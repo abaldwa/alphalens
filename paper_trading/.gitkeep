@@ -1,0 +1,3 @@
+# Paper Trading Logs Directory
+# Execution logs will be stored here as YYYY-MM-DD.csv files
+# Format: date, ticker, signal_type, entry_price, quantity, entry_time, exit_price, exit_time, pnl, pnl_pct

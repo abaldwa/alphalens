@@ -1,0 +1,45 @@
+# requirements/phase0.txt
+#
+# Phase: 0
+# Specs: SPEC-LIB-001, SPEC-LIB-002, SPEC-LIB-003
+# Owner: Platform
+# Consumers: ingestion, datastore, config, scheduler, tests
+#
+# Bootstrap dependencies: data layer, ingestion, scheduler, and test tooling.
+# All versions pinned with == per SPEC-LIB-001 (no >= or ~=). Upgrades follow
+# the SPEC-LIB-002 protocol: one library at a time, on a branch, full test
+# suite + walk-forward backtest comparison before merge.
+
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==23.0.1
+duckdb==1.2.0
+sqlalchemy==2.0.36
+# requests is pinned to 2.31.0, one minor below SPEC-LIB-001's normal latest-pin
+# convention, because fyers-apiv3==3.1.13 (below) hard-pins requests==2.31.0
+# as a transitive dependency; pip's resolver flags 2.32.3 as a conflict.
+# 2.31.0 has no behavioral effect on the existing NSE scrapers (bhavcopy.py,
+# macro.py), which only use Session/headers/get(), all stable across both versions.
+#
+# [DEPENDENCY AUDIT, 2026-06-22] pip-audit flags CVE-2024-35195/CVE-2024-47081/
+# CVE-2026-25645 (fix: requests>=2.32.0/2.32.4/2.33.0) and transitively
+# aiohttp==3.9.3 (fix: 3.9.4+, many later CVEs up to 3.14.1) and
+# setuptools==68.0.0 (fix: 70.0.0+/78.1.1+) — both also hard-pinned by
+# fyers-apiv3==3.1.13, which is already the latest release on PyPI (checked
+# via `pip index versions fyers-apiv3`; no newer version relaxes these pins).
+# Deliberately NOT force-upgraded past fyers-apiv3's exact pins: these CVEs
+# are about handling untrusted/adversarial HTTP input, which doesn't apply to
+# this single-purpose FYERS API client talking only to FYERS' own HTTPS
+# endpoints, whereas force-upgrading risks silently breaking the FYERS SDK's
+# internal HTTP behavior in a way the (mocked) test suite would never catch —
+# only a live backfill run would, and the FYERS integration is too important
+# to risk on an unverifiable forced upgrade. Re-evaluate when FyersDev ships
+# a fyers-apiv3 release with relaxed/updated pins.
+requests==2.31.0
+beautifulsoup4==4.12.3
+APScheduler==3.11.0
+python-dotenv==1.2.2
+tqdm==4.68.3
+fyers-apiv3==3.1.13
+pytest==9.0.3
+pytest-cov==6.0.0

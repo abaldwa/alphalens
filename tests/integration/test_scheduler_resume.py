@@ -1,0 +1,100 @@
+"""
+tests/integration/test_scheduler_resume.py
+
+Phase: 0.3 (Scheduler & Checkpoint Engine)
+Specs: SPEC-SCHED-002, SPEC-SCHED-005, SPEC-SCHED-006, SPEC-SCHED-010
+Owner: Platform / Scheduler
+Consumers: CI, pytest
+
+Full-pipeline integration test: CheckpointManager and run_steps_for_date
+working together against a real (in-memory) SQLite checkpoint store —
+simulate a crash partway through a run, restart, and verify the pipeline
+RESUMES from the failed step rather than re-executing from the start.
+"""
+
+from datetime import date
+
+from ingestion.scheduler.checkpoint import STEP_NAMES, CheckpointManager
+from ingestion.scheduler.pipeline_scheduler import run_steps_for_date
+
+
+def test_pipeline_resumes_not_restarts_after_crash():
+    """
+    SPEC-SCHED-002: "If pipeline crashes at step 7, next run resumes from
+    step 7 (does not re-execute steps 1 to N-1)."
+
+    Run 1: a step_runner that crashes on 'adjust_prices' (the 3rd step).
+    Verify steps 1-2 are checkpointed 'success' and step 3 is 'failed'.
+
+    Run 2 ("restart"): a step_runner that always succeeds. Verify it
+    executes ONLY 'adjust_prices' onward — steps 1-2 must NOT re-run —
+    and that the run now completes successfully end to end.
+    """
+    checkpoint_manager = CheckpointManager(in_memory=True)
+    run_date = date(2026, 2, 2)
+    executed_run1 = []
+
+    def crashing_runner(step_date, step_name):
+        executed_run1.append(step_name)
+        if step_name == "adjust_prices":
+            raise RuntimeError("simulated crash")
+
+    ok = run_steps_for_date(
+        run_date, crashing_runner, checkpoint_manager, is_backfill=False
+    )
+
+    assert ok is False
+    assert executed_run1 == ["download_bhavcopy", "download_fno", "download_macro", "adjust_prices"]
+    assert checkpoint_manager.load_checkpoint(run_date) == "download_macro"
+    assert checkpoint_manager.get_resume_step(run_date) == "adjust_prices"
+
+    executed_run2 = []
+
+    def succeeding_runner(step_date, step_name):
+        executed_run2.append(step_name)
+
+    ok2 = run_steps_for_date(
+        run_date, succeeding_runner, checkpoint_manager, is_backfill=False
+    )
+
+    assert ok2 is True
+    # RESUME, not restart: steps already succeeded must not appear in the second run.
+    assert "download_bhavcopy" not in executed_run2
+    assert "download_fno" not in executed_run2
+    assert "download_macro" not in executed_run2
+    assert executed_run2 == [
+        "adjust_prices",
+        "compute_features",
+        "run_models",
+        "write_signals",
+    ]
+    assert checkpoint_manager.load_checkpoint(run_date) == STEP_NAMES[-1]
+    assert checkpoint_manager.get_resume_step(run_date) is None
+
+
+def test_repeated_failure_keeps_resuming_from_same_step():
+    """
+    SPEC-SCHED-002: if the resumed step fails again, the next run must
+    still resume from that same step — never skip past a step that has
+    never succeeded.
+    """
+    checkpoint_manager = CheckpointManager(in_memory=True)
+    run_date = date(2026, 2, 3)
+
+    def always_fails_at_compute_features(step_date, step_name):
+        if step_name == "compute_features":
+            raise RuntimeError("still broken")
+
+    for _ in range(3):
+        ok = run_steps_for_date(
+            run_date,
+            always_fails_at_compute_features,
+            checkpoint_manager,
+            is_backfill=False,
+        )
+        assert ok is False
+        assert checkpoint_manager.get_resume_step(run_date) == "compute_features"
+
+    # download_bhavcopy/download_fno/adjust_prices succeeded once and are
+    # never re-attempted on subsequent resumes.
+    assert checkpoint_manager.load_checkpoint(run_date) == "adjust_prices"

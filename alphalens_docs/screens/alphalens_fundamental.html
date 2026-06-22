@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.Fundamental</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+:root{--bg:#F8F9FC;--bg2:#FFF;--bg3:#F0F2F8;--bdr:#E2E6EF;--bdr2:#C8CEE0;--tx:#1A1D26;--tx2:#5A6178;--tx3:#8E95A8;--teal:#0A9B8E;--blue:#3B6BF5;--purple:#6E56CF;--green:#1A9338;--amber:#C27A09;--red:#D13438;--r:10px;--r2:14px;--sh:0 1px 3px rgba(0,0,0,.05)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:'DM Sans',system-ui,sans-serif;font-size:14px;-webkit-font-smoothing:antialiased}
+.app-bar{background:var(--bg2);border-bottom:1px solid var(--bdr);padding:0 24px;display:flex;align-items:center;height:56px;position:sticky;top:0;z-index:100}
+.app-logo{font-weight:700;font-size:18px;letter-spacing:-.03em;display:flex;align-items:center;gap:8px}
+.app-logo .dot{width:10px;height:10px;border-radius:50%}
+.app-tabs{display:flex;gap:4px;margin-left:32px}
+.app-tab{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;color:var(--tx2);transition:.15s}
+.app-tab:hover{background:var(--bg3);color:var(--tx)}
+.app-tab.active{background:var(--bg3);color:var(--tx);font-weight:600}
+.app-meta{margin-left:auto;font-size:12px;color:var(--tx3);font-family:'JetBrains Mono',monospace}
+.page{max-width:1400px;margin:0 auto;padding:20px 24px}
+.screen{display:none}.screen.active{display:block}
+.sec{margin-bottom:20px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sec-title{font-size:16px;font-weight:600;letter-spacing:-.02em}
+.sec-sub{font-size:12px;color:var(--tx3)}
+.sec-action{font-size:12px;color:var(--blue);cursor:pointer;font-weight:500}
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--r2);padding:16px;box-shadow:var(--sh)}
+.card-grid{display:grid;gap:16px}
+.grid-2{grid-template-columns:1fr 1fr}
+.grid-3{grid-template-columns:1fr 1fr 1fr}
+.grid-4{grid-template-columns:1fr 1fr 1fr 1fr}
+.stat{text-align:center}
+.stat-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);margin-bottom:4px}
+.stat-value{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:-.03em}
+.stat-sub{font-size:11px;color:var(--tx3);margin-top:2px}
+.insight-card{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;background:linear-gradient(135deg,#f0f4ff 0%,#f0faf8 100%);border:1px solid #d8e2f4;border-radius:var(--r2);padding:14px 16px}
+.insight-metric{text-align:center}
+.insight-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+.insight-val{font-size:17px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.insight-sub{font-size:10px;color:var(--tx3);margin-top:2px}
+.i-entry .insight-label,.i-entry .insight-val{color:var(--blue)}
+.i-returns .insight-label,.i-returns .insight-val{color:var(--green)}
+.i-duration .insight-label,.i-duration .insight-val{color:var(--purple)}
+.i-confidence .insight-label,.i-confidence .insight-val{color:var(--teal)}
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;gap:4px}
+.b-green{background:rgba(26,147,56,.08);color:var(--green)}
+.b-red{background:rgba(209,52,56,.08);color:var(--red)}
+.b-amber{background:rgba(194,122,9,.08);color:var(--amber)}
+.b-blue{background:rgba(59,107,245,.07);color:var(--blue)}
+.b-purple{background:rgba(110,86,207,.07);color:var(--purple)}
+.b-teal{background:rgba(10,155,142,.08);color:var(--teal)}
+.alert-banner{padding:12px 16px;border-radius:var(--r);margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:500}
+.alert-critical{background:#FEE;border:1px solid #FCC;color:var(--red)}
+.alert-warning{background:#FFF8E6;border:1px solid #FFE4A0;color:var(--amber)}
+.alert-info{background:#EEF4FF;border:1px solid #C4D8FF;color:var(--blue)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 12px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);border-bottom:2px solid var(--bdr);background:var(--bg)}
+td{padding:10px 12px;border-bottom:1px solid var(--bg3)}
+tr:hover td{background:var(--bg)}
+.mono{font-family:'JetBrains Mono',monospace}
+.up{color:var(--green)}.dn{color:var(--red)}.neutral{color:var(--tx3)}
+.cross-links{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.cross-link{font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--bdr);color:var(--tx2);cursor:pointer;text-decoration:none;transition:.15s}
+.cross-link:hover{border-color:var(--blue);color:var(--blue);background:rgba(59,107,245,.04)}
+.bar{height:6px;border-radius:3px;background:var(--bg3)}
+.bar-fill{height:100%;border-radius:3px}
+.regime-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:8px;font-size:12px;font-weight:600}
+.regime-bull{background:rgba(26,147,56,.08);color:var(--green)}
+.regime-bear{background:rgba(209,52,56,.08);color:var(--red)}
+.regime-side{background:rgba(142,149,168,.1);color:var(--tx3)}
+.shap-bar{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+.shap-label{width:140px;text-align:right;color:var(--tx2);font-size:11px}
+.shap-track{flex:1;height:16px;background:var(--bg3);border-radius:3px;position:relative;overflow:hidden}
+.shap-fill{height:100%;border-radius:3px;position:absolute;top:0}
+.shap-pos{background:var(--green);right:50%}.shap-neg{background:var(--red);left:50%}
+.chart-placeholder{background:var(--bg);border:1px dashed var(--bdr);border-radius:var(--r);height:240px;display:flex;align-items:center;justify-content:center;color:var(--tx3);font-size:13px}
+.heatmap-cell{padding:8px;text-align:center;font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;border-radius:4px}
+.h-green{background:rgba(26,147,56,.12);color:var(--green)}
+.h-red{background:rgba(209,52,56,.12);color:var(--red)}
+.h-amber{background:rgba(194,122,9,.12);color:var(--amber)}
+.h-neutral{background:var(--bg3);color:var(--tx3)}
+.score-ring{width:80px;height:80px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.ring-green{background:rgba(26,147,56,.08);border:3px solid var(--green);color:var(--green)}
+.ring-red{background:rgba(209,52,56,.08);border:3px solid var(--red);color:var(--red)}
+.ring-amber{background:rgba(194,122,9,.08);border:3px solid var(--amber);color:var(--amber)}
+.progress-bar{height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;border-radius:4px;transition:width .3s}
+.waterfall-step{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--bg3)}
+.waterfall-label{width:160px;font-size:12px;color:var(--tx2)}
+.waterfall-bar{flex:1;height:24px;background:var(--bg3);border-radius:4px;position:relative;overflow:hidden}
+.waterfall-fill{height:100%;border-radius:4px}
+.waterfall-val{font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace;width:80px;text-align:right}
+</style>
+</head>
+<body>
+<div class="app-bar">
+  <div class="app-logo"><div class="dot" style="background:var(--green)"></div>AlphaLens.Fundamental</div>
+  <div class="app-tabs">
+<div class="app-tab active" onclick="go('dash')">Financial Dashboard</div>
+<div class="app-tab" onclick="go('peers')">Peers</div>
+<div class="app-tab" onclick="go('sector')">Sector Deep-Dive</div>
+<div class="app-tab" onclick="go('screener')">Screener</div>
+<div class="app-tab" onclick="go('thesis')">Thesis Builder</div>
+<div class="app-tab" onclick="go('mgmt')">Management</div></div>
+  <div class="app-meta">03 Jun 2026 · 16:42 IST · Pipeline: OK</div>
+</div>
+<div class="page">
+<div id="s-dash" class="screen active">
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+    <span style="font-size:20px;font-weight:700">HDFCBANK</span>
+    <span style="font-size:12px;color:var(--tx3)">Banking · Large Cap · ₹1,680</span>
+    <div class="cross-links" style="margin:0;margin-left:auto"><a class="cross-link">🤖 ML Signal</a><a class="cross-link">📊 Technical</a><a class="cross-link">💰 Valuation</a><a class="cross-link">🔍 Forensic</a></div>
+  </div>
+  <div class="card-grid grid-4" style="margin-bottom:16px">
+    <div class="card"><div class="stat"><div class="stat-label">Revenue TTM</div><div class="stat-value">₹2.8L Cr</div><div class="stat-sub up">+14% YoY</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">PAT TTM</div><div class="stat-value">₹62,500 Cr</div><div class="stat-sub up">+18% YoY</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">ROE</div><div class="stat-value up">16.8%</div><div class="stat-sub">Sector avg: 12.4%</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">NIM</div><div class="stat-value up">3.52%</div><div class="stat-sub">Sector avg: 2.98%</div></div></div>
+  </div>
+  <div class="card-grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="sec-title" style="font-size:14px;margin-bottom:12px">Key Ratios (vs Sector)</div>
+      <table><thead><tr><th>Ratio</th><th>Value</th><th>Sector Avg</th><th>Rank</th><th>Signal</th></tr></thead><tbody>
+        <tr><td>ROE</td><td class="mono">16.8%</td><td class="mono">12.4%</td><td><span class="badge b-green">#2/22</span></td><td class="heatmap-cell h-green" style="padding:4px 8px">Top Q</td></tr>
+        <tr><td>NIM</td><td class="mono">3.52%</td><td class="mono">2.98%</td><td><span class="badge b-green">#3/22</span></td><td class="heatmap-cell h-green" style="padding:4px 8px">Top Q</td></tr>
+        <tr><td>GNPA</td><td class="mono">1.24%</td><td class="mono">2.18%</td><td><span class="badge b-green">#1/22</span></td><td class="heatmap-cell h-green" style="padding:4px 8px">Top Q</td></tr>
+        <tr><td>CASA</td><td class="mono">42.1%</td><td class="mono">38.5%</td><td><span class="badge b-green">#4/22</span></td><td class="heatmap-cell h-green" style="padding:4px 8px">Top Q</td></tr>
+        <tr><td>Cost/Income</td><td class="mono">39.8%</td><td class="mono">45.2%</td><td><span class="badge b-green">#2/22</span></td><td class="heatmap-cell h-green" style="padding:4px 8px">Top Q</td></tr>
+        <tr><td>PE</td><td class="mono">22.4×</td><td class="mono">14.8×</td><td><span class="badge b-red">#20/22</span></td><td class="heatmap-cell h-red" style="padding:4px 8px">Expensive</td></tr>
+      </tbody></table>
+    </div>
+    <div class="card">
+      <div class="sec-title" style="font-size:14px;margin-bottom:12px">Quarterly Trend (Revenue ₹Cr)</div>
+      <div class="chart-placeholder" style="height:200px">📊 Bar chart: Q1–Q8 revenue trend + YoY growth line overlay</div>
+    </div>
+  </div>
+</div>
+<div id="s-peers" class="screen">
+  <div class="sec-title" style="margin-bottom:16px">Peer Comparison — Banking Sector</div>
+  <div class="card"><table><thead><tr><th>Bank</th><th>MCap</th><th>ROE</th><th>NIM</th><th>GNPA</th><th>CASA</th><th>PE</th><th>Quality</th></tr></thead><tbody>
+    <tr style="background:rgba(59,107,245,.04)"><td style="font-weight:700">HDFCBANK</td><td class="mono">₹12.8L</td><td class="mono up">16.8%</td><td class="mono up">3.52%</td><td class="mono up">1.24%</td><td class="mono up">42.1%</td><td class="mono">22.4×</td><td><span class="badge b-green">92</span></td></tr>
+    <tr><td style="font-weight:600">ICICIBANK</td><td class="mono">₹8.9L</td><td class="mono up">17.2%</td><td class="mono">3.28%</td><td class="mono up">1.38%</td><td class="mono">40.2%</td><td class="mono">18.6×</td><td><span class="badge b-green">88</span></td></tr>
+    <tr><td style="font-weight:600">KOTAKBANK</td><td class="mono">₹4.2L</td><td class="mono">14.5%</td><td class="mono up">3.45%</td><td class="mono up">1.12%</td><td class="mono up">48.5%</td><td class="mono">25.2×</td><td><span class="badge b-green">85</span></td></tr>
+    <tr><td style="font-weight:600">SBIN</td><td class="mono">₹7.1L</td><td class="mono">12.8%</td><td class="mono dn">2.82%</td><td class="mono dn">2.48%</td><td class="mono up">43.8%</td><td class="mono">10.2×</td><td><span class="badge b-amber">68</span></td></tr>
+  </tbody></table></div>
+  <div class="chart-placeholder" style="margin-top:16px;height:250px">🕸 Radar Chart: HDFCBANK vs Peer Median — 6 axes: ROE, NIM, GNPA, CASA, Cost/Income, Capital Adequacy</div>
+</div>
+<div id="s-sector" class="screen"><div class="sec-title" style="margin-bottom:16px">Sector Deep-Dive: Banking</div>
+  <div class="card" style="margin-bottom:16px"><div class="sec-title" style="font-size:14px;margin-bottom:12px">Banking-Specific Metrics (from RBI quarterly reports)</div>
+    <table><thead><tr><th>Metric</th><th>HDFCBANK</th><th>Industry</th><th>Trend</th></tr></thead><tbody>
+      <tr><td>Credit Growth</td><td class="mono">18.2%</td><td class="mono">14.5%</td><td class="up">↑ Outpacing</td></tr>
+      <tr><td>Deposit Growth</td><td class="mono">16.8%</td><td class="mono">12.1%</td><td class="up">↑ Outpacing</td></tr>
+      <tr><td>Provision Coverage</td><td class="mono">72%</td><td class="mono">65%</td><td class="up">Above avg</td></tr>
+      <tr><td>Capital Adequacy</td><td class="mono">18.4%</td><td class="mono">16.2%</td><td class="up">Strong buffer</td></tr>
+      <tr><td>NPA Divergence (RBI)</td><td class="mono">0.02%</td><td class="mono">0.18%</td><td class="up">Minimal gap</td></tr>
+    </tbody></table>
+  </div>
+</div>
+<div id="s-screener" class="screen"><div class="sec-title" style="margin-bottom:16px">Fundamental Screener</div><div class="card-grid grid-3" style="margin-bottom:16px">
+  <div class="card" style="border-left:3px solid var(--green);cursor:pointer"><div style="font-weight:600;font-size:13px">Quality Compounder</div><div style="font-size:11px;color:var(--tx2);margin-top:4px">ROE>20%, D/E<0.5, stable margins</div><div style="margin-top:6px"><span class="badge b-green">18 matches</span></div></div>
+  <div class="card" style="border-left:3px solid var(--purple);cursor:pointer"><div style="font-weight:600;font-size:13px">GARP</div><div style="font-size:11px;color:var(--tx2);margin-top:4px">PEG<1.5, growth>20%, ROE>15%</div><div style="margin-top:6px"><span class="badge b-purple">14 matches</span></div></div>
+  <div class="card" style="border-left:3px solid var(--amber);cursor:pointer"><div style="font-weight:600;font-size:13px">Dividend Aristocrat</div><div style="font-size:11px;color:var(--tx2);margin-top:4px">Yield>3%, 5yr growth, payout 30–70%</div><div style="margin-top:6px"><span class="badge b-amber">22 matches</span></div></div>
+</div></div>
+<div id="s-thesis" class="screen"><div class="sec-title" style="margin-bottom:16px">Investment Thesis Builder — HDFCBANK</div>
+  <div class="card-grid grid-2"><div class="card"><div class="sec-title" style="font-size:14px;margin-bottom:8px;color:var(--green)">Strengths (auto-detected)</div><div style="font-size:13px;line-height:1.8">✅ ROE consistently >15% for 8 quarters<br>✅ GNPA at sector-best 1.24%<br>✅ CASA ratio 42%+ (low-cost deposit franchise)<br>✅ Promoter: zero pledge, stable holding<br>✅ Credit growth outpacing industry</div></div>
+  <div class="card"><div class="sec-title" style="font-size:14px;margin-bottom:8px;color:var(--red)">Risks (auto-detected)</div><div style="font-size:13px;line-height:1.8">⚠ PE at 22.4× vs sector 14.8× (premium valuation)<br>⚠ NIM compression risk if rate cycle reverses<br>⚠ Post-merger integration still underway<br>⚠ Competitive pressure from fintechs</div></div>
+</div></div>
+<div id="s-mgmt" class="screen"><div class="sec-title" style="margin-bottom:16px">Management Quality — HDFCBANK</div>
+  <div class="card-grid grid-3" style="margin-bottom:16px">
+    <div class="card"><div class="stat"><div class="stat-label">Mgmt Quality Score</div><div class="stat-value up">88/100</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">Promoter Pledge</div><div class="stat-value up">0%</div><div class="stat-sub">8 consecutive quarters</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">RPT / Revenue</div><div class="stat-value up">1.2%</div><div class="stat-sub">Sector avg: 3.8%</div></div></div>
+  </div>
+</div>
+</div>
+<script>
+function go(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.querySelectorAll('.app-tab').forEach(t=>t.classList.remove('active'));document.getElementById('s-'+id).classList.add('active');event.target.classList.add('active')}
+function toggle(el){const p=el.closest('.expandable');const d=p.querySelector('.expand-content');d.style.display=d.style.display==='none'?'block':'none';el.textContent=d.style.display==='none'?'Expand ▾':'Collapse ▴'}
+</script>
+</body>
+</html>

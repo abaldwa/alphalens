@@ -1,0 +1,25 @@
+# .gitignore
+#
+# Specs: SPEC-SEC-001 (credentials never in VCS), SPEC-DS-007 (gitignored stores)
+
+.env
+*.db
+*.duckdb
+datastore/raw/
+datastore/normalised/
+datastore/features/
+datastore/models/
+datastore/signals/
+datastore/logs/
+__pycache__/
+*.pyc
+.venv/
+catboost_info/
+.pytest_cache/
+.coverage
+
+# Claude Code local tool settings/lock files (machine-specific, not project source)
+.claude/
+
+# FYERS SDK runtime request log (generated at runtime, not source)
+fyersRequests.log

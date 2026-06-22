@@ -1,0 +1,73 @@
+# requirements/phase1.txt
+#
+# Phase: 1
+# Specs: SPEC-LIB-001, SPEC-LIB-002, SPEC-LIB-003, SPEC-LIB-004
+# Owner: Platform
+# Consumers: systems/ml_signal_engine, backtest, datastore/api, tests
+#
+# Phase 1 ML Signal Engine dependencies, on top of phase0.txt: gradient
+# boosting models, regime detection, conformal prediction, HPO, imbalance
+# handling, explainability, survival analysis, changepoint/clustering, drift
+# monitoring, and the DataStore FastAPI layer. All versions pinned with ==
+# per SPEC-LIB-001. ta-lib may require extra system-level build steps (see
+# README.md) before `pip install` succeeds. Triple-barrier labeling is implemented
+# natively per SPEC-MODEL-002 because mlfinlab is not available from PyPI.
+
+-r phase0.txt
+
+# Gradient boosting (SOLID-002: new models, never modify existing model files)
+lightgbm==4.6.0
+catboost==1.2.7
+xgboost==2.1.3
+
+# Regime detection
+hmmlearn==0.3.3
+
+# Core ML / preprocessing
+scikit-learn==1.5.2
+
+# Uncertainty quantification — SPEC-MODEL-007
+mapie==1.3.0
+
+# Hyperparameter optimisation — walk-forward aware (SPEC-MODEL-003)
+optuna==4.7.0
+
+# Class imbalance — SPEC-MODEL-004 (train-fold only)
+imbalanced-learn==0.13.0
+
+# Explainability
+shap==0.46.0
+
+# Technical indicators
+ta-lib==0.6.8
+
+# Survival analysis — exit timing, multibagger duration
+lifelines==0.30.0
+scikit-survival==0.23.1
+
+# Changepoint detection
+ruptures==1.1.9
+
+# Clustering
+hdbscan==0.8.40
+
+# Online drift monitoring (ADWIN, Phase 2 formalisation per SPEC-SCHED-007)
+river==0.22.0
+
+# Native triple-barrier labeling per SPEC-MODEL-002
+# mlfinlab==1.5.0 is intentionally omitted: the public package is not available
+# from PyPI and the required behavior is implemented in AlphaLens code.
+
+# DataStore API — SPEC-DS-002
+# [DEPENDENCY AUDIT, 2026-06-22] fastapi bumped 0.115.6 -> 0.138.0 to pull in
+# starlette>=1.0 (the previous fastapi pin only allowed starlette<0.42.0,
+# which was stuck on 0.41.3 — pip-audit flagged 8 CVEs against it, fix
+# versions ranging 0.47.2 through 1.3.1). starlette is not pinned directly
+# here (transitive via fastapi, same convention as before); resolved to
+# 1.3.1. Verified: full test suite green, live API server smoke-tested
+# (GET /health, /api/v1/ohlcv/*, /api/v1/signals/ml/*, /api/v1/macro/regime
+# all confirmed working against real data post-upgrade).
+fastapi==0.138.0
+uvicorn==0.32.1
+pydantic==2.9.2
+httpx==0.27.2

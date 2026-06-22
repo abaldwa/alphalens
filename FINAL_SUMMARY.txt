@@ -1,0 +1,325 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║        ✅ AlphaLens Execution Framework v2.0 — COMPLETE & READY              ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+PROJECT LOCATION: /home/amit/projects/AlphaLens
+PYTHON VERSION: 3.14.4
+ENVIRONMENT: Ubuntu 22.04
+STATUS: ✅ READY FOR PHASE 0 P0.1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 WHAT YOU'VE GOT
+
+1. ✅ Updated Prompt File (41 KB)
+   📄 CLAUDE_CODE_PROMPTS_UPDATED.md
+   • All 4 phases (P0–P4)
+   • Intelligent agent selection per prompt
+   • Skill assignments (code-review, verify, etc.)
+   • All commands use python3 (Ubuntu)
+   • Automated execution report templates
+   • Git commit strategies
+   • Paper trading integration
+   • Gate check logic with remediation
+
+2. ✅ Quick Start Guide (14 KB)
+   📄 EXECUTION_FRAMEWORK_QUICKSTART.md
+   • 5-minute quick start
+   • Phase execution flow
+   • Example P0.1 walkthrough
+   • Troubleshooting guide
+   • Best practices
+
+3. ✅ Setup Complete Verification (9.5 KB)
+   📄 FRAMEWORK_SETUP_COMPLETE.md
+   • Infrastructure checklist
+   • Directory structure
+   • Success criteria
+   • Quick reference guide
+
+4. ✅ Execution Infrastructure
+   📁 execution_logs/         → Auto-generated reports
+   📁 baselines/              → Baseline metrics (initialized)
+   📁 paper_trading/          → Trading logs directory
+   📁 code_reviews/           → Code review reports
+   📁 scripts/                → Utility Python scripts
+
+5. ✅ Utility Scripts (3 files)
+   🐍 scripts/execution_report_generator.py    (250+ lines)
+   🐍 scripts/baseline_tracker.py              (300+ lines)
+   🐍 scripts/paper_trading_tracker.py         (350+ lines)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 KEY FEATURES IMPLEMENTED
+
+✅ Automated Execution Reports
+   • Generated after each prompt execution
+   • Location: ./execution_logs/PHASE_X_P[X].[Y]_YYYYMMDD_HHMMSS.md
+   • Includes: steps, tests, coverage, metrics, decisions
+   • Markdown format for easy reading
+
+✅ Intelligent Agent Selection
+   • No generic pattern — agents selected per prompt
+   • Example: P0.1 uses Plan + general-purpose
+   • Example: P2.1 uses Explore + general-purpose
+   • Skills automatically assigned and triggered
+
+✅ Code Review Automation
+   • Medium effort: After each prompt
+   • High effort: At phase completion
+   • Findings embedded in execution reports
+   • Auto-fixes applied during implementation
+
+✅ Coverage Enforcement (≥85%)
+   • Minimum acceptable coverage: 85%
+   • Tested after every single phase
+   • Auto-remediation task generation on failure
+   • Trend tracking across phases
+
+✅ Paper Trading Integration
+   • Auto-computed metrics: win rate, Sharpe, drawdown
+   • Logs to: ./paper_trading/executions/YYYY-MM-DD.csv
+   • Metrics embedded in execution reports
+   • Trend analysis vs previous phase
+
+✅ Baseline Tracking
+   • Centralized metrics: ./baselines/baseline_metrics.json
+   • Tracks: coverage, sharpe, tests, win_rate
+   • Trend analysis: ↑ improving, ↓ degrading, → stable
+   • Comparison across phases
+
+✅ Gate Checks (Smart)
+   • ✗ PARTIAL PASS (doesn't block) — auto-remediation
+   • ✓ PASS → proceed to next prompt
+   • Remediation tasks with estimated effort
+   • No "all-or-nothing" failures
+
+✅ Python3 Ubuntu Compatibility
+   • All commands: python3 (not python)
+   • Tested on Python 3.14.4
+   • Bash scripts use #!/bin/bash -e
+   • Proper error handling
+
+✅ Dependency Management
+   • pip-audit integration per phase
+   • Frozen requirements after each phase
+   • CVE tracking in execution reports
+   • requirements/phase0.txt, phase1.txt, etc.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 HOW TO START (3 STEPS)
+
+STEP 1: Open the Updated Prompt File
+   → Open: CLAUDE_CODE_PROMPTS_UPDATED.md
+   → Find: PHASE 0 → P0.1 — Project Skeleton
+   → Copy: The entire 📋 **PROMPT:** section
+
+STEP 2: Paste into Claude Code
+   → Specify agents: Plan, general-purpose
+   → Specify skills: code-review (Medium), verify
+   → Paste the P0.1 prompt
+   → Run execution
+
+STEP 3: Review Generated Report
+   → Check: ./execution_logs/PHASE_0_P0.1_*.md
+   → Verify: Coverage ≥85%, all tests pass
+   → Review: Recommendations for P0.2
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 WHAT AN EXECUTION REPORT LOOKS LIKE
+
+When P0.1 runs, you get:
+
+# 📊 PHASE_0 — P0.1 — Execution Report
+**Date:** 2025-06-19 HH:MM:SS UTC | **Duration:** 12m 34s | **Status:** PASSED
+
+## 🎯 Executive Summary
+- Completion %: 95%
+- Coverage: 86% ✓ (≥85%)
+- Tests: 28/28 PASSED ✓
+- Critical Issues: None
+
+## 🔧 Execution Details
+- Agents: Plan, general-purpose
+- Skills: code-review, verify
+- Steps Executed:
+  1. ✓ Read documentation
+  2. ✓ Design project skeleton
+  3. ✓ Implement config files
+  4. ✓ Run tests
+  5. ✓ Code review
+
+## ✅ Tests & Coverage
+- Unit Tests: 28/28 PASSED
+- Coverage: 86%
+- Code Review: 2 findings (fixed)
+
+## 📈 Baseline Tracking
+- First run (baseline recorded)
+
+## 🚀 Next Steps
+1. Proceed to P0.2 — DataStore Schema
+2. Review findings before next prompt
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📈 PHASE PROGRESSION
+
+Phase 0 (Infrastructure)
+└─ P0.1 → P0.2 → P0.3 → P0.4 → P0.5 → P0.6 → P0.7 → GATE CHECK
+   (6-8 weeks estimated)
+
+Phase 1 (Core Signals)
+└─ P1.1 → P1.2 → P1.3 → P1.4 → P1.5 → P1.6 → P1.7 → GATE CHECK
+   (6-8 weeks estimated)
+
+Phase 2 (Fundamentals)
+└─ P2.1 → P2.2 → P2.3 → P2.4 → P2.5 → P2.6 → GATE CHECK
+   (6-8 weeks estimated)
+
+Phase 3 (Deep Learning)
+└─ P3.1 → P3.2 → P3.3 → P3.4 → P3.5 → GATE CHECK
+   (4-6 weeks estimated)
+
+Phase 4 (RL + Systems)
+└─ P4.1 → P4.2 → P4.3 → P4.4 → COMPLETE
+   (4-6 weeks estimated)
+
+TOTAL: ~6 months development with automated reporting
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎓 EXAMPLE WORKFLOW
+
+1. Copy P0.1 prompt
+   ↓
+2. Paste into Claude Code
+   ↓
+3. Claude runs agents + tests + code review
+   ↓
+4. Report generated: execution_logs/PHASE_0_P0.1_20250619_123456.md
+   ↓
+5. Review report (2-3 mins)
+   ↓
+6. If ✓ PASSED → Copy P0.2 prompt
+   ↓
+7. If ✗ or ⚠️ PARTIAL → Fix issues + re-run P0.1
+   ↓
+8. Repeat for P0.2, P0.3, ... until P0.7 GATE CHECK
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 REPORTING EXAMPLES
+
+View Latest Report:
+  $ ls -ltr execution_logs/ | tail -1 | awk '{print $NF}' | xargs cat
+
+Extract Coverage Trend:
+  $ grep "Coverage:" execution_logs/*.md | tail -10
+
+Extract Sharpe Trend:
+  $ grep "Sharpe" execution_logs/PHASE_*.md | tail -10
+
+View Baselines:
+  $ python3 scripts/baseline_tracker.py
+
+View Paper Trading:
+  $ python3 scripts/paper_trading_tracker.py
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✨ IMPROVEMENTS FROM ORIGINAL FRAMEWORK
+
+Original CLAUDE_CODE_PROMPTS.md
+├─ ✗ Manual execution tracking
+├─ ✗ Console output only
+├─ ✗ No coverage tracking
+├─ ✗ Manual test fixes
+├─ ✗ No baseline tracking
+├─ ✗ Generic agent usage
+├─ ✗ Manual code review
+├─ ✗ No paper trading integration
+└─ ✗ No phase gate enforcement
+
+NEW CLAUDE_CODE_PROMPTS_UPDATED.md v2.0
+├─ ✅ Auto-generated reports (markdown)
+├─ ✅ Structured metrics & analysis
+├─ ✅ Coverage tracking + 85% minimum
+├─ ✅ Auto-fix + remediation tasks
+├─ ✅ Baseline metrics + trend analysis
+├─ ✅ Intelligent per-prompt agent selection
+├─ ✅ Auto-triggered code review (Medium + High)
+├─ ✅ Paper trading metrics auto-computed
+└─ ✅ Smart gate checks (PARTIAL PASS)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📁 FILE LOCATIONS
+
+Framework Files:
+  • CLAUDE_CODE_PROMPTS_UPDATED.md       (41 KB) — USE THIS FILE
+  • EXECUTION_FRAMEWORK_QUICKSTART.md    (14 KB) — Quick reference
+  • FRAMEWORK_SETUP_COMPLETE.md          (9.5 KB) — Setup guide
+
+Execution Infrastructure:
+  • execution_logs/                      → Reports
+  • baselines/baseline_metrics.json      → Metrics
+  • paper_trading/executions/            → Trading logs
+  • code_reviews/                        → Review reports
+  • scripts/                             → Utility scripts
+
+Original File (Backup):
+  • CLAUDE_CODE_PROMPTS.md               (89 KB) — Backup only
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 IMMEDIATE NEXT STEPS
+
+1. ✅ Read EXECUTION_FRAMEWORK_QUICKSTART.md (5 mins)
+   → Understand the flow and workflow
+
+2. ✅ Open CLAUDE_CODE_PROMPTS_UPDATED.md
+   → Navigate to PHASE 0 → P0.1
+
+3. ✅ Copy P0.1 Prompt
+   → Copy the entire 📋 **PROMPT:** section
+
+4. ✅ Open Claude Code
+   → Create new session or use existing
+   → Set working directory: /home/amit/projects/AlphaLens
+
+5. ✅ Paste P0.1 Prompt
+   → Specify agents: Plan, general-purpose
+   → Specify skills: code-review, verify
+   → Paste prompt and run
+
+6. ✅ Review Generated Report
+   → Check: execution_logs/PHASE_0_P0.1_*.md
+   → Verify: Coverage ≥85%, tests pass
+   → Proceed to P0.2
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ ALL SETUP COMPLETE
+
+Status: READY FOR PHASE 0 P0.1
+Environment: Ubuntu 22.04 | Python 3.14.4
+Project Root: /home/amit/projects/AlphaLens
+
+Time to First Report: 15-20 minutes
+Estimated Full Project: 6 months
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 YOU'RE READY TO START!
+
+Open CLAUDE_CODE_PROMPTS_UPDATED.md and start with P0.1 now.
+
+Questions? Check EXECUTION_FRAMEWORK_QUICKSTART.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AlphaLens — Development Documentation Index</title>
+<style>
+  :root { --bg:#0A0C10; --surface:#111318; --surface2:#181C24; --border:#1E2230; --teal:#00D4AA; --purple:#7B6EF6; --amber:#F5A623; --coral:#F06060; --green:#4ADE80; --blue:#4A9EF5; --text:#E8EAF0; --text2:#9BA3B8; --text3:#5A6278; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; padding:32px; max-width:900px; margin:0 auto; }
+  .hero { margin-bottom:40px; }
+  h1 { font-size:36px; font-weight:800; letter-spacing:-0.03em; background:linear-gradient(90deg,var(--teal),var(--purple)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; margin-bottom:8px; }
+  .subtitle { color:var(--text2); font-size:16px; }
+  .stats { display:flex; gap:24px; margin:24px 0; flex-wrap:wrap; }
+  .stat { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 20px; text-align:center; }
+  .stat-n { font-size:24px; font-weight:700; color:var(--teal); }
+  .stat-l { font-size:11px; color:var(--text3); margin-top:2px; }
+  h2 { font-size:18px; font-weight:700; margin:32px 0 16px; color:var(--text); }
+  .doc-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:32px; }
+  .doc-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px; text-decoration:none; color:inherit; display:block; transition:all 0.15s; }
+  .doc-card:hover { border-color:var(--teal); background:linear-gradient(135deg,#00D4AA08,#7B6EF608); }
+  .doc-icon { font-size:24px; margin-bottom:8px; }
+  .doc-title { font-size:14px; font-weight:700; color:var(--text); margin-bottom:4px; }
+  .doc-desc { font-size:12px; color:var(--text2); line-height:1.5; }
+  .doc-badge { display:inline-block; margin-top:8px; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; }
+  .md-badge { background:#00D4AA22; color:var(--teal); border:1px solid #00D4AA44; }
+  .html-badge { background:#7B6EF622; color:var(--purple); border:1px solid #7B6EF644; }
+  .both { background:#F5A62322; color:var(--amber); border:1px solid #F5A62344; }
+  .section-note { background:var(--surface2); border-left:3px solid var(--teal); padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; font-size:13px; color:var(--text2); line-height:1.6; }
+  table { width:100%; border-collapse:collapse; margin:16px 0; background:var(--surface); border-radius:10px; overflow:hidden; border:1px solid var(--border); }
+  th { background:var(--surface2); padding:10px 14px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--text3); border-bottom:1px solid var(--border); }
+  td { padding:10px 14px; border-bottom:1px solid var(--border); font-size:13px; color:var(--text2); }
+  tr:last-child td { border-bottom:none; }
+  code { background:var(--surface2); color:var(--teal); padding:2px 6px; border-radius:4px; font-size:12px; font-family:'Courier New',monospace; }
+  .phase-block { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:12px; }
+  .phase-header { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+  .phase-dot { width:12px; height:12px; border-radius:50%; }
+  .phase-title { font-weight:700; font-size:15px; }
+  .phase-sub { font-size:12px; color:var(--text3); }
+  ul { padding-left:20px; color:var(--text2); }
+  li { margin-bottom:4px; font-size:13px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="hero">
+  <h1>AlphaLens</h1>
+  <div class="subtitle">Indian Equity ML System · Complete Development Documentation Package</div>
+  <div class="stats">
+    <div class="stat"><div class="stat-n">500</div><div class="stat-l">Stocks (Nifty 500)</div></div>
+    <div class="stat"><div class="stat-n">330</div><div class="stat-l">ML Features</div></div>
+    <div class="stat"><div class="stat-n">16</div><div class="stat-l">ML Models</div></div>
+    <div class="stat"><div class="stat-n">4</div><div class="stat-l">Build Phases</div></div>
+    <div class="stat"><div class="stat-n">₹14.4K</div><div class="stat-l">Annual Data Cost</div></div>
+  </div>
+  <div class="section-note">
+    <strong>For Claude Code:</strong> Read <code>CLAUDE.md</code> first in every session.
+    It contains all absolute rules, technology decisions, and build phase context.
+    Never write code that violates the rules in CLAUDE.md.
+  </div>
+</div>
+
+<h2>Core Documentation</h2>
+<div class="doc-grid">
+  <a class="doc-card" href="CLAUDE.md">
+    <div class="doc-icon">🧠</div>
+    <div class="doc-title">CLAUDE.md — Master Context</div>
+    <div class="doc-desc">Claude Code reads this first every session. Contains absolute rules, technology decisions, build phases, file structure, and all constants.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="specs/SDD.md">
+    <div class="doc-icon">📐</div>
+    <div class="doc-title">SDD — Software Design Document</div>
+    <div class="doc-desc">Functional requirements (FR), non-functional requirements (NFR), architecture decisions (ADRs), data flow diagram, security rules.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="specs/API_SPEC.md">
+    <div class="doc-icon">🔌</div>
+    <div class="doc-title">API & Module Contracts</div>
+    <div class="doc-desc">Every module interface, input/output types, contracts, error handling patterns, settings constants specification.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="07_truthful_expectations.md">
+    <div class="doc-icon">⚖️</div>
+    <div class="doc-title">Truthful Expectations</div>
+    <div class="doc-desc">Honest assessment of what ML can/cannot do. Realistic return expectations. Which components have real edge. Prevent over-optimism.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+</div>
+
+<h2>Technical Specifications</h2>
+<div class="doc-grid">
+  <a class="doc-card" href="01_features.md">
+    <div class="doc-icon">🔢</div>
+    <div class="doc-title">Feature Specification</div>
+    <div class="doc-desc">All 330 features across 3 phases. Formula, lookback, data source for each. Vectorized computation rules. Sector z-score normalization.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="02_models.md">
+    <div class="doc-icon">🤖</div>
+    <div class="doc-title">Model Specifications</div>
+    <div class="doc-desc">All 16 models: M-01 HMM through M-16 Drift Monitor. Inputs, outputs, labeling, training protocol, retrain triggers, scope per tier.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="03_data_pipeline.md">
+    <div class="doc-icon">🗄️</div>
+    <div class="doc-title">Data Pipeline</div>
+    <div class="doc-desc">All 7 database schemas. Corporate action adjustment logic. Point-in-time join. Daily execution sequence. Quality checks. Transaction cost model.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="04_backtesting.md">
+    <div class="doc-icon">📊</div>
+    <div class="doc-title">Backtesting Architecture</div>
+    <div class="doc-desc">Walk-forward engine. 10 non-negotiable integrity rules. WalkForwardBacktester class. Performance targets. Overfitting detection suite.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="05_ml_algorithms.md">
+    <div class="doc-icon">⚗️</div>
+    <div class="doc-title">ML Algorithm Specification</div>
+    <div class="doc-desc">All 24 libraries with version numbers. Confirmed choices and dropped algorithms. Optuna HPO protocol. Conformal prediction setup. Intel optimization.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="06_deployment.md">
+    <div class="doc-icon">☁️</div>
+    <div class="doc-title">Deployment & Infrastructure</div>
+    <div class="doc-desc">Oracle Cloud free tier setup. Laptop vs cloud architecture. Full crontab specs. Environment setup. requirements.txt files. WSL2 for Windows.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+</div>
+
+<h2>Tests</h2>
+<div class="doc-grid">
+  <a class="doc-card" href="tests/AUTOMATED_TESTS.md">
+    <div class="doc-icon">🤖</div>
+    <div class="doc-title">Automated Test Suite</div>
+    <div class="doc-desc">Complete pytest specification. conftest.py fixtures. T-01 through T-08 covering ingestion, corp actions, PIT alignment, features, models, backtest, pipeline, drift. 80% coverage target.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+  <a class="doc-card" href="tests/HUMAN_IN_LOOP_TESTS.md">
+    <div class="doc-icon">👤</div>
+    <div class="doc-title">Human-in-the-Loop Tests</div>
+    <div class="doc-desc">8 complex test cases requiring human judgment. Maximum business value. Fraud detection, crash regime, multibagger retrospective, conflicting signals, exit legibility.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+</div>
+
+<h2>Screens & UI</h2>
+<div class="doc-grid">
+  <a class="doc-card" href="screens/daily_dashboard.html">
+    <div class="doc-icon">📺</div>
+    <div class="doc-title">Daily Dashboard — Live Mock</div>
+    <div class="doc-desc">Fully rendered HTML mock of the primary daily signal dashboard. Shows buy signals, exit alerts, SHAP drivers, model health, P&D blocks.</div>
+    <span class="doc-badge html-badge">.html</span>
+  </a>
+  <a class="doc-card" href="screens/screen_specs.html">
+    <div class="doc-icon">🎨</div>
+    <div class="doc-title">Screen Specifications</div>
+    <div class="doc-desc">5 screen specifications: SCR-01 Daily, SCR-02 Multibagger, SCR-03 Forensic, SCR-04 Model Health, SCR-05 Backtest. MUST/SHOULD/COULD elements, wireframes, user stories.</div>
+    <span class="doc-badge html-badge">.html</span>
+  </a>
+</div>
+
+<h2>Automation</h2>
+<div class="doc-grid">
+  <a class="doc-card" href="automation/AUTOMATION_SPEC.md">
+    <div class="doc-icon">⚙️</div>
+    <div class="doc-title">Automation Specification</div>
+    <div class="doc-desc">Retrain automation logic. Pipeline error handling. Alert system. Pre-commit test hooks. Complete crontabs for both laptop and Oracle Cloud.</div>
+    <span class="doc-badge md-badge">.md</span>
+  </a>
+</div>
+
+<h2>Build Order</h2>
+<div class="phase-block">
+  <div class="phase-header"><div class="phase-dot" style="background:#00D4AA"></div><div><div class="phase-title">Phase 1 — Weeks 1–14 · Core Signal Engine</div><div class="phase-sub">Goal: System usable for paper trading by Week 8</div></div></div>
+  <ul>
+    <li>Data pipeline: bhavcopy download, corporate action adjustment, 76 technical features</li>
+    <li>Walk-forward backtesting framework with cost model and integrity rules</li>
+    <li>M-01 HMM Regime Detection</li>
+    <li>M-06 P&D Detector (build before signal models)</li>
+    <li>M-02/03 Signal Models 5d and 21d (LightGBM + CatBoost)</li>
+    <li>M-04 Meta-Labeler</li>
+    <li>M-05 Conformal Prediction (MAPIE ACI)</li>
+    <li>M-07 Exit Signal Model + CoxPH survival</li>
+    <li>M-16 PSI Drift Monitor (build alongside first models)</li>
+    <li>SCR-01 Daily Dashboard (basic version)</li>
+    <li>Optuna HPO + SMOTE + threshold optimization for all Phase 1 models</li>
+  </ul>
+</div>
+<div class="phase-block">
+  <div class="phase-header"><div class="phase-dot" style="background:#7B6EF6"></div><div><div class="phase-title">Phase 2 — Weeks 12–24 · Fundamentals + Multibagger</div><div class="phase-sub">Overlaps Phase 1: fundamentals data flowing by Week 12</div></div></div>
+  <ul>
+    <li>Screener.in data pipeline + BSE shareholding + AMFI MF holdings</li>
+    <li>28 fundamental + 12 governance + 12 MF + corporate action features</li>
+    <li>M-03b Signal 63d (adds fundamental features)</li>
+    <li>M-08 Multibagger Detection Model (weekly)</li>
+    <li>M-09 Forensic Classical Scores (formula-based, no training)</li>
+    <li>M-10 Forensic ML Ensemble (12 sector-specific models)</li>
+    <li>SCR-02 Multibagger Watchlist + SCR-03 Forensic Dashboard</li>
+  </ul>
+</div>
+<div class="phase-block">
+  <div class="phase-header"><div class="phase-dot" style="background:#F5A623"></div><div><div class="phase-title">Phase 3 — Weeks 24–36 · Deep Learning Ensemble</div><div class="phase-sub">Only after Phase 1–2 are stable and paper-trading</div></div></div>
+  <ul>
+    <li>M-11 TFT (pytorch-forecasting) — ensemble member only</li>
+    <li>M-12 BiLSTM + Mamba-2 — sequential patterns</li>
+    <li>M-13 Stacking Meta-Learner — combines all base models</li>
+    <li>M-14 TabNet — feature selection validator (research only)</li>
+    <li>Advanced features: wavelet, entropy, Hurst, pattern recognition</li>
+  </ul>
+</div>
+<div class="phase-block">
+  <div class="phase-header"><div class="phase-dot" style="background:#F06060"></div><div><div class="phase-title">Phase 4 — Week 36+ · RL Meta-Agent</div><div class="phase-sub">Prerequisite: 3+ months paper trading from all Phase 1–3 models</div></div></div>
+  <ul>
+    <li>M-15 PPO Reinforcement Learning — position sizing meta-agent</li>
+    <li>5-stage bootstrapping before any live deployment</li>
+    <li>Replace rules-based position sizer with RL</li>
+  </ul>
+</div>
+
+<h2>Quick Reference — Key Constants</h2>
+<table>
+  <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+  <tr><td><code>SIGNAL_BUY_THRESHOLD</code></td><td>0.65</td><td>Minimum Buy probability to show in dashboard</td></tr>
+  <tr><td><code>META_ACT_THRESHOLD</code></td><td>0.50</td><td>Meta-labeler Act minimum probability</td></tr>
+  <tr><td><code>PND_BLOCK_THRESHOLD</code></td><td>60</td><td>P&D score above this = hard block on all buys</td></tr>
+  <tr><td><code>PND_FLAG_THRESHOLD</code></td><td>40</td><td>P&D score above this = alert user</td></tr>
+  <tr><td><code>EXIT_URGENT_THRESHOLD</code></td><td>80</td><td>Exit urgency = "Exit today"</td></tr>
+  <tr><td><code>EXIT_REDUCE_THRESHOLD</code></td><td>60</td><td>Exit urgency = "Reduce 50%"</td></tr>
+  <tr><td><code>MAX_POSITION_PCT</code></td><td>0.10</td><td>Maximum 10% of portfolio in any single stock</td></tr>
+  <tr><td><code>MAX_SECTOR_PCT</code></td><td>0.40</td><td>Maximum 40% of portfolio in any single sector</td></tr>
+  <tr><td><code>MIN_ADT_INR</code></td><td>1,000,000</td><td>Minimum ₹10L ADTV (liquidity gate)</td></tr>
+  <tr><td><code>PSI_SEVERE</code></td><td>0.25</td><td>Halt new positions + immediate retrain</td></tr>
+  <tr><td><code>PSI_MODERATE</code></td><td>0.10</td><td>Reduce sizes 50% + schedule retrain</td></tr>
+  <tr><td><code>TRANSACTION_ROUNDTRIP</code></td><td>0.005</td><td>0.5% all-in round-trip cost</td></tr>
+  <tr><td><code>BEAR_REGIME_SCALE</code></td><td>0.50</td><td>Halve position sizes in bear market regime</td></tr>
+</table>
+<p style="margin-top:32px;color:var(--text3);font-size:12px;text-align:center">AlphaLens Documentation Package v1.0 · May 2026 · For use with Claude Code</p>
+</body>
+</html>

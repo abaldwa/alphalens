@@ -1,0 +1,299 @@
+"""
+tests/unit/test_backtester.py
+
+Phase: 1.4 (Labeling + Backtesting Infrastructure)
+Specs: SPEC-MODEL-003, SPEC-BT-001 through SPEC-BT-004
+Owner: Platform / QA
+Consumers: CI, pytest
+
+Unit tests for systems/ml_signal_engine/training/walk_forward.py,
+backtest/integrity_checker.py, backtest/costs.py, backtest/overfit_checks.py.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from backtest.costs import IndianTransactionCosts
+from backtest.integrity_checker import BacktestIntegrityChecker
+from backtest.overfit_checks import deflated_sharpe_ratio, random_feature_test
+from config.settings import MIN_ADT_INR, TOTAL_ROUNDTRIP_COST
+from contracts.interfaces import IModel
+from systems.ml_signal_engine.training.walk_forward import WalkForwardValidator
+
+
+def _daily_df(start, periods):
+    return pd.DataFrame({"date": pd.date_range(start, periods=periods, freq="D")})
+
+
+# ===== WalkForwardValidator.split_data =====
+
+
+class TestSplitData:
+    def test_five_folds_produced(self):
+        df = _daily_df("2020-01-01", 2400)  # ~6.6 years -> enough for 5 folds
+        validator = WalkForwardValidator(n_folds=5)
+
+        folds = validator.split_data(df)
+
+        assert len(folds) == 5
+
+    def test_fold_date_ranges_are_expanding_and_correct(self):
+        df = _daily_df("2020-01-01", 2400)
+        validator = WalkForwardValidator(n_folds=5)
+
+        folds = validator.split_data(df)
+
+        prev_train_size = 0
+        for train_df, test_df in folds:
+            # Expanding window: each fold's train set is >= the previous fold's.
+            assert len(train_df) >= prev_train_size
+            prev_train_size = len(train_df)
+            # Test set is exactly the year immediately after the training cutoff.
+            assert test_df["date"].dt.year.nunique() == 1
+            assert train_df["date"].max().year < test_df["date"].min().year
+
+    def test_no_overlap_between_train_and_test(self):
+        df = _daily_df("2020-01-01", 2400)
+        validator = WalkForwardValidator(n_folds=5)
+
+        folds = validator.split_data(df)
+
+        for train_df, test_df in folds:
+            overlap = set(train_df["date"]) & set(test_df["date"])
+            assert not overlap
+            assert train_df["date"].max() < test_df["date"].min()
+
+    def test_insufficient_years_raises(self):
+        df = _daily_df("2020-01-01", 400)  # ~1 year
+        validator = WalkForwardValidator(n_folds=5)
+        with pytest.raises(ValueError):
+            validator.split_data(df)
+
+    def test_missing_date_column_raises(self):
+        df = pd.DataFrame({"not_date": [1, 2, 3]})
+        validator = WalkForwardValidator(n_folds=2)
+        with pytest.raises(ValueError):
+            validator.split_data(df)
+
+    def test_n_folds_override_at_call_time(self):
+        df = _daily_df("2020-01-01", 2400)
+        validator = WalkForwardValidator(n_folds=5)
+
+        folds = validator.split_data(df, n_folds=3)
+
+        assert len(folds) == 3
+
+
+class TestTrainValidationSplit:
+    def test_validation_is_chronologically_last_slice(self):
+        df = _daily_df("2020-01-01", 1000)
+        validator = WalkForwardValidator()
+
+        train_only, val = validator.get_train_validation_split(df, val_fraction=0.2)
+
+        assert train_only["date"].max() < val["date"].min()
+        assert len(train_only) + len(val) == len(df)
+
+    def test_invalid_val_fraction_raises(self):
+        df = _daily_df("2020-01-01", 100)
+        validator = WalkForwardValidator()
+        with pytest.raises(ValueError):
+            validator.get_train_validation_split(df, val_fraction=1.5)
+
+
+# ===== BacktestIntegrityChecker =====
+
+
+class TestIntegrityChecker:
+    def test_walk_forward_check_catches_a_deliberately_introduced_leak(self):
+        """A deliberately overlapping (leaked) fold must fail check_01, not silently pass."""
+        train = _daily_df("2020-01-01", 400)
+        leaked_test = _daily_df("2020-06-01", 30)  # starts mid-train -> real leak
+
+        checker = BacktestIntegrityChecker(folds=[(train, leaked_test)])
+        result = checker.check_01_walk_forward()
+
+        assert result.passed is False
+        assert result.critical is True
+
+    def test_clean_folds_pass_walk_forward_check(self):
+        train = _daily_df("2020-01-01", 365)
+        test = _daily_df("2021-01-01", 30)
+        checker = BacktestIntegrityChecker(folds=[(train, test)])
+
+        result = checker.check_01_walk_forward()
+
+        assert result.passed is True
+
+    def test_run_all_checks_raises_on_critical_failure(self):
+        checker = BacktestIntegrityChecker()  # no context at all -> every critical check fails
+        with pytest.raises(RuntimeError):
+            checker.run_all_checks()
+
+    def test_run_all_checks_passes_with_full_clean_context(self):
+        train = _daily_df("2020-01-01", 365)
+        test = _daily_df("2021-01-01", 365)
+        checker = BacktestIntegrityChecker(
+            folds=[(train, test)],
+            feature_df=pd.DataFrame({"date": pd.date_range("2020-01-01", periods=5)}),
+            ohlcv_df=pd.DataFrame({"adj_factor": [1.0, 1.0]}),
+            universe_tickers={"A", "B"},
+            historical_tickers={"A", "B", "DELISTED1"},
+            applied_roundtrip_cost_pct=TOTAL_ROUNDTRIP_COST,
+            applied_min_adt_inr=MIN_ADT_INR,
+            hpo_dataset="train+validation",
+            fold_sharpes=[1.1, 1.2, 1.0],
+            fold_returns=[0.2, 0.25, 0.18],
+            benchmark_returns=[0.1, 0.12, 0.05],
+            random_feature_accuracy=0.50,
+        )
+
+        results = checker.run_all_checks()
+
+        assert all(results.values())
+        assert set(results) == {
+            "check_01_walk_forward", "check_02_pit", "check_03_corp_actions", "check_04_survivorship",
+            "check_05_costs", "check_06_liquidity", "check_07_no_hpo_on_test", "check_08_fold_stability",
+            "check_09_benchmarks", "check_10_random_feature",
+        }
+
+    def test_no_critical_failure_does_not_raise_even_if_noncritical_fails(self):
+        train = _daily_df("2020-01-01", 365)
+        test = _daily_df("2021-01-01", 365)
+        checker = BacktestIntegrityChecker(
+            folds=[(train, test)],
+            feature_df=pd.DataFrame({"date": pd.date_range("2020-01-01", periods=5)}),
+            ohlcv_df=pd.DataFrame({"adj_factor": [1.0]}),
+            universe_tickers={"A"},
+            historical_tickers={"A", "DELISTED1"},
+            applied_roundtrip_cost_pct=TOTAL_ROUNDTRIP_COST,
+            applied_min_adt_inr=MIN_ADT_INR,
+            hpo_dataset="train+validation",
+            fold_sharpes=[5.0, -5.0, 0.1],  # high std -> fails check_08, non-critical
+        )
+
+        results = checker.run_all_checks()  # must not raise
+
+        assert results["check_08_fold_stability"] is False
+
+    def test_survivorship_check_flags_pure_current_universe(self):
+        """If every historical ticker is still in the current universe, that's a survivorship-bias red flag."""
+        checker = BacktestIntegrityChecker(universe_tickers={"A", "B"}, historical_tickers={"A", "B"})
+        result = checker.check_04_survivorship()
+        assert result.passed is False
+
+    def test_costs_check_flags_understated_costs(self):
+        checker = BacktestIntegrityChecker(applied_roundtrip_cost_pct=0.0001)
+        result = checker.check_05_costs()
+        assert result.passed is False
+
+    def test_random_feature_check_band(self):
+        assert BacktestIntegrityChecker(random_feature_accuracy=0.50).check_10_random_feature().passed is True
+        assert BacktestIntegrityChecker(random_feature_accuracy=0.80).check_10_random_feature().passed is False
+
+
+# ===== IndianTransactionCosts =====
+
+
+class TestIndianTransactionCosts:
+    def test_roundtrip_cost_is_positive(self):
+        costs = IndianTransactionCosts()
+        assert costs.compute_roundtrip_cost(1000, 100) > 0
+
+    def test_roundtrip_cost_pct_near_documented_range(self):
+        """SPEC-BT-002: round-trip total ~0.40-0.50% for a liquid stock."""
+        costs = IndianTransactionCosts()
+        pct = costs.compute_roundtrip_cost_pct(1000, 100)
+        assert 0.003 <= pct <= 0.007
+
+    def test_small_cap_slippage_increases_cost(self):
+        costs = IndianTransactionCosts()
+        liquid_pct = costs.compute_roundtrip_cost_pct(500, 200, adtv_cr=50)
+        illiquid_pct = costs.compute_roundtrip_cost_pct(500, 200, adtv_cr=0.5)
+        assert illiquid_pct > liquid_pct
+
+    def test_validate_against_settings_passes_for_default_rates(self):
+        costs = IndianTransactionCosts()
+        assert costs.validate_against_settings() is True
+
+    def test_non_positive_inputs_raise(self):
+        costs = IndianTransactionCosts()
+        with pytest.raises(ValueError):
+            costs.compute_roundtrip_cost(0, 100)
+        with pytest.raises(ValueError):
+            costs.compute_roundtrip_cost(100, 0)
+
+    def test_is_liquid_enough_matches_settings_threshold(self):
+        costs = IndianTransactionCosts()
+        assert costs.is_liquid_enough(MIN_ADT_INR) is True
+        assert costs.is_liquid_enough(MIN_ADT_INR - 1) is False
+
+
+# ===== overfit_checks =====
+
+
+class TestOverfitChecks:
+    def test_deflated_sharpe_ratio_higher_sharpe_scores_higher(self):
+        low = deflated_sharpe_ratio(sharpe=0.3, n_trials=25, n_obs=252)
+        high = deflated_sharpe_ratio(sharpe=2.0, n_trials=25, n_obs=252)
+        assert high > low
+        assert 0.0 <= low <= 1.0
+        assert 0.0 <= high <= 1.0
+
+    def test_deflated_sharpe_ratio_invalid_args_raise(self):
+        with pytest.raises(ValueError):
+            deflated_sharpe_ratio(1.0, n_trials=0, n_obs=100)
+
+    def test_random_feature_test_scores_near_chance(self):
+        """A model with no real relationship between shuffled features and y should land near 50%."""
+
+        class _MajorityClassModel(IModel):
+            def __init__(self):
+                self._majority = 0
+
+            def train(self, X, y, sample_weight=None):
+                self._majority = int(y.mode().iloc[0])
+
+            def predict(self, X):
+                return pd.Series([self._majority] * len(X), index=X.index)
+
+            def save(self, path):
+                pass
+
+            def load(self, path):
+                pass
+
+            def metadata(self):
+                return {}
+
+        rng = np.random.default_rng(0)
+        n = 200
+        X = pd.DataFrame({"f1": rng.normal(size=n), "f2": rng.normal(size=n)})
+        y = pd.Series(rng.integers(0, 2, size=n))
+
+        accuracy = random_feature_test(_MajorityClassModel(), X, y, X, y, feature_cols=["f1", "f2"], n_repeats=5)
+
+        assert 0.3 <= accuracy <= 0.7  # roughly chance-level for a near-balanced binary target
+
+    def test_random_feature_test_requires_feature_cols(self):
+        class _NoopModel(IModel):
+            def train(self, X, y, sample_weight=None):
+                pass
+
+            def predict(self, X):
+                return pd.Series([0] * len(X), index=X.index)
+
+            def save(self, path):
+                pass
+
+            def load(self, path):
+                pass
+
+            def metadata(self):
+                return {}
+
+        X = pd.DataFrame({"f1": [1, 2, 3]})
+        y = pd.Series([0, 1, 0])
+        with pytest.raises(ValueError):
+            random_feature_test(_NoopModel(), X, y, X, y, feature_cols=[])

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.Forensic</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+:root{--bg:#F8F9FC;--bg2:#FFF;--bg3:#F0F2F8;--bdr:#E2E6EF;--bdr2:#C8CEE0;--tx:#1A1D26;--tx2:#5A6178;--tx3:#8E95A8;--teal:#0A9B8E;--blue:#3B6BF5;--purple:#6E56CF;--green:#1A9338;--amber:#C27A09;--red:#D13438;--r:10px;--r2:14px;--sh:0 1px 3px rgba(0,0,0,.05)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:'DM Sans',system-ui,sans-serif;font-size:14px;-webkit-font-smoothing:antialiased}
+.app-bar{background:var(--bg2);border-bottom:1px solid var(--bdr);padding:0 24px;display:flex;align-items:center;height:56px;position:sticky;top:0;z-index:100}
+.app-logo{font-weight:700;font-size:18px;letter-spacing:-.03em;display:flex;align-items:center;gap:8px}
+.app-logo .dot{width:10px;height:10px;border-radius:50%}
+.app-tabs{display:flex;gap:4px;margin-left:32px}
+.app-tab{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;color:var(--tx2);transition:.15s}
+.app-tab:hover{background:var(--bg3);color:var(--tx)}
+.app-tab.active{background:var(--bg3);color:var(--tx);font-weight:600}
+.app-meta{margin-left:auto;font-size:12px;color:var(--tx3);font-family:'JetBrains Mono',monospace}
+.page{max-width:1400px;margin:0 auto;padding:20px 24px}
+.screen{display:none}.screen.active{display:block}
+.sec{margin-bottom:20px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sec-title{font-size:16px;font-weight:600;letter-spacing:-.02em}
+.sec-sub{font-size:12px;color:var(--tx3)}
+.sec-action{font-size:12px;color:var(--blue);cursor:pointer;font-weight:500}
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--r2);padding:16px;box-shadow:var(--sh)}
+.card-grid{display:grid;gap:16px}
+.grid-2{grid-template-columns:1fr 1fr}
+.grid-3{grid-template-columns:1fr 1fr 1fr}
+.grid-4{grid-template-columns:1fr 1fr 1fr 1fr}
+.stat{text-align:center}
+.stat-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);margin-bottom:4px}
+.stat-value{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:-.03em}
+.stat-sub{font-size:11px;color:var(--tx3);margin-top:2px}
+.insight-card{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;background:linear-gradient(135deg,#f0f4ff 0%,#f0faf8 100%);border:1px solid #d8e2f4;border-radius:var(--r2);padding:14px 16px}
+.insight-metric{text-align:center}
+.insight-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+.insight-val{font-size:17px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.insight-sub{font-size:10px;color:var(--tx3);margin-top:2px}
+.i-entry .insight-label,.i-entry .insight-val{color:var(--blue)}
+.i-returns .insight-label,.i-returns .insight-val{color:var(--green)}
+.i-duration .insight-label,.i-duration .insight-val{color:var(--purple)}
+.i-confidence .insight-label,.i-confidence .insight-val{color:var(--teal)}
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;gap:4px}
+.b-green{background:rgba(26,147,56,.08);color:var(--green)}
+.b-red{background:rgba(209,52,56,.08);color:var(--red)}
+.b-amber{background:rgba(194,122,9,.08);color:var(--amber)}
+.b-blue{background:rgba(59,107,245,.07);color:var(--blue)}
+.b-purple{background:rgba(110,86,207,.07);color:var(--purple)}
+.b-teal{background:rgba(10,155,142,.08);color:var(--teal)}
+.alert-banner{padding:12px 16px;border-radius:var(--r);margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:500}
+.alert-critical{background:#FEE;border:1px solid #FCC;color:var(--red)}
+.alert-warning{background:#FFF8E6;border:1px solid #FFE4A0;color:var(--amber)}
+.alert-info{background:#EEF4FF;border:1px solid #C4D8FF;color:var(--blue)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 12px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);border-bottom:2px solid var(--bdr);background:var(--bg)}
+td{padding:10px 12px;border-bottom:1px solid var(--bg3)}
+tr:hover td{background:var(--bg)}
+.mono{font-family:'JetBrains Mono',monospace}
+.up{color:var(--green)}.dn{color:var(--red)}.neutral{color:var(--tx3)}
+.cross-links{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.cross-link{font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--bdr);color:var(--tx2);cursor:pointer;text-decoration:none;transition:.15s}
+.cross-link:hover{border-color:var(--blue);color:var(--blue);background:rgba(59,107,245,.04)}
+.bar{height:6px;border-radius:3px;background:var(--bg3)}
+.bar-fill{height:100%;border-radius:3px}
+.regime-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:8px;font-size:12px;font-weight:600}
+.regime-bull{background:rgba(26,147,56,.08);color:var(--green)}
+.regime-bear{background:rgba(209,52,56,.08);color:var(--red)}
+.regime-side{background:rgba(142,149,168,.1);color:var(--tx3)}
+.shap-bar{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+.shap-label{width:140px;text-align:right;color:var(--tx2);font-size:11px}
+.shap-track{flex:1;height:16px;background:var(--bg3);border-radius:3px;position:relative;overflow:hidden}
+.shap-fill{height:100%;border-radius:3px;position:absolute;top:0}
+.shap-pos{background:var(--green);right:50%}.shap-neg{background:var(--red);left:50%}
+.chart-placeholder{background:var(--bg);border:1px dashed var(--bdr);border-radius:var(--r);height:240px;display:flex;align-items:center;justify-content:center;color:var(--tx3);font-size:13px}
+.heatmap-cell{padding:8px;text-align:center;font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;border-radius:4px}
+.h-green{background:rgba(26,147,56,.12);color:var(--green)}
+.h-red{background:rgba(209,52,56,.12);color:var(--red)}
+.h-amber{background:rgba(194,122,9,.12);color:var(--amber)}
+.h-neutral{background:var(--bg3);color:var(--tx3)}
+.score-ring{width:80px;height:80px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.ring-green{background:rgba(26,147,56,.08);border:3px solid var(--green);color:var(--green)}
+.ring-red{background:rgba(209,52,56,.08);border:3px solid var(--red);color:var(--red)}
+.ring-amber{background:rgba(194,122,9,.08);border:3px solid var(--amber);color:var(--amber)}
+.progress-bar{height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;border-radius:4px;transition:width .3s}
+.waterfall-step{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--bg3)}
+.waterfall-label{width:160px;font-size:12px;color:var(--tx2)}
+.waterfall-bar{flex:1;height:24px;background:var(--bg3);border-radius:4px;position:relative;overflow:hidden}
+.waterfall-fill{height:100%;border-radius:4px}
+.waterfall-val{font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace;width:80px;text-align:right}
+</style>
+</head>
+<body>
+<div class="app-bar">
+  <div class="app-logo"><div class="dot" style="background:var(--red)"></div>AlphaLens.Forensic</div>
+  <div class="app-tabs">
+<div class="app-tab active" onclick="go('dash')">Forensic Dashboard</div>
+<div class="app-tab" onclick="go('flags')">Red Flags</div>
+<div class="app-tab" onclick="go('benford')">Benford</div>
+<div class="app-tab" onclick="go('cashflow')">Cash Flow</div>
+<div class="app-tab" onclick="go('heatmap')">Peer Heatmap</div>
+<div class="app-tab" onclick="go('report')">Investigation</div>
+<div class="app-tab" onclick="go('scan')">Universe Scan</div></div>
+  <div class="app-meta">03 Jun 2026 · 16:42 IST · Pipeline: OK</div>
+</div>
+<div class="page">
+<div id="s-dash" class="screen active">
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+    <span style="font-size:20px;font-weight:700">XYZFINANCE</span>
+    <div class="score-ring ring-red">92</div>
+    <span class="badge b-red">EXTREME RISK</span>
+    <span style="font-size:12px;color:var(--tx3)">NBFC · ₹185 · MCap ₹2,400 Cr</span>
+    <div class="cross-links" style="margin:0;margin-left:auto"><a class="cross-link">🤖 ML Signal: BLOCKED</a><a class="cross-link">📊 Technical</a><a class="cross-link">📋 Fundamental</a></div>
+  </div>
+  <div class="alert-banner alert-critical">🚫 This stock is BLOCKED from all buy recommendations due to forensic risk score > 60</div>
+
+  <div class="card-grid grid-4" style="margin-bottom:16px">
+    <div class="card"><div class="stat"><div class="stat-label">Classical (20%)</div><div class="stat-value dn">Beneish: -0.42</div><div class="stat-sub">Above -1.78 threshold 🔴</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">ML Fraud (40%)</div><div class="stat-value dn">84%</div><div class="stat-sub">Fraud probability 🔴</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">Anomaly (20%)</div><div class="stat-value dn">3.8σ</div><div class="stat-sub">Highly anomalous 🔴</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label">Governance (20%)</div><div class="stat-value dn">72/100</div><div class="stat-sub">Severe risk 🔴</div></div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="sec-title" style="font-size:14px;margin-bottom:12px">Top 5 Risk Factors (SHAP)</div>
+    <div class="shap-bar"><span class="shap-label">CFO/NI = 0.31</span><div class="shap-track"><div class="shap-fill shap-neg" style="width:36%;left:50%"></div></div><span class="mono dn" style="width:50px">+0.18</span><span style="font-size:10px;color:var(--tx3)">Should be >0.8</span></div>
+    <div class="shap-bar"><span class="shap-label">Pledge = 48%</span><div class="shap-track"><div class="shap-fill shap-neg" style="width:28%;left:50%"></div></div><span class="mono dn" style="width:50px">+0.14</span><span style="font-size:10px;color:var(--tx3)">↑ from 12% in 4Q</span></div>
+    <div class="shap-bar"><span class="shap-label">RPT/Rev = 22%</span><div class="shap-track"><div class="shap-fill shap-neg" style="width:22%;left:50%"></div></div><span class="mono dn" style="width:50px">+0.11</span><span style="font-size:10px;color:var(--tx3)">Sector avg: 4%</span></div>
+    <div class="shap-bar"><span class="shap-label">Recv Days = 142</span><div class="shap-track"><div class="shap-fill shap-neg" style="width:18%;left:50%"></div></div><span class="mono dn" style="width:50px">+0.09</span><span style="font-size:10px;color:var(--tx3)">Sector avg: 38</span></div>
+    <div class="shap-bar"><span class="shap-label">2 ID resignations</span><div class="shap-track"><div class="shap-fill shap-neg" style="width:14%;left:50%"></div></div><span class="mono dn" style="width:50px">+0.07</span><span style="font-size:10px;color:var(--tx3)">In last 6 months</span></div>
+  </div>
+
+  <div class="card">
+    <div class="sec-title" style="font-size:14px;margin-bottom:12px">Historical Pattern Match</div>
+    <table><thead><tr><th>Pattern Match</th><th>Similarity</th><th>Shared Signals</th><th>Outcome</th></tr></thead><tbody>
+      <tr><td style="font-weight:600;color:var(--red)">DHFL (2017, 2yr pre-fraud)</td><td class="mono">0.82</td><td>RPT intensity, pledge spiral, CFO divergence</td><td>Fraud revealed 2019, stock →₹0</td></tr>
+      <tr><td style="font-weight:600;color:var(--red)">Yes Bank (2018, 2yr pre-fraud)</td><td class="mono">0.74</td><td>NPA suppression, evergreening, pledge risk</td><td>RBI moratorium 2020</td></tr>
+    </tbody></table>
+  </div>
+</div>
+
+<div id="s-flags" class="screen">
+  <div class="sec-title" style="margin-bottom:16px">Red Flag Drill-Down — XYZFINANCE</div>
+  <div class="card" style="margin-bottom:12px;border-left:3px solid var(--red)">
+    <div style="display:flex;align-items:center;gap:12px;cursor:pointer">
+      <span class="badge b-red">🔴 CRITICAL</span>
+      <span style="font-weight:600">Low CFO/Net Income Ratio (0.31)</span>
+      <span style="font-size:12px;color:var(--tx3)">69% of reported profit is NOT backed by cash</span>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--tx2)">
+      <strong>8-Quarter Trend:</strong> Q1: 0.92 → Q2: 0.85 → Q3: 0.71 → Q4: 0.58 → Q5: 0.52 → Q6: 0.45 → Q7: 0.38 → Q8: 0.31<br>
+      <strong>Interpretation:</strong> Earnings quality has been deteriorating for 2 years. Revenue is growing 18% but operating cash flow is declining 12%. This divergence is a classic pre-fraud signal.
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:12px;border-left:3px solid var(--red)">
+    <div style="display:flex;align-items:center;gap:12px;cursor:pointer">
+      <span class="badge b-red">🔴 CRITICAL</span>
+      <span style="font-weight:600">Promoter Pledge Spiral (48%)</span>
+      <span style="font-size:12px;color:var(--tx3)">Risen from 12% to 48% in 4 quarters</span>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--tx2)">
+      <strong>Cascade Risk:</strong> If stock price falls 15%, estimated forced selling of 8% of free float from margin calls.<br>
+      <strong>Death spiral probability:</strong> 34% within 6 months based on historical pledge-crash patterns.
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:12px;border-left:3px solid var(--amber)">
+    <div style="display:flex;align-items:center;gap:12px;cursor:pointer">
+      <span class="badge b-amber">⚠ HIGH</span>
+      <span style="font-weight:600">Beneish M-Score Above Threshold (-0.42)</span>
+      <span style="font-size:12px;color:var(--tx3)">Threshold: -1.78 · Current: -0.42</span>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--tx2)">
+      <strong>Components:</strong> DSRI: 1.82 (receivables growing faster than revenue) · TATA: 0.18 (high accruals) · SGI: 1.35 (aggressive growth) · AQI: 1.28 (asset quality declining)
+    </div>
+  </div>
+</div>
+
+<div id="s-benford" class="screen">
+  <div class="sec-title" style="margin-bottom:16px">Benford's Law Analysis — XYZFINANCE</div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="sec-title" style="font-size:14px;margin-bottom:12px">First-Digit Distribution: Revenue (20 quarters)</div>
+    <table><thead><tr><th>Digit</th><th>Expected</th><th>Actual</th><th>Deviation</th></tr></thead><tbody>
+      <tr><td>1</td><td class="mono">30.1%</td><td class="mono">22.0%</td><td class="heatmap-cell h-red" style="padding:4px">-8.1pp</td></tr>
+      <tr><td>2</td><td class="mono">17.6%</td><td class="mono">24.0%</td><td class="heatmap-cell h-red" style="padding:4px">+6.4pp</td></tr>
+      <tr><td>3</td><td class="mono">12.5%</td><td class="mono">18.0%</td><td class="heatmap-cell h-amber" style="padding:4px">+5.5pp</td></tr>
+      <tr><td>4</td><td class="mono">9.7%</td><td class="mono">8.0%</td><td class="heatmap-cell h-neutral" style="padding:4px">-1.7pp</td></tr>
+    </tbody></table>
+    <div style="margin-top:12px;font-size:12px"><strong>Chi² = 14.8</strong> (p-value: 0.005) · <strong>MAD = 0.028</strong> (threshold: 0.015) · <span class="badge b-red">SIGNIFICANT DEVIATION</span></div>
+  </div>
+</div>
+
+<div id="s-cashflow" class="screen">
+  <div class="sec-title" style="margin-bottom:16px">Cash Flow Quality — XYZFINANCE</div>
+  <div class="chart-placeholder" style="height:250px;margin-bottom:16px">📊 Dual-line chart: Revenue (blue, rising) vs CFO (red, declining) — DIVERGENCE since Q3 2024</div>
+  <div class="card"><table><thead><tr><th>Metric</th><th>Current</th><th>4Q Ago</th><th>Healthy Range</th><th>Status</th></tr></thead><tbody>
+    <tr><td>CFO / Net Income</td><td class="mono dn">0.31</td><td class="mono">0.58</td><td class="mono">> 0.8</td><td><span class="badge b-red">Critical</span></td></tr>
+    <tr><td>Accrual Ratio</td><td class="mono dn">0.18</td><td class="mono">0.09</td><td class="mono">< 0.05</td><td><span class="badge b-red">High</span></td></tr>
+    <tr><td>Tax Paid / PBT</td><td class="mono dn">12%</td><td class="mono">18%</td><td class="mono">~25%</td><td><span class="badge b-amber">Low</span></td></tr>
+    <tr><td>Interest Income Yield</td><td class="mono dn">2.1%</td><td class="mono">4.8%</td><td class="mono">~6-7%</td><td><span class="badge b-amber">Satyam test</span></td></tr>
+  </tbody></table></div>
+</div>
+
+<div id="s-heatmap" class="screen">
+  <div class="sec-title" style="margin-bottom:16px">Peer Forensic Heatmap — NBFC Sector</div>
+  <div class="card"><table><thead><tr><th>Company</th><th>Score</th><th>Beneish</th><th>CFO/NI</th><th>Pledge</th><th>RPT</th><th>Recv Days</th><th>Altman Z</th></tr></thead><tbody>
+    <tr style="background:rgba(209,52,56,.05)"><td style="font-weight:700;color:var(--red)">XYZFINANCE</td><td><span class="badge b-red">92</span></td><td class="heatmap-cell h-red">-0.42</td><td class="heatmap-cell h-red">0.31</td><td class="heatmap-cell h-red">48%</td><td class="heatmap-cell h-red">22%</td><td class="heatmap-cell h-red">142</td><td class="heatmap-cell h-red">1.52</td></tr>
+    <tr><td style="font-weight:600">BAJFINANCE</td><td><span class="badge b-green">18</span></td><td class="heatmap-cell h-green">-3.2</td><td class="heatmap-cell h-green">0.95</td><td class="heatmap-cell h-green">0%</td><td class="heatmap-cell h-green">2%</td><td class="heatmap-cell h-green">28</td><td class="heatmap-cell h-green">3.8</td></tr>
+    <tr><td style="font-weight:600">CHOLAFIN</td><td><span class="badge b-green">22</span></td><td class="heatmap-cell h-green">-2.8</td><td class="heatmap-cell h-green">0.88</td><td class="heatmap-cell h-green">0%</td><td class="heatmap-cell h-green">3%</td><td class="heatmap-cell h-green">35</td><td class="heatmap-cell h-green">3.2</td></tr>
+    <tr><td style="font-weight:600">MUTHOOTFIN</td><td><span class="badge b-amber">35</span></td><td class="heatmap-cell h-amber">-1.9</td><td class="heatmap-cell h-amber">0.72</td><td class="heatmap-cell h-green">0%</td><td class="heatmap-cell h-amber">8%</td><td class="heatmap-cell h-amber">55</td><td class="heatmap-cell h-green">2.8</td></tr>
+  </tbody></table></div>
+</div>
+
+<div id="s-report" class="screen">
+  <div class="sec-title" style="margin-bottom:16px">Investigation Report Builder — XYZFINANCE</div>
+  <div class="card"><div style="font-size:13px;line-height:1.8">
+    <strong>Executive Summary:</strong> XYZFINANCE presents extreme forensic risk (score 92/100) with multiple converging red flags: cash flow quality has deteriorated over 8 quarters (CFO/NI from 0.92 to 0.31), promoter pledge has spiralled from 12% to 48%, related party transactions are 5.5× sector average, and 2 independent directors resigned within 6 months.<br><br>
+    <strong>Historical pattern match:</strong> The forensic profile most closely resembles DHFL (2017, similarity 0.82) which was revealed as a ₹34,000Cr fraud in 2019, and Yes Bank (2018, similarity 0.74) which received RBI moratorium in 2020.<br><br>
+    <strong>Recommendation:</strong> <span class="badge b-red">AVOID / EXIT IMMEDIATELY</span> · This stock is blocked from all AlphaLens buy recommendations.
+  </div></div>
+  <div style="margin-top:12px;text-align:center"><span class="badge b-blue" style="cursor:pointer;padding:8px 20px;font-size:13px">📄 Export Investigation Report as PDF</span></div>
+</div>
+
+<div id="s-scan" class="screen">
+  <div class="sec-title" style="margin-bottom:16px">Universe Forensic Scan — 500 Stocks</div>
+  <div class="card-grid grid-4" style="margin-bottom:16px">
+    <div class="card"><div class="stat"><div class="stat-label" style="color:var(--green)">Clean (0–20)</div><div class="stat-value up">358</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label" style="color:var(--amber)">Low Risk (21–40)</div><div class="stat-value" style="color:var(--amber)">92</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label" style="color:var(--red)">Moderate+ (41–60)</div><div class="stat-value dn">38</div></div></div>
+    <div class="card"><div class="stat"><div class="stat-label" style="color:#8B0000">High/Extreme (61+)</div><div class="stat-value dn">12</div></div></div>
+  </div>
+  <div class="card"><table><thead><tr><th>#</th><th>Stock</th><th>Score</th><th>Primary Risk</th><th>Sector</th><th>Δ Quarter</th></tr></thead><tbody>
+    <tr><td>1</td><td style="font-weight:600;color:var(--red)">XYZFINANCE</td><td><span class="badge b-red">92</span></td><td>Evergreening + Pledge Spiral</td><td>NBFC</td><td class="dn">+8</td></tr>
+    <tr><td>2</td><td style="font-weight:600;color:var(--red)">ABCMFG</td><td><span class="badge b-red">87</span></td><td>Revenue + Receivable Fraud</td><td>Manufacturing</td><td class="dn">+12</td></tr>
+    <tr><td>3</td><td style="font-weight:600;color:var(--red)">PQRINFRA</td><td><span class="badge b-red">74</span></td><td>CWIP + Asset Inflation</td><td>Infrastructure</td><td class="dn">+5</td></tr>
+    <tr><td>4</td><td style="font-weight:600">MNOCORP</td><td><span class="badge b-amber">52</span></td><td>Auditor Change + RPT</td><td>Chemicals</td><td class="dn">+13</td></tr>
+    <tr><td>5</td><td style="font-weight:600">DEFLTD</td><td><span class="badge b-amber">48</span></td><td>Receivable Days Spike</td><td>Pharma</td><td class="up">-26</td></tr>
+  </tbody></table></div>
+</div>
+</div>
+<script>
+function go(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.querySelectorAll('.app-tab').forEach(t=>t.classList.remove('active'));document.getElementById('s-'+id).classList.add('active');event.target.classList.add('active')}
+function toggle(el){const p=el.closest('.expandable');const d=p.querySelector('.expand-content');d.style.display=d.style.display==='none'?'block':'none';el.textContent=d.style.display==='none'?'Expand ▾':'Collapse ▴'}
+</script>
+</body>
+</html>
