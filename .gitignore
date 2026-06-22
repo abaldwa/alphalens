@@ -21,5 +21,6 @@ catboost_info/
 # Claude Code local tool settings/lock files (machine-specific, not project source)
 .claude/
 
-# FYERS SDK runtime request log (generated at runtime, not source)
+# FYERS SDK runtime logs (generated at runtime, not source)
 fyersRequests.log
+fyersApi.log
