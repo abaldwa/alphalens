@@ -9,12 +9,18 @@ Consumers: ingestion, features, systems/ml_signal_engine, backtest
 Loads the stock universe from config/nifty500_universe.csv and applies the
 tier/ADTV/market-cap filters defined by the active UNIVERSE_PROFILE in
 config/settings.py. The universe is query-driven, not hardcoded (SPEC-SYS-011):
-expanding from phase_1 to phase_2/phase_3/full_nse is a config change only,
-never a code change.
+expanding from phase_1 (Nifty 500, ~501 stocks) to full_nse (~2492 active
+NSE stocks) is a config change only, never a code change.
 
-NOTE: config/nifty500_universe.csv shipped with this skeleton is a small
-STARTER sample, not the full Nifty 500 constituent list. Replace it with the
-official list (downloadable from the NSE archives) before running the pipeline.
+Tier scheme (assigned by config/build_universe.py):
+  1 = Nifty 50, 2 = NiftyNext50, 3 = Midcap150, 4 = Smallcap250,
+  5 = every other Nifty 500 member, 6 = broader NSE active (non-Nifty500).
+
+To populate the CSV with all 2492 active stocks, run:
+  python -m config.build_universe --full-nse
+
+To populate with Nifty 500 only (phase_1), run:
+  python -m config.build_universe
 """
 
 import logging
@@ -34,6 +40,7 @@ REQUIRED_COLUMNS = [
     "adtv_cr",
     "is_fno_eligible",
     "is_nifty500",
+    "isin",
 ]
 
 
@@ -68,7 +75,8 @@ def load_universe_raw() -> pd.DataFrame:
     if not UNIVERSE_CSV_PATH.exists():
         raise FileNotFoundError(
             f"Universe CSV not found at {UNIVERSE_CSV_PATH}. "
-            "Populate it with the official Nifty 500 constituent list."
+            "Run: python -m config.build_universe --full-nse  (for all 2492 active NSE stocks) "
+            "or: python -m config.build_universe  (for Nifty 500 only)."
         )
 
     df = pd.read_csv(UNIVERSE_CSV_PATH)
@@ -181,3 +189,41 @@ def get_tickers() -> list[str]:
         If required columns are missing from the CSV.
     """
     return load_universe()["ticker"].tolist()
+
+
+def get_isin_to_ticker_map() -> dict:
+    """
+    ISIN -> ticker lookup, built from the full (unfiltered) universe CSV.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    dict
+        {isin: ticker}, over the full unfiltered universe CSV (load_universe_raw,
+        not the tier/ADTV-filtered load_universe) — a holding can be a
+        real position even in a stock this profile's filters would
+        otherwise exclude from the investable universe (e.g. a tier-6
+        broader-NSE stock an MF scheme has accumulated). Rows with a missing/
+        blank ISIN are skipped.
+
+    Spec References
+    ----------------
+    SPEC-SYS-001. Used by ingestion/scrapers/amfi_holdings.py to resolve
+    AMC portfolio disclosures (keyed by ISIN, the only identifier SEBI's
+    disclosure format guarantees) to this project's ticker symbols.
+
+    PIT Assumptions
+    ----------------
+    None — ISIN-to-ticker is a static identity mapping, not a PIT join.
+
+    Raises
+    ------
+    FileNotFoundError
+        If config/nifty500_universe.csv does not exist.
+    """
+    df = load_universe_raw()
+    df = df[df["isin"].notna() & (df["isin"] != "")]
+    return dict(zip(df["isin"], df["ticker"]))

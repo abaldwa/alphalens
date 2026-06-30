@@ -19,12 +19,21 @@ below via app.include_router(). The bare `/health` route and the
 `/api/v1/ohlcv/{ticker}` / `/api/v1/signals/ml/*` routes that used to be
 defined inline in this file were removed in favor of the router versions
 (same paths, equivalent-or-richer behavior — see each router's
-docstring) to avoid a duplicate-route conflict. Fundamentals, Features,
-Models, and Pipeline Status endpoints below are untouched — out of this
-prompt's explicit router-file list.
+docstring) to avoid a duplicate-route conflict. Features, Models, and
+Pipeline Status endpoints below are untouched — out of P1.7's explicit
+router-file list.
+
+[AS BUILT, P2.1] Fundamentals and Shareholding moved into routers/
+(fundamentals.py, shareholding.py) the same way — the old inline
+`/api/v1/fundamentals/{ticker}` GET below was a permanent stub (always
+returned an empty list, `# TODO: Phase 1 — implement actual query`),
+never wired to the `fundamentals`/`shareholding` DuckDB tables that have
+existed since P0.2. Removed in favor of the real, PIT-enforcing router
+versions.
 """
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
@@ -35,9 +44,38 @@ from config.settings import DATASTORE_API_HOST, DATASTORE_API_PORT
 from config.timezone import now_ist
 
 from . import schemas
-from .routers import alerts, ohlcv, regime, signals, system, watchlist
+from .routers import (
+    alerts,
+    corporate_actions,
+    fno,
+    forensic,
+    fundamentals,
+    governance,
+    multibagger,
+    ohlcv,
+    regime,
+    shareholding,
+    signals,
+    system,
+    watchlist,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# [AS BUILT] Replaces the old @app.on_event("startup")/("shutdown") handlers —
+# FastAPI deprecated on_event in favor of this single lifespan context manager
+# (everything before `yield` runs at startup, everything after at shutdown).
+# Same behavior, just the registration mechanism; no real resource setup/
+# teardown logic existed in either handler to preserve.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(f"DataStore API starting up (host={DATASTORE_API_HOST}, port={DATASTORE_API_PORT})")
+    # TODO: Phase 1 — initialize database connections
+    yield
+    logger.info("DataStore API shutting down")
+    # TODO: Phase 1 — close database connections
+
 
 # ===== FastAPI App Initialization =====
 app = FastAPI(
@@ -46,6 +84,7 @@ app = FastAPI(
     "REST API for querying market data, fundamentals, features, and writing ML signals. "
     "All queries enforce point-in-time (PIT) correctness and data staleness tracking.",
     version="0.1",
+    lifespan=lifespan,
 )
 
 # ===== CORS Middleware =====
@@ -57,62 +96,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===== Routers (P1.7) =====
+# ===== Routers (P1.7; fundamentals/shareholding added P2.1; corporate_actions
+# added P2.2; fno added P2.3; forensic/multibagger/governance added P2.6) =====
 app.include_router(system.router)
 app.include_router(ohlcv.router)
+# [AS BUILT, P2.6] forensic.router and multibagger.router MUST be registered
+# before signals.router: their literal "/forensic/{ticker}" and
+# "/multibagger/{ticker}" paths would otherwise structurally collide with
+# signals.router's wildcard "/ml/{ticker}/{date}" pattern (both shapes are
+# "/api/v1/signals/ml/<segment>/<segment>") — FastAPI/Starlette matches by
+# registration order, not specificity, so a request for
+# /api/v1/signals/ml/forensic/RELIANCE would otherwise be swallowed by
+# get_ml_signals(ticker="forensic", date="RELIANCE") and fail date
+# validation with a confusing 422, never reaching get_forensic_score().
+# Same route-ordering discipline signals.py's own docstring already
+# documents for its internal top_buys-vs-{ticker}/{date} ordering.
+app.include_router(forensic.router)
+app.include_router(multibagger.router)
 app.include_router(signals.router)
 app.include_router(regime.router)
 app.include_router(watchlist.router)
 app.include_router(alerts.router)
-
-
-# ===== Fundamentals Endpoints =====
-@app.get(
-    "/api/v1/fundamentals/{ticker}",
-    response_model=schemas.FundamentalResponse,
-    tags=["Fundamentals"],
-)
-async def get_fundamentals(
-    ticker: str,
-    start_date: datetime = Query(..., description="Fiscal period start (YYYY-MM-DD)"),
-    end_date: datetime = Query(..., description="Fiscal period end (YYYY-MM-DD)"),
-    as_of: Optional[datetime] = Query(
-        None,
-        description="PIT reference (default: end_date); "
-        "only fundamentals announced/filed <= as_of are returned",
-    ),
-) -> schemas.FundamentalResponse:
-    """
-    Query fundamental data (earnings, ratios, shareholding, etc).
-
-    SPEC-DS-001, SPEC-DS-003: Fundamental data is known only AFTER announcement.
-    This endpoint filters by announcement_date/filing_date to prevent look-ahead bias.
-
-    Args:
-        ticker: Stock ticker
-        start_date: Start of fiscal period
-        end_date: End of fiscal period
-        as_of: PIT reference date (when data was publicly known)
-
-    Returns:
-        FundamentalResponse with records sorted by date ascending
-
-    Raises:
-        HTTPException 404: If ticker not found
-        HTTPException 400: If date range invalid
-    """
-    # TODO: Phase 1 — implement actual query
-    if not ticker:
-        raise HTTPException(status_code=400, detail="Ticker cannot be empty")
-
-    return schemas.FundamentalResponse(
-        ticker=ticker,
-        start_date=start_date,
-        end_date=end_date,
-        as_of=as_of or end_date,
-        data=[],
-        record_count=0,
-    )
+app.include_router(fundamentals.router)
+app.include_router(shareholding.router)
+app.include_router(governance.router)
+app.include_router(corporate_actions.router)
+app.include_router(fno.router)
 
 
 # ===== Features Endpoints =====
@@ -237,23 +246,6 @@ async def get_pipeline_status(
         error_summary=None,
         notes="Placeholder",
     )
-
-
-# ===== Startup/Shutdown Events =====
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database connections and logging on app startup."""
-    logger.info(
-        f"DataStore API starting up (host={DATASTORE_API_HOST}, port={DATASTORE_API_PORT})"
-    )
-    # TODO: Phase 1 — initialize database connections
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up resources on app shutdown."""
-    logger.info("DataStore API shutting down")
-    # TODO: Phase 1 — close database connections
 
 
 if __name__ == "__main__":

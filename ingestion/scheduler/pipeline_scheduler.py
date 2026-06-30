@@ -53,6 +53,22 @@ _INSERT_PIPELINE_RUN = """
     VALUES (?, ?, ?, ?, ?, ?)
 """
 
+# SPEC-SCHED-013: upsert — one row per job_id, overwritten on every
+# invocation attempt. last_success_at only advances on a real success
+# (COALESCE keeps the previous value on a failed/skipped attempt) so
+# "last successful run" and "last attempt at all" stay independently
+# queryable — see ingestion/scheduler/pipeline_scheduler.py's
+# _record_heartbeat and datastore/api/routers/system.py's GET /health.
+_UPSERT_SCHEDULER_HEARTBEAT = """
+    INSERT INTO scheduler_heartbeats (job_id, last_attempt_at, last_status, last_error, last_success_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(job_id) DO UPDATE SET
+        last_attempt_at = excluded.last_attempt_at,
+        last_status = excluded.last_status,
+        last_error = excluded.last_error,
+        last_success_at = COALESCE(excluded.last_success_at, scheduler_heartbeats.last_success_at)
+"""
+
 # Signature: step_runner(run_date, step_name) -> None. Must raise on failure.
 StepRunner = Callable[[date_type, str], None]
 
@@ -308,6 +324,69 @@ def _record_pipeline_run(
         conn.commit()
 
 
+def _record_heartbeat(
+    job_id: str,
+    status: str,
+    error: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> None:
+    """
+    Upsert scheduler_heartbeats for one recurring job (SPEC-SCHED-013).
+
+    Called on EVERY invocation attempt of a recurring job — success,
+    failure, or a deliberate early skip (e.g. backfill_catchup's "no
+    cached FYERS token" guard) — so GET /health (and an operator) can see
+    "this job hasn't fired in N hours" as a distinct, queryable fact,
+    rather than having to read the scheduler process's own log file by
+    hand to notice it has gone silent.
+
+    Parameters
+    ----------
+    job_id : str
+        'daily_pipeline' | 'backfill_catchup'.
+    status : str
+        'success' | 'failed' | 'skipped'.
+    error : str, optional
+        Error or skip-reason message. None on a clean success.
+    db_path : Path, optional
+        Defaults to config.settings.PIPELINE_LOG_DB_PATH.
+
+    Returns
+    -------
+    None
+
+    Spec References
+    ----------------
+    SPEC-SCHED-013.
+
+    PIT Assumptions
+    ----------------
+    None — operational metadata, not market data.
+
+    Raises
+    ------
+    None — this function deliberately swallows its own exceptions
+    (logged, not raised). A heartbeat write failing must never be the
+    reason a scheduled job's own outcome goes unrecorded or, worse,
+    propagates up and destabilizes the caller.
+    """
+    if db_path is None:
+        from config.settings import PIPELINE_LOG_DB_PATH
+
+        db_path = PIPELINE_LOG_DB_PATH
+
+    now_iso = now_ist().isoformat()
+    try:
+        with get_sqlite_connection(db_path) as conn:
+            conn.execute(
+                _UPSERT_SCHEDULER_HEARTBEAT,
+                (job_id, now_iso, status, error, now_iso if status == "success" else None),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning(f"Could not record scheduler heartbeat for '{job_id}': {exc}")
+
+
 def run_startup_sequence(
     step_runner: StepRunner,
     checkpoint_manager: CheckpointManager,
@@ -401,13 +480,30 @@ def _execute_daily_job(step_runner: StepRunner, checkpoint_manager: CheckpointMa
 
     Spec References
     ----------------
-    SPEC-SCHED-001
+    SPEC-SCHED-001, SPEC-SCHED-013 (heartbeat + exception containment).
 
     Raises
     ------
-    None
+    None — wrapped in try/except (SPEC-SCHED-013): run_startup_sequence
+    itself never raises, but this is the function APScheduler invokes
+    directly as the job target, and the recurring job's ability to fire
+    on its NEXT scheduled time must never depend on every line inside
+    this call staying exception-free forever. Caught a real, multi-day
+    scheduler process whose job silently stopped firing entirely after
+    one unrelated job's exception — see BuildLog.md "Scheduler/DuckDB
+    concurrency resilience". This wrapper, plus the heartbeat write
+    below, ensures (a) no exception from here can ever propagate further
+    than this function, and (b) every attempt — success or failure — is
+    independently observable via GET /health, not just inferable from
+    log files.
     """
-    run_startup_sequence(step_runner, checkpoint_manager, today=now_ist().date())
+    try:
+        ok = run_startup_sequence(step_runner, checkpoint_manager, today=now_ist().date())
+        error = None if ok else "pipeline run returned False"
+        _record_heartbeat("daily_pipeline", "success" if ok else "failed", error)
+    except Exception as exc:
+        logger.error(f"daily_pipeline job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat("daily_pipeline", "failed", str(exc))
 
 
 def _execute_backfill_catchup() -> None:
@@ -439,7 +535,7 @@ def _execute_backfill_catchup() -> None:
 
     Spec References
     ----------------
-    SPEC-SCHED-012, SPEC-PIPE-001.
+    SPEC-SCHED-012, SPEC-PIPE-001, SPEC-SCHED-013 (heartbeat + exception containment).
 
     PIT Assumptions
     ----------------
@@ -447,7 +543,14 @@ def _execute_backfill_catchup() -> None:
 
     Raises
     ------
-    None
+    None — wrapped in try/except (SPEC-SCHED-013). This job is the one
+    that originally crashed (a DuckDB lock conflict against the
+    DataStore API process — see datastore/api/db.py's module docstring
+    for the underlying fix) and, separately, was followed by the
+    scheduler going silent for both this job AND the unrelated daily
+    pipeline job. Every exit path here — clean skip, success, or
+    failure — now records a heartbeat (GET /health surfaces it) and no
+    exception escapes this function.
     """
     from datetime import timedelta
 
@@ -456,22 +559,29 @@ def _execute_backfill_catchup() -> None:
     from ingestion.backfill_runner import run_backfill
     from ingestion.scrapers.fyers_backfill import FYERSBackfill
 
-    fb = FYERSBackfill()
-    cached_token = fb._load_cached_token()
-    if not cached_token or not fb._validate_token(cached_token):
-        logger.warning(
-            "Backfill catch-up skipped: no valid (same-day) FYERS token cached. "
-            "Run `python3 -m ingestion.scrapers.fyers_backfill login` / "
-            "`... exchange <redirected URL>` first, then this job will pick "
-            "up the cached token on its next scheduled run today."
-        )
-        return
+    try:
+        fb = FYERSBackfill()
+        cached_token = fb._load_cached_token()
+        if not cached_token or not fb._validate_token(cached_token):
+            skip_reason = "no valid (same-day) FYERS token cached"
+            logger.warning(
+                "Backfill catch-up skipped: no valid (same-day) FYERS token cached. "
+                "Run `python3 -m ingestion.scrapers.fyers_backfill login` / "
+                "`... exchange <redirected URL>` first, then this job will pick "
+                "up the cached token on its next scheduled run today."
+            )
+            _record_heartbeat("backfill_catchup", "skipped", skip_reason)
+            return
 
-    to_date = now_ist().date()
-    from_date = to_date - timedelta(days=365 * BACKFILL_YEARS)
-    tickers = get_tickers()
-    logger.info(f"Backfill catch-up starting: {len(tickers)} universe tickers, {from_date}..{to_date}")
-    run_backfill(tickers, from_date.isoformat(), to_date.isoformat())
+        to_date = now_ist().date()
+        from_date = to_date - timedelta(days=365 * BACKFILL_YEARS)
+        tickers = get_tickers()
+        logger.info(f"Backfill catch-up starting: {len(tickers)} universe tickers, {from_date}..{to_date}")
+        run_backfill(tickers, from_date.isoformat(), to_date.isoformat())
+        _record_heartbeat("backfill_catchup", "success")
+    except Exception as exc:
+        logger.error(f"backfill_catchup job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat("backfill_catchup", "failed", str(exc))
 
 
 def schedule_backfill_catchup(
@@ -605,3 +715,136 @@ def schedule_daily_pipeline(
         coalesce=True,
     )
     logger.info(f"Daily pipeline scheduled: mode={mode}, time={schedule_time} IST")
+
+
+def _determine_groww_live_snapshot_month():
+    """
+    Sample one real scheme to find out which (year, month) Groww's live
+    holdings snapshot actually represents — needed because Groww (the
+    primary MF-holdings source as of P2.2's pivot, see SPEC-MFHOLD-001 and
+    ingestion/scrapers/groww_mf_holdings.py's module docstring) exposes no
+    historical archive, only "whatever is live right now". Blindly
+    assuming "the previous calendar month" (the original, pre-Groww
+    design) is unsafe: depending on exactly when each AMC publishes,
+    Groww may already be showing the current month's snapshot, or may
+    still be lagging — sampling avoids guessing.
+
+    Returns
+    -------
+    tuple of (int, int)
+        (year, month) of the live snapshot.
+
+    Raises
+    ------
+    ConnectionError
+        If no live snapshot date can be determined at all.
+    """
+    from ingestion.scrapers.groww_mf_holdings import _fetch_scheme_detail, _list_scheme_ids
+
+    scheme_ids = _list_scheme_ids("SBI Mutual Fund")
+    for scheme_id in scheme_ids:
+        detail = _fetch_scheme_detail(scheme_id)
+        holdings = (detail or {}).get("holdings") or []
+        if holdings:
+            portfolio_date = holdings[0].get("portfolio_date")
+            if portfolio_date:
+                snapshot_dt = datetime.fromisoformat(portfolio_date.replace("Z", "+00:00"))
+                return snapshot_dt.year, snapshot_dt.month
+    raise ConnectionError("Could not determine Groww's live snapshot month — no scheme returned a portfolio_date")
+
+
+def _execute_mf_holdings_job() -> None:
+    """
+    APScheduler job target for the twice-monthly MF-holdings ingestion
+    (SPEC-SCHED-009, P2.2 — pivoted to Groww as primary source). Module-
+    level function, not a closure/lambda — SQLAlchemyJobStore must be
+    able to pickle it (same constraint documented on _execute_daily_job).
+
+    Registers every Groww-listed AMC (a real network call — AMC_REGISTRY
+    starts empty for Groww until this is called, see SPEC-MFHOLD-001),
+    imports sbi_mf_holdings (triggers its zero-cost auto-registration),
+    determines which month Groww's live snapshot actually represents
+    (never assumes — see _determine_groww_live_snapshot_month), then
+    ingests that month for every registered AMC (Groww's 49 + SBI's
+    direct Excel cross-check, which supports the same historical month
+    since it has a real archive).
+
+    Fires twice a month (config.settings.MF_HOLDINGS_SCHEDULE_DAYS) rather
+    than once: AMC disclosure timing varies, and Groww's "current
+    snapshot" can change mid-cycle — two checks per month make it very
+    unlikely a given month's snapshot is missed entirely between visits.
+    save_monthly_parquet's merge-not-overwrite behavior (P2.2 continued)
+    makes re-ingesting the same month on the second visit safe — it just
+    refreshes rows for schemes whose data has changed, never duplicates.
+    """
+    import ingestion.scrapers.sbi_mf_holdings  # noqa: F401 (import for its registration side effect)
+    from ingestion.scrapers.amfi_holdings import run_monthly_ingestion
+    from ingestion.scrapers.groww_mf_holdings import register_all_amcs
+
+    try:
+        register_all_amcs()
+        year, month = _determine_groww_live_snapshot_month()
+        run_monthly_ingestion(year, month)
+        _record_heartbeat("mf_holdings_ingestion", "success")
+    except RuntimeError as exc:
+        # AMC_REGISTRY empty (no real source configured yet) — a known,
+        # documented gap, not an unexpected failure. Recorded as
+        # "skipped", not "failed".
+        logger.warning(f"mf_holdings_ingestion skipped: {exc}")
+        _record_heartbeat("mf_holdings_ingestion", "skipped", str(exc))
+    except Exception as exc:
+        logger.error(f"mf_holdings_ingestion job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat("mf_holdings_ingestion", "failed", str(exc))
+
+
+def schedule_mf_holdings_ingestion(
+    scheduler: BackgroundScheduler,
+    days: Optional[str] = None,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register the recurring twice-monthly MF-holdings ingestion job
+    (SPEC-SCHED-009 — laptop-only APScheduler job store, not a separate
+    Oracle/OS-level cron entry, same precedent as schedule_backfill_catchup).
+
+    Parameters
+    ----------
+    scheduler : BackgroundScheduler
+    days : str, optional
+        Cron day-of-month field, e.g. "5,20" for twice a month. Defaults
+        to config.settings.MF_HOLDINGS_SCHEDULE_DAYS.
+    schedule_time : str, optional
+        "HH:MM". Defaults to config.settings.AMFI_SCHEDULE_TIME (08:00 IST).
+
+    Returns
+    -------
+    None
+
+    Spec References
+    ----------------
+    SPEC-SCHED-009, SPEC-PIPE-003.
+
+    Raises
+    ------
+    None
+    """
+    if days is None:
+        from config.settings import MF_HOLDINGS_SCHEDULE_DAYS
+
+        days = MF_HOLDINGS_SCHEDULE_DAYS
+    if schedule_time is None:
+        from config.settings import AMFI_SCHEDULE_TIME
+
+        schedule_time = AMFI_SCHEDULE_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+
+    scheduler.add_job(
+        _execute_mf_holdings_job,
+        CronTrigger(day=days, hour=hour, minute=minute, timezone="Asia/Kolkata"),
+        id="mf_holdings_ingestion",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"MF holdings ingestion scheduled: days={days}, time={schedule_time} IST")

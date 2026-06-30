@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 252
 # Position-context columns ExitSignalModel.predict_full() expects, matching
-# exit_signal.generate_synthetic_training_data()'s schema exactly so a model
+# exit_signal.load_exit_training_data_from_db()'s schema exactly so a model
 # trained on that synthetic archive can score real backtest positions.
 EXIT_CONTEXT_COLUMNS = [
     "entry_price", "days_held", "unrealised_pnl_pct", "days_to_next_earnings",
@@ -202,6 +202,7 @@ class BacktestEngine:
         benchmark: Optional[pd.DataFrame] = None,
         universe_tickers: Optional[set] = None,
         historical_tickers: Optional[set] = None,
+        watchlist_tickers: Optional[set] = None,
     ) -> None:
         self.ohlcv = ohlcv
         self.pnd_detector = pnd_detector
@@ -219,6 +220,14 @@ class BacktestEngine:
         self.n_folds = n_folds
         self.meta_min_rows = meta_min_rows
         self.benchmark = benchmark
+        # [AS BUILT, P2.6] Optional M-08 multibagger-watchlist entry filter
+        # for backtest/run_phase2_backtest.py — None (default) preserves
+        # Phase 1's exact existing behavior (every PIT-eligible, non-P&D-
+        # blocked buy-signal ticker is a candidate); when set, _apply_entries
+        # additionally restricts candidates to this ticker set before the
+        # signal model ever sees them, same "entry filter stacks before the
+        # model" position as the existing P&D pre-filter.
+        self.watchlist_tickers = watchlist_tickers
         # universe_tickers / historical_tickers both default to the ohlcv
         # panel's own ticker set (existing synthetic-data behavior, where
         # there's no meaningful distinction between "currently investable"
@@ -366,6 +375,8 @@ class BacktestEngine:
         signal_model: Any, meta_model: Optional[Any],
     ) -> None:
         candidates = day_rows[~day_rows["ticker"].isin(portfolio.positions.keys())]
+        if self.watchlist_tickers is not None:
+            candidates = candidates[candidates["ticker"].isin(self.watchlist_tickers)]
         if candidates.empty:
             return
         feat_block = candidates.set_index("ticker")[CORE_TECHNICAL_FEATURES]

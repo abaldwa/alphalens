@@ -20,7 +20,6 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from config.settings import DUCKDB_PATH, PIPELINE_LOG_DB_PATH
 from datastore.api.db import get_duckdb_connection, get_sqlite_connection, init_duckdb, init_sqlite
 from datastore.api.main import app
 

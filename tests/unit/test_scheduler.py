@@ -12,6 +12,8 @@ backfill ordering.
 
 from datetime import date
 
+import pytest
+
 from ingestion.scheduler import gap_detector
 from ingestion.scheduler.checkpoint import STEP_NAMES, CheckpointManager
 from ingestion.scheduler.pipeline_scheduler import run_backfill
@@ -193,6 +195,10 @@ class TestBackfillCatchupScheduling:
         from ingestion.scrapers.fyers_backfill import FYERSBackfill
 
         monkeypatch.setattr(FYERSBackfill, "_load_cached_token", lambda self: None)
+        # SPEC-SCHED-013: _execute_backfill_catchup now writes a heartbeat on
+        # every exit path — mock it out so this test never touches the real
+        # PIPELINE_LOG_DB_PATH.
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: None)
 
         run_backfill_calls = []
         monkeypatch.setattr(
@@ -211,6 +217,7 @@ class TestBackfillCatchupScheduling:
 
         monkeypatch.setattr(FYERSBackfill, "_load_cached_token", lambda self: "stale-token")
         monkeypatch.setattr(FYERSBackfill, "_validate_token", lambda self, token: False)
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: None)
 
         run_backfill_calls = []
         monkeypatch.setattr(
@@ -231,6 +238,9 @@ class TestBackfillCatchupScheduling:
         monkeypatch.setattr(FYERSBackfill, "_validate_token", lambda self, token: True)
         monkeypatch.setattr("config.universe.get_tickers", lambda: ["AAA", "BBB"])
 
+        heartbeat_calls = []
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
         run_backfill_calls = []
         monkeypatch.setattr(
             "ingestion.backfill_runner.run_backfill",
@@ -240,4 +250,105 @@ class TestBackfillCatchupScheduling:
         ps._execute_backfill_catchup()
 
         assert len(run_backfill_calls) == 1
+        assert heartbeat_calls == [(("backfill_catchup", "success"), {})]
         assert run_backfill_calls[0][0] == ["AAA", "BBB"]
+
+
+class TestMFHoldingsScheduling:
+    """SPEC-PIPE-003: Groww (P2.2's primary MF-holdings source) exposes no historical archive — only "now"."""
+
+    def test_schedule_mf_holdings_ingestion_registers_twice_monthly_cron_job(self):
+        """config.settings.MF_HOLDINGS_SCHEDULE_DAYS = '5,20' -> must fire on both days, not just one."""
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        from ingestion.scheduler.pipeline_scheduler import schedule_mf_holdings_ingestion
+
+        scheduler = BackgroundScheduler()
+        schedule_mf_holdings_ingestion(scheduler, days="5,20", schedule_time="08:00")
+
+        jobs = scheduler.get_jobs()
+        assert len(jobs) == 1
+        job = jobs[0]
+        assert job.id == "mf_holdings_ingestion"
+        trigger_str = str(job.trigger)
+        assert "day='5,20'" in trigger_str
+        assert "hour='8'" in trigger_str
+
+    def test_determine_groww_live_snapshot_month_reads_first_available_portfolio_date(self, monkeypatch):
+        import ingestion.scheduler.pipeline_scheduler as ps
+
+        monkeypatch.setattr(
+            "ingestion.scrapers.groww_mf_holdings._list_scheme_ids", lambda fund_house: ["scheme-a", "scheme-b"]
+        )
+        monkeypatch.setattr(
+            "ingestion.scrapers.groww_mf_holdings._fetch_scheme_detail",
+            lambda scheme_id: {"holdings": [{"portfolio_date": "2026-05-30T18:30:00.000Z"}]},
+        )
+
+        year, month = ps._determine_groww_live_snapshot_month()
+
+        assert (year, month) == (2026, 5)
+
+    def test_determine_groww_live_snapshot_month_skips_schemes_with_no_holdings(self, monkeypatch):
+        """The first scheme sampled might genuinely have no holdings (e.g. a brand-new NFO) — must try the next one."""
+        import ingestion.scheduler.pipeline_scheduler as ps
+
+        monkeypatch.setattr(
+            "ingestion.scrapers.groww_mf_holdings._list_scheme_ids",
+            lambda fund_house: ["empty-scheme", "real-scheme"],
+        )
+
+        def fake_detail(scheme_id):
+            if scheme_id == "empty-scheme":
+                return {"holdings": []}
+            return {"holdings": [{"portfolio_date": "2026-06-15T18:30:00.000Z"}]}
+
+        monkeypatch.setattr("ingestion.scrapers.groww_mf_holdings._fetch_scheme_detail", fake_detail)
+
+        year, month = ps._determine_groww_live_snapshot_month()
+
+        assert (year, month) == (2026, 6)
+
+    def test_determine_groww_live_snapshot_month_raises_if_nothing_found(self, monkeypatch):
+        import ingestion.scheduler.pipeline_scheduler as ps
+
+        monkeypatch.setattr("ingestion.scrapers.groww_mf_holdings._list_scheme_ids", lambda fund_house: [])
+
+        with pytest.raises(ConnectionError, match="Could not determine"):
+            ps._determine_groww_live_snapshot_month()
+
+    def test_execute_mf_holdings_job_runs_ingestion_for_the_determined_month(self, monkeypatch):
+        import ingestion.scheduler.pipeline_scheduler as ps
+
+        monkeypatch.setattr(ps, "_determine_groww_live_snapshot_month", lambda: (2026, 5))
+        monkeypatch.setattr("ingestion.scrapers.groww_mf_holdings.register_all_amcs", lambda: 49)
+
+        ingestion_calls = []
+        monkeypatch.setattr(
+            "ingestion.scrapers.amfi_holdings.run_monthly_ingestion",
+            lambda year, month: ingestion_calls.append((year, month)),
+        )
+
+        heartbeat_calls = []
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        ps._execute_mf_holdings_job()
+
+        assert ingestion_calls == [(2026, 5)]
+        assert heartbeat_calls == [(("mf_holdings_ingestion", "success"), {})]
+
+    def test_execute_mf_holdings_job_records_failure_heartbeat_on_unexpected_exception(self, monkeypatch):
+        import ingestion.scheduler.pipeline_scheduler as ps
+
+        def boom():
+            raise ValueError("network broke")
+
+        monkeypatch.setattr("ingestion.scrapers.groww_mf_holdings.register_all_amcs", boom)
+
+        heartbeat_calls = []
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        ps._execute_mf_holdings_job()
+
+        assert heartbeat_calls[0][0][0] == "mf_holdings_ingestion"
+        assert heartbeat_calls[0][0][1] == "failed"

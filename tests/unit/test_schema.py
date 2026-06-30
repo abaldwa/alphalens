@@ -35,10 +35,24 @@ NORMALISED_TABLE_COLUMNS = {
         "net_margin", "roe", "roce", "debt_to_equity", "interest_coverage", "fcf",
         "asset_turnover", "inventory_days", "receivable_days", "payable_days",
         "book_value_per_share", "shares_outstanding",
+        # [AS BUILT, P2.1] added for features/fundamental.py's gross_margin,
+        # capex_intensity, current_ratio, net_debt_to_ebitda, roic
+        "gross_profit", "capex", "current_assets", "current_liabilities",
+        "total_debt", "cash_and_equivalents",
+        # [AS BUILT, P2.5] already parsed by screener.py but never persisted until
+        # now — exposed for classical_scores.py's Beneish DEPI / Ohlson FFO inputs.
+        "depreciation",
+        # [AS BUILT, P2.6] Tijori Finance Pro sector-specific operational metrics
+        # (ARPU/NPA/ANDA/etc. — see ingestion/scrapers/tijori.py's _SECTOR_METRICS).
+        "sector_specific_metric_1", "sector_specific_metric_2", "sector_specific_metric_3",
+        "sector_specific_metric_4", "sector_specific_metric_5", "sector_specific_metric_6",
     },
     "shareholding": {
         "ticker", "quarter_end_date", "filing_date", "promoter_pct",
         "promoter_pledge", "fii_pct", "dii_pct", "mf_pct", "retail_pct",
+        # [AS BUILT, P2.6] Trendlyne StratQ superstar-investor tracking — `shareholding`
+        # IS this project's "governance" store (12_platform_architecture.md line 320).
+        "superstar_flag", "superstar_change",
     },
     "macro_indicators": {"date", "indicator", "value"},
     "stock_master": {
@@ -61,12 +75,20 @@ SIGNAL_DUCKDB_TABLE_COLUMNS = {
     "ml_multibagger": {
         "date", "ticker", "mb_probability", "mb_tier", "mb_archetype",
         "survival_6m", "survival_12m", "survival_24m", "survival_36m",
+        # [AS BUILT, P2.6] MultibaggerModel.predict_full() emits all 5
+        # SURVIVAL_HORIZONS_MONTHS = (6, 12, 18, 24, 36) — this Phase 0.2
+        # DDL was missing 18m.
+        "survival_18m",
         "shap_top5_json", "analogues_json",
     },
     "ml_forensic": {
         "date", "ticker", "beneish_m", "altman_z", "piotroski_f", "ohlson_o",
         "dechow_f", "sloan_accrual", "benford_mad", "forensic_composite",
         "forensic_flag", "forensic_ml_prob", "shap_top5_json", "pattern_match",
+        # [AS BUILT, P2.6] forensic_ml.py's actual 5-level flag taxonomy
+        # (green/yellow/orange/red/black) — forensic_flag (BOOLEAN) stays
+        # "blocked" semantics only.
+        "forensic_flag_label",
     },
 }
 

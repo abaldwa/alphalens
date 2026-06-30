@@ -1,32 +1,37 @@
 """
 features/matrix_builder.py
 
-Phase: 1.1 (Core Feature Computation)
+Phase: 1.1 (Core Feature Computation); Phase 2 set in 2.3/2.4; Phase 3 in 3.1
 Specs: SPEC-SOLID-005, SPEC-DS-005, SPEC-DS-007, SPEC-PIPE-004, SPEC-PIPE-005, SPEC-FEAT-001
 Owner: Platform / Features
 Consumers: ingestion/scheduler/daily_pipeline (compute_features step), systems/ml_signal_engine
 
-Assembles the daily feature matrix by orchestrating features/technical.py
-(70 cols), features/intraday.py (3 net-new cols), features/calendar.py
-(7 cols), the M-01 HMM regime detector (6 cols), and features/
-macro_features.py (14 cols) — 100 feature columns total, not the literal
-111 in 02_models.md's "76 core + 8 intraday + 7 calendar + 6 HMM + 14
-macro" formula for the Signal 5d/21d models. The gap is the same 70-vs-76
-technical-feature accounting flagged in features/technical.py, plus a
-5-feature overlap between technical.py's Category 11 and the canonical
-8-feature intraday category (see features/intraday.py's module docstring)
-— both documented rather than silently padded. This module assembles
-whatever the category modules produce — adding a future category
-(SOLID-002: open/closed) only requires extending ALL_FEATURE_COLUMNS here,
-not rewriting this file.
+Assembles the daily feature matrix by orchestrating every Phase 1 + Phase 2
++ Phase 3 feature category module. Phase 3 adds:
+  advanced_technical.py (18): wavelet, hurst, entropy, fracdiff, complexity
+  pattern_scores.py (6): chart pattern recognition scores
+  real_economy_macro.py (10): GST, PMI, IIP, auto sales, cement, power,
+    rail freight, UPI, bank credit
+  deep_forensic.py (28): Groups D–I forensic features
 
-SPEC-SOLID-005 (Dependency Inversion): all OHLCV access goes through
-DataStoreClient (an HTTP client over the DataStore API), never direct
-DuckDB — `client` is constructor-injectable so tests can substitute a
-fake. macro_indicators is the one exception: SPEC-DS-002 explicitly
-permits direct DuckDB reads "within ingestion and feature layers", and no
-DataStore API endpoint for it exists yet, so features/macro_features.py's
-load_macro_indicators() reads DuckDB directly.
+Phase 1+2 total: 235 columns (documented gap vs. "268" prompt header — see
+previous docstring versions and BuildLog.md for per-category reconciliation).
+Phase 3 adds 62 additional features → target 330 (the project's 330-feature
+catalog from 01_features.md).
+
+This module assembles whatever the category modules produce (SOLID-002:
+open/closed). Adding future categories requires only extending
+ALL_FEATURE_COLUMNS here; the compute core is untouched.
+
+SPEC-SOLID-005 (Dependency Inversion): all OHLCV/fundamentals/
+shareholding/corporate-actions/F&O access goes through DataStoreClient
+(an HTTP client over the DataStore API), never direct DuckDB — `client`
+is constructor-injectable so tests can substitute a fake. Two documented
+SPEC-DS-002 exceptions (direct reads permitted "within ingestion and
+feature layers" when no API endpoint exists yet for that store):
+macro_indicators (features/macro_features.py's load_macro_indicators())
+and MF holdings (features/mf_holdings.py reads
+datastore/normalised/mf_holdings/*.parquet directly).
 """
 
 import logging
@@ -38,17 +43,45 @@ import numpy as np
 import pandas as pd
 
 from config.settings import DELIVERY_PCT_RANGE, FEATURES_DAILY_DIR, NULL_RATE_ALERT_THRESHOLD, RATIO_FEATURE_RANGE
+from config.universe import load_universe
 from datastore.client import DataStoreClient
 from features.calendar import CALENDAR_FEATURES, compute_calendar_features
+from features.corporate_action_features import CORPORATE_ACTION_FEATURES, compute_corporate_action_features_panel
+from features.fno_features import FNO_FEATURES, compute_fno_features_panel
+from features.fundamental import FUNDAMENTAL_FEATURES, compute_fundamental_features_panel
+from features.governance import GOVERNANCE_FEATURES, compute_governance_features_panel
 from features.intraday import INTRADAY_FEATURES, compute_intraday_features
 from features.macro_features import MACRO_FEATURES, compute_macro_features, load_macro_indicators
+from features.mf_holdings import MF_HOLDINGS_FEATURES, compute_mf_holdings_features_panel
+from features.multibagger import MULTIBAGGER_FEATURES, compute_multibagger_features
+from features.pnd_features import PND_FEATURES, compute_pnd_features
 from features.technical import BENCHMARK_TICKERS, CORE_TECHNICAL_FEATURES, compute_technical_features
+from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES, compute_advanced_technical_features
+from features.pattern_scores import PATTERN_FEATURES, compute_pattern_scores
+from features.real_economy_macro import REAL_ECONOMY_MACRO_FEATURES, compute_real_economy_macro_panel
+from features.deep_forensic import DEEP_FORENSIC_FEATURES, compute_deep_forensic_features_panel
 from systems.ml_signal_engine.models.hmm.regime_detector import HMM_REGIME_FEATURES, compute_hmm_regime_features
 
 logger = logging.getLogger(__name__)
 
 ALL_FEATURE_COLUMNS: List[str] = (
-    CORE_TECHNICAL_FEATURES + INTRADAY_FEATURES + CALENDAR_FEATURES + HMM_REGIME_FEATURES + MACRO_FEATURES
+    CORE_TECHNICAL_FEATURES
+    + INTRADAY_FEATURES
+    + CALENDAR_FEATURES
+    + HMM_REGIME_FEATURES
+    + MACRO_FEATURES
+    + PND_FEATURES
+    + FUNDAMENTAL_FEATURES
+    + GOVERNANCE_FEATURES
+    + MF_HOLDINGS_FEATURES
+    + CORPORATE_ACTION_FEATURES
+    + FNO_FEATURES
+    + MULTIBAGGER_FEATURES
+    # Phase 3 additions (+62 features → target 330 total)
+    + ADVANCED_TECHNICAL_FEATURES
+    + PATTERN_FEATURES
+    + REAL_ECONOMY_MACRO_FEATURES
+    + DEEP_FORENSIC_FEATURES
 )
 
 # ~2 calendar years: comfortably over 252 *trading* days even allowing for
@@ -63,16 +96,26 @@ _EMPTY_OHLCV_COLUMNS = ["date", "ticker", "open", "high", "low", "close", "volum
 
 
 def _fetch_ohlcv_panel(
-    client: DataStoreClient, tickers: List[str], from_date: datetime, to_date: datetime
+    client: DataStoreClient, tickers: List[str], from_date: datetime, to_date: datetime,
+    _bulk_panel: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
-    Fetch OHLCV history for many tickers via the DataStore API.
+    Fetch OHLCV history for many tickers.
 
-    One HTTP call per ticker — this loop is I/O orchestration (fetching),
-    not feature computation, so SPEC-PIPE-004's "no loop over stocks" rule
-    does not apply here; that rule governs the vectorized math inside
-    features/technical.py, which receives the panel this function builds.
+    If a pre-fetched bulk panel is provided (from client.get_ohlcv_bulk called
+    once for the whole universe), filters it to the requested tickers — one bulk
+    HTTP call instead of one per ticker (build_feature_matrix does this).
+    Falls back to per-ticker calls when called standalone (tests, single tickers).
     """
+    if _bulk_panel is not None:
+        panel = _bulk_panel[_bulk_panel["ticker"].isin(set(tickers))].copy()
+        if panel.empty:
+            return pd.DataFrame(columns=_EMPTY_OHLCV_COLUMNS)
+        if "delivery_pct" not in panel.columns:
+            panel["delivery_pct"] = np.nan
+        return panel
+
+    # Fallback: per-ticker (for tests or callers that pass no bulk panel)
     frames = []
     for ticker in tickers:
         try:
@@ -142,7 +185,8 @@ def _validate_feature_matrix(matrix: pd.DataFrame) -> None:
     # features elsewhere (e.g. macro's advance_decline_ratio, which can
     # legitimately be > 10 or < 0.1 in a lopsided breadth day).
     lo, hi = RATIO_FEATURE_RANGE
-    for col in [c for c in CORE_TECHNICAL_FEATURES if c.endswith("_ratio")]:
+    _FRACTION_RATIO_COLS = {"body_to_range_ratio"}  # bounded [0,1]; not a price ratio
+    for col in [c for c in CORE_TECHNICAL_FEATURES if c.endswith("_ratio") and c not in _FRACTION_RATIO_COLS]:
         vals = matrix[col].dropna()
         bad = vals[(vals < lo) | (vals > hi)]
         if not bad.empty:
@@ -164,6 +208,7 @@ def build_feature_matrix(
     client: Optional[DataStoreClient] = None,
     save: bool = True,
     compute_hmm: bool = True,
+    data_cache=None,
 ) -> pd.DataFrame:
     """
     Build the full daily feature matrix for `tickers` on `date`.
@@ -194,7 +239,8 @@ def build_feature_matrix(
     pd.DataFrame
         One row per ticker (even if its OHLCV fetch failed — all-NaN
         feature row in that case), columns: date, ticker +
-        ALL_FEATURE_COLUMNS (100 cols).
+        ALL_FEATURE_COLUMNS (235 cols — see module docstring for the
+        documented gap vs. this phase's build prompt's literal "268").
 
     Spec References
     ----------------
@@ -229,8 +275,13 @@ def build_feature_matrix(
 
     client = client or DataStoreClient()
 
-    universe_panel = _fetch_ohlcv_panel(client, tickers, from_date, to_date)
-    benchmark_panel = _fetch_ohlcv_panel(client, list(BENCHMARK_TICKERS.values()), from_date, to_date)
+    # One bulk HTTP call for all tickers (universe + benchmarks) instead of 500+ per-ticker calls.
+    bulk_panel = client.get_ohlcv_bulk(from_date, to_date)
+
+    universe_panel = _fetch_ohlcv_panel(client, tickers, from_date, to_date, _bulk_panel=bulk_panel)
+    benchmark_panel = _fetch_ohlcv_panel(
+        client, list(BENCHMARK_TICKERS.values()), from_date, to_date, _bulk_panel=bulk_panel
+    )
     benchmark_wide = _build_benchmark_wide(benchmark_panel)
 
     if universe_panel.empty:
@@ -238,6 +289,7 @@ def build_feature_matrix(
         technical = pd.DataFrame(columns=["date", "ticker"] + CORE_TECHNICAL_FEATURES)
         intraday = pd.DataFrame(columns=["date", "ticker"] + INTRADAY_FEATURES)
         hmm = pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
+        pnd = pd.DataFrame(columns=["date", "ticker"] + PND_FEATURES)
     else:
         technical = compute_technical_features(universe_panel, benchmark_wide)
         intraday = compute_intraday_features(universe_panel)
@@ -246,9 +298,11 @@ def build_feature_matrix(
             if compute_hmm
             else pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
         )
+        pnd = compute_pnd_features(universe_panel)
     today_technical = technical[technical["date"] == target_date].drop(columns=["date"])
     today_intraday = intraday[intraday["date"] == target_date].drop(columns=["date"])
     today_hmm = hmm[hmm["date"] == target_date].drop(columns=["date"]) if not hmm.empty else hmm.drop(columns=["date"])
+    today_pnd = pnd[pnd["date"] == target_date].drop(columns=["date"]) if not pnd.empty else pnd.drop(columns=["date"])
 
     calendar_row = compute_calendar_features(target_date)
 
@@ -258,6 +312,62 @@ def build_feature_matrix(
     universe_close = universe_panel[["date", "ticker", "close"]] if not universe_panel.empty else None
     macro_row = compute_macro_features(target_date, macro_indicators, nifty50_hist, universe_close)
 
+    # SPEC-PIPE-003 (CRITICAL): fundamental/governance/MF-holdings/
+    # corp-action panels each enforce their own PIT rule internally
+    # (announcement_date/filing_date/availability_date <= as_of) — this
+    # function passes `target_date` through as `as_of` and does no PIT
+    # filtering of its own, same discipline as every other PIT-sensitive
+    # category here.
+    universe_meta = load_universe()
+    sector_map = dict(zip(universe_meta["ticker"], universe_meta["sector"]))
+    tier_map = dict(zip(universe_meta["ticker"], universe_meta["tier"]))
+
+    # Pass universe_panel so per-ticker OHLCV price lookups (valuation close,
+    # pledge spiral check, corp-action windows, post-earnings drift) all hit
+    # memory instead of making per-ticker API calls — the data is already in
+    # the bulk panel fetched above.
+    fundamental = compute_fundamental_features_panel(
+        client, tickers, target_date, sector_map,
+        data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+    )
+    governance = compute_governance_features_panel(
+        client, tickers, target_date,
+        data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+    )
+    mf_holdings = compute_mf_holdings_features_panel(tickers, target_date, tier_map=tier_map)
+    corp_action = compute_corporate_action_features_panel(
+        client, tickers, target_date,
+        data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+    )
+    fno = compute_fno_features_panel(client, tickers, target_date, data_cache=data_cache)
+
+    # mf_holdings/governance are already ticker-keyed single-snapshot panels
+    # "as of" target_date — exactly the shape compute_multibagger_features'
+    # PIT-safe institutional merge expects (see that module's docstring).
+    # No fno_iv_panel: matrix_builder only has TODAY's fno panel, not a
+    # rolling IV history, so iv_compression_flag stays NaN here — a
+    # documented gap, not a silent omission.
+    if not universe_panel.empty:
+        multibagger = compute_multibagger_features(
+            universe_panel, benchmark_wide, sector_map, mf_snapshot=mf_holdings, governance_snapshot=governance
+        )
+        today_multibagger = multibagger[multibagger["date"] == target_date].drop(columns=["date"])
+    else:
+        today_multibagger = pd.DataFrame(columns=["ticker"] + MULTIBAGGER_FEATURES)
+
+    # ── Phase 3: advanced technical + pattern + real-economy macro + deep forensic ──
+    if not universe_panel.empty:
+        adv_tech = compute_advanced_technical_features(universe_panel)
+        today_adv_tech = adv_tech[adv_tech["date"] == target_date].drop(columns=["date"])
+        pat_scores = compute_pattern_scores(universe_panel)
+        today_patterns = pat_scores[pat_scores["date"] == target_date].drop(columns=["date"])
+    else:
+        today_adv_tech = pd.DataFrame(columns=["ticker"] + ADVANCED_TECHNICAL_FEATURES)
+        today_patterns = pd.DataFrame(columns=["ticker"] + PATTERN_FEATURES)
+
+    real_economy = compute_real_economy_macro_panel(target_date, tickers)
+    deep_forensic = compute_deep_forensic_features_panel(client, tickers, to_date, data_cache=data_cache)
+
     matrix = pd.DataFrame({"ticker": tickers})
     matrix = matrix.merge(today_technical, on="ticker", how="left")
     matrix = matrix.merge(today_intraday, on="ticker", how="left")
@@ -266,6 +376,21 @@ def build_feature_matrix(
     else:
         for col in HMM_REGIME_FEATURES:
             matrix[col] = np.nan
+    if not today_pnd.empty:
+        matrix = matrix.merge(today_pnd, on="ticker", how="left")
+    else:
+        for col in PND_FEATURES:
+            matrix[col] = np.nan
+    matrix = matrix.merge(fundamental, on="ticker", how="left")
+    matrix = matrix.merge(governance, on="ticker", how="left")
+    matrix = matrix.merge(mf_holdings, on="ticker", how="left")
+    matrix = matrix.merge(corp_action, on="ticker", how="left")
+    matrix = matrix.merge(fno, on="ticker", how="left")
+    matrix = matrix.merge(today_multibagger, on="ticker", how="left")
+    matrix = matrix.merge(today_adv_tech, on="ticker", how="left")
+    matrix = matrix.merge(today_patterns, on="ticker", how="left")
+    matrix = matrix.merge(real_economy, on="ticker", how="left")
+    matrix = matrix.merge(deep_forensic, on="ticker", how="left")
     matrix["date"] = target_date
     matrix = matrix.merge(calendar_row, on="date", how="left")
     matrix = matrix.merge(macro_row, on="date", how="left")

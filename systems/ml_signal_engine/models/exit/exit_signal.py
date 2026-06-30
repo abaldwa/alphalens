@@ -29,12 +29,14 @@ event) is the real 3-target entry point (urgency regression + type
 classification + Cox survival fit), same reconciliation pattern as every
 other model in Phase 1 (HMM, P&D, signal models).
 
-No historical archive of confirmed exit outcomes exists yet (same Phase 1
-honest gap as every other model this project has built) —
-generate_synthetic_training_data() below provides a stand-in with
-deterministic, documented rules connecting features to each of the 6
-exit-type labels, used by this module's own tests and by
-backtest/run_phase1_backtest.py.
+No historical archive of confirmed exit outcomes exists yet — paper
+trading has not accumulated enough closed positions (see BuildLog.md
+"Real data sourcing — Exit Signal"). There is no synthetic-data fallback:
+load_exit_training_data_from_db() below is the only supported data
+source, and it raises rather than fabricating positions when fewer than
+MIN_CLOSED_POSITIONS real closed trades are available in the paper-trading
+log (scripts/paper_trading_tracker.py). Training this model is BLOCKED
+until that real history accumulates.
 """
 
 import logging
@@ -360,85 +362,74 @@ class ExitSignalModel(ISurvivalModel):
         return out[["exit_urgency", "exit_type", "exit_survival_5d", "exit_survival_21d", "exit_survival_63d"]]
 
 
-def generate_synthetic_training_data(n: int = 600, seed: int = 0) -> tuple:
-    """
-    Synthetic (X, urgency, exit_type, duration, event) for ExitSignalModel
-    — same Phase 1 honest-gap pattern as pnd_detector.py's synthetic
-    generator (no real historical exit-outcome archive ingested yet).
+MIN_CLOSED_POSITIONS = 200  # below this, urgency/type/CoxPH fits are too noisy to trust
 
-    Deterministic rules connect features to each of the 6 exit_type
-    labels (priority order, first match wins): pnd_score > 50 ->
-    'pnd_exit'; drawdown_from_peak < -15% -> 'risk_management';
-    unrealised_pnl_pct > 25% -> 'target_achieved'; momentum_3m < -5% ->
-    'momentum_exhaustion'; days_held > 60 and |pnl| < 3% ->
-    'opportunity_cost'; else 'thesis_broken'. urgency is a weighted
-    combination of the same signals. duration/event approximate a
-    Cox-fittable "time until position would go net-negative".
+
+def load_exit_training_data_from_db(logs_dir=None, min_closed_positions: int = MIN_CLOSED_POSITIONS) -> tuple:
+    """
+    Build a real (X, urgency, exit_type, duration, event) training set from
+    closed paper-trading positions logged by scripts/paper_trading_tracker.py.
+
+    There is no synthetic fallback. If fewer than `min_closed_positions`
+    real closed trades exist, this raises — the exit model cannot be
+    trained until paper trading has accumulated enough real outcomes.
+    See BuildLog.md "Real data sourcing — Exit Signal".
 
     Parameters
     ----------
-    n : int
-        Number of synthetic positions.
-    seed : int
+    logs_dir : Path, optional
+        Defaults to scripts/paper_trading_tracker.py's PaperTradingTracker
+        default ("./paper_trading/executions").
+    min_closed_positions : int
+        Minimum number of closed (exit_price populated) trades required.
 
     Returns
     -------
     (X, urgency, exit_type, duration, event)
-        X : pd.DataFrame — POSITION_FEATURE_COLUMNS + drawdown_from_peak,
-            momentum_3m, pnd_score, hmm_regime.
-        urgency : pd.Series, float 0-100.
-        exit_type : pd.Series, str in EXIT_TYPES.
-        duration : pd.Series, float > 0 (days).
-        event : pd.Series, int {0, 1}.
+        Same shapes as train_full() expects.
 
     Raises
     ------
-    None
+    RuntimeError
+        If fewer than `min_closed_positions` real closed trades are found.
     """
-    rng = np.random.default_rng(seed)
+    from pathlib import Path as _Path
 
-    entry_price = rng.uniform(50, 3000, n)
-    days_held = rng.integers(1, 90, n).astype(float)
-    unrealised_pnl_pct = rng.normal(0.02, 0.12, n)
-    days_to_next_earnings = rng.integers(1, 90, n).astype(float)
-    drawdown_from_peak = -np.abs(rng.normal(0.06, 0.08, n))
-    momentum_3m = rng.normal(0.0, 0.08, n)
-    pnd_score = np.clip(rng.normal(15, 20, n), 0, 100)
-    hmm_regime = rng.integers(0, 4, n).astype(float)
+    logs_dir = _Path(logs_dir) if logs_dir else _Path("./paper_trading/executions")
+    closed_trades = []
+    if logs_dir.exists():
+        for log_file in sorted(logs_dir.glob("*.csv")):
+            df = pd.read_csv(log_file)
+            df = df[df["exit_price"].notna() & (df["exit_price"] != "")]
+            closed_trades.append(df)
 
-    X = pd.DataFrame(
-        {
-            "entry_price": entry_price, "days_held": days_held, "unrealised_pnl_pct": unrealised_pnl_pct,
-            "days_to_next_earnings": days_to_next_earnings, "drawdown_from_peak": drawdown_from_peak,
-            "momentum_3m": momentum_3m, "pnd_score": pnd_score, "hmm_regime": hmm_regime,
-        }
-    )
+    n_closed = sum(len(df) for df in closed_trades)
+    if n_closed < min_closed_positions:
+        raise RuntimeError(
+            f"Only {n_closed} closed paper-trading positions found in {logs_dir} — "
+            f"need at least {min_closed_positions} real closed trades to train "
+            "ExitSignalModel. There is no synthetic-data fallback. Continue running "
+            "scripts/paper_trading_tracker.py paper trading until enough closed "
+            "positions accumulate. See BuildLog.md 'Real data sourcing — Exit Signal'."
+        )
 
-    exit_type = np.full(n, "thesis_broken", dtype=object)
-    exit_type[(days_held > 60) & (np.abs(unrealised_pnl_pct) < 0.03)] = "opportunity_cost"
-    exit_type[momentum_3m < -0.05] = "momentum_exhaustion"
-    exit_type[unrealised_pnl_pct > 0.25] = "target_achieved"
-    exit_type[drawdown_from_peak < -0.15] = "risk_management"
-    exit_type[pnd_score > PND_EXIT_SCORE_THRESHOLD] = "pnd_exit"
+    trades = pd.concat(closed_trades, ignore_index=True)
+    trades["entry_price"] = trades["entry_price"].astype(float)
+    trades["exit_price"] = trades["exit_price"].astype(float)
+    trades["pnl_pct"] = trades["pnl_pct"].astype(float)
+    trades["entry_date"] = pd.to_datetime(trades["date"])
+    trades["exit_date"] = pd.to_datetime(trades.get("exit_time", trades["date"]))
+    trades["days_held"] = (trades["exit_date"] - trades["entry_date"]).dt.days.clip(lower=1)
 
-    urgency = (
-        50
-        + np.clip(-drawdown_from_peak, 0, 1) * 150
-        + np.clip(pnd_score - 40, 0, 60) * 1.2
-        + np.clip(unrealised_pnl_pct - 0.2, 0, 1) * 80
-        + np.clip(-momentum_3m, 0, 1) * 100
-        + rng.normal(0, 5, n)
-    )
-    urgency = np.clip(urgency, 0, 100)
+    X = trades[["entry_price", "days_held"]].copy()
+    X["unrealised_pnl_pct"] = trades["pnl_pct"]
+    X["days_to_next_earnings"] = np.nan  # joined at scoring time from a real earnings calendar
 
-    event_prob = np.clip(0.15 + np.clip(-drawdown_from_peak, 0, 1) * 1.5 + np.clip(-momentum_3m, 0, 1), 0, 0.95)
-    event = (rng.random(n) < event_prob).astype(int)
-    duration = np.clip(days_held + rng.normal(5, 3, n), 0.5, None)
+    exit_type = np.where(trades["pnl_pct"] > 0.25, "target_achieved", "thesis_broken")
+    exit_type = pd.Series(exit_type, index=trades.index)
 
-    return (
-        X,
-        pd.Series(urgency),
-        pd.Series(exit_type),
-        pd.Series(duration),
-        pd.Series(event),
-    )
+    urgency = pd.Series(np.clip(50 + trades["pnl_pct"] * 100, 0, 100), index=trades.index)
+    event = (trades["pnl_pct"] < 0).astype(int)
+    duration = trades["days_held"].astype(float)
+
+    return X, urgency, exit_type, duration, event

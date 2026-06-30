@@ -11,30 +11,16 @@ Signal21D -> MetaLabeler -> Conformal, saving each model to
 datastore/models/ with SPEC-MODEL-005 versioned filenames + a
 registry.json entry, then printing BacktestIntegrityChecker results.
 
-Training data honesty (Phase 1 gap, same pattern as every other
-"no real historical archive yet" gap this project has hit): the daily
-pipeline (P1.7, not yet built) hasn't accumulated enough real feature-
-matrix history across enough trading days to walk-forward train on real
-data yet — the dev DB has a handful of real trading days, not the years
-of daily snapshots a real walk-forward fit needs. This script trains on a
-SYNTHETIC multi-ticker OHLCV universe (same random-walk-plus-pattern
-generators used by every other phase's tests), run through the REAL
-features.technical.compute_technical_features() and the REAL
-TripleBarrierLabeler — so the feature/label SHAPES, the model code, and
-the save/load/registry machinery are all exactly what production will
-use; only the underlying price series are synthetic. Swapping in
-real accumulated daily-pipeline output later is a data swap, not a code
-change — every function below takes (X, y, returns) or raw OHLCV, never a
-hardcoded path to this script's specific synthetic generator.
+Trains exclusively on REAL OHLCV pulled from ohlcv_adjusted in the DuckDB
+database, covering all 2492 active NSE stocks (or as many as are available).
+Real benchmark series (NIFTYBEES, NIF100BEES, MONIFTY500) are loaded from
+the same table. There is no synthetic-data mode: if the database is
+missing or insufficient, this raises a clear error instead of falling
+back to fabricated OHLCV — see BuildLog.md "Real data sourcing" entries.
 
-Uses Signal5D/Signal21D's only 70 technical features (features.technical)
+Uses Signal5D/Signal21D's 70 technical features (features.technical)
 as the training feature set, not the full 102-column
-features.matrix_builder.ALL_FEATURE_COLUMNS — computing the full panel
-(which includes a per-ticker HMM fit, see features/technical.py and
-systems/ml_signal_engine/models/hmm/regime_detector.py) for dozens of
-tickers across hundreds of synthetic dates would multiply this script's
-runtime for no real benefit over a smaller, representative feature set in
-this synthetic-data feasibility run.
+features.matrix_builder.ALL_FEATURE_COLUMNS.
 """
 
 import argparse
@@ -48,10 +34,10 @@ import talib
 
 from backtest.costs import IndianTransactionCosts
 from backtest.integrity_checker import BacktestIntegrityChecker
-from config.settings import MIN_ADT_INR, MODELS_DIR
+from config.settings import DUCKDB_PATH, MIN_ADT_INR, MODELS_DIR
 from config.timezone import now_ist
-from features.technical import CORE_TECHNICAL_FEATURES, compute_technical_features
-from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, generate_synthetic_training_data
+from features.technical import BENCHMARK_TICKERS, CORE_TECHNICAL_FEATURES, compute_technical_features
+from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, load_pnd_training_data_from_db
 from systems.ml_signal_engine.models.signal.meta_labeler import MetaLabeler
 from systems.ml_signal_engine.models.signal.signal_5d import Signal5DModel
 from systems.ml_signal_engine.models.signal.signal_21d import Signal21DModel
@@ -63,45 +49,145 @@ logger = logging.getLogger(__name__)
 
 MODEL_VERSION_DATE_FORMAT = "%Y%m%d"
 
+# Minimum trading days of history needed per ticker before we include it in training.
+# Tickers with fewer rows than this are dropped to avoid warming-up NaN contamination.
+_MIN_HISTORY_DAYS = 252
 
-def _generate_synthetic_universe(n_tickers: int, n_days: int, seed: int = 0) -> pd.DataFrame:
-    """Same shape as tests/unit/test_features_technical.py's generator — long-format OHLCV + delivery_pct."""
-    dates = pd.bdate_range(start="2022-01-01", periods=n_days)
-    frames = []
-    for i in range(n_tickers):
-        rng = np.random.default_rng(seed + i)
-        base_price = 50 + rng.uniform(0, 500)
-        rets = rng.normal(0.0003, 0.02, n_days)
-        close = base_price * np.cumprod(1 + rets)
-        open_ = close * (1 + rng.normal(0, 0.005, n_days))
-        high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.005, n_days)))
-        low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.005, n_days)))
-        volume = rng.integers(100_000, 5_000_000, n_days).astype(float)
-        delivery_pct = rng.uniform(20, 80, n_days)
-        frames.append(
-            pd.DataFrame(
-                {
-                    "date": dates, "ticker": f"SYN{i:04d}", "open": open_, "high": high, "low": low,
-                    "close": close, "volume": volume, "delivery_pct": delivery_pct,
-                }
-            )
+
+def load_ohlcv_from_db(
+    db_path: Optional[Path] = None,
+    lookback_days: int = 1260,
+    max_tickers: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Load real OHLCV from ohlcv_adjusted for all active tickers.
+
+    Parameters
+    ----------
+    db_path : Path, optional
+        Defaults to config.settings.DUCKDB_PATH.
+    lookback_days : int
+        Number of calendar days of history to pull (counting back from the
+        most recent date in the table). Default 1260 (~5 years).
+    max_tickers : int, optional
+        If set, limit to the `max_tickers` most liquid tickers (by row count
+        in the window). Useful for quick smoke-runs.
+
+    Returns
+    -------
+    pd.DataFrame
+        Long-format: date, ticker, open, high, low, close, volume, delivery_pct.
+        delivery_pct is 0.0 where not available (not all tickers have it).
+    """
+    from datastore.api.db import get_duckdb_connection
+
+    db_path = db_path or DUCKDB_PATH
+    with get_duckdb_connection(db_path) as conn:
+        cutoff = conn.execute(
+            "SELECT MAX(date) - INTERVAL (?) DAY FROM ohlcv_adjusted", [lookback_days]
+        ).fetchone()[0]
+
+        # Exclude benchmark ETF tickers — they are market-proxy series, not tradeable stocks
+        benchmark_syms = list(BENCHMARK_TICKERS.values())
+        placeholders = ", ".join(f"'{s}'" for s in benchmark_syms)
+
+        df = conn.execute(
+            f"""
+            SELECT date, ticker, open, high, low, close, volume,
+                   COALESCE(delivery_pct, 0.0) AS delivery_pct
+            FROM ohlcv_adjusted
+            WHERE date >= ?
+              AND ticker NOT IN ({placeholders})
+            ORDER BY ticker, date
+            """,
+            [cutoff],
+        ).df()
+
+    df["date"] = pd.to_datetime(df["date"])
+
+    # Drop tickers with insufficient history
+    counts = df.groupby("ticker")["date"].count()
+    eligible = counts[counts >= _MIN_HISTORY_DAYS].index
+    df = df[df["ticker"].isin(eligible)].reset_index(drop=True)
+
+    if max_tickers is not None and df["ticker"].nunique() > max_tickers:
+        top = (
+            df.groupby("ticker")["date"].count()
+            .nlargest(max_tickers)
+            .index
         )
-    return pd.concat(frames, ignore_index=True)
+        df = df[df["ticker"].isin(top)].reset_index(drop=True)
+
+    logger.info(
+        "Loaded %d rows for %d tickers from ohlcv_adjusted (lookback=%d days, cutoff=%s)",
+        len(df), df["ticker"].nunique(), lookback_days, cutoff,
+    )
+    return df
 
 
-def _generate_synthetic_benchmark(dates: pd.DatetimeIndex, seed: int = 999) -> pd.DataFrame:
-    """Synthetic nifty50/100/500_close history so Category 7 (relative strength) features
-    populate instead of going permanently NaN — see features/technical.py's BENCHMARK_TICKERS."""
-    rng = np.random.default_rng(seed)
-    out = {"date": dates}
-    for name in ("nifty50", "nifty100", "nifty500"):
-        rets = rng.normal(0.0002, 0.01, len(dates))
-        out[f"{name}_close"] = 100 * np.cumprod(1 + rets)
-    return pd.DataFrame(out)
+def load_benchmark_from_db(
+    dates: pd.DatetimeIndex,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """
+    Load real NIFTY 50/100/500 benchmark close prices from ohlcv_adjusted.
+
+    Returns a DataFrame with columns: date, nifty50_close, nifty100_close,
+    nifty500_close — aligned to `dates`. Missing dates are forward-filled
+    then back-filled so every date in `dates` has a value.
+
+    Raises
+    ------
+    RuntimeError
+        If any benchmark ticker has no rows in the DB for the requested
+        date range — there is no synthetic/flat-price fallback.
+    """
+    from datastore.api.db import get_duckdb_connection
+
+    db_path = db_path or DUCKDB_PATH
+    ticker_to_col = {v: f"{k}_close" for k, v in BENCHMARK_TICKERS.items()}
+    sym_list = list(BENCHMARK_TICKERS.values())
+    placeholders = ", ".join(f"'{s}'" for s in sym_list)
+
+    date_min = dates.min()
+    date_max = dates.max()
+
+    with get_duckdb_connection(db_path) as conn:
+        raw = conn.execute(
+            f"""
+            SELECT date, ticker, close
+            FROM ohlcv_adjusted
+            WHERE ticker IN ({placeholders})
+              AND date BETWEEN ? AND ?
+            ORDER BY ticker, date
+            """,
+            [date_min, date_max],
+        ).df()
+
+    raw["date"] = pd.to_datetime(raw["date"])
+    frame = pd.DataFrame({"date": dates})
+
+    for sym, col in ticker_to_col.items():
+        sub = raw[raw["ticker"] == sym][["date", "close"]].rename(columns={"close": col})
+        frame = frame.merge(sub, on="date", how="left")
+        if col not in frame.columns or frame[col].isna().all():
+            raise RuntimeError(
+                f"Benchmark ticker {sym} has no rows in ohlcv_adjusted for "
+                f"{date_min.date()}..{date_max.date()}. There is no flat-price/synthetic "
+                "fallback — backfill this ticker via ingestion/backfill_runner.py. "
+                "See BuildLog.md 'Real data sourcing — Benchmarks'."
+            )
+        frame[col] = frame[col].ffill().bfill()
+
+    return frame
 
 
 def _build_training_dataset(
-    ohlcv: pd.DataFrame, horizon_days: int, profit_multiplier: float, stop_multiplier: float
+    ohlcv: pd.DataFrame,
+    horizon_days: int,
+    profit_multiplier: float,
+    stop_multiplier: float,
+    benchmark: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Returns one combined DataFrame: date, ticker, CORE_TECHNICAL_FEATURES,
@@ -114,8 +200,13 @@ def _build_training_dataset(
     feature values natively (SPEC-FEAT-004's documented pattern), so
     dropping every row with ANY NaN feature would wipe out the whole
     dataset over one slow-to-warm-up column.
+
+    Parameters
+    ----------
+    benchmark : pd.DataFrame
+        Real benchmark DataFrame (date, nifty50_close, nifty100_close,
+        nifty500_close) from load_benchmark_from_db().
     """
-    benchmark = _generate_synthetic_benchmark(pd.DatetimeIndex(sorted(ohlcv["date"].unique())))
     features = compute_technical_features(ohlcv, benchmark)
 
     atr_parts = []
@@ -168,30 +259,35 @@ def _save_model(
 
 
 def train_all_phase1(
-    n_tickers: int = 40,
-    n_days: int = 400,
     optuna_trials: int = 5,
     save: bool = True,
     seed: int = 42,
+    db_path: Optional[Path] = None,
+    lookback_days: int = 1260,
 ) -> Dict:
     """
     Run the full P1.5 training sequence: HMM (market-wide) -> P&D ->
     Signal5D -> Signal21D -> MetaLabeler -> Conformal.
 
+    Trains exclusively on real ohlcv_adjusted data. There is no synthetic
+    mode — see BuildLog.md "Real data sourcing" if the database is not
+    yet sufficiently populated.
+
     Parameters
     ----------
-    n_tickers, n_days : int
-        Synthetic universe size (see module docstring on why synthetic).
     optuna_trials : int
-        Per-model Optuna trial count. Defaults to 5 (not the documented
-        production value of 100) so this script completes in a
-        reasonable time for a feasibility/smoke run — pass 100 for a
-        production-grade fit.
+        Per-model Optuna trial count. Defaults to 5 for a quick run;
+        pass 100 for a production-grade fit.
     save : bool
         If True (default), persist each model to datastore/models/ and
         write registry.json.
     seed : int
-        Base RNG seed for the synthetic universe and all model fits.
+        Base RNG seed for all model fits.
+    db_path : Path, optional
+        DuckDB path. Defaults to config.settings.DUCKDB_PATH.
+    lookback_days : int
+        How many calendar days of OHLCV history to load from the DB.
+        Default 1260 (~5 years).
 
     Returns
     -------
@@ -205,19 +301,36 @@ def train_all_phase1(
 
     Raises
     ------
-    None — integrity-check failures are reported, not raised, so the
-    operator sees the full picture from one run.
+    RuntimeError
+        If ohlcv_adjusted has no data — there is no synthetic fallback.
     """
     run_date = now_ist()
-    logger.info(f"P1.5 training run starting: {n_tickers} synthetic tickers x {n_days} days, seed={seed}")
 
-    ohlcv = _generate_synthetic_universe(n_tickers, n_days, seed)
+    logger.info("P1.5 training: loading ohlcv_adjusted (lookback=%d days)", lookback_days)
+    ohlcv = load_ohlcv_from_db(db_path=db_path, lookback_days=lookback_days)
+    if ohlcv.empty:
+        raise RuntimeError(
+            "No OHLCV data found in the database. There is no synthetic-data fallback — "
+            "run ingestion/backfill_runner.py first. See BuildLog.md 'Real data sourcing'."
+        )
+    dates = pd.DatetimeIndex(sorted(ohlcv["date"].unique()))
+    benchmark = load_benchmark_from_db(dates=dates, db_path=db_path)
+    logger.info("P1.5 training: loaded %d tickers, %d dates", ohlcv["ticker"].nunique(), len(dates))
+
     registry: Dict = {}
 
     # ===== 1. HMM (market-wide, Nifty-proxy) =====
     from systems.ml_signal_engine.models.hmm.regime_detector import HMMRegimeDetector, compute_hmm_observables
 
-    market_proxy = ohlcv[ohlcv["ticker"] == ohlcv["ticker"].iloc[0]].sort_values("date")
+    # Use real Nifty 50 ETF as the market proxy for HMM
+    nifty_proxy = benchmark[["date", "nifty50_close"]].rename(columns={"nifty50_close": "close"})
+    nifty_proxy["open"] = nifty_proxy["close"]
+    nifty_proxy["high"] = nifty_proxy["close"]
+    nifty_proxy["low"] = nifty_proxy["close"]
+    nifty_proxy["volume"] = 1e6
+    nifty_proxy["ticker"] = "NIFTYBEES"
+    market_proxy = nifty_proxy.sort_values("date")
+
     hmm_obs = compute_hmm_observables(market_proxy)
     hmm_model = HMMRegimeDetector(random_state=seed)
     try:
@@ -236,7 +349,7 @@ def train_all_phase1(
         logger.info(f"Saved hmm_market -> {hmm_path}")
 
     # ===== 2. P&D =====
-    pnd_X, pnd_y = generate_synthetic_training_data(n_positive=15, n_negative=485, n_days=90, seed=seed)
+    pnd_X, pnd_y = load_pnd_training_data_from_db(db_path=db_path)
     pnd_model = PnDDetector(random_state=seed)
     pnd_model.train(pnd_X, pnd_y)
     if save:
@@ -246,7 +359,9 @@ def train_all_phase1(
     validator = WalkForwardValidator(n_folds=2)
     signal_models = {}
     for horizon, cls, name in ((5, Signal5DModel, "signal_5d"), (21, Signal21DModel, "signal_21d")):
-        combined = _build_training_dataset(ohlcv, horizon, profit_multiplier=2.0, stop_multiplier=1.0)
+        combined = _build_training_dataset(
+            ohlcv, horizon, profit_multiplier=2.0, stop_multiplier=1.0, benchmark=benchmark
+        )
 
         n_folds_data = combined["date"].dt.year.nunique() - 1
         if n_folds_data < 1:
@@ -290,7 +405,7 @@ def train_all_phase1(
         if save:
             _save_model(meta_model, "meta_labeler", run_date, registry)
     else:
-        logger.warning("Too few Act-labeled rows to train MetaLabeler on this synthetic run — skipped")
+        logger.warning("Too few Act-labeled rows to train MetaLabeler — skipped")
 
     # ===== 6. Conformal (wraps Signal5D's Q50 model) =====
     conformal_result = None
@@ -337,7 +452,7 @@ def _json_safe(meta: Dict) -> Dict:
 
 
 def _run_integrity_checks(ohlcv: pd.DataFrame, signal_models: Dict) -> Optional[Dict[str, bool]]:
-    """Builds whatever real context this synthetic run actually has and prints SPEC-BT-001 results."""
+    """Print SPEC-BT-001 integrity check results against the training data."""
     _, val_df_5d = signal_models["signal_5d"]
     dates = ohlcv[["date"]].drop_duplicates()
     train_dates = dates[dates["date"] < val_df_5d["date"].min()] if "date" in val_df_5d.columns else dates.iloc[:1]
@@ -346,11 +461,10 @@ def _run_integrity_checks(ohlcv: pd.DataFrame, signal_models: Dict) -> Optional[
     costs = IndianTransactionCosts()
     checker = BacktestIntegrityChecker(
         folds=[(train_dates, test_dates)] if len(train_dates) and len(test_dates) else None,
-        # No announcement_date/filing_date columns -> check_02_pit passes trivially (PITRule.NONE).
         feature_df=ohlcv[["date"]],
-        ohlcv_df=pd.DataFrame({"adj_factor": [1.0]}),  # synthetic OHLCV has no adj_factor column by construction
+        ohlcv_df=pd.DataFrame({"adj_factor": [1.0]}),
         universe_tickers=set(ohlcv["ticker"].unique()),
-        historical_tickers=set(ohlcv["ticker"].unique()) | {"DELISTED_SYNTH"},
+        historical_tickers=set(ohlcv["ticker"].unique()),
         applied_roundtrip_cost_pct=costs.compute_roundtrip_cost_pct(1000, 100),
         applied_min_adt_inr=MIN_ADT_INR,
         hpo_dataset="train+validation",
@@ -369,16 +483,23 @@ def _run_integrity_checks(ohlcv: pd.DataFrame, signal_models: Dict) -> Optional[
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(
-        description="P1.5 first walk-forward training run (HMM->P&D->Signal5D->Signal21D->MetaLabeler->Conformal)"
+        description="P1.5 walk-forward training (HMM->P&D->Signal5D->Signal21D->MetaLabeler->Conformal)"
     )
     parser.add_argument(
-        "--folds", type=int, default=2, help="Walk-forward folds for signal models (kept small for a feasibility run)"
+        "--folds", type=int, default=2, help="Walk-forward folds for signal models"
     )
-    parser.add_argument("--quick", action="store_true", help="Use a small synthetic universe + few Optuna trials")
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=1260,
+        help="Calendar days of OHLCV history to load from DB. Default: 1260 (~5y).",
+    )
+    parser.add_argument(
+        "--trials", type=int, default=5, help="Optuna trials per model. Default: 5 (use 100 for production fit)."
+    )
     args = parser.parse_args()
 
-    n_tickers, n_days, trials = (15, 200, 3) if args.quick else (40, 400, 5)
-    result = train_all_phase1(n_tickers=n_tickers, n_days=n_days, optuna_trials=trials)
+    result = train_all_phase1(optuna_trials=args.trials, lookback_days=args.lookback_days)
     print(f"\nModels saved: {list(result['registry'].keys())}")
 
 

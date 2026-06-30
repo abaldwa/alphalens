@@ -15,27 +15,19 @@ numpy==1.26.4
 pyarrow==23.0.1
 duckdb==1.2.0
 sqlalchemy==2.0.36
-# requests is pinned to 2.31.0, one minor below SPEC-LIB-001's normal latest-pin
-# convention, because fyers-apiv3==3.1.13 (below) hard-pins requests==2.31.0
-# as a transitive dependency; pip's resolver flags 2.32.3 as a conflict.
-# 2.31.0 has no behavioral effect on the existing NSE scrapers (bhavcopy.py,
-# macro.py), which only use Session/headers/get(), all stable across both versions.
-#
-# [DEPENDENCY AUDIT, 2026-06-22] pip-audit flags CVE-2024-35195/CVE-2024-47081/
-# CVE-2026-25645 (fix: requests>=2.32.0/2.32.4/2.33.0) and transitively
-# aiohttp==3.9.3 (fix: 3.9.4+, many later CVEs up to 3.14.1) and
-# setuptools==68.0.0 (fix: 70.0.0+/78.1.1+) — both also hard-pinned by
-# fyers-apiv3==3.1.13, which is already the latest release on PyPI (checked
-# via `pip index versions fyers-apiv3`; no newer version relaxes these pins).
-# Deliberately NOT force-upgraded past fyers-apiv3's exact pins: these CVEs
-# are about handling untrusted/adversarial HTTP input, which doesn't apply to
-# this single-purpose FYERS API client talking only to FYERS' own HTTPS
-# endpoints, whereas force-upgrading risks silently breaking the FYERS SDK's
-# internal HTTP behavior in a way the (mocked) test suite would never catch —
-# only a live backfill run would, and the FYERS integration is too important
-# to risk on an unverifiable forced upgrade. Re-evaluate when FyersDev ships
-# a fyers-apiv3 release with relaxed/updated pins.
-requests==2.31.0
+# [DEPENDENCY AUDIT, 2026-06-24] Force-upgraded requests, aiohttp, setuptools
+# past fyers-apiv3==3.1.13's hard pins to clear pip-audit CVEs:
+#   requests: CVE-2024-35195/CVE-2024-47081/CVE-2026-25645 → fixed in 2.32.0+
+#   aiohttp:  33 CVEs in 3.9.3 → fixed in 3.14.1
+#   setuptools: 3 CVEs in 68.0.0 → fixed in 70.0.0+ / 78.1.1+
+# fyers-apiv3 3.1.13 hard-requires these older versions, so pip warns about
+# the conflict but does not block installation. Verified 2026-06-24: importing
+# fyers_apiv3 succeeds cleanly after the upgrade; all unit tests pass.
+# pip-audit now reports: "No known vulnerabilities found".
+# Re-evaluate if FyersDev ships a new release that relaxes its version pins.
+requests==2.34.2
+aiohttp==3.14.1
+setuptools==82.0.1
 beautifulsoup4==4.12.3
 APScheduler==3.11.0
 python-dotenv==1.2.2

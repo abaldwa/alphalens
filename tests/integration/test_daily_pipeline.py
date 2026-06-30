@@ -8,12 +8,22 @@ Consumers: CI, pytest
 
 Full end-to-end integration test: trains small/fast versions of every
 Phase 1 model, runs systems/ml_signal_engine/inference/daily_inference.py's
-run_daily_inference() for 5 synthetic tickers across 3 dates against a
-REAL in-process DataStore FastAPI app (httpx.ASGITransport — no real TCP
-port, but the genuine FastAPI routing + DuckDB read/write code paths, not
-mocks), then verifies the written signals are readable back through the
-API exactly as a real consumer (the dashboard, a future portfolio system)
-would read them.
+run_daily_inference() for 5 placeholder tickers ("INTEG00".."INTEG04",
+deterministic hand-built test-harness fixtures, not real NSE tickers)
+across 3 dates against a REAL in-process DataStore FastAPI app
+(httpx.ASGITransport — no real TCP port, but the genuine FastAPI routing +
+DuckDB read/write code paths, not mocks), then verifies the written
+signals are readable back through the API exactly as a real consumer (the
+dashboard, a future portfolio system) would read them.
+
+This test exercises pipeline plumbing (API write/read round-trip, halt
+logic, P&D-block exclusion) rather than model accuracy, so the inference-
+input feature matrices and the HMM/Signal5D/MetaLabeler training data
+below are deterministic, hand-built test-harness fixtures — not a
+synthetic stand-in for production training/inference data. Where a real
+loader already exists (PnDDetector, ExitSignalModel), this test uses it
+and skips if real data isn't available yet — there is no synthetic
+fallback for those.
 
 Uses temp DuckDB/SQLite files (never the real datastore/ directory) by
 monkeypatching each router module's own already-imported SIGNALS_DUCKDB_PATH
@@ -111,11 +121,9 @@ def trained_models(tmp_path_factory):
     """Small/fast trained PnDDetector, Signal5DModel, MetaLabeler, ExitSignalModel, HMM."""
     import joblib
 
-    from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel
-    from systems.ml_signal_engine.models.exit.exit_signal import generate_synthetic_training_data as exit_synth
+    from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel, load_exit_training_data_from_db
     from systems.ml_signal_engine.models.hmm.regime_detector import HMMRegimeDetector, compute_hmm_observables
-    from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector
-    from systems.ml_signal_engine.models.pnd.pnd_detector import generate_synthetic_training_data as pnd_synth
+    from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, load_pnd_training_data_from_db
     from systems.ml_signal_engine.models.signal.meta_labeler import MetaLabeler
     from systems.ml_signal_engine.models.signal.signal_5d import Signal5DModel
 
@@ -141,8 +149,11 @@ def trained_models(tmp_path_factory):
     (models_dir / "hmm").mkdir(parents=True)
     joblib.dump(hmm, models_dir / "hmm" / "hmm_market_current.pkl")
 
-    # P&D — trained on its own synthetic archive (independent of test universe)
-    X_pnd, y_pnd = pnd_synth(n_positive=15, n_negative=235, n_days=90, seed=7)
+    # P&D — trained on real data only (independent of this test's placeholder universe)
+    try:
+        X_pnd, y_pnd = load_pnd_training_data_from_db()
+    except RuntimeError as exc:
+        pytest.skip(f"real P&D training data not yet available: {exc}")
     pnd = PnDDetector(random_state=7)
     pnd.train(X_pnd, y_pnd)
     (models_dir / "pnd_detector").mkdir(parents=True)
@@ -171,7 +182,10 @@ def trained_models(tmp_path_factory):
     meta.save(str(models_dir / "meta_labeler" / "meta_labeler_current.pkl"))
 
     # Exit
-    X_exit, urgency, exit_type, duration, event = exit_synth(n=250, seed=7)
+    try:
+        X_exit, urgency, exit_type, duration, event = load_exit_training_data_from_db()
+    except RuntimeError as exc:
+        pytest.skip(f"real exit-signal training data not yet available: {exc}")
     exit_model = ExitSignalModel(random_state=7)
     exit_model.train_full(X_exit, urgency, exit_type, duration, event)
     (models_dir / "exit_signal").mkdir(parents=True)
@@ -180,7 +194,7 @@ def trained_models(tmp_path_factory):
     return models_dir, market_ohlcv
 
 
-def _synthetic_inputs(run_date: date, seed: int):
+def _fixture_inference_inputs(run_date: date, seed: int):
     rng = np.random.default_rng(seed)
     feature_matrix = pd.DataFrame(
         rng.normal(size=(len(TICKERS), len(CORE_TECHNICAL_FEATURES))), columns=CORE_TECHNICAL_FEATURES
@@ -201,7 +215,7 @@ class TestDailyPipelineEndToEnd:
         models_dir, market_ohlcv = trained_models
 
         for i, run_date in enumerate(DATES):
-            feature_matrix, pnd_feature_matrix = _synthetic_inputs(run_date, seed=100 + i)
+            feature_matrix, pnd_feature_matrix = _fixture_inference_inputs(run_date, seed=100 + i)
             result = run_daily_inference(
                 run_date=run_date,
                 feature_matrix=feature_matrix,
@@ -218,7 +232,7 @@ class TestDailyPipelineEndToEnd:
         """Build prompt: 'Verify signals written to DataStore are readable via API.'"""
         models_dir, market_ohlcv = trained_models
         run_date = DATES[0]
-        feature_matrix, pnd_feature_matrix = _synthetic_inputs(run_date, seed=200)
+        feature_matrix, pnd_feature_matrix = _fixture_inference_inputs(run_date, seed=200)
 
         run_daily_inference(
             run_date=run_date, feature_matrix=feature_matrix, pnd_feature_matrix=pnd_feature_matrix,

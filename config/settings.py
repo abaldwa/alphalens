@@ -25,29 +25,24 @@ load_dotenv()
 # SPEC-SYS-001: Universe Coverage
 # SPEC-SYS-011: Configurable Universe Expansion (universe is query-driven, not hardcoded)
 # ---------------------------------------------------------------------------
-UNIVERSE_PROFILE = os.environ.get("UNIVERSE_PROFILE", "phase_1")  # phase_1 | phase_2 | phase_3 | full_nse
+UNIVERSE_PROFILE = os.environ.get("UNIVERSE_PROFILE", "full_nse")  # phase_1 | phase_2 | phase_3 | full_nse
 
 # tier_threshold: include tiers <= this value
 # min_adtv_cr: minimum average daily traded value, INR crore
 # min_mcap_cr: minimum market capitalisation, INR crore
 #
-# NOTE on phase_1's tier_threshold (5, not the original 2): config/build_universe.py
-# assigns tier purely from NSE's own Nifty 500 sub-index membership (1=Nifty50,
-# 2=NiftyNext50, 3=Midcap150, 4=Smallcap250, 5=every other Nifty 500 member) —
-# all 5 tiers are slices *within* the Nifty 500, never a broader NSE universe.
-# tier_threshold=2 therefore structurally caps phase_1 at 102 stocks
-# (Nifty50+Next50), conflicting with SPEC-SYS-001 ("System monitors 500 stocks
-# (Nifty 500) in Phase 1") and CLAUDE.md's NIFTY_500_SIZE=500. tier_threshold=5
-# is the value that actually reaches the full Nifty 500 under this tier scheme.
-# phase_2/phase_3/full_nse's tier_threshold values (3/4/5) are NOT fixed here —
-# build_universe.py has no source for a broader-than-Nifty-500 universe yet
-# (SPEC-SYS-011's ~2,000/~3,500/~5,000+ "Approx Stocks" column assumes one), so
-# those three profiles remain aspirational/Phase 2+ scope, unchanged by this fix.
+# Tier scheme (config/build_universe.py):
+#   1 = Nifty 50, 2 = NiftyNext50, 3 = Midcap150, 4 = Smallcap250,
+#   5 = every other Nifty 500 member, 6 = broader NSE active (non-Nifty500).
+# build_full_nse_universe_from_db() in build_universe.py populates tier=6 for
+# tickers present in ohlcv_adjusted but absent from the Nifty 500 constituent
+# list, giving us the full ~2492-stock active NSE universe in the CSV.
+# full_nse uses tier_threshold=6 to capture all tiers including the broader market.
 UNIVERSE_PROFILES = {
     "phase_1": {"tier_threshold": 5, "min_adtv_cr": 5.0, "min_mcap_cr": 500},
     "phase_2": {"tier_threshold": 3, "min_adtv_cr": 0.5, "min_mcap_cr": 100},
     "phase_3": {"tier_threshold": 4, "min_adtv_cr": 0.1, "min_mcap_cr": 50},
-    "full_nse": {"tier_threshold": 5, "min_adtv_cr": 0.0, "min_mcap_cr": 0},
+    "full_nse": {"tier_threshold": 6, "min_adtv_cr": 0.0, "min_mcap_cr": 0},
 }
 
 if UNIVERSE_PROFILE not in UNIVERSE_PROFILES:
@@ -60,8 +55,9 @@ TIER_THRESHOLD = UNIVERSE_PROFILES[UNIVERSE_PROFILE]["tier_threshold"]
 MIN_ADTV_CR = UNIVERSE_PROFILES[UNIVERSE_PROFILE]["min_adtv_cr"]
 MIN_MCAP_CR = UNIVERSE_PROFILES[UNIVERSE_PROFILE]["min_mcap_cr"]
 
-NIFTY_500_SIZE = 500  # Phase 1 reference universe size; not a hard cap — see SPEC-SYS-011
-TIER_COUNT = 5
+NIFTY_500_SIZE = 500        # Nifty 500 index size (used for phase_1 profile reference only)
+NSE_ACTIVE_UNIVERSE_SIZE = 2492  # Full active NSE universe (ohlcv_adjusted, non-delisted); see SPEC-SYS-011
+TIER_COUNT = 6              # tiers 1-5 = Nifty 500 sub-indices; tier 6 = broader NSE active
 TIER_REVIEW_FREQUENCY = "quarterly"
 
 # ---------------------------------------------------------------------------
@@ -76,7 +72,7 @@ OPTION_CHAIN_SCRAPE_TIME = "15:25"  # Only fixed-time job; must run before marke
 # ---------------------------------------------------------------------------
 # SPEC-SYS-003: Data Completeness Gate
 # ---------------------------------------------------------------------------
-MIN_STOCKS_FOR_INFERENCE = 450  # out of NIFTY_500_SIZE
+MIN_STOCKS_FOR_INFERENCE = 2000  # out of NSE_ACTIVE_UNIVERSE_SIZE (was 450 out of 500 under phase_1)
 DATA_STALENESS_FLAG_COLUMN = "data_staleness_flag"
 
 # ---------------------------------------------------------------------------
@@ -215,6 +211,14 @@ FYERS_APP_ID = os.environ.get("FYERS_APP_ID")
 FYERS_SECRET_ID = os.environ.get("FYERS_SECRET_ID")
 FYERS_ACCESS_TOKEN = os.environ.get("FYERS_ACCESS_TOKEN")
 FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://127.0.0.1")
+SCREENER_USERNAME = os.environ.get("SCREENER_USERNAME")
+SCREENER_PASSWORD = os.environ.get("SCREENER_PASSWORD")
+VALUERESEARCH_USERNAME = os.environ.get("VALUERESEARCH_USERNAME")
+VALUERESEARCH_PASSWORD = os.environ.get("VALUERESEARCH_PASSWORD")
+TRENDLYNE_USERNAME = os.environ.get("TRENDLYNE_USERNAME")
+TRENDLYNE_PASSWORD = os.environ.get("TRENDLYNE_PASSWORD")
+TIJORI_USERNAME = os.environ.get("TIJORI_USERNAME")
+TIJORI_PASSWORD = os.environ.get("TIJORI_PASSWORD")
 
 # ---------------------------------------------------------------------------
 # FYERS historical backfill — SPEC-PIPE-001, SPEC-PIPE-002
@@ -226,6 +230,120 @@ FYERS_MAX_CALLS_PER_DAY = 1000
 FYERS_RATE_LIMIT_SLEEP_SECONDS = 0.5
 FYERS_HISTORY_MAX_DAYS_PER_CALL = 365  # FYERS daily-resolution history API window limit
 BACKFILL_YEARS = 5
+
+# ---------------------------------------------------------------------------
+# Screener.in fundamentals ingestion — SPEC-PIPE-003 (PIT, CRITICAL)
+# ---------------------------------------------------------------------------
+SCREENER_RAW_DIR = RAW_DIR / "screener"
+SCREENER_RATE_LIMIT_SLEEP_SECONDS = 1.0
+# Conservative PIT defaults when Screener.in doesn't expose the real
+# disclosure date directly (SPEC-PIPE-003): NSE listing rules give
+# companies up to 45 days after quarter-end to announce results, and BSE
+# shareholding filings are due ~21 days after quarter-end
+# (alphalens_docs/03_data_pipeline.md). Using the regulatory deadline
+# rather than a shorter guess means a feature can never be backdated to a
+# date earlier than the data was truly knowable.
+FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS = 45
+SHAREHOLDING_FILING_DELAY_DAYS = 21
+RESULTS_PENDING_THRESHOLD_DAYS = 70  # SPEC-PIPE-003: results_pending_flag
+# features/fundamental.py's ROIC: Screener.in exposes no reported EBIT or
+# effective-tax-rate line item, so NOPAT is approximated as
+# (operating_margin * revenue) * (1 - ASSUMED_TAX_RATE) — India's
+# standard corporate tax rate under the concessional regime (Section
+# 115BAA), used as a flat approximation across all sectors/years.
+ASSUMED_TAX_RATE = 0.25
+Z_SCORE_CLIP = 5.0  # SPEC-FEAT-002: sector-relative z-scores clipped to [-5, +5]
+
+# ---------------------------------------------------------------------------
+# AMFI MF holdings — SPEC-PIPE-003 (PIT), P2.2
+# ---------------------------------------------------------------------------
+MF_HOLDINGS_AVAILABILITY_DELAY_DAYS = 5  # available from ~5th of the following month
+AMFI_FETCH_RATE_LIMIT_SLEEP_SECONDS = 1.0
+# [AS BUILT, P2.2 continued] Twice a month, not once: Groww (the primary
+# source as of the pivot to Groww) exposes only its current live
+# snapshot, no historical archive, and AMC disclosure timing varies
+# enough that a single monthly check risks landing on a stale/transitional
+# snapshot. Cron day-of-month field syntax (comma-separated), passed
+# straight to APScheduler's CronTrigger(day=...).
+MF_HOLDINGS_SCHEDULE_DAYS = "5,20"
+AMFI_SCHEDULE_TIME = "08:00"  # HH:MM, Asia/Kolkata
+AMFI_RAW_DIR = RAW_DIR / "amfi_holdings"  # SPEC-PIPE-001: raw per-AMC disclosure files
+# groww.in: primary MF-holdings source (P2.2 continued) — one scheme-detail
+# HTTP request per scheme across ~49 AMCs x ~80-100 schemes each is several
+# thousand requests for a full run; keep this polite.
+GROWW_RATE_LIMIT_SLEEP_SECONDS = 0.5
+
+# ---------------------------------------------------------------------------
+# Price adjustment — disabled pending deliberation on adjustment logic
+# ---------------------------------------------------------------------------
+# SPEC-PIPE-002: backward adjustment; raw NSE prices preserved in raw_* columns.
+# Set False to disable all adjustment (raw == adjusted); True for full CA adjustment.
+PRICE_ADJUSTMENT_ENABLED = True
+
+# ---------------------------------------------------------------------------
+# Corporate actions ingestion — NSE corporate action filings
+# ---------------------------------------------------------------------------
+NSE_CA_RAW_DIR = RAW_DIR / "corporate_actions"
+NSE_CA_RATE_LIMIT_SLEEP_SECONDS = 1.0
+
+# ---------------------------------------------------------------------------
+# Large deals (bulk + block deals) ingestion — NSE and BSE
+# ---------------------------------------------------------------------------
+LARGE_DEALS_RAW_DIR = RAW_DIR / "large_deals"
+LARGE_DEALS_RATE_LIMIT_SLEEP_SECONDS = 1.0
+
+# ---------------------------------------------------------------------------
+# Corporate action features — P2.2
+# ---------------------------------------------------------------------------
+IPO_LOCKIN_DAYS = 180  # typical SEBI-mandated minimum promoter/anchor lock-in
+POST_EARNINGS_DRIFT_WINDOW_DAYS = 5  # PEAD measurement window after announcement_date
+CORP_ACTION_ANTICIPATION_WINDOW_DAYS = 5  # run-up window before the nearest ex_date
+# features/corporate_action_features.py's dividend_yield_vs_fd_rate: no
+# trailing-dividend or live FD-rate data source exists yet in this
+# codebase (corporate_actions has no DIVIDEND rows ingested; no bank
+# FD-rate feed) — flat approximate reference rate, same documented-
+# approximation precedent as ASSUMED_TAX_RATE, used only once a real
+# dividend yield is available to compare against.
+ASSUMED_FD_RATE = 0.07
+
+# ---------------------------------------------------------------------------
+# Trendlyne StratQ (superstar investor tracking) — SPEC-PIPE-003, P2.6
+# ---------------------------------------------------------------------------
+TRENDLYNE_RAW_DIR = RAW_DIR / "trendlyne"
+TRENDLYNE_RATE_LIMIT_SLEEP_SECONDS = 1.0
+# StratQ portfolio disclosures lag the underlying quarter-end the same way
+# shareholding filings do (both ultimately trace back to BSE/NSE bulk/block
+# deal + shareholding-pattern disclosures) — reuses SHAREHOLDING_FILING_DELAY_DAYS
+# as the conservative PIT default when Trendlyne doesn't expose its own
+# "last updated" timestamp directly, same reasoning as
+# FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS above.
+
+# ---------------------------------------------------------------------------
+# Tijori Finance Pro (sector-specific operational metrics) — SPEC-PIPE-003, P2.6
+# ---------------------------------------------------------------------------
+TIJORI_RAW_DIR = RAW_DIR / "tijori"
+TIJORI_RATE_LIMIT_SLEEP_SECONDS = 1.0
+
+# ---------------------------------------------------------------------------
+# F&O features — SPEC-FEAT-004, P2.3
+# ---------------------------------------------------------------------------
+# features/fno_features.py's Black-Scholes IV inversion: NSE's F&O bhavcopy
+# has no risk-free-rate field — flat approximate reference rate, same
+# documented-approximation precedent as ASSUMED_FD_RATE/ASSUMED_TAX_RATE
+# (India's ~10yr G-Sec yield has hovered close to this band).
+INDIA_RISK_FREE_RATE = 0.07
+# F&O eligibility lookback: a ticker is treated as F&O-eligible as of date
+# D if fno_data has any contract row for it within this many calendar days
+# before D (NSE revises the F&O-eligible list quarterly; this window is
+# comfortably wider than one expiry cycle so a ticker isn't wrongly flagged
+# ineligible just because today happens to fall between two of its expiries).
+FNO_ELIGIBILITY_LOOKBACK_DAYS = 35
+# IV solver: Brent's method bracket and tolerance for Black-Scholes
+# inversion — vol below 1%/above 500% is treated as un-solvable (NaN), not
+# clamped, since premiums that don't bracket a root in this range are
+# usually a stale/zero-volume quote, not real implied volatility.
+IV_SOLVER_MIN_VOL = 0.01
+IV_SOLVER_MAX_VOL = 5.0
 
 # ---------------------------------------------------------------------------
 # DataStore API — SPEC-DS-002

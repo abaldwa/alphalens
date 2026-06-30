@@ -6,7 +6,7 @@ SPEC-OBS-004: Paper Trading Performance Tracking
 
 import csv
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from config.timezone import now_ist
 

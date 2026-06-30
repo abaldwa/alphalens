@@ -10,27 +10,18 @@ Phase 1 backtest: Signal5D + MetaLabeler + P&D pre-filter entries,
 ExitSignalModel-driven exits, equal-weight sizing, run through
 BacktestEngine's walk-forward harness (P1.6).
 
-[AS BUILT] Two data sources, selected by --real-data:
-- Default (synthetic): same documented "synthetic price series, real
-  model/feature/backtest code" pattern as systems/ml_signal_engine/
-  inference/train_all_phase1.py (P1.5) — kept as the default so existing
-  callers (the 🔒 PHASE 1 GATE CHECK's --check-only, fast smoke tests)
-  keep working unchanged (SOLID-002).
-- --real-data: fetches real OHLCV via DataStoreClient (SPEC-DS-002 — never
-  a direct DuckDB query from this consumer-layer script) for
-  config.universe.get_tickers()'s curated universe, filtered to tickers
-  with enough history to be useful; real sector mapping from config.
-  universe.load_universe(); attempts a real benchmark (NIFTYBEES etc.),
-  falling back to the same synthetic benchmark generator if the real
-  series is too sparse to be useful (a real, currently-true gap — see
-  BuildLog.md "First real production pipeline run" on why the benchmark
-  tickers themselves aren't backfilled yet). PnDDetector/ExitSignalModel
-  remain trained on their own synthetic archives regardless of
-  --real-data — no real P&D-confirmed or exit-outcome archive exists yet
-  to train them on (same Phase 1 gap as every other model in this
-  project); --real-data is about the price/feature data the *signal*
-  model walk-forward-trains and is evaluated against, not a claim that
-  every model here is now real-data-trained end to end.
+Real OHLCV is fetched via DataStoreClient (SPEC-DS-002 — never a direct
+DuckDB query from this consumer-layer script) for config.universe.
+get_tickers()'s curated universe, filtered to tickers with enough history
+to be useful; real sector mapping from config.universe.load_universe();
+a real benchmark (NIFTYBEES etc.) is required — there is no synthetic
+fallback for OHLCV, sector mapping, or benchmark data.
+
+PnDDetector trains on load_pnd_training_data_from_db() (real OHLCV,
+KNOWN_PND_TICKERS labels). ExitSignalModel trains on
+load_exit_training_data_from_db() (real closed paper-trading positions) —
+this will raise until enough real closed positions exist; see
+BuildLog.md "Real data sourcing — Exit Signal".
 
 Prints BacktestIntegrityChecker results and per-fold/aggregate metrics,
 then writes backtest/reports/phase1_YYYYMMDD.json.
@@ -50,31 +41,19 @@ from config.timezone import now_ist
 from config.universe import get_tickers, load_universe
 from datastore.client import DataStoreClient
 from features.technical import BENCHMARK_TICKERS
-from systems.ml_signal_engine.inference.train_all_phase1 import _generate_synthetic_universe
-from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel
-from systems.ml_signal_engine.models.exit.exit_signal import generate_synthetic_training_data as exit_synthetic_data
-from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector
-from systems.ml_signal_engine.models.pnd.pnd_detector import generate_synthetic_training_data as pnd_synthetic_data
+from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel, load_exit_training_data_from_db
+from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, load_pnd_training_data_from_db
 from systems.ml_signal_engine.models.signal.signal_5d import Signal5DModel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
-# No real sector/industry mapping ingested yet — a deterministic round-robin
-# placeholder is enough to exercise PortfolioSimulator's MAX_SECTOR_PCT gate;
-# same "documented synthetic stand-in" pattern as every other Phase 1 gap.
-SYNTHETIC_SECTORS = ["IT", "BANKING", "PHARMA", "FMCG", "AUTO", "ENERGY", "METALS", "REALTY"]
 # A real benchmark series shorter than this can't populate Category 7
-# (relative-strength) features at all — not worth using over the synthetic
-# fallback. Matches the 252-day (1 trading year) bar used elsewhere in this
-# project for "enough history to be useful."
+# (relative-strength) features at all. Matches the 252-day (1 trading
+# year) bar used elsewhere in this project for "enough history to be useful."
 MIN_BENCHMARK_ROWS = 252
 REAL_DATA_LOOKBACK_YEARS = 5
-
-
-def _build_sector_map(tickers) -> Dict[str, str]:
-    return {t: SYNTHETIC_SECTORS[i % len(SYNTHETIC_SECTORS)] for i, t in enumerate(sorted(tickers))}
 
 
 def _real_sector_map() -> Dict[str, str]:
@@ -126,13 +105,18 @@ def _fetch_real_universe(
     return ohlcv
 
 
-def _fetch_real_benchmark(api_base_url: Optional[str] = None) -> Optional[pd.DataFrame]:
+def _fetch_real_benchmark(api_base_url: Optional[str] = None) -> pd.DataFrame:
     """
-    Attempt to fetch a real benchmark (NIFTYBEES/NIF100BEES/MONIFTY500) via
-    DataStoreClient. Returns None (caller falls back to synthetic) if every
-    series is shorter than MIN_BENCHMARK_ROWS — a real, currently-true gap:
-    BENCHMARK_TICKERS are never in scope for ingestion.backfill_runner's
-    universe loop, only config.universe.get_tickers()'s investable universe.
+    Fetch a real benchmark (NIFTYBEES/NIF100BEES/MONIFTY500) via
+    DataStoreClient.
+
+    Raises
+    ------
+    RuntimeError
+        If every benchmark ticker has fewer than MIN_BENCHMARK_ROWS real
+        rows. There is no synthetic-benchmark fallback — backfill
+        BENCHMARK_TICKERS via ingestion/backfill_runner.py. See
+        BuildLog.md "Real data sourcing — Benchmarks".
     """
     client = DataStoreClient(base_url=api_base_url) if api_base_url else DataStoreClient()
     to_dt = now_ist()
@@ -147,11 +131,12 @@ def _fetch_real_benchmark(api_base_url: Optional[str] = None) -> Optional[pd.Dat
             series[name] = df
 
     if not series:
-        logger.warning(
-            f"real benchmark unavailable (all of {list(BENCHMARK_TICKERS.values())} have "
-            f"< {MIN_BENCHMARK_ROWS} rows) — falling back to the synthetic benchmark generator"
+        raise RuntimeError(
+            f"Real benchmark unavailable: all of {list(BENCHMARK_TICKERS.values())} have "
+            f"< {MIN_BENCHMARK_ROWS} rows in ohlcv_adjusted. There is no synthetic-benchmark "
+            "fallback. Backfill these tickers via ingestion/backfill_runner.py. See "
+            "BuildLog.md 'Real data sourcing — Benchmarks'."
         )
-        return None
 
     benchmark = None
     for df in series.values():
@@ -167,35 +152,29 @@ def _fetch_historical_tickers(api_base_url: Optional[str] = None) -> set:
 
 
 def run_phase1_backtest(
-    n_tickers: int = 40, n_days: int = 400, folds: int = 5, optuna_trials: int = 5,
+    folds: int = 5, optuna_trials: int = 5,
     n_target_positions: int = 10, seed: int = 42, check_only: bool = False,
-    use_real_data: bool = False, max_real_tickers: Optional[int] = None,
+    max_real_tickers: Optional[int] = None,
     min_history_days: int = 252, api_base_url: Optional[str] = None,
 ) -> dict:
     run_date = now_ist()
 
-    if use_real_data:
-        logger.info("Phase 1 backtest starting: REAL data (config.universe.get_tickers() via DataStoreClient)")
-        ohlcv = _fetch_real_universe(max_real_tickers, min_history_days, api_base_url)
-        sector_map = _real_sector_map()
-        benchmark = _fetch_real_benchmark(api_base_url)
-        universe_tickers = set(get_tickers())
-        historical_tickers = _fetch_historical_tickers(api_base_url)
-        engine_kwargs = {
-            "benchmark": benchmark, "universe_tickers": universe_tickers, "historical_tickers": historical_tickers,
-        }
-    else:
-        logger.info(f"Phase 1 backtest starting: {n_tickers} synthetic tickers x {n_days} days, seed={seed}")
-        ohlcv = _generate_synthetic_universe(n_tickers, n_days, seed=seed)
-        sector_map = _build_sector_map(ohlcv["ticker"].unique())
-        engine_kwargs = {}
+    logger.info("Phase 1 backtest starting: REAL data (config.universe.get_tickers() via DataStoreClient)")
+    ohlcv = _fetch_real_universe(max_real_tickers, min_history_days, api_base_url)
+    sector_map = _real_sector_map()
+    benchmark = _fetch_real_benchmark(api_base_url)
+    universe_tickers = set(get_tickers())
+    historical_tickers = _fetch_historical_tickers(api_base_url)
+    engine_kwargs = {
+        "benchmark": benchmark, "universe_tickers": universe_tickers, "historical_tickers": historical_tickers,
+    }
 
-    pnd_X, pnd_y = pnd_synthetic_data(n_positive=30, n_negative=970, n_days=90, seed=seed)
+    pnd_X, pnd_y = load_pnd_training_data_from_db()
     pnd_detector = PnDDetector(random_state=seed)
     pnd_detector.train(pnd_X, pnd_y)
-    logger.info("P&D pre-filter trained (synthetic archive)")
+    logger.info("P&D pre-filter trained (real ohlcv_adjusted + KNOWN_PND_TICKERS)")
 
-    exit_X, urgency, exit_type, duration, event = exit_synthetic_data(n=800, seed=seed)
+    exit_X, urgency, exit_type, duration, event = load_exit_training_data_from_db()
     exit_model = ExitSignalModel(random_state=seed)
     exit_diag = exit_model.train_full(exit_X, urgency, exit_type, duration, event)
     logger.info(f"Exit signal model trained: {exit_diag}")
@@ -246,33 +225,23 @@ def run_phase1_backtest(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the first Phase 1 backtest (Signal5D + MetaLabeler + P&D + Exit)")
-    parser.add_argument("--tickers", type=int, default=40, help="Synthetic mode only")
-    parser.add_argument("--days", type=int, default=400, help="Synthetic mode only")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--trials", type=int, default=5)
-    parser.add_argument("--quick", action="store_true", help="Small/fast synthetic run for smoke-testing")
     parser.add_argument(
         "--check-only", action="store_true",
-        help="Gate-check mode: run BacktestIntegrityChecker only (implies --quick), print PASS/FAIL, exit 1 on failure",
+        help="Gate-check mode: run BacktestIntegrityChecker only, print PASS/FAIL, exit 1 on failure",
     )
-    parser.add_argument(
-        "--real-data", action="store_true",
-        help="Use real OHLCV/sector/benchmark data (DataStoreClient) instead of the synthetic universe",
-    )
-    parser.add_argument("--max-real-tickers", type=int, default=None, help="--real-data only: cap universe size")
+    parser.add_argument("--max-real-tickers", type=int, default=None, help="Cap universe size")
     parser.add_argument(
         "--min-history-days", type=int, default=252,
-        help="--real-data only: exclude tickers with fewer real OHLCV rows than this",
+        help="Exclude tickers with fewer real OHLCV rows than this",
     )
     args = parser.parse_args()
 
-    quick = args.quick or args.check_only
-    n_tickers, n_days, trials = (15, 200, 2) if quick else (args.tickers, args.days, args.trials)
     folds = 2 if args.check_only else args.folds
     results = run_phase1_backtest(
-        n_tickers=n_tickers, n_days=n_days, folds=folds, optuna_trials=trials, check_only=args.check_only,
-        use_real_data=args.real_data, max_real_tickers=args.max_real_tickers,
-        min_history_days=args.min_history_days,
+        folds=folds, optuna_trials=args.trials, check_only=args.check_only,
+        max_real_tickers=args.max_real_tickers, min_history_days=args.min_history_days,
     )
 
     if args.check_only and not results["integrity_passed"]:

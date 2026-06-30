@@ -6,7 +6,7 @@ SPEC-OBS-002: Baseline Tracking and Trend Analysis
 
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, Optional
 
 from config.timezone import now_ist
 

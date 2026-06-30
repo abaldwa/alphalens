@@ -1,16 +1,27 @@
 """
 ingestion/scrapers/fno.py
 
-Phase: 0.4 (Data Ingestion Scrapers)
+Phase: 0.4 (Data Ingestion Scrapers); URL fixed + persistence wired in 2.3
 Specs: SPEC-PIPE-001
 Owner: Platform / Ingestion
-Consumers: ingestion/scheduler, features/fno_features, datastore/raw
+Consumers: ingestion/scheduler/daily_pipeline.py, features/fno_features.py, datastore/raw
 
 Downloads the daily NSE F&O (futures and options) bhavcopy. Stores open
-interest, volume, and settlement price keyed by ticker/expiry/strike/
-option_type, for every instrument type (futures and options, index and
-stock). Raw response retained under datastore/raw/fno/ for audit
-(SPEC-PIPE-001).
+interest, volume, settlement price, and underlying spot price keyed by
+ticker/expiry/strike/option_type, for every instrument type (futures and
+options, index and stock). Raw response retained under datastore/raw/fno/
+for audit (SPEC-PIPE-001).
+
+[AS BUILT, P2.3] The original NSE_FNO_BHAVCOPY_URL_TEMPLATE
+(archives.nseindia.com/content/historical/DERIVATIVES/...) 404s against
+NSE's current archive — confirmed live (every recent trading day tried).
+NSE migrated to a unified "UDiFF" bhavcopy format; the real, working
+endpoint and column set (verified live against 2026-06-22's actual file)
+are used here instead. The new format is strictly richer than the old
+one: `UndrlygPric` (NSE's own reported underlying/spot price for that
+contract) and `ChngInOpnIntrst` (day-over-day OI change, pre-computed by
+NSE rather than requiring a separate lag-join) are both new real columns
+this module now captures — features/fno_features.py uses both directly.
 """
 
 import io
@@ -27,14 +38,17 @@ from ingestion.scrapers.bhavcopy import NSE_HOMEPAGE_URL, USER_AGENT
 
 logger = logging.getLogger(__name__)
 
+# [AS BUILT, P2.3] NSE's current UDiFF unified bhavcopy endpoint — verified
+# live (HTTP 200, real ~1.4MB zip) against 2026-06-22. Replaces the
+# pre-existing broken archives.nseindia.com/content/historical/DERIVATIVES/
+# path (404 on every date tried).
 NSE_FNO_BHAVCOPY_URL_TEMPLATE = (
-    "https://archives.nseindia.com/content/historical/DERIVATIVES/"
-    "{year}/{mon}/fo{ddmmyyyy}bhav.csv.zip"
+    "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_{yyyymmdd}_F_0000.csv.zip"
 )
 
 REQUIRED_COLUMNS = [
     "ticker", "instrument", "expiry", "strike", "option_type",
-    "oi", "volume", "settle_price",
+    "oi", "oi_change", "volume", "settle_price", "close_price", "underlying_price",
 ]
 
 MAX_RETRIES = 3
@@ -77,11 +91,7 @@ def _fetch_fno_bhavcopy_csv(trade_date: datetime) -> pd.DataFrame:
     """
     import zipfile
 
-    url = NSE_FNO_BHAVCOPY_URL_TEMPLATE.format(
-        year=trade_date.year,
-        mon=trade_date.strftime("%b").upper(),
-        ddmmyyyy=trade_date.strftime("%d%m%Y"),
-    )
+    url = NSE_FNO_BHAVCOPY_URL_TEMPLATE.format(yyyymmdd=trade_date.strftime("%Y%m%d"))
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -128,8 +138,13 @@ def download_fno_bhavcopy(date: str) -> pd.DataFrame:
     -------
     pd.DataFrame
         Columns: ticker, instrument, expiry, strike, option_type, oi,
-        volume, settle_price. One row per ticker/expiry/strike/option_type
-        combination (futures rows have strike=NaN, option_type=None).
+        oi_change, volume, settle_price, close_price, underlying_price.
+        One row per ticker/expiry/strike/option_type combination (futures
+        rows have strike=NaN, option_type=None). `instrument` values:
+        STF (stock future), STO (stock option), IDF (index future), IDO
+        (index option) — NSE's own UDiFF FinInstrmTp codes, kept as-is
+        rather than relabeled, since features/fno_features.py and any
+        other consumer can filter on these directly.
 
     Spec References
     ----------------
@@ -148,25 +163,26 @@ def download_fno_bhavcopy(date: str) -> pd.DataFrame:
     raw = _fetch_fno_bhavcopy_csv(trade_date)
     _save_raw(trade_date, raw)
 
-    raw.columns = [c.strip().upper() for c in raw.columns]
-    for col in ("SYMBOL", "INSTRUMENT", "OPTION_TYP"):
+    for col in ("TckrSymb", "FinInstrmTp", "OptnTp"):
         if col in raw.columns and raw[col].dtype == object:
             raw[col] = raw[col].str.strip()
 
-    option_type = raw["OPTION_TYP"].replace({"XX": None})
-    strike = pd.to_numeric(raw["STRIKE_PR"], errors="coerce")
-    strike = strike.where(option_type.notna())  # futures: no strike
+    option_type = raw["OptnTp"]
+    strike = pd.to_numeric(raw["StrkPric"], errors="coerce")
 
     df = pd.DataFrame(
         {
-            "ticker": raw["SYMBOL"],
-            "instrument": raw["INSTRUMENT"],
-            "expiry": pd.to_datetime(raw["EXPIRY_DT"], errors="coerce", dayfirst=True),
+            "ticker": raw["TckrSymb"],
+            "instrument": raw["FinInstrmTp"],
+            "expiry": pd.to_datetime(raw["XpryDt"], errors="coerce"),
             "strike": strike,
             "option_type": option_type,
-            "oi": pd.to_numeric(raw["OPEN_INT"], errors="coerce"),
-            "volume": pd.to_numeric(raw["CONTRACTS"], errors="coerce"),
-            "settle_price": pd.to_numeric(raw["SETTLE_PR"], errors="coerce"),
+            "oi": pd.to_numeric(raw["OpnIntrst"], errors="coerce"),
+            "oi_change": pd.to_numeric(raw["ChngInOpnIntrst"], errors="coerce"),
+            "volume": pd.to_numeric(raw["TtlTradgVol"], errors="coerce"),
+            "settle_price": pd.to_numeric(raw["SttlmPric"], errors="coerce"),
+            "close_price": pd.to_numeric(raw["ClsPric"], errors="coerce"),
+            "underlying_price": pd.to_numeric(raw["UndrlygPric"], errors="coerce"),
         }
     )
 

@@ -50,7 +50,7 @@ class TestStepDownloadBhavcopy:
 
         with get_duckdb_connection(None) as conn:
             monkeypatch.setattr(
-                daily_pipeline, "get_duckdb_connection", lambda path: _FixedConn(conn)
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
             )
             daily_pipeline.step_download_bhavcopy(date(2026, 1, 5))
 
@@ -89,15 +89,63 @@ class TestStepDownloadFno:
 
         daily_pipeline.step_download_fno(date(2026, 1, 5))  # must not raise
 
-    def test_success_is_logged_not_persisted(self, monkeypatch):
-        """No fno DuckDB table exists yet (Phase 2 scope) — a successful
-        fetch is only logged today, not written anywhere."""
+    def test_success_is_persisted_to_fno_data(self, monkeypatch):
+        """P2.3: fno_data now exists — a successful fetch is written there,
+        not just logged (see ingestion/scrapers/fno.py's module docstring
+        for the real UDiFF endpoint fix this replaced)."""
+        create_normalised.create_schema(in_memory=True)
         from ingestion.scrapers import fno
 
-        df = pd.DataFrame({"ticker": ["AAA"], "oi": [100]})
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA", "AAA"],
+                "instrument": ["STF", "STO"],
+                "expiry": pd.to_datetime(["2026-01-29", "2026-01-29"]),
+                "strike": [None, 100.0],
+                "option_type": [None, "CE"],
+                "oi": [1000, 500],
+                "oi_change": [50, -10],
+                "volume": [200, 80],
+                "settle_price": [102.0, 5.5],
+                "close_price": [102.0, 5.5],
+                "underlying_price": [101.5, 101.5],
+            }
+        )
         monkeypatch.setattr(fno, "download_fno_bhavcopy", lambda date_str: df)
 
-        daily_pipeline.step_download_fno(date(2026, 1, 5))  # must not raise
+        with get_duckdb_connection(None) as conn:
+            monkeypatch.setattr(
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
+            )
+            daily_pipeline.step_download_fno(date(2026, 1, 5))
+
+            rows = conn.execute("SELECT ticker, instrument, oi FROM fno_data ORDER BY instrument").fetchall()
+            assert rows == [("AAA", "STF", 1000), ("AAA", "STO", 500)]
+
+    def test_rerun_for_same_date_replaces_not_duplicates(self, monkeypatch):
+        """Delete-then-insert per trade_date (see datastore/schema/create_normalised.py's
+        _CREATE_FNO_DATA comment) — a retry must not duplicate rows."""
+        create_normalised.create_schema(in_memory=True)
+        from ingestion.scrapers import fno
+
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA"], "instrument": ["STF"], "expiry": pd.to_datetime(["2026-01-29"]),
+                "strike": [None], "option_type": [None], "oi": [1000], "oi_change": [50],
+                "volume": [200], "settle_price": [102.0], "close_price": [102.0], "underlying_price": [101.5],
+            }
+        )
+        monkeypatch.setattr(fno, "download_fno_bhavcopy", lambda date_str: df)
+
+        with get_duckdb_connection(None) as conn:
+            monkeypatch.setattr(
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
+            )
+            daily_pipeline.step_download_fno(date(2026, 1, 5))
+            daily_pipeline.step_download_fno(date(2026, 1, 5))
+
+            count = conn.execute("SELECT COUNT(*) FROM fno_data WHERE trade_date = '2026-01-05'").fetchone()[0]
+            assert count == 1
 
 
 class TestStepDownloadMacro:
@@ -119,7 +167,7 @@ class TestStepDownloadMacro:
 
         with get_duckdb_connection(None) as conn:
             monkeypatch.setattr(
-                daily_pipeline, "get_duckdb_connection", lambda path: _FixedConn(conn)
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
             )
             daily_pipeline.step_download_macro(date(2026, 1, 5))
 
@@ -149,7 +197,7 @@ class TestStepDownloadMacro:
 
         with get_duckdb_connection(None) as conn:
             monkeypatch.setattr(
-                daily_pipeline, "get_duckdb_connection", lambda path: _FixedConn(conn)
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
             )
             daily_pipeline.step_download_macro(date(2026, 1, 5))  # must not raise
 
@@ -190,7 +238,7 @@ class TestStepAdjustPrices:
 
         with get_duckdb_connection(None) as conn:
             monkeypatch.setattr(
-                daily_pipeline, "get_duckdb_connection", lambda path: _FixedConn(conn)
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
             )
             daily_pipeline.step_adjust_prices(date(2026, 1, 5))
 
@@ -201,26 +249,25 @@ class TestStepComputeFeatures:
     """[AS BUILT, P1.7] step_compute_features wired to features/matrix_builder.py + features/pnd_features.py."""
 
     def test_builds_both_matrices_and_saves_pnd_parquet(self, monkeypatch, tmp_path):
+        import numpy as np
         import features.matrix_builder as matrix_builder_mod
-        import features.pnd_features as pnd_features_mod
         from config import settings
         from config import universe as universe_mod
-        from datastore import client as client_mod
+        from features.pnd_features import PND_FEATURES
 
         monkeypatch.setattr(universe_mod, "get_tickers", lambda: ["AAA", "BBB"])
+
+        # build_feature_matrix now includes PND columns; step_compute_features
+        # extracts them from the matrix instead of making a second bulk call.
+        pnd_row = {col: np.nan for col in PND_FEATURES}
+        mock_matrix = pd.DataFrame([
+            {"date": pd.Timestamp("2026-01-05"), "ticker": "AAA", **pnd_row},
+            {"date": pd.Timestamp("2026-01-05"), "ticker": "BBB", **pnd_row},
+        ])
         monkeypatch.setattr(
-            matrix_builder_mod, "build_feature_matrix", lambda *a, **k: pd.DataFrame({"ticker": ["AAA", "BBB"]})
+            matrix_builder_mod, "build_feature_matrix", lambda *a, **k: mock_matrix
         )
 
-        ohlcv_rows = [
-            {"date": "2026-01-02", "ticker": "AAA", "open": 100.0, "high": 101.0, "low": 99.0,
-             "close": 100.5, "volume": 1000, "delivery_pct": 50.0}
-        ]
-        monkeypatch.setattr(client_mod.DataStoreClient, "get_ohlcv", lambda self, ticker, f, t: ohlcv_rows)
-        monkeypatch.setattr(
-            pnd_features_mod, "compute_pnd_features",
-            lambda ohlcv: pd.DataFrame({"date": ohlcv["date"], "ticker": ohlcv["ticker"], "vol_spike_vs_60d_avg": 1.0}),
-        )
         pnd_dir = tmp_path / "daily_pnd"
         monkeypatch.setattr(settings, "FEATURES_PND_DAILY_DIR", pnd_dir)
 

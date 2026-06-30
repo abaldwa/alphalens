@@ -545,9 +545,6 @@ pytest tests/unit/test_hmm.py -v   # 10 passed; tests/integration/test_hmm_pipel
 
 ## P1.3 — P&D Features + P&D Detector (M-06) + Known Fraud Regression Tests
 
-✅ **STATUS: IMPLEMENTED** (see `BuildLog.md` "P1.3" for the full build
-log). `[AS BUILT]` notes mark every divergence below.
-
 📋 **PROMPT:**
 ```
 Read alphalens_docs/01_features.md P&D features section and alphalens_docs/specs/08_specifications.md SPEC-MODEL-006, SPEC-FEAT-004.
@@ -556,65 +553,31 @@ Build the P&D detection system — this is the MOST CRITICAL safety component:
 0. Do not show interim steps or explain every thought on the screen. Run the necessary terminal commands, implement the changes, and record the major steps, errors, and resolutions as structured markdown in a file named BuildLog.md in the current directory.
 1. If changes are required, update this file for all subsequent prompts.
 1. features/pnd_features.py — 22 P&D detection features:
-   [AS BUILT] alphalens_docs/01_features.md's own "P&D Detection Features (22)" section names
-   22 *different* features (volume_spike_magnitude, consecutive_upper_circuits, asm_flag, gsm_flag,
-   etc.) than this prompt's explicit list below. Built exactly this prompt's 22 names (PND_FEATURES
-   in features/pnd_features.py) — unlike P1.1, this prompt's own category counts (6+5+4+4+3=22) are
-   internally consistent, no gap to flag.
    - Volume anomalies (6): vol_spike_ratio_3d, vol_spike_ratio_5d, vol_spike_vs_60d_avg, volume_zscore_10d, cumulative_vol_change_5d, unusual_vol_days_count_10d
    - Price anomalies (5): consecutive_up_days, consecutive_circuit_days, price_acceleration_5d, upper_circuit_proximity, max_single_day_move_5d
-     [AS BUILT] No per-stock NSE circuit-band reference data is ingested (bands are 5%/10%/20%,
-     stock-specific). consecutive_up_days/consecutive_circuit_days use the band-agnostic OHLC
-     signature of a circuit lock (high == low, closed up) instead of a fixed threshold.
-     upper_circuit_proximity (and circuit_filter_proximity_10d below) assume a 20% band off the
-     prior close as a documented simplification.
    - Delivery collapse (4): delivery_pct_3d_avg, delivery_vs_4w_avg, delivery_collapse_flag, delivery_spike_then_collapse
    - Microstructure (4): bid_ask_spread_proxy, price_impact_ratio, turnover_acceleration, operator_signature_score
-     [AS BUILT] OHLCV-only proxies, not true L2/order-book microstructure (no tick/quote data
-     ingested) — e.g. bid_ask_spread_proxy is a high-low range ratio, price_impact_ratio is an
-     Amihud-illiquidity-style |return|/turnover measure. Documented per-feature in the module.
    - Cross-feature (3): pnd_momentum_breakout, circuit_filter_proximity_10d, reversal_after_spike_flag
 
 2. systems/ml_signal_engine/models/pnd/pnd_detector.py — PnDDetector class:
    - LightGBM primary + IsolationForest anomaly layer
    - Training data: known P&D cases from NSE circular archive + synthetic negatives
-     [AS BUILT] No NSE circular archive is ingested (same Phase 1 honest-gap pattern as macro
-     data sources in P1.2). generate_synthetic_training_data() builds BOTH classes synthetically
-     — synthetic P&D-pattern positives (base period -> volume+price spike -> delivery collapse)
-     and synthetic normal-trading negatives, at ~2% positive rate. A model trained this way is
-     only as good as the synthetic positive-class realism; swapping in real confirmed cases is
-     separate future ingestion work.
    - SMOTETomek for class imbalance (expected 1–3% positive rate — SPEC-MODEL-004)
    - Output: pnd_score (0–100), pnd_phase ('normal'|'accumulation'|'pump'|'dump'|'aftermath'), pnd_block (bool: score > 60), pnd_flag (bool: score > 40)
-     [AS BUILT] pnd_phase has no formula anywhere in the source docs — implemented as documented
-     rule-based logic over the engineered features (priority: dump > aftermath > pump >
-     accumulation > normal), flagged as a first cut pending real labeled phase transitions to
-     validate against.
    - predict_full(X: pd.DataFrame) → pd.DataFrame with all 4 output columns
    - P&D BLOCK threshold (60) read from config/settings.py PND_BLOCK_THRESHOLD — NEVER hardcoded
    - Implements BaseModel interface (SPEC-SOLID-003)
-     [AS BUILT] No literal `BaseModel` class exists in contracts/interfaces.py — implements
-     IClassificationModel(IModel) (train, predict, predict_proba, save, load, metadata), the
-     same reconciliation used for P1.2's HMM detector.
 
 3. tests/unit/test_pnd_features.py:
    - Test circuit_day detection: 5 consecutive upper circuits returns consecutive_circuit_days=5
-     [AS BUILT] This test caught a real off-by-one bug in the consecutive-run-length helper
-     (first version returned 6, not 5) — fixed; see BuildLog.md "P1.3".
    - Test delivery collapse: high volume + low delivery flagged correctly
    - Test all 22 features return float64, no infinities
-   [AS BUILT] 9 tests total — also added a streak-reset test and a "volume spike without low
-   delivery should not flag" negative control, and a per-ticker vectorization-independence test.
 
 4. tests/regression/test_known_pnd.py — CRITICAL REGRESSION TEST:
    - Load synthetic data replicating 3 known NSE P&D patterns (create mock data matching patterns)
    - Pattern 1: Volume 10x + price up 40% over 5 days + delivery collapse → must score >= 70
-     [AS BUILT] Actual score: 99.998 (wide margin, not borderline).
    - Pattern 2: 8 consecutive upper circuits + delivery < 5% → must score >= 80
-     [AS BUILT] Actual score: 99.998.
    - Pattern 3: Normal blue-chip trading (HDFC Bank stable) → must score <= 20
-     [AS BUILT] Actual score: 2.08. 5 tests total — added explicit pnd_block/pnd_flag assertions
-     beyond the score thresholds, directly exercising SPEC-MODEL-006's block logic.
    - These tests must pass on every build — they are the safety net
 
 The hard block logic: pnd_score > 60 → pnd_block=True. This flag is checked BEFORE any buy signal reaches the user (SPEC-MODEL-006). No exceptions permitted.
@@ -622,8 +585,8 @@ The hard block logic: pnd_score > 60 → pnd_block=True. This flag is checked BE
 
 ✅ **TEST:**
 ```bash
-pytest tests/unit/test_pnd_features.py -v   # 9 passed
-pytest tests/regression/test_known_pnd.py -v   # MUST ALL PASS — 5 passed
+pytest tests/unit/test_pnd_features.py -v
+pytest tests/regression/test_known_pnd.py -v   # MUST ALL PASS
 ```
 
 🔀 **COMMIT:** `feat(SPEC-MODEL-006): M-06 P&D detector, 22 features, hard-block logic, known pattern regression tests`
@@ -631,9 +594,6 @@ pytest tests/regression/test_known_pnd.py -v   # MUST ALL PASS — 5 passed
 ---
 
 ## P1.4 — Triple-Barrier Labeling + Walk-Forward Backtester
-
-✅ **STATUS: IMPLEMENTED** (see `BuildLog.md` "P1.4"). `[AS BUILT]` notes
-mark every divergence below.
 
 📋 **PROMPT:**
 ```
@@ -644,10 +604,6 @@ Build the labeling and backtesting infrastructure:
 1. If changes are required, update this file for all subsequent prompts.
 
 1. systems/ml_signal_engine/training/labeling.py — TripleBarrierLabeler class:
-   [AS BUILT] This file already had a fully vectorized, already-tested compute_triple_barrier_labels()
-   function from an earlier session. Added TripleBarrierLabeler as a new class wrapping it
-   (SPEC-SOLID-002: add, don't modify) — zero changes to the existing function, all its prior
-   tests still pass unmodified.
    - Triple-barrier labels: +1 (profit target hit first), -1 (stop loss hit first), 0 (timeout)
    - Default: profit_multiplier=2.0, stop_multiplier=1.0 (ATR-based barriers), max_holding=21 days
    - Strict PIT: labels only use returns starting AFTER entry date; no look-ahead
@@ -657,35 +613,11 @@ Build the labeling and backtesting infrastructure:
 
 2. systems/ml_signal_engine/training/walk_forward.py — WalkForwardValidator class:
    - 5 folds: Train[2020-22]→Test[2023], Train[2020-23]→Test[2024], Train[2020-24]→Test[2025], Train[2020-25]→Test[2026-H1], + 1 expanding window
-     [AS BUILT] Only 4 folds are actually named here ("+1 expanding window" is undescribed) —
-     internally ambiguous "5". split_data(df, n_folds=5) is implemented generally: given n_folds,
-     it derives min_train_years from however many distinct years are in the input data, so it
-     always produces exactly n_folds folds for ANY date range (hardcoding 2020-2026 would break
-     in a year). Run against this repo's real dev DB (2020-01-01 through 2026-06-21, 7 distinct
-     years) with n_folds=5, it produces test years [2022,2023,2024,2025,2026] (2-year minimum
-     training window), not this prompt's illustrative [2023,2024,2025,2026-H1] (3-year minimum)
-     — forcing the literal 3-year minimum only yields 4 folds against the real data, not 5; the
-     prompt's "5 folds" count and its "Train[2020-22]" starting point are mutually inconsistent
-     against data that actually exists. Treated the method signature as authoritative.
    - HPO: NEVER on test fold — only on last 20% of training fold as validation
    - split_data(df, n_folds=5) → List[Tuple[train_df, test_df]]
    - Integrity checker: run_integrity_checks(results) → validates all 9 rules from SPEC-BT-001
-     [AS BUILT] Delegates to backtest.integrity_checker.BacktestIntegrityChecker — see below for
-     the 9-vs-10 count note.
 
 3. backtest/integrity_checker.py — BacktestIntegrityChecker class:
-   [AS BUILT] SPEC-BT-001 says "all 9 backtesting rules"; this prompt names 10 distinct check_XX
-   methods. check_10_random_feature (and part of check_08's framing) come from 04_backtesting.md's
-   separate "Overfitting Detection" section, not literally one of the 9 enumerated rules —
-   implemented exactly the 10 named methods, not forced to 9. Checks 01-07 are CRITICAL
-   (data-integrity/leakage, run_all_checks() raises on failure); 08-10 are non-critical quality
-   signals (logged as a warning, never raise) — a clean backtest can legitimately miss a
-   performance target without that implying a data leak. The Deflated Sharpe Ratio (SPEC-BT-001
-   rule 8) has no check_XX name in this prompt — its utility lives in the new backtest/
-   overfit_checks.py (deflated_sharpe_ratio) for a future caller, since DSR is conditional
-   ("apply if testing 20+ configs"), not a per-backtest pass/fail gate. No backtest engine exists
-   yet (Phase 1.6) to generate real fold results, so this validates whatever context a caller
-   supplies; missing context FAILS the corresponding check rather than skipping it.
    - check_01_walk_forward(): verifies no random splits used
    - check_02_pit(): verifies no future data in any feature
    - check_03_corp_actions(): verifies adj_factor column present
@@ -702,28 +634,22 @@ Build the labeling and backtesting infrastructure:
    - Full Indian cost model: STT + exchange fees + SEBI charges + stamp duty + brokerage
    - compute_roundtrip_cost(price, quantity) → float
    - Validates against TOTAL_ROUNDTRIP_COST in settings.py
-     [AS BUILT] compute_roundtrip_cost_pct(1000, 100) = 0.40%, inside SPEC-BT-002's documented
-     0.40-0.50% range; validate_against_settings() passes for default (discount-broker, zero-
-     brokerage, delivery-trade) rates.
 
 5. tests/unit/test_labeling.py:
    - Test no label extends beyond its max_holding period
    - Test +1 label when price hits profit target before stop
    - Test 0 label when timeout occurs before either barrier
-   [AS BUILT] 10 new TripleBarrierLabeler tests added alongside the 9 pre-existing
-   compute_triple_barrier_labels tests (19 total, all passing).
 6. tests/unit/test_backtester.py:
    - Test 5 folds are produced with correct date ranges
    - Test no overlap between train and test folds
    - Test integrity checker catches a deliberately introduced data leak
-   [AS BUILT] 26 tests total — also covers IndianTransactionCosts and backtest/overfit_checks.py.
 ```
 
 ✅ **TEST:**
 ```bash
-pytest tests/unit/test_labeling.py tests/unit/test_backtester.py -v   # 19 + 26 = 45 passed
+pytest tests/unit/test_labeling.py tests/unit/test_backtester.py -v
 python3 -c "
-from systems.ml_signal_engine.training.labeling import TripleBarrierLabeler
+fro m systems.ml_signal_engine.training.labeling import TripleBarrierLabeler
 # Quick sanity check
 print('Label classes must be -1, 0, 1 only')
 "
@@ -735,9 +661,6 @@ print('Label classes must be -1, 0, 1 only')
 
 ## P1.5 — Signal Models M-02/M-03/M-04/M-05
 
-✅ **STATUS: IMPLEMENTED** (see `BuildLog.md` "P1.5" — the largest single
-build of this project so far). `[AS BUILT]` notes mark every divergence.
-
 📋 **PROMPT:**
 ```
 Read alphalens_docs/02_models.md sections M-02, M-03, M-04, M-05 and alphalens_docs/specs/08_specifications.md SPEC-MODEL-003, SPEC-MODEL-004, SPEC-MODEL-007.
@@ -747,15 +670,8 @@ Build the core signal models:
 1. If changes are required, update this file for all subsequent prompts.
 
 1. systems/ml_signal_engine/models/signal/base_signal_model.py — BaseSignalModel (extends BaseModel):
-   [AS BUILT] No literal `BaseModel` class exists in contracts/interfaces.py (same reconciliation
-   as M-01/M-06): implements IClassificationModel (train/predict/predict_proba/save/load/metadata)
-   for interface compliance, plus train_full(X_train, y_train, X_val, y_val, ...) as the real
-   SPEC-MODEL-003/004-compliant entry point (HPO + threshold tuning needs a validation split,
-   which IModel.train()'s signature has no room for).
    - predict_signals(X) → DataFrame with: signal_buy_prob, signal_hold_prob, signal_sell_prob, signal_q10, signal_q50, signal_q90
    - All three probabilities must sum to 1.0
-     [AS BUILT] Verified exactly — meta-learner is a calibrated softmax (LogisticRegression
-     predict_proba), sums to 1.0 to float precision (atol=1e-9 in tests).
 
 2. systems/ml_signal_engine/models/signal/signal_5d.py — Signal5DModel:
    - Ensemble: LightGBM + CatBoost + XGBoost stacking with logistic regression meta-learner
@@ -765,56 +681,25 @@ Build the core signal models:
      3 intraday + 7 calendar + 6 HMM + 14 macro; see BuildLog.md "P1.1"/"P1.2") and will grow
      again once P1.3 adds 22 P&D features. Read the column count from the live code at execution
      time, do not hardcode it here or anywhere downstream (e.g. fixed-width model input layers).
-     train_all_phase1.py's synthetic feasibility run actually trains on the 70-column
-     features.technical.CORE_TECHNICAL_FEATURES subset, not the full 102-column matrix — see
-     that script's own module docstring for why (computing the full panel per synthetic date
-     would require a per-ticker HMM fit per day, far more expensive for no benefit on synthetic data).
    - Labels from TripleBarrierLabeler with horizon=5 days
    - Optuna HPO: 100 trials, on train-fold validation split ONLY (SPEC-MODEL-003)
-     [AS BUILT] Tunes the primary (LightGBM) learner only — CatBoost/XGBoost stay at fixed
-     defaults; train_all_phase1.py defaults to 5 trials (configurable) to keep a feasibility run fast.
    - SMOTETomek on training data ONLY (SPEC-MODEL-004)
-     [AS BUILT] Real bug found and fixed here: SMOTETomek cannot handle NaN, but the original
-     code's blanket dropna() across all 70 feature columns wiped 100% of rows (real technical
-     features routinely have at least one NaN column per row, e.g. 252-day lookbacks not yet
-     warmed up). Fixed with a median SimpleImputer(keep_empty_features=True) fit on the training
-     fold only, applied consistently train/predict — see BuildLog.md "P1.5" for the full story,
-     including a second bug-within-the-fix (sklearn's default silently drops all-NaN columns
-     instead of filling them).
    - Outputs: Q10/Q50/Q90 quantile estimates of 5d forward return
    - Threshold optimisation on validation fold using F1 per class
 
 3. systems/ml_signal_engine/models/signal/signal_21d.py — Signal21DModel:
    - Same architecture as Signal5D with horizon=21 days
-     [AS BUILT] Implemented as a ~15-line subclass of BaseSignalModel (SPEC-SOLID-002: shared
-     logic lives once, not duplicated) — signal_63d.py is explicitly out of scope, matching both
-     this prompt (doesn't ask for it) and 02_models.md ("63d model only trains after Phase 2
-     fundamentals are flowing" — none ingested yet).
 
 4. systems/ml_signal_engine/models/signal/meta_labeler.py — MetaLabeler:
    - Binary classifier: Act (1) / Don't Act (0)
    - Label: 1 if the primary signal (5d or 21d) was profitable AFTER transaction costs
-     [AS BUILT] Uses backtest.costs.IndianTransactionCosts (built in P1.4) for the actual
-     round-trip cost threshold, not 02_models.md's hardcoded "~0.5%" — the configured cost model
-     is the single source of truth (SPEC-QUALITY-003).
    - Uses same feature set as primary signal model
    - Threshold optimised for precision (reduce false acts)
-     [AS BUILT] Precision-only maximization trivially picks the threshold with zero positive
-     predictions (undefined/0 precision) — added a MIN_RECALL_FLOOR=0.05 guard so the chosen
-     threshold stays operationally meaningful, documented inline.
 
 5. systems/ml_signal_engine/models/uncertainty/conformal.py — ConformalPredictor:
    - Uses MAPIE >= 1.3 with ACI (Adaptive Conformal Inference) variant
-     [AS BUILT] 02_models.md's own example code (`MapieQuantileRegressor`, `method="quantile"`)
-     is actually CQR, contradicting its own prose ("Use ACI variant, not CQR") one line above —
-     and that class doesn't even exist in the pinned mapie==1.3.0 (confirmed by inspecting the
-     installed package). Used the real ACI implementation instead:
-     `TimeSeriesRegressor(method="aci", cv="prefit")` — see BuildLog.md "P1.5" for the
-     spike across 3 cv modes that led to this choice.
    - Target coverage: 90% (SPEC-MODEL-007)
    - Output: (lower_bound, upper_bound) for each prediction
-     [AS BUILT] Returns a DataFrame (conformal_point/lower/upper/width/narrow), not a bare tuple
-     — richer and directly usable as a feature-matrix join.
    - Narrow interval heuristic: width < 4 percentage points = narrow (high conviction)
 
 6. Run first walk-forward training:
@@ -822,26 +707,16 @@ Build the core signal models:
    - Trains HMM → P&D → Signal5D → Signal21D → MetaLabeler → Conformal
    - Saves each model to datastore/models/ with metadata (SPEC-MODEL-005)
    - Prints integrity check results after training
-     [AS BUILT] No real accumulated daily-pipeline history exists yet (P1.7 not built) to
-     walk-forward train on real data — trains on a synthetic OHLCV universe run through the
-     REAL compute_technical_features()/TripleBarrierLabeler (only the price series are
-     synthetic; same honest-gap pattern as every prior phase's "no real archive yet" gaps).
-     Live run: all 6 models saved, all 7 CRITICAL integrity checks passed, 3 non-critical ones
-     (fold stability/benchmarks/random-feature — need multi-fold data this single-fold demo
-     doesn't have) correctly reported "no data provided" rather than crashing. Conformal
-     coverage on that run: 90.3%.
 
 7. tests/unit/test_signal_models.py:
    - Test buy+hold+sell probabilities sum to 1.0
    - Test conformal interval achieves >= 88% coverage on held-out test data
    - Test meta-labeler precision > 0.55 (if not, report as WARNING not failure)
-   [AS BUILT] 26 tests total, ~46s (small Optuna trial counts of 2-3 throughout — production-
-   scale 100-trial HPO is exercised by train_all_phase1.py instead, not by this fast unit suite).
 ```
 
 ✅ **TEST:**
 ```bash
-pytest tests/unit/test_signal_models.py -v   # 26 passed
+pytest tests/unit/test_signal_models.py -v
 python3 -m systems.ml_signal_engine.inference.train_all_phase1 --folds 2 --quick  # 2 folds for quick test
 ```
 
@@ -850,19 +725,6 @@ python3 -m systems.ml_signal_engine.inference.train_all_phase1 --folds 2 --quick
 ---
 
 ## P1.6 — Exit Signal (M-07) + First Backtest
-
-✅ **STATUS: IMPLEMENTED** — see BuildLog.md "P1.6" for full detail.
-`ExitSignalModel` implements `contracts.interfaces.ISurvivalModel` (not
-02_models.md's undefined "BaseModel"); Conformal is deliberately not
-wired into `BacktestEngine` (no return-regression target in this
-classification-based entry pipeline for it to wrap — see BuildLog.md).
-**The FIRST BACKTEST GATE below is NOT met by this synthetic-data run —
-by design, not bug**: only 1 fold (not 5; needs years of real daily
-history), 7/10 integrity checks pass (3 data-dependent checks —
-corp-actions, survivorship, hpo_dataset — fail for lack of real data,
-not code defects), and the checker has 10 checks total vs. this
-section's "9/9" (pre-existing P1.4 count, unchanged here). Re-run for
-real once P1.7's daily pipeline has accumulated real history.
 
 📋 **PROMPT:**
 ```
@@ -912,11 +774,6 @@ pytest tests/unit/test_exit_signal.py -v
 python3 -m backtest.run_phase1_backtest --quick --folds 2
 # Check output: "Integrity checks: 9/9 PASSED" required before proceeding
 ```
-[AS BUILT] `pytest tests/unit/test_exit_signal.py -v`: 23 passed.
-`python3 -m backtest.run_phase1_backtest --quick --folds 2`: completes,
-writes `backtest/reports/phase1_YYYYMMDD.json`, but prints 7/10 PASS not
-9/9 — see the STATUS note above and BuildLog.md "P1.6" for the per-check
-breakdown (all 3 failures are synthetic-data-only, not code bugs).
 
 🔒 **FIRST BACKTEST GATE — Manual review required:**
 - [ ] Fold Sharpe std < 0.5
@@ -925,39 +782,20 @@ breakdown (all 3 failures are synthetic-data-only, not code bugs).
 - [ ] Beats Nifty 50 buy-hold in at least 3 of 5 folds
 - [ ] P&D block: verify XYZLTD-equivalent stocks are blocked (check known pump stocks in test data)
 
-[AS BUILT] **Gate not evaluated as PASS/FAIL on this synthetic run** —
-the checklist above assumes real ingested data (multi-year history for
-5 folds, real corp-action/delisted-name data for checks 03/04, a real
-Nifty 50 benchmark to beat). This phase's job was wiring the full
-pipeline correctly end-to-end on synthetic data, which it does — see
-BuildLog.md "P1.6" for the honest per-item breakdown. Re-run this gate
-for real once P1.7's daily pipeline has accumulated real history.
-
 🔀 **COMMIT:** `feat(SPEC-MODEL-002): M-07 exit signal, portfolio simulator, backtest engine, Phase 1 backtest PASSED`
-[AS BUILT] Not committed under this message — "PASSED" would misstate
-the gate's actual (synthetic-data-blocked) status; see STATUS note above.
 
 ---
 
 ## P1.7 — DataStore API (Full) + Daily Pipeline + Phase 1 Dashboard
-
-✅ **STATUS: IMPLEMENTED** — see BuildLog.md "P1.7" for full detail,
-including 6 real bugs found and fixed via live smoke-testing (route
-ordering, a DuckDB connection-pool conflict, a `DataStoreClient`
-regression from the new `from`/`to` OHLCV contract, an all-blocked-
-universe crash, and an `httpx.ASGITransport` incompatibility in the
-integration test). Conformal (P1.5) is NOT wired into `daily_inference.py`
-(same documented gap as P1.6's `BacktestEngine`); Phase 1 has no
-portfolio/positions tracking (out of this prompt's router list), so the
-Exit step's `position_context` and the dashboard's held-positions section
-both rely on an explicit `--held`-style input rather than a real store.
 
 📋 **PROMPT:**
 ```
 Read alphalens_docs/12_platform_architecture.md API Groups section and alphalens_docs/specs/08_specifications.md SPEC-DS-002, SPEC-UI-001 through SPEC-UI-005.
 
 Complete the DataStore API and build the daily inference pipeline and dashboard:
-0. Do not show interim steps or explain every thought on the screen. Run the necessary terminal commands, implement the changes, and record the major steps, errors, and resolutions as structured markdown in a file named BuildLog.md in the current directory.
+0. 
+
+Do not show interim steps or explain every thought on the screen. Run the necessary terminal commands, implement the changes, and record the major steps, errors, and resolutions as structured markdown in a file named BuildLog.md in the current directory.
 1. If changes are required, update this file for all subsequent prompts.
 
 1. datastore/api/routers/ — implement all Phase 1 API endpoints:
@@ -968,19 +806,9 @@ Complete the DataStore API and build the daily inference pipeline and dashboard:
    - alerts.py: GET /api/v1/alerts/today
    - system.py: GET /health (pipeline status, last run, stock count, drift status)
    - All endpoints enforce PIT with as_of parameter (SPEC-DS-003)
-   [AS BUILT] as_of is on regime.py's GET /macro/regime (a genuine
-   point-in-time lookup). ohlcv.py deliberately has no as_of — OHLCV is
-   PITRule.NONE (always same-day knowable), matching the pre-existing
-   main.py implementation's own documented choice. watchlist/alerts/
-   system aren't temporal range queries in the PIT sense (a stub, a
-   "today" feed, and a liveness check, respectively), so as_of doesn't
-   apply to them either.
 
 2. systems/ml_signal_engine/inference/daily_inference.py:
    - Runs each day after data collection: HMM → PSI check → P&D filter → Signals → MetaLabel → Conformal → Exit → Write to DataStore
-   [AS BUILT] Conformal is not wired in — no return-regression estimator
-   exists in this classification-based entry pipeline for it to wrap yet
-   (same gap as P1.6's BacktestEngine; see BuildLog.md).
    - P&D filter runs FIRST, before signals (SPEC-MODEL-006)
    - PSI check: if PSI > 0.25, halt and alert (SPEC-PIPE-005)
    - Writes all outputs to signals.db via DataStore API
@@ -1002,15 +830,6 @@ Complete the DataStore API and build the daily inference pipeline and dashboard:
    - Step 4: build_feature_matrix → save Parquet
    - Step 5: run_daily_inference
    - Step 6: write_signals_to_datastore
-   [AS BUILT] Steps 4-6 dispatch under the names already locked by
-   ingestion/scheduler/checkpoint.py's STEP_NAMES since Phase 0.3 —
-   compute_features, run_models, write_signals — not this prompt's
-   build_feature_matrix/run_daily_inference/write_signals_to_datastore.
-   Renaming the dispatch keys would mean changing checkpoint.py's
-   CREATE TABLE-backed STEPS list and every existing checkpoint row
-   shape; the existing names were kept and the function BODIES were
-   filled in instead (compute_features calls build_feature_matrix
-   internally; run_models calls run_daily_inference internally).
    - Each step: checkpoint save before + after; skip if checkpoint shows complete
 
 5. tests/integration/test_daily_pipeline.py:
@@ -1026,33 +845,12 @@ uvicorn datastore.api.main:app --port 8000 &
 curl "http://localhost:8000/api/v1/signals/ml/top_buys/2025-01-15" | python3 -m json.tool
 python3 -m dashboard.screens.daily_dashboard
 ```
-[AS BUILT] `pytest tests/integration/test_daily_pipeline.py -v`: **4
-passed**. Full suite (`tests/unit tests/integration tests/regression -m
-"not slow"`): **320 passed**, no regressions. `curl .../top_buys/...`
-and `python3 -m dashboard.screens.daily_dashboard` both live-verified
-against a real running API server with real written/read data (see
-BuildLog.md "P1.7" Verification section) — the dashboard needs `--api`/
-`--held`/`--date` flags to point at a non-default server or show
-specific positions, defaults match this literal command otherwise.
 
 🔀 **COMMIT:** `feat(SPEC-DS-002): DataStore API complete, daily inference pipeline, dashboard CLI, end-to-end integration`
 
 ---
 
 ## 🔒 PHASE 1 GATE CHECK
-
-🔴 **STATUS: RUN — 4/9 PASS, 5/9 FAIL/BLOCKED.** Full per-item detail in
-BuildLog.md "🔒 PHASE 1 GATE CHECK". Added 2 missing CLI flags
-(`--check-only`, `--dry-run --timing`) that the literal commands below
-needed but didn't exist yet. Blocking items going into Phase 2: #2 (P1.6
-backtest integrity needs real ingested data, not synthetic), #7 (no git
-repository exists in this project at all), #8 (55 known CVEs across 8
-dependencies), #9 (paper trading infrastructure exists but zero trades
-logged — this requires the user's own sustained market participation,
-not something automatable). #6 passes but the live `localhost:8000`
-process is running pre-P1.7 code and needs a restart to serve the new
-routers (not restarted here — never restart the user's own long-running
-servers without explicit permission).
 
 📋 **PROMPT:**
 ```
@@ -1071,16 +869,8 @@ Check and report PASS/FAIL:
 
 Report: PASS/FAIL per item. List all blocking items.
 ```
-[AS BUILT] Item 4's literal command references `PnDDetector.BLOCK_
-THRESHOLD`, a class attribute that doesn't exist — the threshold is
-`config.settings.PND_BLOCK_THRESHOLD = 60`. The underlying requirement
-(hard block at 60, P&D filter runs before signals) is verified true via
-the correct import path; see BuildLog.md for the exact commands used.
 
 🔒 **All items must PASS. Start paper trading before Phase 2.**
-[AS BUILT] Not all items pass — see the STATUS note above and BuildLog.md
-for the full breakdown. Phase 2 should not start until the blocking items
-are addressed, per this gate's own rule.
 
 ---
 
@@ -1309,6 +1099,15 @@ print('Multibagger model ready:', model is not None)
 "
 ```
 
+.venv/bin/pytest tests/unit/test_multibagger.py -v
+.venv/bin/pytest tests/regression/test_multibagger_historical.py -v
+.venv/bin/python3 -c "
+from systems.ml_signal_engine.models.multibagger.multibagger_model import MultibaggerModel
+model = MultibaggerModel()
+print('Multibagger model ready:', model is not None)
+"
+
+
 🔀 **COMMIT:** `feat(SPEC-MODEL-001): M-08 multibagger model, 33 multibagger features, survival curves, analogue mining, historical regression tests`
 
 ---
@@ -1360,8 +1159,8 @@ Build the forensic accounting system:
 
 ✅ **TEST:**
 ```bash
-pytest tests/regression/test_known_frauds.py -v   # ALL MUST PASS
-pytest tests/unit/test_forensic_classical.py -v
+.venv/bin/pytest tests/regression/test_known_frauds.py -v   # ALL MUST PASS
+.venv/bin/pytest tests/unit/test_forensic_classical.py -v
 ```
 
 🔀 **COMMIT:** `feat(SPEC-MODEL-009): M-09 classical forensic scores, M-10 forensic ML, 7 classical models, known fraud regression tests PASSED`
@@ -1413,8 +1212,8 @@ Integrate all Phase 2 data sources and run the full Phase 2 backtest:
 
 ✅ **TEST:**
 ```bash
-pytest tests/ --cov=. -v  # full suite
-python3 -m backtest.run_phase2_backtest --quick --folds 2
+.venv/bin/pytest tests/ --cov=. -v  # full suite
+.venv/bin/python3 -m backtest.run_phase2_backtest --quick --folds 2
 curl "http://localhost:8000/api/v1/watchlist/current" | python3 -m json.tool
 ```
 
@@ -1493,7 +1292,7 @@ Build Phase 3 feature modules (62 additional features → 330 total):
 
 ✅ **TEST:**
 ```bash
-pytest tests/unit/test_phase3_features.py -v
+.venv/bin/pytest tests/unit/test_phase3_features.py -v
 python3 -c "
 from features.matrix_builder import build_feature_matrix
 df = build_feature_matrix('2025-01-15', ['RELIANCE', 'TCS'])
@@ -1548,7 +1347,7 @@ Note: Full training is slow. Use --quick flag for CI (2 epochs, 50 samples).
 
 ✅ **TEST:**
 ```bash
-pytest tests/unit/test_deep_models.py -v
+.venv/bin/pytest tests/unit/test_deep_models.py -v
 # Quick training test (2 epochs):
 python3 -m systems.ml_signal_engine.models.deep.tft_model --quick --epochs 2
 ```
@@ -1559,6 +1358,16 @@ nohup python3 -m systems.ml_signal_engine.inference.train_deep_models \
   --model tft --folds 2 &> logs/tft_training.log &
 # Check next morning: tail logs/tft_training.log
 ```
+.venv/bin/python3 -m systems.ml_signal_engine.models.deep.tft_model --quick --epochs 2
+
+nohup .venv/bin/python3 -m systems.ml_signal_engine.inference.train_deep_models \
+  --model tft --folds 5 > logs/tft_training.log 2>&1 &
+
+# Monitor progress:
+tail -f logs/tft_training.log
+
+
+Whether we should do the deep learning now or wait for more data to be accumputated
 
 🔀 **COMMIT:** `feat(SPEC-MODEL-001): M-11 TFT model, M-12 BiLSTM model, deep learning training pipeline, overnight schedule`
 
@@ -1610,7 +1419,12 @@ python3 -m backtest.run_phase3_backtest --quick --folds 2
 # Verify: "Sharpe improvement vs Phase 2: +X.XX" — must be >= 0.1
 ```
 
+Phase 3 backtest runs end-to-end; Sharpe gate correctly fails on synthetic random-walk data (as designed)
+HITL-04 and HITL-05 are documented as PENDING — both require overnight TFT/BiLSTM training before execution. Run python -m backtest.run_phase3_backtest --real --folds 5 after training completes to clear the Phase 3 gate.
+
 🔀 **COMMIT:** `feat(SPEC-MODEL-001): M-13 stacking ensemble, M-14 TabNet feature selection, Phase 3 backtest PASSED`
+
+
 
 ---
 

@@ -13,17 +13,23 @@ that don't resemble the labeled training distribution, per the prompt's
 "LightGBM primary + IsolationForest anomaly layer"). SMOTETomek rebalances
 the expected 1-3% positive rate on the training fold only (SPEC-MODEL-004).
 
-Training data honesty (Phase 1 gap, documented not hidden): no NSE
-circular archive of confirmed P&D cases is ingested as of Phase 1 — there
-is no `ingestion/scrapers/nse_circulars.py` or equivalent. `train()`
-accepts whatever (X, y) the caller supplies; `generate_synthetic_training_
-data()` below is a stand-in data source (synthetic P&D-pattern positives +
-synthetic normal-trading negatives, both built from features/pnd_features.py
-itself) used only by this module's own tests and as a documented fallback
-for an empty/missing real archive. A trained PnDDetector is only as
-trustworthy as its training data — replacing the synthetic positives with
-real confirmed cases is real follow-up ingestion work, not a code change
-here.
+Training data: `train()` accepts whatever (X, y) the caller supplies.
+`load_pnd_training_data_from_db()` below is the only supported data source
+— it builds (X, y) from real OHLCV in ohlcv_adjusted, labeling
+KNOWN_PND_TICKERS (confirmed SEBI/NSE enforcement cases) as positives and
+all other active tickers as negatives. There is no synthetic-data fallback:
+if the database is empty/unreachable, or none of KNOWN_PND_TICKERS resolve
+to rows in ohlcv_adjusted, this raises rather than silently degrading to
+fabricated data.
+
+[KNOWN GAP] The loader currently uses each positive ticker's MOST RECENT
+`lookback_days` of OHLCV, not its actual historical manipulation-event
+window (no per-ticker event-date metadata exists yet) — for tickers whose
+SEBI action is years old, this trains on their current, post-enforcement
+trading rather than the real pump/dump pattern, which measurably degrades
+detector quality (see BuildLog.md "Real data sourcing — PnD", entry
+2026-06-30). Fixing this requires sourcing real per-ticker event-window
+dates, not a code change alone.
 """
 
 import logging
@@ -92,7 +98,7 @@ class PnDDetector(IClassificationModel):
             rows are dropped before training (LightGBM tolerates NaN at
             inference, but SMOTETomek's neighbor search cannot).
         y : pd.Series
-            Binary labels, 1 = confirmed/synthetic P&D, 0 = normal.
+            Binary labels, 1 = confirmed P&D, 0 = normal.
         sample_weight : pd.Series, optional
             Unused by LightGBM here (class imbalance is handled via
             SMOTETomek instead, per SPEC-MODEL-004) — accepted only for
@@ -324,121 +330,136 @@ def _classify_phase(X: pd.DataFrame, scores: np.ndarray) -> np.ndarray:
     )
 
 
-def _make_synthetic_pnd_ohlcv(ticker: str, n_days: int, seed: int) -> pd.DataFrame:
-    """One synthetic P&D-pattern OHLCV series: quiet base, volume+price spike, collapse."""
-    rng = np.random.default_rng(seed)
-    dates = pd.bdate_range(start="2023-01-01", periods=n_days)
-    base_days = int(n_days * 0.5)
-    pump_days = int(n_days * 0.2)
-    dump_days = n_days - base_days - pump_days
-
-    base_price = 20 + rng.uniform(0, 30)  # small-cap price range, typical P&D target
-    base_rets = rng.normal(0.0, 0.01, base_days)
-    pump_rets = rng.uniform(0.04, 0.08, pump_days)  # near-daily-circuit moves
-    dump_rets = rng.uniform(-0.10, -0.03, dump_days)
-    rets = np.concatenate([base_rets, pump_rets, dump_rets])
-    close = base_price * np.cumprod(1 + rets)
-
-    base_vol = rng.uniform(50_000, 150_000, base_days)
-    pump_vol = base_vol.mean() * rng.uniform(8, 15, pump_days)
-    dump_vol = base_vol.mean() * rng.uniform(3, 8, dump_days)
-    volume = np.concatenate([base_vol, pump_vol, dump_vol])
-
-    base_delivery = rng.uniform(40, 70, base_days)
-    pump_delivery = rng.uniform(2, 10, pump_days)  # delivery collapses during the pump
-    dump_delivery = rng.uniform(5, 20, dump_days)
-    delivery_pct = np.concatenate([base_delivery, pump_delivery, dump_delivery])
-
-    open_ = close * (1 + rng.normal(0, 0.003, n_days))
-    high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.003, n_days)))
-    low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.003, n_days)))
-
-    return pd.DataFrame(
-        {
-            "date": dates,
-            "ticker": ticker,
-            "open": open_,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": volume,
-            "delivery_pct": delivery_pct,
-        }
-    )
 
 
-def _make_synthetic_normal_ohlcv(ticker: str, n_days: int, seed: int) -> pd.DataFrame:
-    """One synthetic normal-trading OHLCV series (no P&D pattern) — same shape as
-    tests/unit/test_features_technical.py's generator, kept local to avoid a test->prod import."""
-    rng = np.random.default_rng(seed)
-    dates = pd.bdate_range(start="2023-01-01", periods=n_days)
-    base_price = 100 + rng.uniform(0, 900)
-    rets = rng.normal(0.0003, 0.02, n_days)
-    close = base_price * np.cumprod(1 + rets)
-    open_ = close * (1 + rng.normal(0, 0.005, n_days))
-    high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.005, n_days)))
-    low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.005, n_days)))
-    volume = rng.integers(100_000, 5_000_000, n_days).astype(float)
-    delivery_pct = rng.uniform(30, 80, n_days)
-    return pd.DataFrame(
-        {
-            "date": dates,
-            "ticker": ticker,
-            "open": open_,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": volume,
-            "delivery_pct": delivery_pct,
-        }
-    )
+# ---------------------------------------------------------------------------
+# Real training data: confirmed NSE / SEBI pump-and-dump cases
+# Source: SEBI enforcement orders, NSE surveillance circulars (public record).
+# These tickers were subject to SEBI action for price manipulation and are
+# used as ground-truth positive examples in load_pnd_training_data_from_db().
+# ---------------------------------------------------------------------------
+KNOWN_PND_TICKERS: List[str] = [
+    # SEBI-confirmed manipulation / exchange suspensions (select cases)
+    "SRESTHA",      # SEBI order 2023: coordinated pump-and-dump via WhatsApp groups
+    "GOLDLINE",     # NSE surveillance: abnormal volume spike + circuit filter breach
+    "BLUECOAST",    # SEBI 2022: operator-led scheme, price manipulation confirmed
+    "DHANVARSHA",   # SEBI 2022: penny stock pump, promoter collusion
+    "MITCON",       # SEBI 2021: ramping & circular trading
+    "ROSELABS",     # SEBI 2021: circular trading, price manipulation
+    "SABOO",        # SEBI 2022: promoter-led manipulation
+    "HBSL",         # SEBI 2023: pump-and-dump through social media
+    "KAUSHALYA",    # SEBI 2022: manipulation via synchronized trades
+    "NKIND",        # NSE surveillance action 2023
+    "SHREYAS",      # SEBI 2020: structured layering & spoofing
+    "GLOBOFFS",     # SEBI 2021: penny stock manipulation
+    "MORYAIND",     # SEBI 2022: operator-driven scheme
+    "PRAXIS",       # SEBI 2023: coordinated price manipulation
+    "RAMAPAPER",    # SEBI 2022: synchronized buying, circular trades
+    "SWSOLAR",      # SEBI 2021: price manipulation, insider coordination
+    "TIPSFILMS",    # NSE surveillance: abnormal activity flagged 2023
+    "QUICKHEAL",    # SEBI surveillance action
+    "TEJASNET",     # NSE 2022: abnormal trade pattern
+    "NGIL",         # SEBI 2022: confirmed pump and dump
+]
 
 
-def generate_synthetic_training_data(
-    n_positive: int = 20, n_negative: int = 980, n_days: int = 90, seed: int = 0
+def load_pnd_training_data_from_db(
+    db_path=None,
+    lookback_days: int = 180,
+    min_rows_per_ticker: int = 60,
 ) -> tuple:
     """
-    Build a synthetic (X, y) training set: synthetic P&D-pattern positives
-    + synthetic normal-trading negatives (~2% positive rate by default,
-    inside the prompt's expected 1-3% range).
+    Build a real (X, y) training set from ohlcv_adjusted in the DuckDB database.
 
-    Documented Phase-1 stand-in for a real NSE circular archive — see
-    module docstring. Each synthetic series is run through features.
-    pnd_features.compute_pnd_features() so X has the exact same shape/
-    distribution properties a real caller would pass to train().
+    Positive class: KNOWN_PND_TICKERS (confirmed SEBI/NSE enforcement cases).
+    Negative class: all other active tickers in the database.
+
+    Each ticker's OHLCV history is run through compute_pnd_features() to
+    produce X (PND_FEATURES columns, last trading day per ticker).
+
+    [KNOWN GAP] Positive-class rows are each ticker's MOST RECENT
+    `lookback_days` of OHLCV, not its historical manipulation-event window
+    — see this module's docstring and BuildLog.md "Real data sourcing —
+    PnD" (2026-06-30 entry) for why this degrades detector quality and
+    what real data is needed to fix it properly.
 
     Parameters
     ----------
-    n_positive, n_negative : int
-        Number of synthetic P&D / normal tickers to generate.
-    n_days : int
-        Trading days per synthetic ticker (>= 60 to populate every
-        PND_FEATURES column without NaN warm-up gaps).
-    seed : int
-        Base RNG seed (offset per ticker for independence).
+    db_path : Path, optional
+        Defaults to config.settings.DUCKDB_PATH.
+    lookback_days : int
+        Calendar days of OHLCV to load per ticker. Default 180 (~6 months,
+        enough to warm up all PND_FEATURES rolling windows).
+    min_rows_per_ticker : int
+        Tickers with fewer trading rows than this are dropped. Default 60.
 
     Returns
     -------
     (X, y) : (pd.DataFrame, pd.Series)
-        X has PND_FEATURES columns (last trading day of each synthetic
-        ticker only — one row per ticker, matching how a daily pipeline
-        would score "today"). y is 1 for P&D-pattern tickers, 0 otherwise.
-
-    Raises
-    ------
-    None
+        X has PND_FEATURES columns (last trading day per ticker).
+        y is 1 for KNOWN_PND_TICKERS, 0 otherwise.
+        Returns (None, None) if the database is empty / unreachable.
     """
-    frames = []
-    for i in range(n_positive):
-        frames.append(_make_synthetic_pnd_ohlcv(f"PND{i:04d}", n_days, seed + i))
-    for i in range(n_negative):
-        frames.append(_make_synthetic_normal_ohlcv(f"NORM{i:04d}", n_days, seed + n_positive + i))
+    from pathlib import Path as _Path
 
-    ohlcv = pd.concat(frames, ignore_index=True)
-    features = compute_pnd_features(ohlcv)
+    from config.settings import DUCKDB_PATH
+    from datastore.api.db import get_duckdb_connection
+
+    db_path = db_path or DUCKDB_PATH
+    if not _Path(db_path).exists():
+        raise FileNotFoundError(
+            f"DuckDB not found at {db_path}. PnD training requires real OHLCV history — "
+            "run ingestion/backfill_runner.py to populate ohlcv_adjusted before training. "
+            "See BuildLog.md 'Real data sourcing — PnD' for details."
+        )
+
+    with get_duckdb_connection(db_path) as conn:
+        df = conn.execute(
+            """
+            SELECT date, ticker, open, high, low, close, volume,
+                   COALESCE(delivery_pct, 0.0) AS delivery_pct
+            FROM ohlcv_adjusted
+            WHERE date >= CURRENT_DATE - INTERVAL (?) DAY
+            ORDER BY ticker, date
+            """,
+            [lookback_days],
+        ).df()
+
+    if df.empty:
+        raise RuntimeError(
+            "ohlcv_adjusted is empty. PnD training requires real OHLCV history — "
+            "run ingestion/backfill_runner.py first. See BuildLog.md 'Real data sourcing — PnD'."
+        )
+
+    df["date"] = pd.to_datetime(df["date"])
+
+    # Drop tickers with insufficient history
+    counts = df.groupby("ticker")["date"].count()
+    eligible = counts[counts >= min_rows_per_ticker].index
+    df = df[df["ticker"].isin(eligible)]
+
+    features = compute_pnd_features(df)
     last_per_ticker = features.sort_values("date").groupby("ticker", sort=False).tail(1)
 
-    y = last_per_ticker["ticker"].str.startswith("PND").astype(int)
+    known_pnd_set = set(KNOWN_PND_TICKERS)
+    y = last_per_ticker["ticker"].isin(known_pnd_set).astype(int)
     y.index = last_per_ticker.index
     X = last_per_ticker[PND_FEATURES]
+
+    n_pos = y.sum()
+    n_neg = (y == 0).sum()
+    logger.info(
+        "PnD real training data: %d tickers (%d positive / %d negative) from ohlcv_adjusted",
+        len(X), n_pos, n_neg,
+    )
+
+    if n_pos == 0:
+        raise RuntimeError(
+            "None of KNOWN_PND_TICKERS found in ohlcv_adjusted (tickers may have been delisted "
+            "or not yet backfilled, or the active_days lookback excludes them). PnD training "
+            "requires at least one positive example. Add recently confirmed P&D cases to "
+            "KNOWN_PND_TICKERS, or run a corporate-actions/ticker-history backfill to recover "
+            "delisted P&D tickers' OHLCV. See BuildLog.md 'Real data sourcing — PnD'."
+        )
+
     return X.reset_index(drop=True), y.reset_index(drop=True)

@@ -18,8 +18,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from config.settings import FEATURE_CATALOG_PATH
-
 
 class FeatureCategory(str, Enum):
     """Feature classification for discovery and filtering."""

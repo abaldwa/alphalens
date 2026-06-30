@@ -7,7 +7,7 @@ Owner: Platform / DataStore
 Consumers: ingestion/*, datastore/api, features/*, backtest
 
 Creates Store 2 (Normalised) DuckDB tables: ohlcv_adjusted, corporate_actions,
-fundamentals, shareholding, macro_indicators, stock_master.
+fundamentals, shareholding, fno_data, macro_indicators, stock_master.
 
 PIT enforcement (SPEC-PIPE-003, SPEC-DS-003) is applied at the API layer
 (datastore/api/pit.py), not via schema constraints, because point-in-time
@@ -25,7 +25,16 @@ from datastore.api.db import get_duckdb_connection
 
 logger = logging.getLogger(__name__)
 
-# SPEC-DS-001: normalised, corporate-action-adjusted OHLCV
+# SPEC-DS-001 / SPEC-PIPE-002: normalised OHLCV — always holds the
+# corporate-action-adjusted values (backward-adjusted to today's basis).
+#
+# adj_factor     : cumulative price adj factor; adjusted = raw × adj_factor
+# vol_adj_factor : cumulative volume adj factor; adj_vol = raw_vol × vol_adj_factor
+#
+# Original NSE-reported values are NOT stored here.  Only rows that the
+# price adjuster has modified appear in the companion ohlcv_ca_audit table
+# with their exact original values.  Unmodified rows (adj_factor=1.0) have
+# raw == adjusted — no audit entry is created for them.
 _CREATE_OHLCV_ADJUSTED = """
     CREATE TABLE IF NOT EXISTS ohlcv_adjusted (
         date DATE NOT NULL,
@@ -38,11 +47,56 @@ _CREATE_OHLCV_ADJUSTED = """
         delivery_qty BIGINT,
         delivery_pct DOUBLE,
         adj_factor DOUBLE NOT NULL DEFAULT 1.0,
+        vol_adj_factor DOUBLE NOT NULL DEFAULT 1.0,
         PRIMARY KEY (date, ticker)
     )
 """
 
-# SPEC-PIPE-002: corporate action log driving idempotent price adjustment
+# SPEC-PIPE-002: audit / restore table for the price adjuster.
+#
+# Populated by price_adjuster.adjust_for_corporate_actions() just before
+# it modifies any row in ohlcv_adjusted.  Only rows that have been touched
+# by the adjuster appear here; stocks with no corporate actions have no rows.
+#
+# raw_* columns:  exact NSE-reported values at the time of first adjustment —
+#                 NEVER overwritten (ON CONFLICT preserves them).
+# adj_factor / vol_adj_factor: cumulative factors last applied; updated on
+#   every adjuster run so the audit table is self-contained (knowing what
+#   factor was applied to which original value).
+#
+# Restore a single row:
+#   UPDATE ohlcv_adjusted o
+#   SET open=a.raw_open, high=a.raw_high, low=a.raw_low, close=a.raw_close,
+#       volume=a.raw_volume, delivery_qty=a.raw_delivery_qty,
+#       adj_factor=1.0, vol_adj_factor=1.0
+#   FROM ohlcv_ca_audit a
+#   WHERE o.date=a.date AND o.ticker=a.ticker
+#   AND a.ticker='RELIANCE' AND a.date='2019-06-17';
+_CREATE_OHLCV_CA_AUDIT = """
+    CREATE TABLE IF NOT EXISTS ohlcv_ca_audit (
+        date             DATE NOT NULL,
+        ticker           VARCHAR NOT NULL,
+        raw_open         DOUBLE NOT NULL,
+        raw_high         DOUBLE NOT NULL,
+        raw_low          DOUBLE NOT NULL,
+        raw_close        DOUBLE NOT NULL,
+        raw_volume       BIGINT NOT NULL,
+        raw_delivery_qty BIGINT,
+        adj_factor       DOUBLE NOT NULL,
+        vol_adj_factor   DOUBLE NOT NULL,
+        PRIMARY KEY (date, ticker)
+    )
+"""
+
+# SPEC-PIPE-002: corporate action log driving idempotent price adjustment.
+# action_type values: SPLIT, BONUS, DIVIDEND, RIGHTS, BUYBACK, QIP, AGM, OTHER.
+# ratio semantics depend on action_type:
+#   SPLIT:    new shares per old share (e.g. ratio=5 for a 10→2 FV split)
+#   BONUS:    bonus shares per held share (e.g. ratio=1 for a 1:1 bonus)
+#   DIVIDEND: amount per share in INR (e.g. ratio=10.0 for Rs.10/share)
+#   RIGHTS:   rights shares per held (e.g. ratio=0.2 for 1:5 rights)
+#   Others:   0.0 (no price-adjustment relevance)
+# details: raw purpose string from NSE for auditability / re-parsing.
 _CREATE_CORPORATE_ACTIONS = """
     CREATE TABLE IF NOT EXISTS corporate_actions (
         ticker VARCHAR NOT NULL,
@@ -51,6 +105,7 @@ _CREATE_CORPORATE_ACTIONS = """
         ratio DOUBLE NOT NULL,
         announcement_date DATE,
         record_date DATE,
+        details VARCHAR,
         PRIMARY KEY (ticker, ex_date, action_type)
     )
 """
@@ -81,11 +136,42 @@ _CREATE_FUNDAMENTALS = """
         payable_days DOUBLE,
         book_value_per_share DOUBLE,
         shares_outstanding BIGINT,
+        gross_profit DOUBLE,
+        capex DOUBLE,
+        current_assets DOUBLE,
+        current_liabilities DOUBLE,
+        total_debt DOUBLE,
+        cash_and_equivalents DOUBLE,
+        depreciation DOUBLE,
+        -- [AS BUILT, P2.6] Tijori Finance Pro sector-specific operational
+        -- metrics (ARPU for telecom, NPA for banking, ANDA approvals for
+        -- pharma, etc. — see ingestion/scrapers/tijori.py's _SECTOR_METRICS
+        -- map for the full sector->metric-name dictionary). Generic
+        -- numbered columns, not one column per metric type, because the
+        -- metric *meaning* varies by sector — sector_specific_metric_1's
+        -- label for a given row is looked up from tijori.py's map by
+        -- stock_master.sector, not fixed at the schema level.
+        sector_specific_metric_1 DOUBLE,
+        sector_specific_metric_2 DOUBLE,
+        sector_specific_metric_3 DOUBLE,
+        sector_specific_metric_4 DOUBLE,
+        sector_specific_metric_5 DOUBLE,
+        sector_specific_metric_6 DOUBLE,
         PRIMARY KEY (ticker, fiscal_year, quarter)
     )
 """
 
 # SPEC-PIPE-003 (CRITICAL): filing_date is the PIT key, never quarter_end_date
+#
+# [AS BUILT, P2.6] `shareholding` IS this project's "governance" store —
+# 12_platform_architecture.md line 320 labels it literally:
+# "/governance/  # Shareholding patterns (PIT via filing_date)". The P2.6
+# build prompt's "Writes to governance table (superstar_flag,
+# superstar_change columns)" therefore resolves to THIS table, not a new
+# standalone one — same "the doc's own data-store naming governs over a
+# build prompt that assumes a table exists under a different literal name"
+# resolution as P2.5's `depreciation` column landing on the existing
+# `fundamentals` table rather than a new one.
 _CREATE_SHAREHOLDING = """
     CREATE TABLE IF NOT EXISTS shareholding (
         ticker VARCHAR NOT NULL,
@@ -97,7 +183,52 @@ _CREATE_SHAREHOLDING = """
         dii_pct DOUBLE,
         mf_pct DOUBLE,
         retail_pct DOUBLE,
+        superstar_flag BOOLEAN,
+        superstar_change DOUBLE,
         PRIMARY KEY (ticker, quarter_end_date)
+    )
+"""
+
+# SPEC-PIPE-001, P2.3: NSE F&O bhavcopy (futures + options), persisted
+# per ingestion/scrapers/fno.py's UDiFF column set. No PRIMARY KEY:
+# strike/option_type are NULL for futures rows, and the natural write
+# pattern (one full day's bhavcopy file arrives atomically) is delete-
+# then-insert per trade_date (ingestion/scheduler/daily_pipeline.py's
+# step_download_fno), not row-level upsert — same reasoning corporate_actions
+# would use if its source weren't already de-duplicated by ex_date.
+_CREATE_FNO_DATA = """
+    CREATE TABLE IF NOT EXISTS fno_data (
+        trade_date DATE NOT NULL,
+        ticker VARCHAR NOT NULL,
+        instrument VARCHAR NOT NULL,
+        expiry DATE NOT NULL,
+        strike DOUBLE,
+        option_type VARCHAR,
+        oi BIGINT,
+        oi_change BIGINT,
+        volume BIGINT,
+        settle_price DOUBLE,
+        close_price DOUBLE,
+        underlying_price DOUBLE
+    )
+"""
+
+# Large deals: bulk deals (≥0.5% of shares in a single trade) and block
+# deals (≥5 lakh shares or ≥Rs.10 crore in the block-deal window) from
+# NSE and BSE. No PRIMARY KEY: the same client can have multiple bulk deals
+# for the same stock on the same day — delete-then-insert per
+# (trade_date, exchange, deal_type) mirrors fno_data's write pattern.
+_CREATE_LARGE_DEALS = """
+    CREATE TABLE IF NOT EXISTS large_deals (
+        trade_date DATE NOT NULL,
+        exchange VARCHAR NOT NULL,
+        deal_type VARCHAR NOT NULL,
+        ticker VARCHAR NOT NULL,
+        client_name VARCHAR,
+        transaction_type VARCHAR,
+        quantity BIGINT,
+        price DOUBLE,
+        remarks VARCHAR
     )
 """
 
@@ -129,12 +260,99 @@ _CREATE_STOCK_MASTER = """
 
 _ALL_TABLES = {
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
+    "ohlcv_ca_audit": _CREATE_OHLCV_CA_AUDIT,
     "corporate_actions": _CREATE_CORPORATE_ACTIONS,
     "fundamentals": _CREATE_FUNDAMENTALS,
     "shareholding": _CREATE_SHAREHOLDING,
+    "fno_data": _CREATE_FNO_DATA,
+    "large_deals": _CREATE_LARGE_DEALS,
     "macro_indicators": _CREATE_MACRO_INDICATORS,
     "stock_master": _CREATE_STOCK_MASTER,
 }
+
+# [AS BUILT, P2.1] This project has no formal migration system — `CREATE
+# TABLE IF NOT EXISTS` is a no-op against a table that already exists, so
+# extending an EXISTING table's columns (as P2.1 did for `fundamentals`:
+# gross_profit, capex, current_assets, current_liabilities, total_debt,
+# cash_and_equivalents) silently does NOT reach a real, already-created
+# database file — caught live: the real `datastore/normalised/
+# alphalens.duckdb` (created back in P0.2, 0 rows, but the table already
+# existed) rejected the first real screener.py write with
+# `BinderException: ... does not have a column with name "gross_profit"`.
+# `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` is DuckDB's idempotent
+# equivalent for this case — applied here so any existing DB (this
+# project's real one, or anyone else's) self-heals to the current schema
+# the next time create_schema() runs, with zero manual migration step.
+_MIGRATE_ADDED_COLUMNS = {
+    "ohlcv_adjusted": [
+        # vol_adj_factor: cumulative share-count adjustment factor for SPLIT/BONUS.
+        # raw_ columns (raw_open…raw_delivery_qty) were added and then removed in P3.5;
+        # original NSE values now live in ohlcv_ca_audit instead.
+        "ALTER TABLE ohlcv_adjusted ADD COLUMN IF NOT EXISTS vol_adj_factor DOUBLE DEFAULT 1.0",
+    ],
+    "corporate_actions": [
+        "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS details VARCHAR",
+    ],
+    "fundamentals": [
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS gross_profit DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS capex DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS current_assets DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS current_liabilities DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS total_debt DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS cash_and_equivalents DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS depreciation DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_1 DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_2 DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_3 DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_4 DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_5 DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_6 DOUBLE",
+    ],
+    "shareholding": [
+        "ALTER TABLE shareholding ADD COLUMN IF NOT EXISTS superstar_flag BOOLEAN",
+        "ALTER TABLE shareholding ADD COLUMN IF NOT EXISTS superstar_change DOUBLE",
+    ],
+}
+
+
+def _migrate_added_columns(conn) -> None:
+    """Idempotently ALTER any table whose schema has grown since it may have first been created."""
+    for table_name, statements in _MIGRATE_ADDED_COLUMNS.items():
+        for ddl in statements:
+            conn.execute(ddl)
+        logger.info(f"Ensured added columns present: {table_name}")
+
+
+# raw_ columns were added to ohlcv_adjusted in P3.5 then removed in the same
+# phase when the design switched to the ohlcv_ca_audit table. Any DB that ran
+# the P3.5 intermediate migration will have these orphan columns.
+# DuckDB does not support `DROP COLUMN IF EXISTS`, so we check information_schema
+# first and skip silently if the columns are already gone.
+_DROP_ORPHAN_COLUMNS = {
+    "ohlcv_adjusted": [
+        "raw_open", "raw_high", "raw_low", "raw_close", "raw_volume", "raw_delivery_qty",
+    ],
+}
+
+
+def _migrate_dropped_columns(conn) -> None:
+    """Drop any columns that were removed from the schema in a later phase."""
+    for table_name, cols in _DROP_ORPHAN_COLUMNS.items():
+        existing = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = ? AND column_name = ANY(?)",
+                [table_name, cols],
+            ).fetchall()
+        }
+        for col in cols:
+            if col in existing:
+                try:
+                    conn.execute(f"ALTER TABLE {table_name} DROP COLUMN {col}")
+                    logger.info(f"Dropped orphan column {table_name}.{col}")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"Could not drop {table_name}.{col}: {exc}")
 
 
 def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> None:
@@ -164,6 +382,8 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
         for table_name, ddl in _ALL_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")
+        _migrate_added_columns(conn)
+        _migrate_dropped_columns(conn)
 
     logger.info(f"Normalised schema ready at {db_path if db_path else ':memory:'}")
 

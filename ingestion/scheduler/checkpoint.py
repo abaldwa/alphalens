@@ -44,6 +44,11 @@ STEPS = [
     {"name": "download_bhavcopy", "is_backfillable": True},
     {"name": "download_fno", "is_backfillable": True},
     {"name": "download_macro", "is_backfillable": True},
+    # Corporate actions must land before adjust_prices so the adjuster sees
+    # the full ledger when it eventually runs (PRICE_ADJUSTMENT_ENABLED controls
+    # whether adjust_prices actually applies factors — see config/settings.py).
+    {"name": "download_corporate_actions", "is_backfillable": True},
+    {"name": "download_large_deals", "is_backfillable": True},
     {"name": "adjust_prices", "is_backfillable": True},
     {"name": "compute_features", "is_backfillable": True},
     {"name": "run_models", "is_backfillable": False},

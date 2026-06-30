@@ -114,7 +114,7 @@ def load_macro_indicators(
     as_of_ts = pd.Timestamp(as_of)
     start = (as_of_ts - pd.Timedelta(days=lookback_days)).date()
     try:
-        with get_duckdb_connection(db_path, read_only=True) as conn:
+        with get_duckdb_connection(db_path, read_only=True, persist=False) as conn:
             df = conn.execute(
                 "SELECT date, indicator, value FROM macro_indicators WHERE date >= ? AND date <= ?",
                 [start, as_of_ts.date()],

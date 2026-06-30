@@ -182,41 +182,54 @@ its outputs back via the API. No system scrapes data independently or maintains 
 4. **Walk-forward validation only** — never random train/test split on time-series data.
 5. **P&D detection runs before any buy signal reaches the user.** It is a pre-filter,
    not a post-filter. Score > 60 = hard block.
+6. **No synthetic, mocked, or procedurally-generated data anywhere in the application,
+   ever — and no fallback to it.** Every model trains on real data only (real OHLCV via
+   `ohlcv_adjusted`, real fundamentals, real documented archive cases such as
+   `KNOWN_FRAUD_ARCHIVE`/`KNOWN_PND_TICKERS`/`HISTORICAL_MULTIBAGGER_ARCHIVE`, or real
+   paper-trading history). If real data is insufficient, the loader/script **raises**
+   (`RuntimeError`/`FileNotFoundError`) with an actionable message pointing to
+   `BuildLog.md`'s "Real data sourcing — X" section — it never substitutes a generated,
+   jittered, or randomly-sampled stand-in. This applies to training data, inference
+   inputs, and backtests alike. (Deterministic, hand-built unit-test fixtures that
+   exercise a function's logic in isolation — e.g. a crafted OHLCV panel to test a
+   specific boundary condition — are not "synthetic data" in this sense; they never
+   ship in application code paths and must be clearly labeled as test fixtures, not as
+   a stand-in for real market/training data.)
 
 ### Code standards
-6. Every function must have a NumPy-style docstring: Parameters, Returns, Spec References, PIT Assumptions, Raises.
-7. All database operations use parameterized queries — no string interpolation in SQL.
-8. Feature computation is always vectorized (pandas/numpy) — no Python loops over stocks.
-9. Every model file inherits from the appropriate interface in `contracts/interfaces.py` (IModel, IClassificationModel, IRegimeModel, ISurvivalModel).
-10. All paths defined in `config/settings.py` — never hardcode paths in model files.
-11. Every module-level docstring includes: Phase, Specs, Owner, Consumers.
-12. Inline comments reference spec IDs for non-obvious business logic.
+7. Every function must have a NumPy-style docstring: Parameters, Returns, Spec References, PIT Assumptions, Raises.
+8. All database operations use parameterized queries — no string interpolation in SQL.
+9. Feature computation is always vectorized (pandas/numpy) — no Python loops over stocks.
+10. Every model file inherits from the appropriate interface in `contracts/interfaces.py` (IModel, IClassificationModel, IRegimeModel, ISurvivalModel).
+11. All paths defined in `config/settings.py` — never hardcode paths in model files.
+12. Every module-level docstring includes: Phase, Specs, Owner, Consumers.
+13. Inline comments reference spec IDs for non-obvious business logic.
 
 ### SOLID Principles (mandatory — see 14_engineering_standards.md for details)
-13. **S — Single Responsibility:** Each class does one thing. Each function does one thing. No "and" in the description.
-14. **O — Open/Closed:** Add features by adding new files, not modifying existing code. New models inherit IModel. New features register in FEATURE_REGISTRY.
-15. **L — Liskov Substitution:** Any IModel subclass can replace any other wherever IModel is expected.
-16. **I — Interface Segregation:** Models implement only the interfaces they need (IModel, IClassificationModel, IExplainableModel, IRegimeModel, ISurvivalModel).
-17. **D — Dependency Inversion:** High-level modules depend on abstractions (interfaces), not concrete implementations. Pipeline runner receives IModel, not Signal5dModel.
+14. **S — Single Responsibility:** Each class does one thing. Each function does one thing. No "and" in the description.
+15. **O — Open/Closed:** Add features by adding new files, not modifying existing code. New models inherit IModel. New features register in FEATURE_REGISTRY.
+16. **L — Liskov Substitution:** Any IModel subclass can replace any other wherever IModel is expected.
+17. **I — Interface Segregation:** Models implement only the interfaces they need (IModel, IClassificationModel, IExplainableModel, IRegimeModel, ISurvivalModel).
+18. **D — Dependency Inversion:** High-level modules depend on abstractions (interfaces), not concrete implementations. Pipeline runner receives IModel, not Signal5dModel.
 
 ### Library governance
-18. All library versions pinned in requirements/*.txt.
-19. Upgrades: one library at a time, on a branch, full test suite + backtest comparison.
-20. Reject upgrade if Sharpe drops > 0.05 or any test fails.
-21. Prefer public libraries over custom implementations (see 14_engineering_standards.md Part 4).
-22. Quarterly security audit via `pip-audit`.
+19. All library versions pinned in requirements/*.txt.
+20. Upgrades: one library at a time, on a branch, full test suite + backtest comparison.
+21. Reject upgrade if Sharpe drops > 0.05 or any test fails.
+22. Prefer public libraries over custom implementations (see 14_engineering_standards.md Part 4).
+23. Quarterly security audit via `pip-audit`.
 
 ### Traceability
-23. Every spec ID (SPEC-XXX-NNN) has at least one test (see RTM in 14_engineering_standards.md).
-24. Every test references the spec it validates in its docstring.
-25. Every commit message references the spec(s) it implements.
-26. Requirements Traceability Matrix maintained in 14_engineering_standards.md — 100% coverage required.
+24. Every spec ID (SPEC-XXX-NNN) has at least one test (see RTM in 14_engineering_standards.md).
+25. Every test references the spec it validates in its docstring.
+26. Every commit message references the spec(s) it implements.
+27. Requirements Traceability Matrix maintained in 14_engineering_standards.md — 100% coverage required.
 
 ### Model training
-11. Optuna HPO always runs on walk-forward validation folds, never on test data.
-12. SMOTE applied to training data only — never validation or test data.
-13. Classification threshold is always optimized on validation fold — never use 0.5 default.
-14. Model retrain protocol: snapshot → train → shadow-test → compare → promote only if better.
+28. Optuna HPO always runs on walk-forward validation folds, never on test data.
+29. SMOTE applied to training data only — never validation or test data.
+30. Classification threshold is always optimized on validation fold — never use 0.5 default.
+31. Model retrain protocol: snapshot → train → shadow-test → compare → promote only if better.
 
 ---
 

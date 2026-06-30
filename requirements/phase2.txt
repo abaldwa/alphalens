@@ -1,0 +1,35 @@
+# requirements/phase2.txt
+#
+# Phase: 2
+# Specs: SPEC-LIB-001, SPEC-LIB-002, SPEC-PIPE-001, SPEC-PIPE-003
+# Owner: Platform
+# Consumers: ingestion/scrapers (screener.py, amfi_holdings.py), features/*
+#
+# Phase 2 Fundamentals + Multibagger dependencies, on top of phase1.txt.
+#
+-r phase1.txt
+
+# playwright: headless-browser scraping for sources that require real
+# JavaScript execution to reach their data (confirmed live during P2.2:
+# AMC mutual fund portfolio-disclosure pages render their actual download
+# links via JS-driven custom <select> widgets; plain requests +
+# BeautifulSoup cannot see this content). Requires a one-time browser
+# binary install separate from `pip install`:
+#   PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 python3 -m playwright install chromium
+# (the env var works around this project's dev machine running Ubuntu
+# 26.04, newer than any OS Playwright 1.60.0 has a registered Chromium
+# build for — see ingestion/scrapers/browser.py's module docstring;
+# not needed on an officially-supported OS).
+playwright==1.60.0
+
+# openpyxl: parses .xlsx files some sources (AMC portfolio disclosures)
+# publish instead of CSV/HTML.
+openpyxl==3.1.5
+
+# scipy: Black-Scholes implied-volatility inversion (features/fno_features.py
+# uses scipy.optimize.brentq + scipy.stats.norm) — already an indirect
+# dependency via scikit-learn, pinned explicitly here per SPEC-LIB-001
+# since this module imports it directly.
+scipy==1.17.1
+
+-r phase1.txt

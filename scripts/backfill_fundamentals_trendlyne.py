@@ -1,0 +1,569 @@
+"""
+scripts/backfill_fundamentals_trendlyne.py
+
+Phase: 3 (Fundamentals Backfill — Trendlyne source)
+Specs: SPEC-PIPE-003 (CRITICAL — PIT), SPEC-SEC-001
+Owner: Platform / Ingestion
+
+Logs into Trendlyne and backfills fundamentals for all tickers using the
+`get-fundamental_results-v2` JSON API (confirmed working 2026-06-25).
+
+Data returned (all in INR Cr, consolidated where available):
+  Quarterly  : Revenue, EBITDA, OPM%, PAT, EPS, Net Margin%, Depreciation
+               Interest, Book Value per Share  (13 quarters, ~3 years)
+  Annual     : ROE%, ROCE%, D/E, Interest Coverage, EBITDA margin,
+               CFO, Cash & equivalents, Total Debt, Asset Turnover,
+               Current Assets/Liabilities  (11 years, back to ~FY2015)
+
+UPSERT strategy
+---------------
+  Quarterly fields  →  UPSERT on (ticker, fiscal_year, quarter)
+                         COALESCE preserves existing Screener values;
+                         Trendlyne fills only NULL slots.
+  Annual fields     →  replicated across all 4 quarters of that FY
+                         so every quarter row has ROE, ROCE etc.
+
+PREREQUISITES
+-------------
+  - TRENDLYNE_USERNAME / TRENDLYNE_PASSWORD in .env
+  - No API server required (writes directly to DuckDB)
+  - Do NOT run simultaneously with the DataStore API (DuckDB single-writer)
+
+Usage
+-----
+    # Full run (all DB tickers)
+    nohup .venv/bin/python3 scripts/backfill_fundamentals_trendlyne.py \\
+        > logs/trendlyne_backfill.log 2>&1 &
+    tail -f logs/trendlyne_backfill.log
+
+    # Universe-only (~2492 active tickers, ~60 min)
+    .venv/bin/python3 scripts/backfill_fundamentals_trendlyne.py --universe-only
+
+    # Dry-run (parse + print, no DB writes)
+    .venv/bin/python3 scripts/backfill_fundamentals_trendlyne.py --dry-run --limit 5
+
+Timing
+------
+  ~2 HTTP requests + 1.5 s sleep per ticker.
+  2492 tickers → ~60 min.
+  4110 tickers → ~3.5 hours.
+"""
+
+import argparse
+import calendar
+import gc
+import logging
+import re
+import sys
+import time
+from datetime import date
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s — %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+BASE_URL = "https://trendlyne.com"
+LOGIN_URL = f"{BASE_URL}/accounts/login/"
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+SLEEP_BETWEEN_TICKERS = 1.5   # seconds — respect Trendlyne's servers
+BATCH_SIZE = 100               # commit to DuckDB every N tickers
+
+_MONTH_MAP = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+# ── Quarterly field mapping  (Trendlyne key → DB column) ─────────────────────
+_Q_FIELDS: Dict[str, str] = {
+    "SR_Q":       "revenue",          # Operating Revenues Qtr (INR Cr)
+    "EBIDT_Q":    "ebitda",           # EBITDA Qtr (INR Cr)
+    "OPMPCT_Q":   "operating_margin", # Operating Profit Margin %
+    "NP_Q":       "pat",              # Net Profit Qtr (INR Cr)
+    "EPS_Q":      "eps",              # Basic EPS Qtr (INR)
+    "NETPCT_Q":   "net_margin",       # Net Profit Margin %
+    "BVSH_Q":     "book_value_per_share",
+    "DEP_Q":      "depreciation",
+}
+
+# ── Annual field mapping  (Trendlyne key → DB column) ────────────────────────
+_A_FIELDS: Dict[str, str] = {
+    "ROE_A":                    "roe",
+    "ROCE_A":                   "roce",
+    "DEBT_CE_A":                "debt_to_equity",
+    "IC_A":                     "interest_coverage",
+    "EBIDTPCT_A":               "ebitda_margin",
+    "CFO_A":                    "fcf",              # cash from ops as FCF proxy
+    "CashAndCashEquivalents_A": "cash_and_equivalents",
+    "ASETTO_A":                 "asset_turnover",
+    "CA_A":                     "current_assets",
+    "CL_A":                     "current_liabilities",
+    "BVSH_A":                   "book_value_per_share",
+}
+# total_debt = LongTermBorrowings_A + ShortTermBorrowings_A (computed below)
+# gross_profit = SR_Q - OEXPNS_Q + EBIDT_Q (not straightforward; skip)
+# shares_outstanding: not directly available as a count in INR Cr units
+
+
+# ── Date helpers ──────────────────────────────────────────────────────────────
+
+def _parse_quarter_label(label: str) -> Tuple[str, int, int]:
+    """
+    'Mar 2026' → (quarter_end_date='2026-03-31', fiscal_year=2026, quarter=4)
+
+    Indian FY: Apr-Jun=Q1, Jul-Sep=Q2, Oct-Dec=Q3, Jan-Mar=Q4.
+    FY label = the year in which March falls (FY-end).
+    """
+    parts = label.strip().split()
+    if len(parts) != 2:
+        raise ValueError(f"Unexpected quarter label: {label!r}")
+    mon_str, yr_str = parts
+    month = _MONTH_MAP[mon_str]
+    year = int(yr_str)
+    last_day = calendar.monthrange(year, month)[1]
+    qend = f"{year}-{month:02d}-{last_day:02d}"
+    if month <= 3:
+        fy, q = year, 4
+    elif month <= 6:
+        fy, q = year + 1, 1
+    elif month <= 9:
+        fy, q = year + 1, 2
+    else:
+        fy, q = year + 1, 3
+    return qend, fy, q
+
+
+def _announcement_date(qend: str) -> str:
+    """Conservative PIT default: 45 days after quarter end (60 for Q4)."""
+    d = date.fromisoformat(qend)
+    days = 60 if d.month == 3 else 45
+    ann = date(d.year, d.month, d.day)
+    import datetime
+    return (ann + datetime.timedelta(days=days)).isoformat()
+
+
+def _safe(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        return None if (f != f) else f   # NaN check
+    except (TypeError, ValueError):
+        return None
+
+
+# ── Trendlyne session helpers ─────────────────────────────────────────────────
+
+def _login() -> requests.Session:
+    from config.settings import TRENDLYNE_USERNAME, TRENDLYNE_PASSWORD
+    if not TRENDLYNE_USERNAME or not TRENDLYNE_PASSWORD:
+        raise RuntimeError(
+            "TRENDLYNE_USERNAME / TRENDLYNE_PASSWORD not set in .env"
+        )
+    session = requests.Session()
+    session.headers.update(_HEADERS)
+
+    page = session.get(LOGIN_URL, timeout=30)
+    csrf_m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', page.text)
+    if not csrf_m:
+        raise RuntimeError("Could not find CSRF token on Trendlyne login page")
+    csrf = csrf_m.group(1)
+
+    resp = session.post(
+        LOGIN_URL,
+        data={
+            "csrfmiddlewaretoken": csrf,
+            "login": TRENDLYNE_USERNAME,
+            "password": TRENDLYNE_PASSWORD,
+            "recaptcha_token": "",
+            "recaptcha_action": "login",
+            "remember": "on",
+        },
+        headers={"Referer": LOGIN_URL},
+        timeout=30,
+    )
+    if resp.status_code >= 400 or "id_password" in resp.text:
+        raise RuntimeError(
+            f"Trendlyne login failed (status={resp.status_code}). "
+            "Check TRENDLYNE_USERNAME/PASSWORD in .env"
+        )
+    logger.info("Trendlyne login successful → %s", resp.url)
+    return session
+
+
+def _fetch_ticker_data(session: requests.Session, ticker: str) -> Optional[Dict]:
+    """
+    Fetch Trendlyne fundamental JSON for a single ticker.
+    Returns the parsed body dict, or None if the ticker is not found.
+
+    Two HTTP requests:
+      1. Company page  → extract data-tablesurl (session-specific hash)
+      2. tablesurl     → JSON with quarterly + annual data
+    """
+    company_url = f"{BASE_URL}/equity/{ticker}/{ticker.lower()}/"
+    try:
+        r = session.get(company_url, timeout=30)
+    except requests.RequestException as exc:
+        logger.debug("Network error for %s: %s", ticker, exc)
+        return None
+
+    if r.status_code == 404:
+        logger.debug("%s: 404 on Trendlyne (not listed)", ticker)
+        return None
+    if r.status_code in (405, 410):
+        # Trendlyne returns 405 for tickers not in their routing table
+        # (BSE-only, delisted, or very small cos). Try dash-slug fallback.
+        slug = ticker.lower().replace("&", "-")
+        alt_url = f"{BASE_URL}/equity/{ticker}/{slug}/"
+        if alt_url != company_url:
+            try:
+                r2 = session.get(alt_url, timeout=30)
+                if r2.status_code == 200:
+                    r = r2
+                else:
+                    logger.debug("%s: not on Trendlyne (405 + alt %d)", ticker, r2.status_code)
+                    return None
+            except requests.RequestException:
+                return None
+        else:
+            logger.debug("%s: not on Trendlyne (HTTP 405)", ticker)
+            return None
+    if r.status_code == 403:
+        logger.debug("%s: 403 — may need re-login", ticker)
+        return None
+    if r.status_code != 200:
+        logger.warning("%s: company page → HTTP %d", ticker, r.status_code)
+        return None
+
+    tablesurl_m = re.search(r'data-tablesurl=(https://[^\s>]+)', r.text)
+    if not tablesurl_m:
+        logger.debug("%s: data-tablesurl not found on company page", ticker)
+        return None
+    tablesurl = tablesurl_m.group(1)
+
+    try:
+        rj = session.get(
+            tablesurl, timeout=30,
+            headers={"X-Requested-With": "XMLHttpRequest", "Referer": company_url},
+        )
+    except requests.RequestException as exc:
+        logger.debug("Network error fetching tablesurl for %s: %s", ticker, exc)
+        return None
+
+    if rj.status_code != 200 or not rj.text.strip():
+        logger.debug("%s: tablesurl → HTTP %d (empty=%s)", ticker, rj.status_code, not rj.text.strip())
+        return None
+
+    try:
+        js = rj.json()
+    except Exception:
+        logger.debug("%s: tablesurl response is not JSON", ticker)
+        return None
+
+    if js.get("head", {}).get("status") != "0":
+        logger.debug("%s: Trendlyne API returned non-success: %s", ticker, js.get("head"))
+        return None
+
+    return js.get("body")
+
+
+# ── Data extraction ───────────────────────────────────────────────────────────
+
+def _extract_quarterly_rows(ticker: str, body: Dict) -> List[Dict]:
+    """Build one fundamentals dict per quarter from quarterly data dump."""
+    q_order = body.get("quarterlyOrder", [])
+    # Prefer consolidated; fall back to standalone
+    q_dump = body.get("quarterlyDataDump", {})
+    q_data = q_dump.get("consolidated") or q_dump.get("standalone") or {}
+
+    rows = []
+    for label in q_order:
+        period = q_data.get(label)
+        if not period:
+            continue
+        try:
+            qend, fy, q = _parse_quarter_label(label)
+        except Exception:
+            continue
+
+        row: Dict[str, Any] = {
+            "ticker": ticker,
+            "fiscal_year": fy,
+            "quarter": q,
+            "quarter_end_date": qend,
+            "announcement_date": _announcement_date(qend),
+        }
+        for tl_key, db_col in _Q_FIELDS.items():
+            row[db_col] = _safe(period.get(tl_key))
+
+        # gross_profit: SR_Q - OEXPNS_Q (if available)
+        sr = _safe(period.get("SR_Q"))
+        opex = _safe(period.get("OEXPNS_Q"))
+        row["gross_profit"] = (sr - opex) if (sr is not None and opex is not None) else None
+
+        # interest_coverage (quarterly): OP_Q / INT_Q
+        op_q = _safe(period.get("OP_Q"))
+        int_q = _safe(period.get("INT_Q"))
+        row["interest_coverage"] = (
+            (op_q / int_q) if (op_q is not None and int_q is not None and int_q > 0) else None
+        )
+
+        # Annual fields defaulting to None (will be patched from annual data later)
+        for db_col in _A_FIELDS.values():
+            row.setdefault(db_col, None)
+        row.setdefault("total_debt", None)
+        row.setdefault("capex", None)
+        row.setdefault("shares_outstanding", None)
+
+        rows.append(row)
+    return rows
+
+
+def _extract_annual_patch(body: Dict) -> Dict[int, Dict]:
+    """
+    Build a map of fiscal_year → {db_col: value} from annual data.
+    Annual FY label 'Mar YYYY' → fiscal_year = YYYY.
+    """
+    a_order = body.get("annualOrder", [])
+    a_dump = body.get("annualDataDump", {})
+    a_data = a_dump.get("consolidated") or a_dump.get("standalone") or {}
+
+    patches: Dict[int, Dict] = {}
+    for label in a_order:
+        period = a_data.get(label)
+        if not period:
+            continue
+        try:
+            _, fy, _ = _parse_quarter_label(label)   # Mar YYYY → Q4 of FY
+        except Exception:
+            continue
+
+        patch: Dict[str, Any] = {}
+        for tl_key, db_col in _A_FIELDS.items():
+            patch[db_col] = _safe(period.get(tl_key))
+
+        # total_debt = long-term + short-term borrowings
+        ltd = _safe(period.get("LongTermBorrowings_A"))
+        std = _safe(period.get("ShortTermBorrowings_A"))
+        if ltd is not None or std is not None:
+            patch["total_debt"] = (ltd or 0.0) + (std or 0.0)
+        else:
+            patch["total_debt"] = None
+
+        patches[fy] = patch
+    return patches
+
+
+def _merge_annual(q_rows: List[Dict], annual_patches: Dict[int, Dict]) -> List[Dict]:
+    """
+    Patch quarterly rows with annual data for the same fiscal year.
+    COALESCE: quarterly value wins if already present.
+    """
+    for row in q_rows:
+        patch = annual_patches.get(row["fiscal_year"], {})
+        for col, val in patch.items():
+            if row.get(col) is None:
+                row[col] = val
+    return q_rows
+
+
+# ── DB writes ─────────────────────────────────────────────────────────────────
+
+_UPSERT_SQL = """
+INSERT INTO fundamentals (
+    ticker, fiscal_year, quarter, quarter_end_date, announcement_date,
+    revenue, ebitda, pat, eps, operating_margin, ebitda_margin, net_margin,
+    roe, roce, debt_to_equity, interest_coverage, fcf, gross_profit,
+    total_debt, cash_and_equivalents, asset_turnover,
+    current_assets, current_liabilities,
+    book_value_per_share, depreciation
+) VALUES (
+    ?,?,?,?,?,
+    ?,?,?,?,?,?,?,
+    ?,?,?,?,?,?,
+    ?,?,?,
+    ?,?,
+    ?,?
+)
+ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET
+    revenue            = COALESCE(fundamentals.revenue, excluded.revenue),
+    ebitda             = COALESCE(fundamentals.ebitda, excluded.ebitda),
+    pat                = COALESCE(fundamentals.pat, excluded.pat),
+    eps                = COALESCE(fundamentals.eps, excluded.eps),
+    operating_margin   = COALESCE(fundamentals.operating_margin, excluded.operating_margin),
+    ebitda_margin      = COALESCE(fundamentals.ebitda_margin, excluded.ebitda_margin),
+    net_margin         = COALESCE(fundamentals.net_margin, excluded.net_margin),
+    roe                = COALESCE(fundamentals.roe, excluded.roe),
+    roce               = COALESCE(fundamentals.roce, excluded.roce),
+    debt_to_equity     = COALESCE(fundamentals.debt_to_equity, excluded.debt_to_equity),
+    interest_coverage  = COALESCE(fundamentals.interest_coverage, excluded.interest_coverage),
+    fcf                = COALESCE(fundamentals.fcf, excluded.fcf),
+    gross_profit       = COALESCE(fundamentals.gross_profit, excluded.gross_profit),
+    total_debt         = COALESCE(fundamentals.total_debt, excluded.total_debt),
+    cash_and_equivalents = COALESCE(fundamentals.cash_and_equivalents, excluded.cash_and_equivalents),
+    asset_turnover     = COALESCE(fundamentals.asset_turnover, excluded.asset_turnover),
+    current_assets     = COALESCE(fundamentals.current_assets, excluded.current_assets),
+    current_liabilities = COALESCE(fundamentals.current_liabilities, excluded.current_liabilities),
+    book_value_per_share = COALESCE(fundamentals.book_value_per_share, excluded.book_value_per_share),
+    depreciation       = COALESCE(fundamentals.depreciation, excluded.depreciation)
+"""
+
+
+def _write_rows(conn, rows: List[Dict]) -> int:
+    written = 0
+    for r in rows:
+        try:
+            conn.execute(_UPSERT_SQL, [
+                r["ticker"], r["fiscal_year"], r["quarter"],
+                r["quarter_end_date"], r["announcement_date"],
+                r.get("revenue"), r.get("ebitda"), r.get("pat"), r.get("eps"),
+                r.get("operating_margin"), r.get("ebitda_margin"), r.get("net_margin"),
+                r.get("roe"), r.get("roce"), r.get("debt_to_equity"),
+                r.get("interest_coverage"), r.get("fcf"), r.get("gross_profit"),
+                r.get("total_debt"), r.get("cash_and_equivalents"),
+                r.get("asset_turnover"), r.get("current_assets"), r.get("current_liabilities"),
+                r.get("book_value_per_share"), r.get("depreciation"),
+            ])
+            written += 1
+        except Exception as exc:
+            logger.debug("Write error %s FY%s Q%s: %s",
+                         r["ticker"], r["fiscal_year"], r["quarter"], exc)
+    return written
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Backfill fundamentals from Trendlyne")
+    parser.add_argument("--universe-only", action="store_true",
+                        help="Only process the ~2492-ticker active universe (default: all DB tickers)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Fetch and parse but do not write to DB")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Stop after N tickers (for testing)")
+    parser.add_argument("--sleep", type=float, default=SLEEP_BETWEEN_TICKERS,
+                        help=f"Seconds between tickers (default: {SLEEP_BETWEEN_TICKERS})")
+    args = parser.parse_args()
+
+    from config.settings import DUCKDB_PATH
+    from datastore.api.db import get_duckdb_connection
+
+    # Build ticker list
+    if args.universe_only:
+        from config.universe import get_tickers
+        tickers = get_tickers()
+    else:
+        with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+            tickers = [r[0] for r in conn.execute(
+                "SELECT DISTINCT ticker FROM ohlcv_adjusted ORDER BY ticker"
+            ).fetchall()]
+    if args.limit:
+        tickers = tickers[:args.limit]
+    logger.info("Trendlyne backfill: %d tickers, dry_run=%s", len(tickers), args.dry_run)
+
+    session = _login()
+    t_start = time.monotonic()
+    ok = notfound = errors = total_rows = 0
+    pending_rows: List[Dict] = []
+
+    def _flush(conn):
+        nonlocal total_rows
+        if not pending_rows:
+            return
+        written = _write_rows(conn, pending_rows)
+        total_rows += written
+        pending_rows.clear()
+
+    for i, ticker in enumerate(tickers, start=1):
+        try:
+            body = _fetch_ticker_data(session, ticker)
+        except Exception as exc:
+            logger.warning("[%d/%d] %s: fetch error — %s", i, len(tickers), ticker, exc)
+            errors += 1
+            time.sleep(args.sleep)
+            continue
+
+        if body is None:
+            notfound += 1
+            time.sleep(args.sleep * 0.3)   # shorter sleep for 404s
+            continue
+
+        try:
+            q_rows = _extract_quarterly_rows(ticker, body)
+            a_patch = _extract_annual_patch(body)
+            rows = _merge_annual(q_rows, a_patch)
+        except Exception as exc:
+            logger.warning("[%d/%d] %s: parse error — %s", i, len(tickers), ticker, exc)
+            errors += 1
+            time.sleep(args.sleep)
+            continue
+
+        ok += 1
+        if not args.dry_run:
+            pending_rows.extend(rows)
+        else:
+            logger.info("[%d/%d] %s: %d rows (dry-run)", i, len(tickers), ticker, len(rows))
+            if rows:
+                r0 = rows[0]
+                logger.info("  Sample: FY%s Q%s | rev=%.0f ebitda=%.0f pat=%.0f roe=%s",
+                            r0["fiscal_year"], r0["quarter"],
+                            r0.get("revenue") or 0, r0.get("ebitda") or 0,
+                            r0.get("pat") or 0, r0.get("roe"))
+
+        # Flush every BATCH_SIZE tickers
+        if not args.dry_run and len(pending_rows) >= BATCH_SIZE * 15:
+            with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+                _flush(conn)
+            gc.collect()
+
+        if i % 100 == 0 or i == len(tickers):
+            elapsed = time.monotonic() - t_start
+            rate = i / elapsed if elapsed > 0 else 0
+            eta = (len(tickers) - i) / rate / 60 if rate > 0 else 0
+            logger.info("[%d/%d] ok=%d notfound=%d err=%d rows=%d  %.1f t/s  ETA~%.0f min",
+                        i, len(tickers), ok, notfound, errors, total_rows, rate, eta)
+
+        time.sleep(args.sleep)
+
+    # Final flush
+    if not args.dry_run and pending_rows:
+        with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+            _flush(conn)
+
+    # Summary
+    if not args.dry_run:
+        with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+            f = conn.execute("SELECT COUNT(*), COUNT(DISTINCT ticker) FROM fundamentals").fetchone()
+            roe_pct = conn.execute(
+                "SELECT COUNT(roe)*100.0/COUNT(*) FROM fundamentals"
+            ).fetchone()[0]
+            roce_pct = conn.execute(
+                "SELECT COUNT(roce)*100.0/COUNT(*) FROM fundamentals"
+            ).fetchone()[0]
+
+    elapsed_min = (time.monotonic() - t_start) / 60
+    logger.info("─" * 60)
+    logger.info("Trendlyne backfill complete in %.1f min", elapsed_min)
+    logger.info("  Tickers: %d ok, %d not-on-Trendlyne, %d errors", ok, notfound, errors)
+    logger.info("  Total rows written: %d", total_rows)
+    if not args.dry_run:
+        logger.info("  fundamentals table: %d rows, %d tickers", f[0], f[1])
+        logger.info("  ROE completeness : %.1f%%", roe_pct)
+        logger.info("  ROCE completeness: %.1f%%", roce_pct)
+
+
+if __name__ == "__main__":
+    main()

@@ -19,6 +19,16 @@ unadjusted table to switch to yet, so `adjusted=false` is accepted but
 behaves identically to `adjusted=true` (same as main.py's pre-existing
 `as_of` parameter on this endpoint, which is accepted for PIT-contract
 symmetry but doesn't filter rows since price data is PITRule.NONE).
+
+[AS BUILT, SPEC-SCHED-013] Every connection here uses persist=False —
+DUCKDB_PATH is also written by the ingestion scheduler (a separate,
+long-lived process); a persistently-pooled read-only connection here
+would hold the file open for this whole API process's lifetime,
+permanently blocking the scheduler from ever opening a read-write
+connection. persist=False closes the connection again after each
+request, so the scheduler's write steps can interleave between requests.
+See datastore/api/db.py's module docstring for the full incident this
+fixes.
 """
 
 import logging
@@ -26,6 +36,7 @@ from datetime import date as date_type
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from config.settings import DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
@@ -53,13 +64,39 @@ async def get_ohlcv_tickers(
     direct DuckDB query of its own — needed for
     BacktestIntegrityChecker's check_04_survivorship.
     """
-    with get_duckdb_connection(DUCKDB_PATH, read_only=True) as conn:
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         rows = conn.execute(
             "SELECT ticker, COUNT(*) AS n_rows FROM ohlcv_adjusted GROUP BY ticker HAVING COUNT(*) >= ? "
             "ORDER BY ticker",
             [min_rows],
         ).fetchall()
     return OHLCVUniverseResponse(tickers=[r[0] for r in rows], row_counts={r[0]: r[1] for r in rows})
+
+
+@router.get("/_bulk")
+async def get_ohlcv_bulk(
+    from_date: date_type = Query(..., alias="from", description="Inclusive start date (YYYY-MM-DD)"),
+    to_date: date_type = Query(..., alias="to", description="Inclusive end date (YYYY-MM-DD)"),
+) -> Response:
+    """
+    Return OHLCV for ALL tickers in [from, to] in one DuckDB query.
+
+    Replaces the per-ticker GET /ohlcv/{ticker} loop in matrix_builder and
+    step_compute_features — one call instead of 500, ~10x faster for backfill.
+    Returns a flat JSON array of records (same fields as OHLCVRow minus
+    adjusted_close, which equals close for all rows in ohlcv_adjusted).
+    Uses pandas .to_json() (C-backed) to avoid Pydantic overhead on 400k rows.
+    """
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from must be <= to")
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        df = conn.execute(
+            "SELECT CAST(date AS VARCHAR) AS date, ticker, open, high, low, close, "
+            "volume, delivery_pct, adj_factor "
+            "FROM ohlcv_adjusted WHERE date >= ? AND date <= ? ORDER BY ticker, date",
+            [from_date, to_date],
+        ).df()
+    return Response(content=df.to_json(orient="records"), media_type="application/json")
 
 
 @router.get("/{ticker}", response_model=OHLCVResponse)
@@ -82,7 +119,7 @@ async def get_ohlcv(
     if from_date > to_date:
         raise HTTPException(status_code=400, detail="from must be <= to")
 
-    with get_duckdb_connection(DUCKDB_PATH, read_only=True) as conn:
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         rows = conn.execute(
             """
             SELECT date, ticker, open, high, low, close, volume, delivery_pct, adj_factor
@@ -112,7 +149,7 @@ async def get_ohlcv_latest(ticker: str) -> Optional[OHLCVRow]:
     if not ticker:
         raise HTTPException(status_code=400, detail="Ticker cannot be empty")
 
-    with get_duckdb_connection(DUCKDB_PATH, read_only=True) as conn:
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         row = conn.execute(
             """
             SELECT date, ticker, open, high, low, close, volume, delivery_pct, adj_factor

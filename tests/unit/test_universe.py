@@ -30,6 +30,7 @@ def _row(ticker, tier=1, market_cap_cr=1000, adtv_cr=10.0, is_nifty500=True):
         "adtv_cr": adtv_cr,
         "is_fno_eligible": False,
         "is_nifty500": is_nifty500,
+        "isin": f"INE{hash(ticker) % 1000000000:09d}",
     }
 
 

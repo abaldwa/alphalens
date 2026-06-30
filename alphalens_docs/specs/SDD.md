@@ -40,6 +40,7 @@ ESG data, satellite data, autonomous order execution
 | FR-01-06 | System SHALL load AMFI MF holdings using ~5th of following month as availability date | MUST | 2 |
 | FR-01-07 | System SHALL validate completeness: ≥ 450/500 stocks with non-null features before proceeding | MUST | 1 |
 | FR-01-08 | System SHALL log every pipeline step with timestamp, stock count, and any errors | MUST | 1 |
+| FR-01-09 | System SHALL NOT generate, fabricate, or fall back to synthetic/mocked/procedurally-sampled data in any training, scoring, or backtest code path; insufficient real data SHALL raise, never substitute (SPEC-SYS-006) | MUST | 1 |
 
 ### FR-02: Feature Computation
 | ID | Requirement | Priority | Phase |

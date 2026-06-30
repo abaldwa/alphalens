@@ -76,7 +76,7 @@ EXIT_MODEL_NAME = "exit_signal"
 
 REGIME_RANK_NAMES = {0.0: "bearish", 1.0: "sideways", 2.0: "volatile", 3.0: "bullish"}
 
-# Must match exit_signal.generate_synthetic_training_data()'s schema (P1.6) —
+# Must match exit_signal.load_exit_training_data_from_db()'s schema —
 # duplicated rather than imported from backtest/engine.py to avoid an
 # inference-layer -> backtest-layer dependency for one constant list.
 EXIT_CONTEXT_COLUMNS = [

@@ -14,11 +14,21 @@ that runs before any buy signal reaches the user (SPEC-MODEL-006). These
   Pattern 2: 8 consecutive upper circuits + delivery < 5%               -> score >= 80
   Pattern 3: Normal blue-chip trading (HDFC-Bank-like, stable)          -> score <= 20
 
-All three are synthetic data built to match the prompt's literal pattern
-descriptions (no real NSE circular archive is ingested as of Phase 1 —
-see systems/ml_signal_engine/models/pnd/pnd_detector.py's module
-docstring) — this is the closest available proxy for "known NSE P&D
-patterns" until that ingestion work lands.
+The detector itself is trained on real data only, via
+pnd_detector.load_pnd_training_data_from_db() (KNOWN_PND_TICKERS' real
+OHLCV around their documented event windows + clean real comparison
+tickers) — there is no synthetic-training-data fallback; this test skips
+if that real training data isn't available yet.
+
+The 3 OHLCV panels below are deterministic, hand-built stress-test
+fixtures exercising the literal numeric pattern descriptions above (not
+training data, and not a stand-in for real market history) — they let
+this regression test assert exact detector behavior at known decision
+boundaries (10x volume, 40% runup, 8 circuits, etc.) without depending on
+whether a real historical instance of each exact boundary case exists in
+the archive yet. Replacing them with real archived P&D event OHLCV is
+tracked in BuildLog.md "Real data sourcing — P&D pattern regression
+fixtures".
 """
 
 import numpy as np
@@ -26,12 +36,15 @@ import pandas as pd
 import pytest
 
 from features.pnd_features import compute_pnd_features
-from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, generate_synthetic_training_data
+from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, load_pnd_training_data_from_db
 
 
 @pytest.fixture(scope="module")
 def trained_detector():
-    X, y = generate_synthetic_training_data(n_positive=12, n_negative=288, n_days=90, seed=11)
+    try:
+        X, y = load_pnd_training_data_from_db()
+    except RuntimeError as exc:
+        pytest.skip(f"real P&D training data not yet available: {exc}")
     detector = PnDDetector(random_state=11)
     detector.train(X, y)
     return detector

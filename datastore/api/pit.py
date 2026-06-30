@@ -13,7 +13,6 @@ SOLID: Single Responsibility — all PIT logic is isolated here for 100% testabi
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
 
 import pandas as pd
 
@@ -60,7 +59,7 @@ def enforce_pit_fundamentals(
         f"(as_of={as_of.date()}, removed {len(df) - len(df_pit)} forward-looking)"
     )
 
-    return df_pit.sort_values(by="date", ascending=True)
+    return df_pit.sort_values(by=announcement_date_col, ascending=True)
 
 
 def enforce_pit_shareholding(
@@ -103,7 +102,7 @@ def enforce_pit_shareholding(
         f"(as_of={as_of.date()}, removed {len(df) - len(df_pit)} forward-looking)"
     )
 
-    return df_pit.sort_values(by="date", ascending=True)
+    return df_pit.sort_values(by=filing_date_col, ascending=True)
 
 
 def enforce_pit_mf_holdings(
@@ -150,7 +149,7 @@ def enforce_pit_mf_holdings(
     )
 
     # Drop temporary column
-    return df_pit.drop(columns=["observable_date"]).sort_values(by="date", ascending=True)
+    return df_pit.drop(columns=["observable_date"]).sort_values(by=month_end_col, ascending=True)
 
 
 def compute_staleness_flags(

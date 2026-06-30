@@ -19,6 +19,7 @@ Every spec maps to: a phase, a module, at least one test, and a verification met
 | SPEC-SYS-003 | 0 | T-SYS-003 | U | 440 stocks → halt; 460 → proceed |
 | SPEC-SYS-004 | 0 | T-SYS-004 | M | Weekly: Oracle instance alive |
 | SPEC-SYS-005 | All | T-SYS-005 | M | Quarterly: du -sh datastore/ < 500GB |
+| SPEC-SYS-006 | All | T-SYS-006 | U | grep for generate_synthetic/synthetic_data in systems/, backtest/ returns nothing outside labeled test fixtures |
 | SPEC-SYS-011 | 2 | T-SYS-011 | U | Profile switch → stock count changes |
 
 ### SPEC-PIPE: Data Pipeline
@@ -31,6 +32,7 @@ Every spec maps to: a phase, a module, at least one test, and a verification met
 | SPEC-PIPE-004 | 1 | T-PIPE-004 | I | 500 stocks features < 15 min |
 | SPEC-PIPE-005 | 0 | T-PIPE-005 | U | Inject nulls/outliers → flagged |
 | SPEC-PIPE-006 | 0 | T-PIPE-006 | I | VIX + USD/INR in valid range |
+| SPEC-MFHOLD-001 | 2 | T-MFHOLD-001a,b,c | U | Groww snapshot-month validation; SBI ISIN-exact parse; registry merge-not-overwrite |
 
 ### SPEC-FEAT: Feature Engineering
 
@@ -135,7 +137,7 @@ Every spec maps to: a phase, a module, at least one test, and a verification met
 | SPEC-TRACE-003 | All | T-TRACE-003 | M | Commits reference SPEC-IDs |
 | SPEC-TRACE-004 | All | T-TRACE-004 | S | Test docstrings reference SPEC-IDs |
 
-### RTM Summary: 80 specs, 80 tests, 100% traceability
+### RTM Summary: 82 specs, 82 tests, 100% traceability
 
 | Test Type | Count | Automated? |
 |-----------|:-----:|:----------:|
@@ -270,10 +272,13 @@ def test_bonus_halves_price(self):
 
 ### Phase 2 → Phase 3 Gate
 - [ ] Screener.in PIT verified (T-PIPE-003a)
-- [ ] Sector z-scores working (T-FEAT-002)
+- [ ] Sector z-scores working (T-FEAT-002) — check `roe` column in feature Parquet (z-scored in-place, not `roe_zscore`); verify non-null for tickers with fundamentals data
 - [ ] Forensic flags known frauds (T-MODEL-009)
-- [ ] pip-audit clean (T-LIB-003)
+- [ ] pip-audit clean (T-LIB-003) — `pip-audit` reports "No known vulnerabilities found"; aiohttp/requests/setuptools force-upgraded past fyers-apiv3's pins (2026-06-24)
+- [ ] Trendlyne credentials: `TRENDLYNE_USERNAME` and `TRENDLYNE_PASSWORD` set in `.env` (not `TRENDLYNE_API_KEY` — Trendlyne StratQ is login-walled, no API key)
 - [ ] ≥ 3 months paper trading
+- [ ] Phase 2 backtest: Signal63D + watchlist Sharpe > Phase 1 Signal5D Sharpe (relative improvement confirmed); absolute Sharpe > 1.0 requires full 500-ticker universe + ≥ 50 Optuna trials (quick-mode 15-ticker/2-fold result 2026-06-24: Phase 2 −0.814 vs Phase 1 −0.949, Phase 2 is better ✓)
+- [ ] pytest --cov ≥ 80% (run as batched coverage; full suite may OOM; heavy ML tests run separately)
 - [ ] RTM reviewed
 
 ### Phase 3 → Phase 4 Gate

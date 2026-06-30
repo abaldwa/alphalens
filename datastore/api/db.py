@@ -1,18 +1,48 @@
 """
 datastore/api/db.py
 
-Phase: 0.1 (Project Skeleton)
-Specs: SPEC-DS-007, SPEC-QUALITY-002
+Phase: 0.1 (Project Skeleton); concurrency resilience added per SPEC-SCHED-013
+Specs: SPEC-DS-007, SPEC-QUALITY-002, SPEC-SCHED-013
 Owner: Platform / DataStore
 Consumers: datastore/api, ingestion/*, systems/*, backtest
 
 Database connection management and initialization.
 Abstracts DuckDB (analytical queries) and SQLite (transactional/scheduling) setup.
 SOLID: Dependency Injection — clients receive connections via context managers.
+
+[AS BUILT, SPEC-SCHED-013] DuckDB allows multiple concurrent read-only
+connections OR exactly one read-write connection — never both at once,
+even across separate processes. The original "keep every connection open
+forever in a pool" design (fine for a single long-lived process) meant
+that once the DataStore API opened so much as one read-only connection to
+a DuckDB file, that file stayed locked open for the *life of the API
+process* — permanently blocking any other process (the ingestion
+scheduler's write steps, a manual backfill run) from ever opening a
+read-write connection to the same file while the API was up. Caught when
+a real, multi-day-running scheduler process's 20:00 backfill-catchup job
+crashed against this exact conflict and (separately) the scheduler then
+stopped firing entirely — see BuildLog.md "Scheduler/DuckDB concurrency
+resilience" for the full incident.
+
+Fix: `persist=False` opens a connection, yields it, and closes it again
+on exit — never cached in the pool — so the file is only held open for
+the duration of the actual query/operation, not the life of the process.
+Callers that only ever do brief, frequent reads against a file another
+process also writes to (the API's OHLCV endpoints) should use
+`persist=False`; callers that are the *sole* writer/reader of a file for
+the life of their process (e.g. the API's own ml_signals access) can keep
+`persist=True` (the default, unchanged) for connection-reuse efficiency.
+
+`get_duckdb_connection` also now retries with backoff on a lock-conflict
+IOException — even with `persist=False` reducing the window, a write
+operation that is *actively* in progress when a read arrives will still
+briefly hold the file exclusively; retrying instead of failing the
+request outright turns that into a short delay rather than a hard error.
 """
 
 import logging
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -23,6 +53,13 @@ except ImportError:
     duckdb = None
 
 logger = logging.getLogger(__name__)
+
+# SPEC-SCHED-013: retry budget for a transient DuckDB lock conflict (another
+# process briefly holding the file open). Total worst-case wait ~3.5s
+# (0.5+1.0+2.0) — short enough not to make an API request hang noticeably,
+# long enough to ride out a quick write-step handoff.
+DUCKDB_LOCK_RETRY_ATTEMPTS = 4
+DUCKDB_LOCK_RETRY_BASE_DELAY_S = 0.5
 
 
 def init_duckdb(path: Path) -> None:
@@ -181,15 +218,35 @@ _duckdb_connections: dict = {}
 _sqlite_connections: dict = {}
 
 
+def _connect_with_retry(path_key: str, read_only: bool):
+    """SPEC-SCHED-013: retry-with-backoff on a transient DuckDB lock conflict."""
+    last_exc = None
+    for attempt in range(DUCKDB_LOCK_RETRY_ATTEMPTS):
+        try:
+            return duckdb.connect(path_key, read_only=read_only)
+        except duckdb.IOException as exc:
+            last_exc = exc
+            if "Could not set lock" not in str(exc) or attempt == DUCKDB_LOCK_RETRY_ATTEMPTS - 1:
+                raise
+            delay = DUCKDB_LOCK_RETRY_BASE_DELAY_S * (2**attempt)
+            logger.warning(
+                f"DuckDB lock conflict on {path_key} (attempt {attempt + 1}/"
+                f"{DUCKDB_LOCK_RETRY_ATTEMPTS}) — retrying in {delay:.1f}s: {exc}"
+            )
+            time.sleep(delay)
+    raise last_exc  # pragma: no cover — unreachable, loop always returns or raises
+
+
 @contextmanager
 def get_duckdb_connection(
     db_path: Optional[Path] = None,
     read_only: bool = False,
+    persist: bool = True,
 ) -> Iterator:
     """
     Context manager for DuckDB connections.
 
-    Yields a DuckDB connection object. Handles cleanup automatically.
+    Yields a DuckDB connection object.
 
     Args:
         db_path: Path to .duckdb file. If None, uses in-memory database (for testing).
@@ -201,6 +258,20 @@ def get_duckdb_connection(
             a long-lived process holding the file open doesn't lock out
             other readers (caught wiring features/matrix_builder.py, P1.1
             — see BuildLog.md).
+        persist: If True (default), the connection is cached and kept open
+            for the life of the process (efficient for a sole reader/writer
+            of a file). If False, the connection is opened fresh and
+            CLOSED again on exit — never cached — so the file's lock is
+            released as soon as this `with` block ends. Use False for any
+            caller sharing a file with another long-lived process (e.g.
+            the API's OHLCV endpoints, which share DUCKDB_PATH with the
+            ingestion scheduler — SPEC-SCHED-013; see module docstring).
+            Ignored (always treated as True) when db_path is None — an
+            in-memory `:memory:` database has no cross-process file lock to
+            release in the first place, and separate `persist=False` calls
+            would each get an independent, empty in-memory database instead
+            of sharing state — breaking tests that seed an in-memory DB in
+            one call and read it back in another.
 
     Yields:
         DuckDB connection object
@@ -208,6 +279,8 @@ def get_duckdb_connection(
     Raises:
         ImportError: If duckdb not installed
         IOError: If db_path is invalid
+        duckdb.IOException: If the file is still lock-conflicted after
+            DUCKDB_LOCK_RETRY_ATTEMPTS retries.
 
     Example:
         with get_duckdb_connection(db_path) as conn:
@@ -218,10 +291,19 @@ def get_duckdb_connection(
 
     # Default to in-memory for testing
     path_key = str(db_path) if db_path else ":memory:"
-    cache_key = f"{path_key}|read_only={read_only}"
+    is_in_memory = path_key == ":memory:"
 
+    if not persist and not is_in_memory:
+        conn = _connect_with_retry(path_key, read_only)
+        try:
+            yield conn
+        finally:
+            conn.close()
+        return
+
+    cache_key = f"{path_key}|read_only={read_only}"
     if cache_key not in _duckdb_connections:
-        _duckdb_connections[cache_key] = duckdb.connect(path_key, read_only=read_only)
+        _duckdb_connections[cache_key] = _connect_with_retry(path_key, read_only)
 
     conn = _duckdb_connections[cache_key]
     try:

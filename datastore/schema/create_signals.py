@@ -74,6 +74,29 @@ _CREATE_PIPELINE_DRIFT_LOG = """
 
 _PIPELINE_DRIFT_LOG_TABLE = {"pipeline_drift_log": _CREATE_PIPELINE_DRIFT_LOG}
 
+# [AS BUILT, SPEC-SCHED-013] One row per recurring scheduled job
+# (job_id='daily_pipeline' | 'backfill_catchup'), upserted on EVERY
+# invocation attempt — success or failure — by
+# ingestion/scheduler/pipeline_scheduler.py's job wrappers. Lets GET
+# /health (and an operator) tell "this job hasn't fired in N hours" apart
+# from "it fires but keeps failing", neither of which was previously
+# observable without reading the scheduler process's own log file by
+# hand. Written because a real, multi-day-running scheduler process's
+# job silently stopped firing entirely after one crash, with nothing
+# anywhere recording that it had gone quiet — see BuildLog.md "Scheduler/
+# DuckDB concurrency resilience".
+_CREATE_SCHEDULER_HEARTBEATS = """
+    CREATE TABLE IF NOT EXISTS scheduler_heartbeats (
+        job_id VARCHAR PRIMARY KEY,
+        last_attempt_at TIMESTAMP NOT NULL,
+        last_status VARCHAR NOT NULL,
+        last_error TEXT,
+        last_success_at TIMESTAMP
+    )
+"""
+
+_SCHEDULER_HEARTBEATS_TABLE = {"scheduler_heartbeats": _CREATE_SCHEDULER_HEARTBEATS}
+
 # SPEC-SCHED-002, SPEC-SCHED-005, SPEC-SCHED-010: per-step checkpoint log,
 # companion to pipeline_runs. One row per (date, step_name); upserted by
 # ingestion/scheduler/checkpoint.py.CheckpointManager.save_checkpoint().
@@ -142,6 +165,13 @@ _CREATE_ML_MULTIBAGGER = """
         survival_12m DOUBLE,
         survival_24m DOUBLE,
         survival_36m DOUBLE,
+        -- [AS BUILT, P2.6] MultibaggerModel.predict_full() (M-08,
+        -- systems/ml_signal_engine/models/multibagger/multibagger_model.py)
+        -- emits SURVIVAL_HORIZONS_MONTHS = (6, 12, 18, 24, 36) — this
+        -- Phase 0.2 DDL only had 4 of the 5 horizons (missing 18m). Added
+        -- here rather than silently dropping a real model output column
+        -- when wiring up P2.6's scoring script.
+        survival_18m DOUBLE,
         shap_top5_json VARCHAR,
         analogues_json VARCHAR,
         PRIMARY KEY (date, ticker)
@@ -162,6 +192,15 @@ _CREATE_ML_FORENSIC = """
         benford_mad DOUBLE,
         forensic_composite DOUBLE,
         forensic_flag BOOLEAN,
+        -- [AS BUILT, P2.6] forensic_flag (BOOLEAN) is kept as "blocked"
+        -- semantics (forensic_composite > forensic_ml.py's
+        -- FORENSIC_BLOCK_THRESHOLD=60 — "BLOCKED from all buy
+        -- recommendations"). forensic_ml.py's actual flag taxonomy is
+        -- 5-level (green/yellow/orange/red/black, FLAG_LEVELS) — that
+        -- richer label is added here as forensic_flag_label, not silently
+        -- collapsed into the boolean. Used by the P2.6 dashboard's
+        -- "forensic alert count (red/amber breakdown)".
+        forensic_flag_label VARCHAR,
         forensic_ml_prob DOUBLE,
         shap_top5_json VARCHAR,
         pattern_match VARCHAR,
@@ -174,6 +213,27 @@ _SIGNAL_TABLES = {
     "ml_multibagger": _CREATE_ML_MULTIBAGGER,
     "ml_forensic": _CREATE_ML_FORENSIC,
 }
+
+# [AS BUILT, P2.6] Same idempotent ALTER TABLE pattern as
+# create_normalised.py's _MIGRATE_ADDED_COLUMNS — see that module's
+# docstring for why CREATE TABLE IF NOT EXISTS alone cannot reach an
+# already-created table file.
+_MIGRATE_ADDED_COLUMNS = {
+    "ml_multibagger": [
+        "ALTER TABLE ml_multibagger ADD COLUMN IF NOT EXISTS survival_18m DOUBLE",
+    ],
+    "ml_forensic": [
+        "ALTER TABLE ml_forensic ADD COLUMN IF NOT EXISTS forensic_flag_label VARCHAR",
+    ],
+}
+
+
+def _migrate_added_columns(conn) -> None:
+    """Idempotently ALTER any signal table whose schema has grown since it may have first been created."""
+    for table_name, statements in _MIGRATE_ADDED_COLUMNS.items():
+        for ddl in statements:
+            conn.execute(ddl)
+        logger.info(f"Ensured added columns present: {table_name}")
 
 
 def create_pipeline_runs_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> None:
@@ -268,6 +328,36 @@ def create_pipeline_drift_log_schema(db_path: Optional[Path] = None, in_memory: 
     logger.info(f"Pipeline drift log schema ready at {db_path if db_path else ':memory:'}")
 
 
+def create_scheduler_heartbeats_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> None:
+    """
+    Create the scheduler_heartbeats SQLite table (one row per recurring job).
+
+    Idempotent — safe to call multiple times.
+
+    Args:
+        db_path: Path to .db file. If None and in_memory=False, uses
+            config.settings.PIPELINE_LOG_DB_PATH (same file as pipeline_runs).
+        in_memory: If True, create the table in an in-memory SQLite database
+            (db_path is ignored). Used by tests/unit/test_schema.py.
+    """
+    if in_memory:
+        db_path = None
+    elif db_path is None:
+        from config.settings import PIPELINE_LOG_DB_PATH
+
+        db_path = PIPELINE_LOG_DB_PATH
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with get_sqlite_connection(db_path) as conn:
+        cursor = conn.cursor()
+        for table_name, ddl in _SCHEDULER_HEARTBEATS_TABLE.items():
+            cursor.execute(ddl)
+            logger.info(f"Ensured table exists: {table_name}")
+        conn.commit()
+
+    logger.info(f"Scheduler heartbeats schema ready at {db_path if db_path else ':memory:'}")
+
+
 def create_signal_tables_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> None:
     """
     Create Store 4 (Signals) DuckDB tables: ml_signals, ml_multibagger, ml_forensic.
@@ -292,6 +382,7 @@ def create_signal_tables_schema(db_path: Optional[Path] = None, in_memory: bool 
         for table_name, ddl in _SIGNAL_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")
+        _migrate_added_columns(conn)
 
     logger.info(f"Signals schema ready at {db_path if db_path else ':memory:'}")
 
@@ -315,6 +406,7 @@ def create_schema(
     create_pipeline_runs_schema(db_path=sqlite_path, in_memory=in_memory)
     create_pipeline_checkpoints_schema(db_path=sqlite_path, in_memory=in_memory)
     create_pipeline_drift_log_schema(db_path=sqlite_path, in_memory=in_memory)
+    create_scheduler_heartbeats_schema(db_path=sqlite_path, in_memory=in_memory)
     create_signal_tables_schema(db_path=duckdb_path, in_memory=in_memory)
 
 
@@ -325,6 +417,7 @@ def list_tables() -> dict:
             list(_PIPELINE_RUNS_TABLE.keys())
             + list(_PIPELINE_CHECKPOINTS_TABLE.keys())
             + list(_PIPELINE_DRIFT_LOG_TABLE.keys())
+            + list(_SCHEDULER_HEARTBEATS_TABLE.keys())
         ),
         "duckdb": list(_SIGNAL_TABLES.keys()),
     }

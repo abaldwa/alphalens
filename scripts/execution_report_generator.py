@@ -4,10 +4,8 @@ Execution Report Generator for AlphaLens Claude Code Framework
 SPEC-OBS-003: Structured Logging and Reporting
 """
 
-import json
-import os
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional
 
 from config.timezone import now_ist
 

@@ -1,0 +1,28 @@
+# requirements/phase3.txt
+#
+# Phase: 3
+# Specs: SPEC-LIB-001, SPEC-FEAT-001, SPEC-MODEL-010
+# Owner: Platform
+# Consumers: features/advanced_technical, features/pattern_scores,
+#            features/real_economy_macro, features/deep_forensic,
+#            systems/ml_signal_engine/models/deep
+#
+# Phase 3 deep-learning and advanced-technical dependencies.
+# All versions pinned with == per SPEC-LIB-001.
+# Install: .venv/bin/pip install --no-cache-dir -r requirements/phase3.txt
+#
+# NOTE: torch is a large download (~800 MB CPU-only wheel). Install on a
+# stable network connection; use --no-cache-dir on quota-constrained machines.
+
+-r phase1.txt
+
+# ── Deep learning ────────────────────────────────────────────────────────────
+# CPU-only torch; swap for cu121/cu124 index URL if a CUDA GPU is available.
+torch==2.12.1
+pytorch-tabnet==4.1.0
+pytorch-forecasting==1.3.0
+
+# ── Wavelet & signal analysis ────────────────────────────────────────────────
+# PyWavelets is also present in phase1.txt for ruptures integration;
+# pinned here as an explicit Phase 3 feature dependency.
+PyWavelets==1.9.0

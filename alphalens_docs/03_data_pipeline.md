@@ -105,6 +105,15 @@ CREATE TABLE fundamentals (
     payable_days       REAL,
     book_value_per_share REAL,
     shares_outstanding INTEGER,
+    -- [AS BUILT, P2.1] Added: features/fundamental.py's gross_margin,
+    -- capex_intensity, roic, net_debt_to_ebitda, current_ratio need these
+    -- raw line items, not present in the original P0.2 schema.
+    gross_profit REAL,
+    capex REAL,
+    current_assets REAL,
+    current_liabilities REAL,
+    total_debt REAL,
+    cash_and_equivalents REAL,
     PRIMARY KEY (ticker, fiscal_year, quarter)
 );
 CREATE INDEX idx_fund_ticker_ann ON fundamentals(ticker, announcement_date);

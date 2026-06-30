@@ -37,6 +37,40 @@
   dropped along with Oracle Cloud — SPEC-SCHED-009); not yet automated
 - Total: < 500 GB on laptop SSD
 
+### SPEC-SYS-006 · No Synthetic Data (CRITICAL)
+- The application SHALL NOT generate, fabricate, or fall back to synthetic, mocked,
+  jittered, or procedurally-sampled data anywhere in a model-training, scoring, or
+  backtesting code path. This applies to every model (M-01 through M-16) and every
+  backtest script without exception.
+- Every training-data loader (`load_pnd_training_data_from_db`,
+  `load_exit_training_data_from_db`, `load_multibagger_training_data_from_db`,
+  `load_forensic_training_data_from_db`, `load_ohlcv_from_db`, etc.) sources real
+  data only: real OHLCV (`ohlcv_adjusted`), real fundamentals, real documented
+  archive cases (`KNOWN_FRAUD_ARCHIVE`, `KNOWN_CLEAN_ARCHIVE`, `KNOWN_PND_TICKERS`,
+  `HISTORICAL_MULTIBAGGER_ARCHIVE`), or real accumulated paper-trading history.
+- If the real data available is insufficient (below a documented minimum-sample
+  threshold), the loader/script MUST raise (`RuntimeError` or `FileNotFoundError`)
+  with a message that (a) states what's missing and how much was found vs. required,
+  and (b) points to the relevant `BuildLog.md` "Real data sourcing — X" section
+  describing how to backfill or compute the missing real data. It MUST NOT
+  silently substitute a generated/sampled/randomized stand-in.
+- Known historical-archive entries (e.g. `HISTORICAL_MULTIBAGGER_ARCHIVE`'s
+  feature vectors) that are themselves still a documented gap pending a real
+  15-year OHLCV backfill are flagged in their own module docstrings and in
+  BuildLog.md — they are not silently presented as if they were measured.
+- **Exemption (test fixtures only):** deterministic, hand-built unit/regression-test
+  fixtures that exercise a specific function's logic against known boundary
+  conditions (e.g. a constructed OHLCV panel asserting "10x volume spike scores
+  >= 70") are not in scope of this spec — they never execute in an application
+  code path, are clearly named/documented as test fixtures, and do not feed any
+  persisted model artifact. Test fixtures must not be confused with, or substitute
+  for, the real-data loaders above; any test that trains a model under test must
+  use the real loader (skipping with a clear reason if real data isn't available
+  in that environment), not a synthetic generator.
+- Verification: `grep -rn "generate_synthetic\|np.random.*training\|synthetic_data"
+  systems/ backtest/` (excluding test-fixture helpers explicitly named/documented
+  as such) must return no production training/inference code paths.
+
 ---
 
 ## SPEC-PIPE: Data Pipeline Specifications
@@ -48,11 +82,71 @@
 - Ingestion layer writes to DataStore ONLY; consumer systems read via API
 
 ### SPEC-PIPE-002 · Corporate Action Adjustment
-- Applied retroactively to all historical prices on ex-date
-- SPLIT: pre-ex prices × ratio. BONUS: pre-ex prices / (1 + ratio)
-- Must be idempotent (safe to call multiple times)
-- Post-adjustment: price continuity at ex-date < 1% gap
-- Logged with before/after price sample
+
+**Direction:** Backward adjustment. Historical prices/volumes are rewritten to the
+current/latest per-share basis. Today's NSE-reported price is always preserved unchanged.
+
+**Per-action adjustment rules (confirmed P3.5):**
+
+| Action   | price_factor                            | vol_factor   |
+|----------|-----------------------------------------|--------------|
+| SPLIT    | `1 / ratio`                             | `ratio`      |
+| BONUS    | `1 / (1 + ratio)`                       | `1 + ratio`  |
+| DIVIDEND | `1 − (dividend / raw_close_before_ex)`  | `1.0`        |
+| RIGHTS   | 1.0 (subscription price not available)  | `1.0`        |
+| Others   | 1.0                                     | `1.0`        |
+
+- **SPLIT direction note (corrected P3.5):** original wording said "× ratio" which is wrong.
+  A 1:5 split (ratio=5) means Rs.500 pre-split → Rs.100 adjusted → factor = 1/5 = 0.2.
+  Code has always been correct; only the spec wording was wrong.
+
+**Volume adjustment (SPLIT/BONUS only):**
+- Pre-action `volume` and `delivery_qty` ×`vol_factor` (share-count units; opposite direction
+  to price so volumetric comparisons remain consistent across the ex_date)
+- `delivery_pct` = delivery_qty/volume — immune (same factor in numerator and denominator)
+- `turnover` (price×volume) — immune (price and vol factors are inverses for SPLIT/BONUS)
+
+**Dividend factor:**
+- `price_factor = 1 − (dividend / raw_close_on_last_trading_day_before_ex_date)`
+- raw_close recovered as `COALESCE(ohlcv_ca_audit.raw_close, ohlcv_adjusted.close / adj_factor)`
+  so earlier split/bonus adjustments do not distort the reference price
+- Vol factor = 1.0 (dividends do not change share count)
+
+**Audit table design (P3.5 — replaces earlier raw_* column approach):**
+- Original NSE-reported values are stored in `ohlcv_ca_audit`, NOT in ohlcv_adjusted
+- Only rows actually modified by the adjuster appear in ohlcv_ca_audit; stocks with no
+  corporate actions have zero audit rows (raw == adjusted, nothing to store)
+- `raw_*` columns in ohlcv_ca_audit: first write wins (ON CONFLICT DO NOTHING) — the
+  original NSE price is preserved forever regardless of adjuster re-runs
+- `adj_factor / vol_adj_factor` in ohlcv_ca_audit: always updated to the latest applied
+  factors (audit row is self-contained)
+- `ohlcv_adjusted.adj_factor` and `ohlcv_adjusted.vol_adj_factor` carry the currently
+  applied factors (1.0 = unadjusted). Features use these to know what was applied.
+- Invariant: `raw_value = adjusted_value / adj_factor` (prices); same for volume
+- Restore a ticker: `UPDATE ohlcv_adjusted SET open=a.raw_open, ..., adj_factor=1.0
+  FROM ohlcv_ca_audit a WHERE o.date=a.date AND o.ticker=a.ticker AND a.ticker='TGT'`
+
+**Re-download interaction (daily_pipeline.py):**
+- When bhavcopy re-downloads a date (ON CONFLICT): prices updated, factors reset to 1.0
+- ohlcv_ca_audit rows for that date are deleted immediately after the upsert — they were
+  derived from the old NSE data and would be stale; the next `adjust_prices` run recreates
+  them from the fresh NSE prices
+
+**Idempotency:**
+- Target `(adj_factor, vol_adj_factor)` computed from full corporate_actions history
+- Raw values recovered as `current / adj_factor` — if adj_factor=1.0 (first run), this
+  equals the NSE price exactly. Re-runs hit ON CONFLICT and the stored raw_* are preserved.
+- Only rows where target ≠ stored (within 1e-9 tolerance) are updated
+
+**Post-adjustment continuity check:**
+- `|close[ex_date] − close[day_before]| / close[day_before] < 1%` — WARNING, not hard failure
+  (genuine market moves on ex_date can legitimately exceed 1%)
+
+**Feature flag:**
+- `PRICE_ADJUSTMENT_ENABLED` in `config/settings.py`
+- `False` = `step_adjust_prices` is a no-op; `True` (default since P3.5) = active
+
+**Implementation:** `ingestion/adjust/price_adjuster.py`, audit table: `ohlcv_ca_audit`
 
 ### SPEC-PIPE-003 · Point-in-Time Alignment (CRITICAL)
 - Fundamentals: use announcement_date (NEVER quarter_end_date)
@@ -76,6 +170,119 @@
 - India VIX from NSE daily; fallback to previous day if unavailable
 - USD/INR, Crude, Gold from Yahoo Finance; retry 3 times on failure
 - FII/DII from NSE; mark unavailable if scrape fails (non-critical)
+
+### SPEC-PIPE-007 · Corporate Actions Ingestion
+- Source: NSE JSON API (`/api/corporates-corporateActions?index=equities`), EQ series only
+- Runs daily as a non-critical pipeline step (`download_corporate_actions`) after macro
+  download and before `adjust_prices` — an outage must never block features/models
+- Action types stored: SPLIT, BONUS, DIVIDEND, RIGHTS, BUYBACK, QIP, AGM, OTHER
+- Ratio semantics per action type (all in `corporate_actions` schema comment):
+  - SPLIT: new shares per old share (e.g. FV 10→2 → ratio=5)
+  - BONUS: bonus shares per held share (e.g. 1:1 → ratio=1; 1:2 → ratio=0.5)
+  - DIVIDEND: INR per share (e.g. Rs.10/share → ratio=10.0)
+  - RIGHTS: rights shares per held share (e.g. 1:5 rights → ratio=0.2)
+  - BUYBACK/QIP/AGM/OTHER: ratio=0.0 (no price-adjustment effect)
+- `details VARCHAR` column stores the raw NSE purpose string verbatim for audit and
+  re-parsing without a re-fetch
+- Idempotent: `ON CONFLICT (ticker, ex_date, action_type) DO NOTHING`
+- Raw JSON retained at `datastore/raw/corporate_actions/{YYYY-MM-DD}.json`
+- `announcement_date` is NOT exposed by NSE's CA endpoint — set to NULL; features that
+  require announcement_date must not use this table as a PIT-correct source without it
+- Implemented in `ingestion/scrapers/corporate_actions.py`
+
+### SPEC-PIPE-008 · Large Deals (Bulk + Block) Ingestion
+- **Definitions:**
+  - Bulk Deal: a single market transaction where ≥ 0.5% of a company's total listed shares
+    are traded (SEBI circular). Reported to NSE/BSE by end of day.
+  - Block Deal: a single transaction of ≥ 500,000 shares OR ≥ Rs. 10 crore, executed
+    exclusively in the block deal window (9:15–9:30 AM IST). Reported immediately.
+- **Sources:** NSE (historical bulk/block deal API + snapshot fallback) and BSE (open API)
+- **Endpoint map:**
+  - NSE Bulk: `https://www.nseindia.com/api/historical/bulk-deals?from=DD-MM-YYYY&to=DD-MM-YYYY`
+  - NSE Block: `https://www.nseindia.com/api/historical/block-deals?from=DD-MM-YYYY&to=DD-MM-YYYY`
+  - BSE Bulk: `https://api.bseindia.com/BseIndiaAPI/api/BulkDeals/w?strdate=DDMMYYYY&enddate=DDMMYYYY`
+  - BSE Block: `https://api.bseindia.com/BseIndiaAPI/api/BlockDeals/w?strdate=DDMMYYYY&enddate=DDMMYYYY`
+- **`large_deals` table schema:**
+  - `trade_date`, `exchange` (NSE/BSE), `deal_type` (BULK/BLOCK), `ticker`
+  - `client_name`, `transaction_type` (B/S), `quantity`, `price`, `remarks`
+- No PRIMARY KEY — delete-then-insert per (trade_date, exchange, deal_type) per day;
+  multiple deals per client per stock per day are valid
+- Each of the 4 sources fetched independently; any single source failure is caught, logged,
+  and skipped — the others still contribute rows (SPEC-PIPE-006 "non-critical" pattern)
+- BSE ticker field uses BSE's SCRIP_ID which usually matches NSE symbol but may differ;
+  no automatic reconciliation — cross-reference via company name if needed
+- Raw JSON retained at `datastore/raw/large_deals/{date}_{exchange}_{type}.json`
+- Implemented in `ingestion/scrapers/large_deals.py`
+
+### SPEC-PIPE-009 · Large Deals Family Filter (Clean Layer)
+- **Problem:** A significant fraction of reported bulk/block deals are intra-family
+  transfers — e.g. Rakesh Jhunjhunwala selling to Rekha Jhunjhunwala, or RARE Enterprises
+  (his vehicle) transferring to a family trust. These are not open-market buys/sells by
+  independent participants. Including them in signals creates false activity flags.
+- **Clean layer definition:** A `large_deals_clean` daily Parquet (or DuckDB view) derived
+  from `large_deals` with all intra-family and intra-promoter-group pairs removed.
+- **Family identification — three-tier approach (all applied in order; any match → drop):**
+  1. **Entity-family registry** (primary, highest precision): A curated table
+     `entity_families(entity_name VARCHAR, family_name VARCHAR, entity_type VARCHAR)`
+     mapping known investor entities to their family. Seeded from Trendlyne StratQ's
+     superstar investor list (which names the entity/vehicle alongside the person) and
+     manually maintained. Examples: `("RARE Enterprises", "Jhunjhunwala", "HNI_VEHICLE")`,
+     `("Rekha Jhunjhunwala", "Jhunjhunwala", "HNI_INDIVIDUAL")`. A deal where both buyer
+     and seller map to the same `family_name` → `is_intra_family = True`.
+  2. **Surname similarity** (secondary, broader net): Extract the last token of
+     `client_name` after stripping common suffixes (`LLP`, `Ltd`, `PVT`, `Trust`,
+     `Fund`, `Enterprises`, `Capital`). If two same-stock same-day counterparties share
+     the same cleaned surname → `is_intra_family = True`. Handles new entrants not yet
+     in the registry. Prone to false positives for common surnames (Patel, Sharma, Singh)
+     — mitigated by requiring the match on same stock, same day.
+  3. **Promoter cross-reference** (tertiary): If both client names appear in
+     `shareholding` promoter disclosures for the same ticker → `is_intra_promoter = True`
+     (a subset of intra-family but covers non-family promoter group transfers).
+- **Output columns added to clean layer:** `is_intra_family BOOL`, `is_intra_promoter BOOL`,
+  `family_name VARCHAR` (NULL if not matched), `filter_reason VARCHAR`
+- **Source preference:** If Trendlyne or Tijori already tag deals with entity type
+  (promoter/FII/DII/HNI/institution), persist that tag directly and use it to enrich
+  the family registry rather than rebuilding from scratch.
+- **Implementation target:** P3.5. `large_deals` raw table is built and populated in
+  P3.4; the clean-layer filter is a separate daily post-processing step added after
+  `download_large_deals` in the pipeline.
+- **Spec for clean layer retention:** Raw `large_deals` rows are never deleted — only the
+  clean Parquet is filtered. This preserves the ability to re-run filtering with an
+  updated registry without re-fetching from NSE/BSE.
+
+### SPEC-MFHOLD-001 · MF Holdings Sourcing Strategy (P2.2)
+- AMFI does not centrally host scheme-wise portfolio holdings — SEBI's
+  25-Aug-2022 circular mandates each AMC publish its own monthly
+  disclosure independently, on its own website, in its own format.
+- Primary source: **Groww** (groww.in) — verified live to mirror every
+  AMC's real disclosure (49 AMCs) via a single consistent format
+  (Next.js SSR `__NEXT_DATA__` JSON), reachable with a plain
+  unauthenticated HTTP GET. Per-holding ISIN is NOT exposed by Groww —
+  resolved via normalized-company-name match against `config.universe`'s
+  real `isin` column. Share quantity is NOT exposed — only % of AUM
+  (`corpus_per`); `quantity` is left null rather than fabricated.
+- **Groww exposes only the current live snapshot — it has no historical
+  archive.** A fetch for month M is only valid if Groww's live data is
+  itself currently dated M; this must be checked against the live
+  response's own `portfolio_date`, never assumed. A scheduled job that
+  misses a given month's live window has no way to recover it via Groww.
+- Secondary, higher-precision cross-check: **SBI Mutual Fund**'s own
+  direct portfolio-disclosure page (real ISIN + real share quantity,
+  and — unlike Groww — a genuine multi-month historical archive via its
+  own year/month selector). Used to validate Groww-derived SBI rows and
+  as the only fallback source if a past month is ever needed for SBI
+  specifically.
+- Architecture: source-agnostic `AMC_REGISTRY` (SPEC-SOLID-002,
+  Open/Closed) — new AMC coverage is added by registering a
+  `(fetch_fn, parse_fn)` pair, never by editing the registry/
+  orchestration core.
+- Ingestion runs twice monthly (config.settings.MF_HOLDINGS_SCHEDULE_DAYS,
+  default day 5 and day 20) rather than once, because AMC disclosure
+  timing varies and Groww's "current snapshot" can change mid-cycle.
+- PIT (SPEC-PIPE-003): `availability_date` = the
+  `MF_HOLDINGS_AVAILABILITY_DELAY_DAYS`-th day of the month following
+  the disclosure month, stamped on every row at write time — features
+  consume this column, never `month` directly.
 
 ---
 
@@ -439,6 +646,65 @@
   re-trigger the backfill command itself once the operator has logged in
   that day — the daily interactive login step remains a manual operator
   action until/unless FYERS offers a non-interactive auth path
+
+### SPEC-SCHED-013 · DuckDB Concurrency Resilience & Scheduler Heartbeats
+- **Root cause this spec exists for:** DuckDB allows multiple concurrent
+  read-only connections to a file OR exactly one read-write connection —
+  never both at once, even across separate processes. The DataStore API
+  (long-lived) and the ingestion scheduler (also long-lived) both touch
+  `DUCKDB_PATH`; a naive "keep every connection open for the life of the
+  process" pool means the API holding so much as one read-only connection
+  permanently blocks the scheduler from ever opening a read-write
+  connection to the same file, and vice versa
+- `datastore.api.db.get_duckdb_connection(..., persist=False)`: opens a
+  connection, yields it, and closes it again on exit — never cached —
+  so a file's lock is held only for the duration of one request/step, not
+  the process's entire lifetime. Required on both sides of any
+  cross-process-shared DuckDB file:
+  - API endpoints reading a file the scheduler also writes (e.g. every
+    `DUCKDB_PATH`-touching route in `datastore/api/routers/ohlcv.py`,
+    `system.py`)
+  - Scheduler/ingestion steps writing a file the API also reads (e.g.
+    `ingestion/scheduler/daily_pipeline.py`'s `step_download_bhavcopy`,
+    `step_adjust_prices`, `step_download_macro`;
+    `ingestion/backfill_runner.py`'s `run_backfill`)
+  - Does NOT apply to a file only one process ever touches (e.g. the
+    API's own exclusive ownership of `ml_signals` in `SIGNALS_DUCKDB_PATH`)
+    or to in-memory (`:memory:`) connections, which have no cross-process
+    file lock to release in the first place — `persist=False` is a no-op
+    (treated as `True`) for `:memory:` so tests that seed an in-memory DB
+    in one call and read it back in another keep working
+- `get_duckdb_connection` retries a lock-conflict `IOException` with
+  exponential backoff (`DUCKDB_LOCK_RETRY_ATTEMPTS=4`,
+  `DUCKDB_LOCK_RETRY_BASE_DELAY_S=0.5` → ~3.5s worst case) before raising
+  — turns a write step that is *actively* in progress when a read arrives
+  into a short delay instead of a hard failure
+- **Scheduler heartbeats:** every invocation attempt of a recurring job
+  (`daily_pipeline`, `backfill_catchup`) — success, failure, or a
+  deliberate early skip — is upserted to `scheduler_heartbeats`
+  (`job_id` PRIMARY KEY; `last_attempt_at`, `last_status`, `last_error`,
+  `last_success_at`). `last_success_at` only advances on an actual
+  success, so "last successful run" and "last attempt at all" stay
+  independently queryable
+- Both recurring job functions (`_execute_daily_job`,
+  `_execute_backfill_catchup`) are wrapped in try/except: no exception
+  may propagate past the job target function itself, regardless of root
+  cause — a single job's failure must never risk destabilizing the
+  scheduler's ability to fire its *next* scheduled occurrence
+- `GET /health` exposes a `scheduler` field: one entry per known job,
+  including a computed `is_stale` flag (no attempt recorded within the
+  job's expected interval — 4 days for the Mon-Fri daily pipeline to
+  absorb a normal weekend without a false positive, 26 hours for the
+  daily backfill catch-up)
+- **Incident this spec formalizes:** a real, multi-day-running scheduler
+  process's `backfill_catchup` job crashed against exactly the lock
+  conflict above (the API process was holding a persistent read-only
+  connection); the crash itself was caught and logged by APScheduler
+  correctly, but the scheduler then stopped firing *either* recurring
+  job entirely, with no heartbeat or any other record anywhere to make
+  that observable short of reading the scheduler process's own log file
+  via `/proc/<pid>/fd` by hand. See BuildLog.md "Scheduler/DuckDB
+  concurrency resilience" for the full investigation and fix.
 
 ---
 

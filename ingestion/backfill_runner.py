@@ -304,7 +304,7 @@ def run_backfill(
     membership or order changed between runs (e.g. after rebuilding
     config/nifty500_universe.csv from a different source — a position
     that meant "the last of 20 tickers" no longer meant the same thing
-    against a differently-ordered 502-ticker list, and ~340 never-
+    against a differently-ordered universe list, and ~340 never-
     downloaded tickers got skipped as if complete). has_sufficient_history()
     is the sole skip mechanism: it checks actual ohlcv_adjusted row
     coverage per ticker, which is correct regardless of what order or
@@ -319,7 +319,12 @@ def run_backfill(
         resolved_db_path = db_path or DUCKDB_PATH
 
     results: Dict[str, int] = {}
-    with get_duckdb_connection(resolved_db_path) as conn:
+    # persist=False (SPEC-SCHED-013): this is called from both a one-shot
+    # CLI process (where it's moot) and the scheduler's recurring
+    # backfill-catchup job (a long-lived process sharing DUCKDB_PATH with
+    # the DataStore API) — release the write lock once the whole backfill
+    # loop finishes, not for the scheduler process's entire lifetime.
+    with get_duckdb_connection(resolved_db_path, persist=False) as conn:
         for ticker in tickers:
             if has_sufficient_history(conn, ticker, from_date, to_date):
                 logger.info(f"{ticker}: sufficient history already present — skipping")
