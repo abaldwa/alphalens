@@ -32,20 +32,41 @@ function loadRegime() {
     .catch((e) => showError("regime-strip", e));
 }
 
+// Higher-signal alert types surface first — drift/exit are rare and need
+// immediate attention; pnd_block/pnd_flag are common (often dozens/day)
+// and shown as an expandable tail so they don't bury everything else.
+const ALERT_TYPE_PRIORITY = { drift_halt: 0, exit_urgent: 1, drift_warning: 2, pnd_block: 3, pnd_flag: 4 };
+const ALERTS_VISIBLE_CAP = 5;
+
+function alertBanner(a) {
+  const cls = a.severity === "high" ? "alert-critical" : a.severity === "medium" ? "alert-warning" : "alert-info";
+  return el("div", { class: "alert-banner " + cls }, [`[${a.alert_type}] ${a.message}`]);
+}
+
 function loadAlerts() {
   apiGet("/api/v1/alerts/today")
     .then((r) => {
       const c = document.getElementById("alerts");
       c.innerHTML = "";
       if (!r.alerts.length) return;
-      r.alerts.forEach((a) => {
-        const cls = a.severity === "high" ? "alert-critical" : a.severity === "medium" ? "alert-warning" : "alert-info";
-        c.appendChild(
-          el("div", { class: "alert-banner " + cls }, [
-            `[${a.alert_type}] ${a.ticker ? a.ticker + ": " : ""}${a.message}`,
-          ])
-        );
-      });
+
+      const sorted = [...r.alerts].sort(
+        (a, b) => (ALERT_TYPE_PRIORITY[a.alert_type] ?? 9) - (ALERT_TYPE_PRIORITY[b.alert_type] ?? 9)
+      );
+      const visible = sorted.slice(0, ALERTS_VISIBLE_CAP);
+      const rest = sorted.slice(ALERTS_VISIBLE_CAP);
+
+      visible.forEach((a) => c.appendChild(alertBanner(a)));
+
+      if (rest.length) {
+        const details = el("details", { class: "alert-more" }, [
+          el("summary", { style: "cursor:pointer;font-size:13px;color:var(--tx3);margin-bottom:8px" }, [
+            `+${rest.length} more alert${rest.length === 1 ? "" : "s"}`,
+          ]),
+        ]);
+        rest.forEach((a) => details.appendChild(alertBanner(a)));
+        c.appendChild(details);
+      }
     })
     .catch((e) => showError("alerts", e));
 }
