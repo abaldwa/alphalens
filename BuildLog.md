@@ -8150,7 +8150,7 @@ Comprehensive re-audit of every Phase/Stage/Gate against the actual repo state (
 | Phase 0→1 | 5/8 initially, blockers closed in follow-up, no final 8/8 re-score recorded | `:1598` |
 | Phase 1→2 | 4/9 pass, 5/9 fail (integrity/synthetic-data limitation, no SPEC-ID commits at the time, pip-audit 55 CVEs, paper trading 0 days) | `:3498-3519` |
 | Phase 2→3 (2026-06-24, post-fix) | **6/9 PASS**, 2 FAIL, 1 time-gated | `:5878-5891`. Fixed: coverage→80%, sector z-scores, Trendlyne creds, pip-audit→0 CVEs. Still failing: absolute Sharpe >1.0, paper trading ≥90 days. |
-| Phase 2→3 absolute-Sharpe sub-gate | **AMBIGUOUS, needs reconciliation** | `backtest/reports/phase2_20260627.json` (20-ticker/5-fold) shows aggregate Sharpe **+1.459**, which would clear this gate, but one fold (2026 YTD, 103 trades) alone shows Sharpe 5.1/CAGR 42% — likely an outlier skewing the mean. `:5891` still lists this as unmet and no BuildLog entry reconciles the two numbers. **Needs a clean re-run + outlier review before being marked passed.** |
+| Phase 2→3 absolute-Sharpe sub-gate | **RECONCILED (2026-07-02): still FAILS.** | See "Absolute-Sharpe Gate Reconciliation — 2026-07-02" below. |
 | Phase 3 stacking gate (`phase3_20260624.json`) | **FAIL** — gate_passed=false, integrity_passed=false | Sharpe improvement -0.79 (need ≥0.10); corp-actions/survivorship integrity checks failed. Predates later adj_factor/survivorship fixes — **never re-run**, so current status of this specific gate is unknown, not fixed. |
 | Phase 3 HITL gate (`tests/hitl/hitl_phase3_results.md`) | **ALL PENDING**, unblocked but not executed | TFT/BiLSTM training (blocker) completed 2026-07-01; the HITL file was never updated afterward. |
 | `tests/quality/` no-stub/synthetic-data policy | **3 FAILING as of this review** (live run today) | Regression from the 2026-07-02 TA/Damodaran session: `KNOWN_STUB_PACKAGES` in `tests/quality/test_no_stub_or_synthetic_data.py:339` still lists `systems/technical_analysis` and `systems/damodaran_valuation` as empty stubs (they're not anymore); new unallowlisted rng calls at `monte_carlo.py:155`, `tft_model.py:896,986`; unallowlisted phrase "synthetic rating" in `wacc.py` (Damodaran's own terminology — likely a false positive, but not yet allowlisted). 73/76 quality tests still pass. |
@@ -8162,7 +8162,7 @@ Comprehensive re-audit of every Phase/Stage/Gate against the actual repo state (
 3. **Phase 3 HITL-04/HITL-05 never executed** despite blocker (trained TFT/BiLSTM) clearing 2026-07-01 — `tests/hitl/hitl_phase3_results.md` stale since 2026-06-24.
 4. **M-13 stacking ensemble untrained end-to-end** — no real stacking-based signal exists; infra (`scripts/train_stacking.py`) ready but unrun.
 5. **Phase 3 stacking gate JSON stale** (`phase3_20260624.json`) — predates integrity fixes made elsewhere; needs re-run to know true current status.
-6. **Absolute-Sharpe gate number ambiguous** — `phase2_20260627.json` (+1.459) vs. `:5891`'s "still failing" note; needs a clean re-run across more folds/tickers with outlier fold scrutinized before calling this gate passed.
+6. ~~**Absolute-Sharpe gate number ambiguous**~~ — **RESOLVED (2026-07-02), gate does NOT clear.** See reconciliation below.
 7. **Paper trading Gate 7 at 0/90 days** — purely time-gated; the forward bot has never been started for real. Earliest possible clear ~mid-November 2026, and only if started continuously from today.
 8. **Uncommitted work** — everything since commit `fd936d6` (all 2026-07-01/07-02 session work: TA screener, Damodaran valuation, scheduler dependency graph, ops-page improvements) sits uncommitted in the working tree.
 9. **Git commit messages don't satisfy Phase 1 gate #7 literally** (SPEC-ID per commit) — repo has git now, but messages are generic, not per-commit SPEC-tagged.
@@ -8194,4 +8194,28 @@ Confirmed via source read of `ingestion/scheduler/pipeline_scheduler.py` and `in
 | Valuation | 0/4 | 4/4 (backend ready, frontend not wired) |
 
 No fabricated/mocked data found in any router — every "empty" screen is an honest empty-state (`implemented=False` when a table genuinely has no rows), not a stub returning fake numbers. This is consistent with the project's no-stub policy.
+
+## Absolute-Sharpe Gate Reconciliation — 2026-07-02
+
+**Root cause found.** `BacktestEngine.run_full_backtest()`'s `aggregate` (`backtest/engine.py:527-533`, pre-fix) took a plain, unweighted mean of per-fold Sharpe/CAGR across walk-forward folds. The walk-forward split is by calendar year, and the *last* fold is always whatever partial slice of the current year exists — as of this data (`ohlcv` through 2026-06-24), that's a ~6-month window with only 103 trades. Annualizing CAGR/Sharpe off a short, small-sample window produces an extreme outlier (fold 4: CAGR 42.3%, Sharpe 5.127), and averaging it in equally with 4 full-year folds (Sharpe 0.98, 1.21, -0.43, 0.41) drags the headline number from ~0.54 up to +1.459 — which happened to clear the >1.0 gate, contradicting the `:5891` note that the same gate was still failing. This was never a live signal-quality improvement; it was a walk-forward aggregation bug.
+
+**Fix applied:** `backtest/engine.py`'s `run_full_backtest()` now also computes `sharpe_mean_full_periods_only` / `cagr_mean_full_periods_only` (folds with a test window ≥350 days only) and `n_partial_folds_excluded`, alongside the pre-existing `sharpe_mean`/`cagr_mean` (left unchanged for backward compatibility with `run_phase3_backtest.py`'s comparison logic). Gate decisions should use the `*_full_periods_only` figures going forward.
+
+**Reconciled number (recomputed directly from `backtest/reports/phase2_20260627.json`'s existing raw per-fold data — folds 0-3, excluding partial fold 4):**
+
+| Variant | Sharpe (full-year folds only) | CAGR (full-year folds only) |
+|---|---|---|
+| Phase 1 baseline (Signal5D) | 0.257 | — |
+| Phase 2 (Signal63D + watchlist) | **0.542** | 2.2% |
+
+**Verdict: the absolute-Sharpe >1.0 sub-gate does NOT clear.** 0.542 is a real, meaningful improvement over the Phase 1 baseline (0.257) — the relative-improvement framing from earlier BuildLog entries still holds — but it is well short of the absolute >1.0 threshold. The `:5891` "still failing" note was correct; the +1.459 number was an artifact, not evidence the gate had cleared.
+
+**A fresh end-to-end re-run is currently blocked, independently of the above.** Attempting `python -m backtest.run_phase2_backtest` today fails before producing any folds:
+```
+RuntimeError: Only 0 closed paper-trading positions found in paper_trading/executions —
+need at least 200 real closed trades to train ExitSignalModel. There is no synthetic-data
+fallback. Continue running scripts/paper_trading_tracker.py paper trading until enough
+closed positions accumulate.
+```
+This is `systems/ml_signal_engine/models/exit/exit_signal.py:408`'s hard, by-design guard (no synthetic-data fallback, per CLAUDE.md Absolute Rule 6) — and it's a direct consequence of Gate 7's paper trading day count being 0 (see "Paper trading Gate 7 at 0/90 days" above). **This means the absolute-Sharpe gate cannot be re-verified with a fresh end-to-end run until paper trading has accumulated ≥200 real closed positions** — the two open items are coupled, not independent. The reconciled 0.542 figure above is the best currently-available honest answer, computed from the last real run's raw fold data with the corrected aggregation; it is not a new backtest run.
 

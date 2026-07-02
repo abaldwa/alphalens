@@ -534,6 +534,23 @@ class BacktestEngine:
             ),
             "total_trades": int(sum(f.n_trades for f in fold_results)),
         }
+        # A plain fold-count mean lets a short, low-trade-count trailing fold
+        # (e.g. the current, still-incomplete calendar year) dominate the
+        # headline number once its CAGR/Sharpe get annualized off a handful
+        # of trades — see BuildLog.md "Full Project Status Review —
+        # 2026-07-02" item 6. Report both the existing unweighted mean
+        # (unchanged, for backward compatibility with existing consumers)
+        # and a version that only considers folds whose test window is
+        # (approximately) a full year, so gate decisions can use the more
+        # representative number instead of one skewed by a partial period.
+        full_year_folds = [f for f in fold_results if (f.test_end - f.test_start).days >= 350]
+        aggregate["n_partial_folds_excluded"] = len(fold_results) - len(full_year_folds)
+        if full_year_folds:
+            aggregate["cagr_mean_full_periods_only"] = float(np.mean([f.cagr for f in full_year_folds]))
+            aggregate["sharpe_mean_full_periods_only"] = float(np.mean([f.sharpe for f in full_year_folds]))
+        else:
+            aggregate["cagr_mean_full_periods_only"] = None
+            aggregate["sharpe_mean_full_periods_only"] = None
 
         oof_df = pd.concat(oof_rows, ignore_index=True) if oof_rows else None
 
