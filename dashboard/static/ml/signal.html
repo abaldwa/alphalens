@@ -14,8 +14,8 @@
 <div class="page">
   <div class="sec">
     <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
-      <input type="text" id="ticker-input" placeholder="Ticker">
-      <input type="text" id="date-input" placeholder="YYYY-MM-DD">
+      <input type="text" id="ticker-input" list="ticker-list" placeholder="Ticker">
+      <input type="date" id="date-input">
       <button id="load-btn">Load</button>
     </div>
     <div id="signal-header"></div>
@@ -40,9 +40,11 @@
   </div>
 </div>
 <script src="../js/api.js"></script>
+<script src="../js/ticker_picker.js"></script>
 <script src="../js/shell.js"></script>
 <script src="../js/empty_state.js"></script>
 <script src="../js/crosslink.js"></script>
+<script src="../js/calendar_picker.js"></script>
 <script src="js/signal.js"></script>
 </body>
 </html>

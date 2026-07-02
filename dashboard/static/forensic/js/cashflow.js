@@ -5,6 +5,7 @@
 // rather than the prototype's literal "CFO vs NI" framing. Accrual-quality
 // summary (sloan_accrual, dechow_f) comes from the real forensic row.
 renderAppShell("forensic", "cashflow");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");

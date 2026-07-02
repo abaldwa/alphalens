@@ -4,6 +4,7 @@
 // sentence is a template populated from real ForensicRow fields. Export is
 // browser print-to-PDF (window.print()) — zero new dependency.
 renderAppShell("forensic", "report");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");

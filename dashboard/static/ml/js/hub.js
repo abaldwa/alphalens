@@ -84,14 +84,21 @@ function insightCard(r, price) {
 }
 
 function loadTopBuys() {
-  apiGet(`/api/v1/signals/ml/top_buys/${todayStr()}`, { n: 5 })
+  const today = todayStr();
+  apiGet(`/api/v1/signals/ml/top_buys/${today}`, { n: 5, carry_forward: true })
     .then((rows) => {
       const c = document.getElementById("top-buys");
       if (!rows.length) {
-        c.innerHTML = `<div class="empty">No buy signals for today yet</div>`;
+        c.innerHTML = `<div class="empty">No buy signals generated yet</div>`;
         return;
       }
       c.innerHTML = "";
+      const signalDate = rows[0].date ? rows[0].date.slice(0, 10) : null;
+      if (signalDate && signalDate !== today) {
+        c.appendChild(el("div", { class: "empty", style: "margin-bottom:8px" }, [
+          `Showing the last generated signals, from ${signalDate} — today's run hasn't produced signals yet`,
+        ]));
+      }
       const top2 = rows.slice(0, 2);
       Promise.all(top2.map((r) => apiGet(`/api/v1/ohlcv/${r.ticker}/latest`).then((row) => row && row.close).catch(() => null)))
         .then((prices) => {

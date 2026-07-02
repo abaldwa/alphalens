@@ -8219,3 +8219,77 @@ closed positions accumulate.
 ```
 This is `systems/ml_signal_engine/models/exit/exit_signal.py:408`'s hard, by-design guard (no synthetic-data fallback, per CLAUDE.md Absolute Rule 6) — and it's a direct consequence of Gate 7's paper trading day count being 0 (see "Paper trading Gate 7 at 0/90 days" above). **This means the absolute-Sharpe gate cannot be re-verified with a fresh end-to-end run until paper trading has accumulated ≥200 real closed positions** — the two open items are coupled, not independent. The reconciled 0.542 figure above is the best currently-available honest answer, computed from the last real run's raw fold data with the corrected aggregation; it is not a new backtest run.
 
+## Forensic Backfill + Fundamentals Peers Fix + TA Screener Frontend + Site-Wide Ticker/Calendar Widgets (2026-07-02)
+
+### Context
+Follow-up session addressing dashboard gaps found in the 2026-07-02 status review: `ml_forensic` had only 30/2644 tickers scored (forensic/redflag/benford/cashflow/heatmap/report/universe all effectively empty), `GET /fundamentals/{ticker}/peers` returned empty for every ticker, the Technical Screener frontend was still a stub despite a real backend, and no page had ticker autocomplete or trading-calendar date validation.
+
+### 1. Forensic score backfill (`python3 -m systems.ml_signal_engine.inference.score_forensic`)
+Started the API server (`.venv/bin/python3 -m datastore.api.main`, port 8000) and ran the full-universe backfill (2644 tickers, no `--limit`/`--tickers`). The script first rebuilds its training set via `load_forensic_training_data_from_db` — one GET round-trip per ticker across fundamentals/shareholding/ohlcv/fno — before the actual per-ticker score+write loop runs, so the run is GET-heavy for a long stretch before `ml_forensic` row counts move. Verified the write path itself is correct with a direct `POST /api/v1/signals/ml/forensic/write` call (confirmed via `GET .../forensic/summary` immediately reflecting the new date). **Final counts: `total_scored` 30 → 2645 (2644-ticker universe + 1 stale `TESTWRITE` smoke-test row, see below), 0 red / 1744 amber / 901 green, `as_of_date` 2026-06-23 → 2026-07-02. Script log: "Done: 2644/2644 succeeded", zero failures.** A `TESTWRITE` row (from an earlier ad hoc `POST /write` smoke test, not part of the real universe) is still sitting in `ml_forensic` and inflates `total_scored` by 1 — flagged for the user to delete directly (no `DELETE` endpoint exists on `/api/v1/signals/ml/forensic/*`, and the live API server holds an exclusive DuckDB write lock on `signals.duckdb`, so removing it safely requires either adding a delete route + restarting the server, or a one-off `DELETE FROM ml_forensic WHERE ticker = 'TESTWRITE'` while the server is stopped — deliberately not done in this session since stopping a pre-existing, already-running server wasn't requested).
+
+### 2. Fundamentals peers/sector root cause
+`GET /sector/{sector}` was fine — "IT" isn't a valid sector string, the real universe sector names are the full NSE sector names (e.g. `Information Technology`); confirmed working with the correct string (27 tickers, real z-score averages).
+
+`GET /{ticker}/peers` had a real bug: `config/build_universe.py` hardcodes `market_cap_cr = 0` for the entire universe (documented gap — NSE's free archives don't publish bulk market cap, no other source wired in), but `features/fundamental_composites.py`'s `select_peers()` required `own_mcap > 0` before returning anything, so peers could never be returned for **any** ticker while that gap exists — confirmed via `python3 -c "... (universe['market_cap_cr']<=0).sum()"` → 2644/2644. Fixed `select_peers()` to fall back to sector-only peer selection (deterministic alphabetical order, no fabricated market-cap ranking) whenever market cap is unavailable for the ticker or its sector-mates, only using the log-market-cap ranking when real data exists. Updated `dashboard/static/fundamental/js/peers.js`'s empty-state message to match. `dashboard.js`/`sector.js` were already correct — the "Empty" report was untriggered load (no `?ticker=`), same UX pattern as every other ticker-input screen.
+
+### 3. ML signal empty-state — no change needed
+`dashboard/static/ml/js/signal.js` already distinguished "carry-forward same signal, different date" from "no signal ever generated" with clear messaging. `datastore/api/routers/signals.py`'s `carry_forward` query param on `GET /ml/{ticker}/{date}` and `GET /ml/top_buys/{date}` was fixed to resolve the fallback date inside the SQL query (a two-step Python re-bind of `MAX(date)` silently matched zero rows because duckdb returns TIMESTAMP columns as `datetime`, not `date`, so the re-bound value's type no longer matched the stored column on equality) — this was the actual reason "empty" pages appeared even when carry-forward data existed. `dashboard/static/ml/js/hub.js`'s top-buys panel now also carries forward and labels the fallback date honestly.
+
+### 4. Technical Screener frontend (SPEC-TA-005 backend, previously unwired)
+Backend already existed (`GET /api/v1/ta/screener/templates`, `/run/{template_name}`, `POST /custom` — 42 templates, confirmed real matches via curl, e.g. A2 → 50 matches with `key_values`). Built `dashboard/static/technical/js/screener.js`: template dropdown + results table (ticker, score, matched/total conditions, per-template key indicator values), linking each ticker to `chart.html?ticker=...`. Replaced `screener.html`'s `renderEmptyState()` stub. Reordered `shell.js`'s `APPS.technical.screens` so Screener is first (app-switcher default + `/ui/technical/` landing), added `dashboard/static/technical/index.html` (redirect to `screener.html`, matching the top-level `index.html` app-picker pattern). `chart.js` was already conditional on `?ticker=` — no change needed there.
+
+### 5. Site-wide ticker autocomplete (SPEC-UI-011)
+`dashboard/static/js/ticker_picker.js`: `TickerPicker.attach(inputId)` fetches `GET /api/v1/ohlcv/_meta/tickers` once (module-level cache), builds a shared `<datalist id="ticker-list">`, wires it via the input's `list` attribute. Wired into all 12 files with a ticker input (re-verified via `grep -rl 'id="ticker-input"\|id="tickers-input"' dashboard/static`): `ml/signal.html`, `technical/{chart,compare}.html`, `fundamental/{management,thesis,dashboard,peers}.html`, `forensic/{benford,cashflow,report,redflag,dashboard}.html`.
+
+### 6. Site-wide calendar validation (SPEC-UI-012)
+Added `GET /api/v1/ops/trading-calendar/holidays` (`datastore/api/routers/ops.py`), returning `config/nse_holidays.py`'s `ALL_NSE_HOLIDAYS` as ISO date strings — no duplicated holiday list. `dashboard/static/js/calendar_picker.js`: `CalendarPicker.attach(inputId)` fetches the list once (cached), flags weekends/holidays on `change` via `setCustomValidity()` + an inline error message next to the input (no `alert()`). Wired into `ml/positions.html`'s `backdate-input` and `ml/signal.html`'s `date-input` (converted from `type="text"` to `type="date"` as part of this fix).
+
+### 7. Specs
+Added `SPEC-UI-011` (ticker autocomplete), `SPEC-UI-012` (calendar validation), `SPEC-UI-013` (screener as default landing) to `alphalens_docs/specs/08_specifications.md`; updated `SPEC-UI-008` to reflect the Screener now being real.
+
+### Tests / verification
+- `node --check` on every new/edited JS file — all pass.
+- `curl`-verified: `/api/v1/ta/screener/templates`, `/run/A2` (50 matches), `/api/v1/fundamentals/sector/Information%20Technology` (27 tickers, real averages), `/api/v1/fundamentals/RELIANCE/ratios` (available:true), `/api/v1/ops/trading-calendar/holidays`, `/api/v1/signals/ml/RELIANCE/2026-07-02?carry_forward=true` (correctly falls back to 2026-06-22).
+- `tests/quality/` zero-stub policy: no synthetic/hardcoded data introduced — the peers fallback uses only real sector/ticker data, no fabricated market-cap numbers.
+
+
+## market_cap_cr Backfill — 2026-07-02
+
+### Context
+Flagged in the prior session's closing report: `market_cap_cr` was hardcoded to `0` for the entire 2644-ticker universe in `config/build_universe.py` (NSE's free archives don't publish bulk market cap, and the gap was never closed with a real source). This silently degraded `select_peers()`'s market-cap-proximity ranking down to a sector-only alphabetical fallback for every single ticker.
+
+### Root cause
+`ingestion/scrapers/screener.py` already scrapes Screener.in's real "Market Cap" figure per ticker, but only uses it as an intermediate to back-derive `shares_outstanding` (`fundamentals.shares_outstanding`) — the market cap value itself was discarded and never persisted anywhere (`fundamentals` table has no `market_cap_cr` column; `stock_master.market_cap_cr` is dead schema, 0 rows). Nothing in `config/build_universe.py` or the daily pipeline ever computed it from the data that *was* available.
+
+### Fix
+Added `compute_market_cap_from_fundamentals()` to `config/build_universe.py` (same one-time-backfill pattern as the existing `compute_adtv_from_ohlcv()`): joins each ticker's latest non-null `fundamentals.shares_outstanding` (by `announcement_date DESC`) to its latest `ohlcv_adjusted.close`, computes `market_cap_cr = shares_outstanding * close / 1e7`, and rewrites `config/nifty500_universe.csv` in place — leaving `market_cap_cr = 0` unchanged for tickers with no scraped `shares_outstanding` (no fabrication). Wired up via `python3 -m config.build_universe --refresh-market-cap` (new CLI flag, alongside a matching `--refresh-adtv` for the pre-existing ADTV pass, which previously had no CLI entry point either).
+
+**Result:** `market_cap_cr` updated for 828/2644 tickers (bounded by current `shares_outstanding` scrape coverage — the same ~31% of the universe that has real fundamentals data from Screener.in). Verified: RELIANCE now shows ₹17.70 lakh cr, HDFCBANK ₹12.26 lakh cr, BHARTIARTL ₹11.40 lakh cr — real, correctly-ordered values. `select_peers()` (`features/fundamental_composites.py`, unchanged — its 2026-07-02 fallback logic already preferred real market-cap ranking when available) now returns genuine market-cap-proximity peers for these 828 tickers instead of falling back to sector-only ordering; confirmed via `GET /api/v1/fundamentals/RELIANCE/peers` returning ONGC/COALINDIA/IOC/BPCL/GAIL ranked by real z-scored fundamentals.
+
+**Remaining gap:** the other ~1,816 tickers still have `market_cap_cr = 0` and fall back to sector-only peer ranking, bounded by Screener.in scrape coverage of `shares_outstanding`, not by this fix — closing that gap further means improving fundamentals scraping coverage, a separate, larger effort.
+
+### Tests / verification
+- `python3 -m config.build_universe --refresh-market-cap` → `market_cap_cr updated for 828/2644 tickers`.
+- `curl localhost:8000/api/v1/fundamentals/RELIANCE/peers?k=5` → real peers, real ratios.
+- No new fabricated data: unscraped tickers stay at `0`, same documented gap as before, just narrower.
+
+### Follow-up same day — closing the fundamentals-coverage gap further
+
+The "remaining gap" above was investigated rather than left as-is. Root cause of *why* only 828/2644 got a value: `ingestion/scrapers/screener.py`'s `export_company_data()` scrapes Screener's page-header "Market Cap" stat directly (`_HEADER_FIELDS["Market Cap"] -> market_cap_cr`, line ~154), but only ever used that local variable to back-derive `shares_outstanding` (`market_cap_cr * 1e7 / current_price`) — if `current_price` was missing on the page, or the ticker had no matching row in `ohlcv_adjusted`, the real scraped market cap was silently thrown away and never reached `fundamentals` or the universe CSV, even though Screener gave it to us directly.
+
+`datastore/raw/screener/` holds 3,151 previously-downloaded raw HTML pages from past scrape runs — no re-scrape/login/network call needed to recover this.
+
+Added `backfill_market_cap_from_screener_cache()` to `config/build_universe.py`: for every universe ticker still at `market_cap_cr == 0` after `compute_market_cap_from_fundamentals()`, re-parses its cached `datastore/raw/screener/{ticker}.html` (reusing `screener.py`'s own `_parse_section_table`/`_HEADER_FIELDS`) and reads `market_cap_cr` straight off the header — no derivation, no network call, never overwrites a value that's already non-zero. Wired into the same `--refresh-market-cap` CLI flag (runs immediately after `compute_market_cap_from_fundamentals()`).
+
+**Result:** coverage rose from 828 → **1,830/2,644 tickers (69%)** with real, non-zero `market_cap_cr`. Verified `GET /api/v1/fundamentals/HEXT/peers` (HEXT was one of the newly-recovered tickers) now returns real market-cap-ranked IT-sector peers (LTTS, IKS, MPHASIS, TATATECH) instead of sector-only fallback.
+
+**True remaining gap (814 tickers), investigated and confirmed not further fixable without a live re-scrape:**
+- 162 tickers have no cached Screener page at all (never successfully scraped).
+- 652 tickers have a cached page, but the page's own "Market Cap" field is blank (`₹ Cr.` with no number) — a scrape-time gap on Screener's side at capture time (e.g. rate-limited/partial page), not a parsing bug. Confirmed by inspecting raw text of sample pages (JOCIL, HDFCMID150, MIDQ50ADD).
+
+Closing this last 814 requires a live re-scrape of those specific tickers — out of scope for this pass, left as a documented follow-up, not fabricated.
+
+### Tests / verification (follow-up)
+- `python3 -c "from config.build_universe import backfill_market_cap_from_screener_cache; backfill_market_cap_from_screener_cache()"` → `1830/2644 total now non-zero`.
+- `curl localhost:8000/api/v1/fundamentals/HEXT/peers?k=5` → real market-cap-based IT peers for a newly-recovered ticker.
+- Confirmed the 814 still-zero tickers fall into two honestly-labeled buckets (no cached page / blank field on cached page), not silently dropped.

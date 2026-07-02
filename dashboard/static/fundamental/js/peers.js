@@ -1,5 +1,6 @@
 // dashboard/static/fundamental/js/peers.js — FA-B Peer Comparison
 renderAppShell("fundamental", "peers");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");
@@ -14,7 +15,7 @@ function load() {
       document.getElementById("peers-sector").textContent = r.sector ? `Sector: ${r.sector}` : "";
       const c = document.getElementById("peers-table");
       if (!r.peers.length) {
-        c.innerHTML = `<div class="empty">No peers found — most likely market_cap_cr is unsourced for this sector (peer ranking needs real market-cap data, see config/build_universe.py)</div>`;
+        c.innerHTML = `<div class="empty">No peers found — either this ticker's sector is unknown, or no other ticker in its sector has a computed feature row for today</div>`;
         return;
       }
       const table = el("table", {}, [

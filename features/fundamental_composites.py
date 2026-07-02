@@ -109,20 +109,36 @@ def select_peers(
     itself. `panel` is the day's fundamental feature rows (ticker column
     must be present) — only tickers that actually have a row in the panel
     can be peers, so the result only ever names tickers with real data.
+
+    [2026-07-02 fix] config/build_universe.py currently hardcodes
+    market_cap_cr=0 for the entire universe (NSE's free archives don't
+    publish bulk market cap, and no other source is wired in yet — see
+    that module's docstring). The original version of this function
+    required own_mcap > 0, which meant peers could never be returned for
+    any ticker while that gap exists. Falls back to sector-only selection
+    (alphabetical, for determinism — no fabricated market-cap ranking)
+    whenever market cap is unavailable for the ticker or its candidates.
     """
     sector = sector_map.get(ticker)
-    own_mcap = mcap_map.get(ticker)
-    if sector is None or own_mcap is None or own_mcap <= 0:
+    if sector is None:
         return []
+    own_mcap = mcap_map.get(ticker)
+    have_mcap = own_mcap is not None and own_mcap > 0
     candidates = [
         t for t in panel["ticker"]
-        if t != ticker and sector_map.get(t) == sector and mcap_map.get(t, 0) > 0
+        if t != ticker and sector_map.get(t) == sector
     ]
     if not candidates:
         return []
-    own_log_mcap = np.log(own_mcap)
-    candidates.sort(key=lambda t: abs(np.log(mcap_map[t]) - own_log_mcap))
-    return candidates[:k]
+    if have_mcap:
+        mcap_candidates = [t for t in candidates if mcap_map.get(t, 0) > 0]
+        if mcap_candidates:
+            own_log_mcap = np.log(own_mcap)
+            mcap_candidates.sort(key=lambda t: abs(np.log(mcap_map[t]) - own_log_mcap))
+            return mcap_candidates[:k]
+    # No usable market-cap data (own or peers') — fall back to a
+    # deterministic sector-only ordering rather than returning nothing.
+    return sorted(candidates)[:k]
 
 
 # Screener presets operate on sector-relative z-scores (the only ratio

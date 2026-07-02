@@ -6,6 +6,7 @@
 // vs sector peers (green), z < -0.5 = bottom (red), else amber — and the
 // real quality/growth composite scores (GET /api/v1/fundamentals/{ticker}/scores).
 renderAppShell("fundamental", "dashboard");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");

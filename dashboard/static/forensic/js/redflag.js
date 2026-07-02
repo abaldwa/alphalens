@@ -6,6 +6,7 @@
 // ALTMAN_SAFE_THRESHOLD=2.99, PIOTROSKI_WEAK_THRESHOLD=2) — real backend
 // thresholds applied to real backend values, not invented cutoffs.
 renderAppShell("forensic", "redflag");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");

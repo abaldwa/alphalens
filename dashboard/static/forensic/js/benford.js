@@ -8,6 +8,7 @@
 // BENFORD_MAD_NONCONFORMING / BENFORD_MAD_SIGNIFICANT constants from
 // systems/ml_signal_engine/models/forensic/classical_scores.py.
 renderAppShell("forensic", "benford");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");

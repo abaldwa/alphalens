@@ -71,12 +71,33 @@ async def get_top_buys(
     date: date_type = Path(..., description="Signal date (YYYY-MM-DD)"),
     n: int = Query(5, ge=1, le=100, description="Number of top buy signals to return"),
     model_name: str = Query("signal_5d", description="Which signal model's buy_prob to rank by"),
+    carry_forward: bool = Query(
+        False,
+        description=(
+            "If true and no signals were written for `date`, fall back to the most "
+            "recent earlier date that has them (rows still carry their real, earlier "
+            "`date` field — nothing is relabeled as `date`). For live 'what to do "
+            "today' views only. Backdated Entry / historical audit callers must leave "
+            "this False: SPEC-MODEL-006's Gate 7 forward-time day count requires an "
+            "honest 'no signal that day' rather than a silently backfilled one."
+        ),
+    ),
 ) -> List[MLSignalRow]:
     """
     Top-N buy signals for a date, ranked by buy_prob, excluding any ticker
     P&D-blocked that date (SPEC-MODEL-006).
     """
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+        query_date = date
+        if carry_forward:
+            resolved = conn.execute(
+                "SELECT MAX(date) FROM ml_signals WHERE date <= ? AND model_name = ? AND buy_prob IS NOT NULL",
+                [date, model_name],
+            ).fetchone()[0]
+            if resolved is None:
+                return []
+            query_date = resolved
+
         rows = conn.execute(
             f"""
             SELECT {_SELECT_COLS} FROM ml_signals
@@ -88,7 +109,7 @@ async def get_top_buys(
             ORDER BY buy_prob DESC
             LIMIT ?
             """,
-            [date, model_name, date, n],
+            [query_date, model_name, query_date, n],
         ).fetchall()
 
     return [_row_to_signal(r) for r in rows]
@@ -96,17 +117,46 @@ async def get_top_buys(
 
 @router.get("/ml/{ticker}/{date}", response_model=List[MLSignalRow])
 async def get_ml_signals(
-    ticker: str, date: date_type = Path(..., description="Signal date (YYYY-MM-DD)")
+    ticker: str,
+    date: date_type = Path(..., description="Signal date (YYYY-MM-DD)"),
+    carry_forward: bool = Query(
+        False,
+        description=(
+            "If true and this ticker has no rows on `date`, fall back to its most "
+            "recent earlier date with rows (each row keeps its real, earlier `date` "
+            "value). Intended for live lookup views, not PIT-sensitive historical audits."
+        ),
+    ),
 ) -> List[MLSignalRow]:
     """All models' signal rows for one ticker on one date."""
     if not ticker:
         raise HTTPException(status_code=400, detail="Ticker cannot be empty")
 
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
-        rows = conn.execute(
-            f"SELECT {_SELECT_COLS} FROM ml_signals WHERE ticker = ? AND date = ? ORDER BY model_name",
-            [ticker, date],
-        ).fetchall()
+        if carry_forward:
+            # Resolve the fallback date inside the same SQL statement as the
+            # row fetch. A prior two-step version fetched MAX(date) into
+            # Python and re-bound it into a second `date = ?` equality
+            # query; that silently matched zero rows because duckdb hands
+            # TIMESTAMP columns back as `datetime`, not `date`, so the
+            # re-bound Python value's type no longer matched the stored
+            # column type on equality. A subquery avoids ever re-binding a
+            # value duckdb handed back to us.
+            rows = conn.execute(
+                f"""
+                SELECT {_SELECT_COLS} FROM ml_signals
+                WHERE ticker = ? AND date = (
+                    SELECT MAX(date) FROM ml_signals WHERE ticker = ? AND date <= ?
+                )
+                ORDER BY model_name
+                """,
+                [ticker, ticker, date],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT {_SELECT_COLS} FROM ml_signals WHERE ticker = ? AND date = ? ORDER BY model_name",
+                [ticker, date],
+            ).fetchall()
 
     return [_row_to_signal(r) for r in rows]
 

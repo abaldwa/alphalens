@@ -1,5 +1,6 @@
 // dashboard/static/technical/js/compare.js — TA-C Multi-Stock Compare
 renderAppShell("technical", "compare");
+TickerPicker.attach("tickers-input");
 
 function heatCellForCorr(v) {
   if (v === null || v === undefined) return el("td", { class: "heatmap-cell h-neutral" }, ["—"]);

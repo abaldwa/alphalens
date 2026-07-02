@@ -1,5 +1,7 @@
 // dashboard/static/ml/js/signal.js — ML-B Signal Deep Dive
 renderAppShell("ml", "signal");
+TickerPicker.attach("ticker-input");
+CalendarPicker.attach("date-input");
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -63,11 +65,11 @@ function loadSignals() {
   showLoading("model-scores");
   showLoading("shap");
 
-  apiGet(`/api/v1/signals/ml/${ticker}/${date}`)
+  apiGet(`/api/v1/signals/ml/${ticker}/${date}`, { carry_forward: true })
     .then((rows) => {
       const c = document.getElementById("model-scores");
       if (!rows.length) {
-        c.innerHTML = `<div class="empty">No signal rows for ${ticker} on ${date}</div>`;
+        c.innerHTML = `<div class="empty">No signal has ever been generated for ${ticker} on or before ${date}</div>`;
         document.getElementById("shap").innerHTML = `<div class="empty">—</div>`;
         return;
       }
@@ -89,6 +91,12 @@ function loadSignals() {
         ]))),
       ]);
       c.innerHTML = "";
+      const signalDate = rows[0].date ? rows[0].date.slice(0, 10) : null;
+      if (signalDate && signalDate !== date) {
+        c.appendChild(el("div", { class: "empty", style: "margin-bottom:8px" }, [
+          `Showing the last generated signal, from ${signalDate} — none for ${date} yet`,
+        ]));
+      }
       c.appendChild(el("div", { class: "card" }, [table]));
 
       const sigRow = rows.find((r) => r.shap_top5_json);

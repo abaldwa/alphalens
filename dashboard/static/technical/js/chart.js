@@ -5,6 +5,7 @@
 // latest price + a curated indicator/pattern panel from the real feature
 // store (GET /api/v1/ta/{ticker}/indicators, /patterns).
 renderAppShell("technical", "chart");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");

@@ -7,6 +7,7 @@
 // fundamental_analysis/management/ is an empty stub beyond this composite)
 // — kept as a separate, clearly empty-stated sub-section.
 renderAppShell("fundamental", "management");
+TickerPicker.attach("ticker-input");
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("ticker")) document.getElementById("ticker-input").value = params.get("ticker");

@@ -16,8 +16,8 @@ const APPS = [
   {
     id: "technical", name: "AlphaLens.Technical", color: "var(--blue)", base: "/ui/technical/",
     screens: [
-      { id: "chart", label: "Chart", href: "chart.html" },
       { id: "screener", label: "Screener", href: "screener.html" },
+      { id: "chart", label: "Chart", href: "chart.html" },
       { id: "compare", label: "Compare", href: "compare.html" },
       { id: "alerts", label: "Alert Manager", href: "alerts.html" },
       { id: "overview", label: "Market Overview", href: "overview.html" },

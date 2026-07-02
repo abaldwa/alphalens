@@ -482,13 +482,15 @@ empty-state rule. Plan: `squishy-frolicking-whisper.md`.
   empty-state (SPEC-UI-010) rather than the link being hidden
 
 ### SPEC-UI-008 · AlphaLens.Technical (TA-A through E)
-- Files: `dashboard/static/technical/{chart,screener,compare,alerts,
+- Files: `dashboard/static/technical/{screener,chart,compare,alerts,
   overview}.html`
-- **No backend exists** (`systems/technical_analysis/` is an empty stub —
-  no indicators, pattern detection, or screener engine). All 5 screens
-  render SPEC-UI-010's empty-state only; do not wire raw
-  `/api/v1/features/{ticker}` columns into TA-A as a faux screener (that
-  would be misleading half-functionality)
+- **[AS BUILT, 2026-07-02]** Chart, Compare, Market Overview, and the
+  Screener (TA-D, 42 pre-built templates via `/api/v1/ta/screener/*`,
+  SPEC-TA-005) are real and wired to `systems/technical_analysis/screener/
+  engine.py`. Screener is the app's default landing screen (first in
+  `shell.js`'s `APPS[technical].screens`) — see SPEC-UI-011. Only Alerts
+  (TA-E, alert storage/checker) remains No-Backend and renders
+  SPEC-UI-010's empty-state
 
 ### SPEC-UI-009 · AlphaLens.Fundamental (FA-A through F) and
   AlphaLens.Valuation (VAL-A through D)
@@ -513,6 +515,49 @@ empty-state rule. Plan: `squishy-frolicking-whisper.md`.
   (e.g. `TATAMOTORS`, `₹825`, `+4.2%`) as placeholder content — verified
   by a `grep` audit for known prototype sample tokens across
   `dashboard/static/` at the end of the 2026-07-01 rebuild (zero matches)
+
+### SPEC-UI-011 · Universal Ticker Autocomplete
+- **[AS BUILT, 2026-07-02]** Every free-text ticker `<input>` across the 5
+  apps offers autocomplete against the real ticker universe — no
+  hand-typed/fabricated ticker list (Absolute Rule #6)
+- `dashboard/static/js/ticker_picker.js`'s `TickerPicker.attach(inputId)`
+  fetches `GET /api/v1/ohlcv/_meta/tickers` (distinct tickers in
+  `ohlcv_adjusted`) exactly once per page load (module-level cache,
+  shared across every `attach()` call on that page), builds one shared
+  `<datalist id="ticker-list">`, and wires it via the input's `list`
+  attribute
+- Wired on every screen with a ticker `<input>`: ML Signal Deep Dive,
+  Technical Chart/Compare, Fundamental Dashboard/Peers/Thesis/Management,
+  Forensic Dashboard/Red Flags/Benford/Cash Flow/Investigation
+- Compare's comma-separated multi-ticker field gets the same `list`
+  wiring; native `<datalist>` can only suggest a full-field match there,
+  a documented limitation, not a bug
+
+### SPEC-UI-012 · Trading-Calendar Date Validation
+- **[AS BUILT, 2026-07-02]** Every date `<input type="date">` used to pick
+  an NSE trading day validates client-side against weekends and the real
+  NSE holiday calendar — no separate/duplicated holiday list from the
+  backend's `config/nse_holidays.py:ALL_NSE_HOLIDAYS`
+- `GET /api/v1/ops/trading-calendar/holidays` (`datastore/api/routers/
+  ops.py`) returns `ALL_NSE_HOLIDAYS` as JSON; `dashboard/static/js/
+  calendar_picker.js`'s `CalendarPicker.attach(inputId)` fetches it once
+  (module-level cache) and on the input's `change` event calls
+  `setCustomValidity()` plus an inline error message (no `alert()`) when
+  the selected date is a Sat/Sun or a holiday
+- Wired on ML Positions' `backdate-input` and ML Signal Deep Dive's
+  `date-input` (the latter converted from `type="text"` to
+  `type="date"` as part of this spec)
+
+### SPEC-UI-013 · Technical Screener as Default Landing Screen
+- **[AS BUILT, 2026-07-02]** `dashboard/static/technical/screener.html`
+  (TA-D, SPEC-TA-005) is the first entry in `shell.js`'s
+  `APPS[technical].screens` array, making it both the app-switcher target
+  (`app.screens[0].href`) and `dashboard/static/technical/index.html`'s
+  redirect target for `/ui/technical/`
+- Chart (TA-A) only auto-loads a ticker when `?ticker=` is present in the
+  URL (e.g. arriving via a screener row's "View chart" link or a
+  cross-app link) — it never eagerly fetches on a bare page load, so
+  Screener is the true default view for the Technical app
 
 ---
 

@@ -24,13 +24,26 @@ Sourced for real, from NSE archives (verified live):
     Nifty 50 / Next 50 / Midcap 150 / Smallcap 250 index lists (tier 1-4);
     every other Nifty 500 member is tier 5; non-Nifty500 DB tickers = tier 6.
 
-NOT sourced — left as explicit placeholders, NOT fabricated:
+NOT sourced at build time — left as explicit placeholders, NOT fabricated:
   - market_cap_cr: NSE's free archives do not publish bulk market cap.
-    Set to 0 for every row. config/universe.py's phase_1 filter normally
-    requires market_cap_cr >= MIN_MCAP_CR (500cr) — left as 0/unfiltered
-    here per explicit operator decision (see BuildLog.md "Universe
-    expansion" entry); MUST be backfilled from a real source before this
-    filter should be trusted again.
+    Set to 0 for every row here. Two one-time passes backfill it:
+      1. compute_market_cap_from_fundamentals() joins fundamentals'
+         shares_outstanding (ingestion/scrapers/screener.py) to the
+         latest close in ohlcv_adjusted.
+      2. backfill_market_cap_from_screener_cache() recovers market_cap_cr
+         directly from cached Screener.in HTML pages
+         (datastore/raw/screener/{ticker}.html) for tickers pass 1 missed
+         — Screener's page header scrapes market_cap_cr directly but
+         export_company_data() previously discarded it after deriving
+         shares_outstanding, so this re-parses the already-downloaded
+         page rather than re-scraping.
+    Both run via `python3 -m config.build_universe --refresh-market-cap`.
+    Coverage as of 2026-07-02: 1,830/2,644 tickers non-zero. The
+    remaining 814 either have no cached Screener page (162) or the
+    cached page's own Market Cap field is blank (652, a scrape-time gap
+    requiring a live re-scrape, not a parsing issue). Tickers still at
+    market_cap_cr == 0 are treated by config/universe.py's phase_1 filter
+    as "unknown, not below threshold" (unfiltered), same as before.
   - adtv_cr: requires actual traded volume history, which doesn't exist
     until after the price backfill runs. Set to 0 here; a separate
     one-time pass (compute_adtv_from_ohlcv() in this module) fills it in
@@ -220,6 +233,186 @@ def compute_adtv_from_ohlcv(
     return df[OUTPUT_COLUMNS]
 
 
+def compute_market_cap_from_fundamentals(
+    universe_csv_path: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """
+    Recompute market_cap_cr for every ticker from real scraped
+    shares_outstanding (fundamentals) x latest close (ohlcv_adjusted),
+    and rewrite the universe CSV in place.
+
+    market_cap_cr (INR crore) = shares_outstanding * latest close / 1e7.
+
+    Parameters
+    ----------
+    universe_csv_path : Path, optional
+        Defaults to config.settings.UNIVERSE_CSV_PATH.
+    db_path : Path, optional
+        Defaults to config.settings.DUCKDB_PATH.
+
+    Returns
+    -------
+    pd.DataFrame
+        The rewritten universe DataFrame.
+
+    Spec References
+    ----------------
+    SPEC-SYS-001, SPEC-SYS-011
+
+    PIT Assumptions
+    ----------------
+    None — this computes a current snapshot statistic (latest known
+    shares_outstanding x latest close), used only for universe
+    filtering/display, never as a PIT feature value.
+
+    Coverage
+    --------
+    Only tickers with at least one non-null shares_outstanding row in
+    fundamentals (Screener.in-scraped, see ingestion/scrapers/screener.py)
+    get a non-zero market_cap_cr. Tickers without it are left at 0
+    (unchanged), same documented gap as before for that subset.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the universe CSV does not exist yet (run build_universe_csv()
+        first).
+    """
+    from config.settings import DUCKDB_PATH
+    from datastore.api.db import get_duckdb_connection
+
+    universe_csv_path = universe_csv_path or UNIVERSE_CSV_PATH
+    if not universe_csv_path.exists():
+        raise FileNotFoundError(f"{universe_csv_path} does not exist — run build_universe_csv() first")
+
+    df = pd.read_csv(universe_csv_path)
+
+    with get_duckdb_connection(db_path or DUCKDB_PATH) as conn:
+        mcap = conn.execute(
+            """
+            WITH latest_shares AS (
+                SELECT ticker, shares_outstanding,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker ORDER BY announcement_date DESC
+                       ) AS rn
+                FROM fundamentals
+                WHERE shares_outstanding IS NOT NULL
+            ),
+            latest_close AS (
+                SELECT ticker, close,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker ORDER BY date DESC
+                       ) AS rn
+                FROM ohlcv_adjusted
+            )
+            SELECT s.ticker, (s.shares_outstanding * c.close) / 1e7 AS market_cap_cr
+            FROM latest_shares s
+            JOIN latest_close c ON c.ticker = s.ticker AND c.rn = 1
+            WHERE s.rn = 1
+            """
+        ).df()
+
+    df = df.merge(mcap, on="ticker", how="left", suffixes=("", "_new"))
+    df["market_cap_cr"] = df["market_cap_cr_new"].fillna(df["market_cap_cr"])
+    df = df.drop(columns="market_cap_cr_new")
+
+    df[OUTPUT_COLUMNS].to_csv(universe_csv_path, index=False)
+    n_updated = df["market_cap_cr"].gt(0).sum()
+    logger.info(
+        f"market_cap_cr updated for {n_updated}/{len(df)} tickers with scraped shares_outstanding"
+    )
+    return df[OUTPUT_COLUMNS]
+
+
+def backfill_market_cap_from_screener_cache(
+    universe_csv_path: Optional[Path] = None,
+    raw_dir: Optional[Path] = None,
+) -> pd.DataFrame:
+    """
+    Recover market_cap_cr directly from cached Screener.in HTML pages, for
+    tickers compute_market_cap_from_fundamentals() couldn't fill.
+
+    Root cause this addresses
+    --------------------------
+    ingestion/scrapers/screener.py's export_company_data() already scrapes
+    "Market Cap" from every company page's header into a local
+    market_cap_cr variable — but only uses it to *derive*
+    shares_outstanding (market_cap_cr * 1e7 / current_price), then discards
+    the raw value. When current_price was missing, or the ticker has no
+    matching row in ohlcv_adjusted, the real scraped market cap never made
+    it into fundamentals or the universe CSV at all, even though Screener
+    provided it directly. This function re-parses the raw HTML (already
+    downloaded to disk by a prior scrape, no new network calls) to recover
+    that discarded value.
+
+    Only fills rows still at market_cap_cr == 0 after
+    compute_market_cap_from_fundamentals() — never overwrites a real
+    non-zero value.
+
+    Parameters
+    ----------
+    universe_csv_path : Path, optional
+        Defaults to config.settings.UNIVERSE_CSV_PATH.
+    raw_dir : Path, optional
+        Defaults to ingestion.scrapers.screener.SCREENER_RAW_DIR.
+
+    Returns
+    -------
+    pd.DataFrame
+        The rewritten universe DataFrame.
+
+    Coverage
+    --------
+    Bounded by how many universe tickers have a cached
+    SCREENER_RAW_DIR/{ticker}.html page AND that page's header actually
+    has a "Market Cap" stat. Tickers with neither a cached page nor a
+    shares_outstanding-derived value stay at market_cap_cr == 0
+    (documented gap, not fabricated).
+    """
+    from bs4 import BeautifulSoup
+
+    from ingestion.scrapers.screener import (
+        SCREENER_RAW_DIR,
+        _HEADER_FIELDS,
+        _parse_section_table,
+    )
+
+    universe_csv_path = universe_csv_path or UNIVERSE_CSV_PATH
+    raw_dir = raw_dir or SCREENER_RAW_DIR
+    if not universe_csv_path.exists():
+        raise FileNotFoundError(f"{universe_csv_path} does not exist — run build_universe_csv() first")
+
+    df = pd.read_csv(universe_csv_path)
+    missing = df.loc[df["market_cap_cr"].fillna(0) <= 0, "ticker"]
+
+    recovered: dict[str, float] = {}
+    for ticker in missing:
+        page = raw_dir / f"{ticker}.html"
+        if not page.exists():
+            continue
+        soup = BeautifulSoup(page.read_text(encoding="utf-8"), "html.parser")
+        header = _parse_section_table(soup, section_id=None, field_map=_HEADER_FIELDS, header_stats=True)
+        mcap = header.get("market_cap_cr")
+        if mcap:
+            recovered[ticker] = mcap
+
+    if recovered:
+        is_missing = df["market_cap_cr"].fillna(0) <= 0
+        recovered_series = df["ticker"].map(recovered)
+        df.loc[is_missing, "market_cap_cr"] = recovered_series[is_missing].combine_first(
+            df.loc[is_missing, "market_cap_cr"]
+        )
+
+    df[OUTPUT_COLUMNS].to_csv(universe_csv_path, index=False)
+    n_updated = df["market_cap_cr"].gt(0).sum()
+    logger.info(
+        f"market_cap_cr recovered from cached Screener pages for "
+        f"{len(recovered)} tickers ({n_updated}/{len(df)} total now non-zero)"
+    )
+    return df[OUTPUT_COLUMNS]
+
+
 def build_full_nse_universe_from_db(
     output_path: Optional[Path] = None,
     db_path: Optional[Path] = None,
@@ -367,9 +560,30 @@ if __name__ == "__main__":
         default=90,
         help="Days lookback to consider a ticker active (only used with --full-nse). Default: 90.",
     )
+    parser.add_argument(
+        "--refresh-adtv",
+        action="store_true",
+        help="Recompute adtv_cr from ohlcv_adjusted in place (requires price backfill to have run).",
+    )
+    parser.add_argument(
+        "--refresh-market-cap",
+        action="store_true",
+        help=(
+            "Recompute market_cap_cr from fundamentals.shares_outstanding x latest close "
+            "in place (requires fundamentals scraping to have run), then recover any "
+            "still-zero rows directly from cached Screener.in HTML pages "
+            "(see backfill_market_cap_from_screener_cache)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.full_nse:
         build_full_nse_universe_from_db(active_days=args.active_days)
-    else:
+    elif not (args.refresh_adtv or args.refresh_market_cap):
         build_universe_csv()
+
+    if args.refresh_adtv:
+        compute_adtv_from_ohlcv()
+    if args.refresh_market_cap:
+        compute_market_cap_from_fundamentals()
+        backfill_market_cap_from_screener_cache()

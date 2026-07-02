@@ -43,6 +43,7 @@ from datastore.api.schemas import (
     SchedulerJobHeartbeat,
 )
 from datastore.api.utils.scheduler_status import get_scheduler_heartbeats
+from config.nse_holidays import ALL_NSE_HOLIDAYS
 from ingestion.scheduler.checkpoint import STEPS, CheckpointManager
 from ingestion.scheduler.daily_pipeline import step_runner
 from ingestion.scheduler.gap_detector import is_trading_day
@@ -50,6 +51,16 @@ from ingestion.scheduler.gap_detector import is_trading_day
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/ops", tags=["Ops"])
+
+
+@router.get("/trading-calendar/holidays")
+async def get_trading_calendar_holidays() -> dict:
+    """NSE trading holidays (ALL_NSE_HOLIDAYS, config/nse_holidays.py) as
+    ISO date strings — used by dashboard/static/js/calendar_picker.js to
+    flag non-trading dates on date inputs client-side. Reuses the single
+    source of truth already used by ingestion/scheduler/gap_detector.py's
+    is_trading_day; does not duplicate the holiday list."""
+    return {"holidays": sorted(d.isoformat() for d in ALL_NSE_HOLIDAYS)}
 
 
 @router.get("/heartbeats", response_model=list[SchedulerJobHeartbeat])

@@ -3,6 +3,7 @@
 // is real data closely tied to position monitoring, and has no dedicated
 // screen ID of its own in the 27-screen prototype spec)
 renderAppShell("ml", "positions");
+CalendarPicker.attach("backdate-input");
 
 function decisionBadge(actionType) {
   if (actionType === "buy") return "b-green";
