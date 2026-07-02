@@ -897,6 +897,31 @@ class TAUserAlertResponse(BaseModel):
     count: int = 0
 
 
+class TASignalWriteRow(BaseModel):
+    """One ta_signals row for POST /api/v1/ta/signals/write's batch body."""
+
+    date: str
+    ticker: str
+    template_name: str
+    category: str
+    score: float
+    matched_conditions: int
+    total_conditions: int
+    key_values: Dict[str, Optional[float]] = Field(default_factory=dict)
+
+
+class TASignalWriteRequest(BaseModel):
+    """Request body for POST /api/v1/ta/signals/write."""
+
+    rows: List[TASignalWriteRow] = Field(default_factory=list)
+
+
+class TACheckTriggersRequest(BaseModel):
+    """Request body for POST /api/v1/ta/user-alerts/check-triggers."""
+
+    date: str
+
+
 # ===== Fundamental Analysis API scaffolding (SPEC-FA-008) — the 27
 # sector-relative z-scored ratios + 3 staleness flags (features/fundamental.py)
 # and 12 governance features (features/governance.py) already exist in the

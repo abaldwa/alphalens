@@ -143,39 +143,48 @@ class DailyAlertChecker:
         if rows:
             conn.executemany(_INSERT_SQL, rows)
 
-    def run(self, run_date: Optional[str] = None) -> Dict[str, int]:
-        """Run all 42 templates against today's feature Parquet and write results.
+    def evaluate(self, run_date: Optional[str] = None) -> "tuple[Optional[str], Dict[str, List[ScreenerResult]]]":
+        """Run all 42 templates against a date's feature Parquet — compute only, no DB write.
+
+        Split out from run() (SPEC-SCHED-013 follow-up, 2026-07-02) so
+        callers running in a different process than the DataStore API
+        (i.e. the scheduler) can POST the results through the API's
+        /api/v1/ta/signals/write endpoint instead of opening a direct
+        DuckDB connection to SIGNALS_DUCKDB_PATH — that file already has
+        a long-lived cached connection held by the API process for the
+        life of its run, so a second, independent process (the scheduler)
+        opening its own connection loses the race for DuckDB's single-
+        writer-per-file lock (observed via a live "check_ta_alerts" Ops
+        Monitor failure — see BuildLog.md). Routing writes through the
+        API instead means only the API process ever opens the file
+        directly, matching SPEC-DS-002.
 
         Parameters
         ----------
         run_date : str, optional
             YYYY-MM-DD. Defaults to the latest available feature Parquet date.
-            Useful for backfilling or re-running a specific date.
 
         Returns
         -------
-        dict
-            {template_name: match_count} for each of the 42 templates.
-            Templates with zero full matches appear with value 0.
-            Returns {} if no feature Parquet is available for the date.
+        tuple of (str or None, dict)
+            (resolved_date, {template_name: [ScreenerResult, ...]}) — only
+            full matches (score == 1.0) are included per template.
+            resolved_date is None (and the dict empty) if no feature
+            Parquet is available for run_date.
 
         Spec References
-        ---------------
+        ----------------
         SPEC-TA-006: daily alert evaluation
-        SPEC-SCHED-013: persist=False to release the DuckDB file lock quickly
         """
         resolved = resolve_date(run_date)
         if resolved is None:
             logger.warning(
-                "DailyAlertChecker.run: no feature Parquet available for date '%s'",
+                "DailyAlertChecker.evaluate: no feature Parquet available for date '%s'",
                 run_date,
             )
-            return {}
+            return None, {}
 
         logger.info("DailyAlertChecker: evaluating 42 templates for date %s", resolved)
-
-        # Ensure the signals directory exists before opening DuckDB
-        SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
         template_results: Dict[str, List[ScreenerResult]] = {}
         total_matches = 0
@@ -202,6 +211,42 @@ class DailyAlertChecker:
             total_matches,
             resolved,
         )
+        return resolved, template_results
+
+    def run(self, run_date: Optional[str] = None) -> Dict[str, int]:
+        """Run all 42 templates against today's feature Parquet and write results.
+
+        In-process convenience wrapper around evaluate() + a direct DuckDB
+        write — safe to call from the same process as the DataStore API
+        (e.g. tests, one-off scripts), but NOT from the scheduler process;
+        see evaluate()'s docstring for why. ingestion/scheduler/
+        daily_pipeline.py's step_check_ta_alerts uses evaluate() + the
+        /api/v1/ta/signals/write HTTP endpoint instead.
+
+        Parameters
+        ----------
+        run_date : str, optional
+            YYYY-MM-DD. Defaults to the latest available feature Parquet date.
+            Useful for backfilling or re-running a specific date.
+
+        Returns
+        -------
+        dict
+            {template_name: match_count} for each of the 42 templates.
+            Templates with zero full matches appear with value 0.
+            Returns {} if no feature Parquet is available for the date.
+
+        Spec References
+        ---------------
+        SPEC-TA-006: daily alert evaluation
+        SPEC-SCHED-013: persist=False to release the DuckDB file lock quickly
+        """
+        resolved, template_results = self.evaluate(run_date)
+        if resolved is None:
+            return {}
+
+        # Ensure the signals directory exists before opening DuckDB
+        SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
         # Write all results to the signals DuckDB in a single connection
         # SPEC-SCHED-013: persist=False releases the lock immediately on exit

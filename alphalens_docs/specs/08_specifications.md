@@ -660,19 +660,40 @@ DuckDB tables in `SIGNALS_DUCKDB_PATH`:
   alert is newly-triggered iff no trigger row exists yet for
   `(alert_id, run_date)` before that call — idempotent on re-run).
 
-`check_alerts(run_date)` (called by the same `check_ta_alerts` pipeline
-step, right after `DailyAlertChecker.run()`) checks every active alert
-against `run_date`'s `ta_signals` full matches and returns the newly-
-triggered `alert_id`s.
+`check_alerts(run_date)` checks every active alert against `run_date`'s
+`ta_signals` full matches and returns the newly-triggered `alert_id`s.
+
+**[UPDATED, 2026-07-02]** The `check_ta_alerts` pipeline step originally
+called `DailyAlertChecker.run()` and `alert_store.check_alerts()`
+directly from the scheduler process, each opening its own connection to
+`SIGNALS_DUCKDB_PATH` — but the API process already holds a long-lived
+cached connection to that same file (several routers default to
+`persist=True`), so the scheduler process lost the race for DuckDB's
+single-writer-per-file lock (a live Ops Monitor failure). Fixed by
+splitting `DailyAlertChecker.run()` into `evaluate()` (pure compute, no
+DB access — used by the scheduler) + `run()` (compute + direct write,
+kept only for in-process/test callers), and adding two API endpoints so
+all `signals.duckdb` access for this subsystem goes through the API
+process, matching `signals.py`'s "API is the only writer" invariant:
+- `POST /api/v1/ta/signals/write` — batch-upsert `ta_signals` rows.
+- `POST /api/v1/ta/user-alerts/check-triggers` — runs `check_alerts()`
+  server-side for a given date.
+
+`step_check_ta_alerts` now calls `evaluate()` locally (reads the feature
+Parquet only) then POSTs the results to both endpoints via `httpx`
+(120s timeout — a full day's batch is ~13k rows / ~3.4MB JSON, ~38s
+round-trip). No `SIGNALS_DUCKDB_PATH` connection is ever opened from the
+scheduler process for this step anymore.
 
 New endpoints in `datastore/api/routers/technical.py` (before the
 `/{ticker}/...` routes, same reasoning as the screener/alerts routes):
 `GET /api/v1/ta/user-alerts` (list, enriched with `triggered_today`),
 `POST /api/v1/ta/user-alerts` (create), `DELETE /api/v1/ta/user-alerts/{alert_id}`
-(soft-delete). UI: `dashboard/static/technical/alerts.html` +
-`js/alerts.js` — ticker input uses the site-wide `TickerPicker`
-(SPEC-UI-011), template dropdown from `/api/v1/ta/screener/templates`,
-table shows Watching/Triggered status + Delete action. Tests:
+(soft-delete), plus the two write/check endpoints above. UI:
+`dashboard/static/technical/alerts.html` + `js/alerts.js` — ticker input
+uses the site-wide `TickerPicker` (SPEC-UI-011), template dropdown from
+`/api/v1/ta/screener/templates`, table shows Watching/Triggered status +
+Delete action. Tests:
 `tests/unit/test_ta_alerts.py` (create/list/delete round-trip, unknown-
 template rejection, newly-triggered detection + idempotency, partial-
 match rejection).

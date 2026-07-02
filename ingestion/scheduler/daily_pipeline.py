@@ -786,18 +786,32 @@ def step_paper_trade(run_date: date_type, db_path: Optional[Path] = None) -> Non
 def step_check_ta_alerts(run_date: date_type, db_path: Optional[Path] = None) -> None:
     """
     Evaluate all 42 TA screener templates against today's feature Parquet
-    (systems/technical_analysis/alerts/daily_alert_checker.py), persisting
-    full matches to ta_signals, then check user-defined alerts
-    (systems/technical_analysis/alerts/alert_store.py) against those
-    matches so newly-triggered alerts are recorded in ta_alert_triggers.
+    (systems/technical_analysis/alerts/daily_alert_checker.py's
+    evaluate(), compute-only), POST full matches to the DataStore API's
+    /api/v1/ta/signals/write (ta_signals), then POST to
+    /api/v1/ta/user-alerts/check-triggers so the API process checks
+    user-defined alerts (systems/technical_analysis/alerts/alert_store.py)
+    against those matches server-side.
+
+    [BUG FIX, 2026-07-02] Previously called DailyAlertChecker.run() and
+    alert_store.check_alerts() directly, each opening its own connection
+    to SIGNALS_DUCKDB_PATH from this (scheduler) process — but the
+    DataStore API process already holds a long-lived cached connection to
+    that same file for its whole run (several routers default to
+    persist=True), so this process lost the race for DuckDB's single-
+    writer-per-file lock (observed as a live "check_ta_alerts" Ops
+    Monitor failure — IO Error: Could not set lock ... Conflicting lock
+    is held). Routing both the compute-result write and the trigger
+    check through the API via HTTP means only the API process ever opens
+    signals.duckdb directly, matching SPEC-DS-002 and eliminating the
+    cross-process lock race rather than just reducing its odds.
 
     Parameters
     ----------
     run_date : date
     db_path : Path, optional
-        Unused — both steps reach data via feature Parquet /
-        SIGNALS_DUCKDB_PATH directly (SPEC-DS-005/SPEC-DS-007), not a
-        DuckDB connection passed in from here.
+        Unused — evaluate() reads feature Parquet directly
+        (SPEC-DS-005); all signals.duckdb access goes through the API.
 
     Returns
     -------
@@ -805,28 +819,61 @@ def step_check_ta_alerts(run_date: date_type, db_path: Optional[Path] = None) ->
 
     Spec References
     ----------------
-    SPEC-TA-006, SPEC-TA-009
+    SPEC-TA-006, SPEC-TA-009, SPEC-DS-002
 
     PIT Assumptions
     ----------------
-    None at this layer — both steps only read run_date's own feature
-    Parquet / that date's ta_signals rows, no look-ahead.
+    None at this layer — evaluate() only reads run_date's own feature
+    Parquet, no look-ahead.
 
     Raises
     ------
     Exception
-        Any failure in template evaluation or alert-trigger persistence —
+        Any failure in template evaluation or the API write/check calls —
         propagated so the checkpoint records this step as failed.
     """
-    from systems.technical_analysis.alerts import alert_store
-    from systems.technical_analysis.alerts.daily_alert_checker import DailyAlertChecker
+    import httpx
+
+    from config.settings import DATASTORE_API_BASE_URL
+    from systems.technical_analysis.alerts.daily_alert_checker import (
+        _TEMPLATE_CATEGORY,
+        DailyAlertChecker,
+    )
 
     date_str = run_date.isoformat()
-    match_counts = DailyAlertChecker().run(run_date=date_str)
-    total_matches = sum(match_counts.values())
-    logger.info(f"check_ta_alerts: {total_matches} template full-matches across {len(match_counts)} templates for {date_str}")
+    resolved, template_results = DailyAlertChecker().evaluate(run_date=date_str)
+    if resolved is None:
+        logger.warning(f"check_ta_alerts: no feature Parquet available for {date_str} — skipping")
+        return
 
-    newly_triggered = alert_store.check_alerts(run_date)
+    rows = [
+        {
+            "date": resolved,
+            "ticker": r.ticker,
+            "template_name": r.template_name,
+            "category": _TEMPLATE_CATEGORY.get(r.template_name, "custom"),
+            "score": r.score,
+            "matched_conditions": r.matched_conditions,
+            "total_conditions": r.total_conditions,
+            "key_values": r.key_values or {},
+        }
+        for results in template_results.values()
+        for r in results
+    ]
+    total_matches = len(rows)
+
+    # 120s: a full day's ta_signals batch (~13k rows / ~3.4MB JSON, all 42
+    # templates x full universe) took ~38s round-trip in testing — this is
+    # a once-daily batch job, not an interactive call, so a generous
+    # timeout is fine.
+    with httpx.Client(timeout=120.0) as client:
+        write_resp = client.post(f"{DATASTORE_API_BASE_URL}/api/v1/ta/signals/write", json={"rows": rows})
+        write_resp.raise_for_status()
+        logger.info(f"check_ta_alerts: {total_matches} template full-matches across {len(template_results)} templates for {date_str} (written={write_resp.json().get('written')})")
+
+        check_resp = client.post(f"{DATASTORE_API_BASE_URL}/api/v1/ta/user-alerts/check-triggers", json={"date": resolved})
+        check_resp.raise_for_status()
+        newly_triggered = check_resp.json().get("newly_triggered", [])
     logger.info(f"check_ta_alerts: {len(newly_triggered)} user-defined alert(s) newly triggered for {date_str}")
 
 

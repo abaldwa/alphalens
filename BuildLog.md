@@ -8359,3 +8359,25 @@ Re-running the pipeline surfaced a **DuckDB same-process connection-config confl
 - Full `run_models` re-run for 2026-07-02 via the real pipeline step function — succeeded, real signals written and verified via `GET /api/v1/signals/ml/top_buys/2026-07-02`.
 - Full `run_steps_for_date` resume from `run_models` — `write_signals`/`paper_trade` also succeeded; `check_ta_alerts` failed on the cross-process lock race described above (non-critical, doesn't block signal generation).
 - `tests/unit/test_ta_alerts.py`, `tests/unit/test_ta_screener.py`: still pass after the connection-config fix.
+
+
+## check_ta_alerts Cross-Process DuckDB Lock — Actually Fixed — 2026-07-02
+
+### Context
+The "known gap" flagged in the previous entry (persist=False mitigation only reduced the odds of the cross-process lock race) turned out to be a real, live problem: the user hit it on the Ops Monitor — `check_ta_alerts: IO Error: Could not set lock on file ".../signals.duckdb": Conflicting lock is held in ... (PID <api_server>)`. The scheduler process (running `check_ta_alerts`) and the API process (holding a long-lived cached read-write connection to the same file, opened by any of `alerts.py`/`regime.py`/`watchlist.py`/`multibagger.py`/`signals.py`/`forensic.py`) are two separate OS processes — DuckDB's single-writer-per-file lock means whichever one connects first wins, and once the API holds it (indefinitely, `persist=True`), the scheduler can never get in for the rest of the API's run. A `persist=False` config match, as applied previously, only meant the scheduler's request released its own lock attempt quickly if it succeeded — it did nothing to help it *acquire* the lock while the API's connection was already open.
+
+### Fix (matches the architecture, doesn't just paper over it)
+`datastore/api/routers/signals.py`'s own docstring states "This API server is the *only* writer of signals.duckdb" — but `ta_signals`/`ta_alerts` writes broke that invariant by connecting directly from the scheduler process. Fixed properly this time:
+- `systems/technical_analysis/alerts/daily_alert_checker.py`: split `run()` into a new `evaluate(run_date)` (pure compute — runs the 42 templates, returns results, **no DB access**) and kept `run()` as a thin in-process convenience wrapper (compute + direct write) for tests/one-off scripts only.
+- New `POST /api/v1/ta/signals/write` (`datastore/api/routers/technical.py`) — batch-upserts `ta_signals` rows from inside the API process (reuses `daily_alert_checker.py`'s own DDL/insert SQL).
+- New `POST /api/v1/ta/user-alerts/check-triggers` — runs `alert_store.check_alerts(date)` inside the API process.
+- `ingestion/scheduler/daily_pipeline.py`'s `step_check_ta_alerts`: now calls `DailyAlertChecker().evaluate()` (local feature-Parquet read, no DB) then POSTs the results to both new endpoints via `httpx`. **No SIGNALS_DUCKDB_PATH connection is ever opened from the scheduler process for this step anymore** — only the API process touches the file, eliminating the lock race entirely rather than reducing its odds.
+- One real batch is ~12,800 rows / ~3.4MB JSON (all 42 templates × full universe) and took ~38s round-trip in testing — bumped the scheduler's httpx client timeout from 30s to 120s (a once-daily batch job, not interactive, so generous timeout is fine).
+
+### Result
+Reproduced the exact failure condition (pinned the API's cached connection via `/api/v1/regime/current` + `/api/v1/watchlist/current`, then ran `step_check_ta_alerts` from a separate process) — succeeded in 41.5s with zero lock errors, real `ta_signals` rows verified via `GET /api/v1/ta/alerts/today` for 2026-07-02.
+
+### Tests / verification
+- `tests/unit/test_ta_screener.py`, `tests/unit/test_ta_alerts.py`: still pass (8/8).
+- `STEP_NAMES`/`_STEP_DISPATCH` key-set equality re-checked.
+- Live reproduction of the reported failure mode, now passing.

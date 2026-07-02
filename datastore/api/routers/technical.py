@@ -23,7 +23,7 @@ to prevent FastAPI from interpreting "screener" or "alerts" as a ticker name.
 
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -34,6 +34,7 @@ from datastore.api.db import get_duckdb_connection
 from datastore.api.schemas import (
     TAAlertResponse,
     TAAlertRow,
+    TACheckTriggersRequest,
     TACompareResponse,
     TACompareTickerRow,
     TAIndicatorsResponse,
@@ -43,6 +44,7 @@ from datastore.api.schemas import (
     TAScreenerRequest,
     TAScreenerResponse,
     TAScreenerRow,
+    TASignalWriteRequest,
     TATemplateInfo,
     TATemplateListResponse,
     TAUserAlertCreate,
@@ -493,6 +495,87 @@ async def delete_user_alert(alert_id: int) -> Dict[str, bool]:
     if not ok:
         raise HTTPException(status_code=404, detail=f"alert_id {alert_id} not found or already inactive")
     return {"deleted": True}
+
+
+@router.post("/signals/write")
+async def write_ta_signals(body: TASignalWriteRequest) -> Dict[str, int]:
+    """Batch upsert ta_signals rows — the API-process write path for
+    DailyAlertChecker.evaluate() results.
+
+    Exists so ingestion/scheduler/daily_pipeline.py's check_ta_alerts step
+    (running in the scheduler process, a different OS process than this
+    API) never opens SIGNALS_DUCKDB_PATH directly. That file already has
+    a long-lived connection cached by this API process (several other
+    routers default to persist=True); a second process opening its own
+    connection loses the race for DuckDB's single-writer-per-file lock —
+    observed as a live "check_ta_alerts" Ops Monitor failure. Routing the
+    write through this endpoint means only the API process ever touches
+    the file directly, matching SPEC-DS-002 ("no other process touches
+    signals.duckdb").
+
+    Parameters
+    ----------
+    body : TASignalWriteRequest
+
+    Returns
+    -------
+    dict
+        {"written": <row count>}
+
+    Spec References
+    ----------------
+    SPEC-TA-006, SPEC-TA-008: ta_signals schema/upsert
+    """
+    from systems.technical_analysis.alerts.daily_alert_checker import (
+        _CREATE_TA_SIGNALS_SQL,
+        _INSERT_SQL,
+    )
+
+    if not body.rows:
+        return {"written": 0}
+
+    rows = [
+        (
+            r.date, r.ticker, r.template_name, r.category, r.score,
+            r.matched_conditions, r.total_conditions,
+            json.dumps(r.key_values) if r.key_values else None,
+        )
+        for r in body.rows
+    ]
+
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+        conn.execute(_CREATE_TA_SIGNALS_SQL)
+        conn.executemany(_INSERT_SQL, rows)
+    return {"written": len(rows)}
+
+
+@router.post("/user-alerts/check-triggers")
+async def check_user_alert_triggers(body: TACheckTriggersRequest) -> Dict[str, Any]:
+    """Run alert_store.check_alerts() inside the API process for the given date.
+
+    Same cross-process-lock reasoning as write_ta_signals above: the
+    scheduler calls this HTTP endpoint instead of importing alert_store
+    and connecting to SIGNALS_DUCKDB_PATH itself.
+
+    Parameters
+    ----------
+    body : TACheckTriggersRequest
+
+    Returns
+    -------
+    dict
+        {"newly_triggered": [alert_id, ...]}
+
+    Spec References
+    ----------------
+    SPEC-TA-009: daily alert-trigger evaluation
+    """
+    from datetime import date as date_type
+
+    run_date = date_type.fromisoformat(body.date)
+    newly = alert_store.check_alerts(run_date)
+    return {"newly_triggered": newly}
 
 
 # ---------------------------------------------------------------------------
