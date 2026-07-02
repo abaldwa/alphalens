@@ -7,7 +7,7 @@
 // Backend status copy, keyed by app id — reused by every No-Backend screen
 // in that app so the explanation isn't hand-written N times.
 const BACKEND_STATUS = {
-  technical: "Charting, Compare, Market Overview, and the Screener (42 templates via /api/v1/ta/screener/*) are now live (real indicators/patterns/breadth). This screen specifically still has no backend: systems/technical_analysis/ has no alert storage/checker yet. That's real new logic, not API scaffolding, so it stays empty for now.",
+  technical: "Charting, Compare, Market Overview, Screener (42 templates), and Alert Manager (user-defined ticker/template alerts, checked daily) are all now live and wired to real data — see /api/v1/ta/*.",
   fundamental: "All 6 AlphaLens.Fundamental screens are now wired to real data (sector-relative ratios, governance, quality/growth/management composite scores, peer ranking, screener presets, thesis synthesis) — see /api/v1/fundamentals/*. Remaining gaps (sector-unique metrics like GNPA/ANDA, related-party-transaction detail) are flagged per-panel, not screen-wide.",
   valuation: "AlphaLens.Valuation has no backend yet — systems/damodaran_valuation/ is an empty stub (no DCF or relative-valuation engine exists). This screen will activate once that system exists.",
   forensic: "This panel needs data the forensic API doesn't expose yet.",

@@ -8293,3 +8293,42 @@ Closing this last 814 requires a live re-scrape of those specific tickers — ou
 - `python3 -c "from config.build_universe import backfill_market_cap_from_screener_cache; backfill_market_cap_from_screener_cache()"` → `1830/2644 total now non-zero`.
 - `curl localhost:8000/api/v1/fundamentals/HEXT/peers?k=5` → real market-cap-based IT peers for a newly-recovered ticker.
 - Confirmed the 814 still-zero tickers fall into two honestly-labeled buckets (no cached page / blank field on cached page), not silently dropped.
+
+### Follow-up 2 same day — live re-scrape of the remaining 814
+
+User approved a live re-scrape. Added `--tickers-file` to `scripts/backfill_fundamentals_screener.py` (previously only supported `--all-db-tickers` or the default universe pool) and ran it in the background against exactly the 814 still-zero tickers, using real `SCREENER_USERNAME`/`SCREENER_PASSWORD` credentials already in `.env`.
+
+**Result:** 810/814 tickers scraped successfully in 18.3 minutes (4 failed: AKZOINDIA, MIRCELECTR, SASTASUNDR, VISASTEEL — not investigated further, small residual). Re-ran `compute_market_cap_from_fundamentals()` + `backfill_market_cap_from_screener_cache()`: coverage rose **1,830 → 1,954/2,644 (74%)**. Remaining 690 tickers are the genuinely stubborn cases (delisted/illiquid/no Screener.in page at all) — not pursued further without a specific reason to.
+
+### Tests / verification (follow-up 2)
+- `logs/screener_mcap_backfill_814.log`: `Screener backfill complete in 18.3 min: 810/814 succeeded`.
+- `compute_market_cap_from_fundamentals()` → `market_cap_cr updated for 1950/2644 tickers`.
+- `backfill_market_cap_from_screener_cache()` → `4 tickers` recovered from cache on top, `1954/2644 total now non-zero`.
+
+
+## TA Alert Manager — 2026-07-02
+
+### Context
+`dashboard/static/technical/alerts.html` was empty-state ("no alert storage/checker yet"). User asked to build the real backend + frontend.
+
+### Investigation
+`systems/technical_analysis/alerts/daily_alert_checker.py`'s `DailyAlertChecker` already existed, fully built and unit-tested — it runs all 42 screener templates daily and upserts full matches into a `ta_signals` table — but was never invoked from anywhere: not in `ingestion/scheduler/daily_pipeline.py`'s `_STEP_DISPATCH`, only referenced from its own file and its test. `datastore/api/routers/technical.py` already had read-only `/alerts/today` and `/alerts/{ticker}` reading from `ta_signals`. Genuinely missing: (1) wiring the checker into the pipeline so `ta_signals` actually gets populated daily, (2) user-created/persistent alerts (as opposed to the fixed 42-template daily snapshot), (3) state-change detection (surface only *newly* triggered alerts), (4) CRUD endpoints + frontend.
+
+### Fix
+- **`systems/technical_analysis/alerts/alert_store.py`** (new): `create_alert`/`list_alerts`/`delete_alert` (soft-delete) CRUD against a new `ta_alerts` table, plus `check_alerts(run_date)` which checks every active alert against that date's `ta_signals` full matches and records newly-triggered events in an append-only `ta_alert_triggers` table (idempotent — re-running the same date reports no new triggers). Reuses `ta_signals`/`DailyAlertChecker` rather than duplicating the screener's condition-evaluation engine.
+- **`ingestion/scheduler/daily_pipeline.py`**: new `step_check_ta_alerts` runs `DailyAlertChecker().run()` then `alert_store.check_alerts()`. Registered in `_STEP_DISPATCH` and in `ingestion/scheduler/checkpoint.py`'s `STEPS` as `check_ta_alerts` (depends_on `compute_features`, `is_backfillable: True` — deterministic given that date's own features, no model inference).
+- **`datastore/api/routers/technical.py`**: new `GET/POST /api/v1/ta/user-alerts`, `DELETE /api/v1/ta/user-alerts/{alert_id}`, placed before the `/{ticker}/...` parametric routes. New schemas in `datastore/api/schemas.py` (`TAUserAlertCreate/Row/Response`).
+- **`dashboard/static/technical/alerts.html` + new `js/alerts.js`**: real form (ticker via site-wide `TickerPicker`, template dropdown from `/api/v1/ta/screener/templates`), table of alerts with Watching/Triggered status and Delete action — replaces the empty-state stub.
+- **`dashboard/static/js/api.js`**: added `apiDelete()` helper (didn't exist before, needed for the Delete action).
+
+**Bug caught during manual testing:** `list_alerts()` initially rendered a NULL `last_triggered_date` as the literal string `"NaT"` (pandas `NaT` is not `None`) instead of JSON `null` — fixed with `pd.isna()`.
+
+### Result
+Verified end-to-end via curl against the live API: create → list (shows `triggered_today: false`) → ran `DailyAlertChecker` + `check_alerts` for a real date (2026-07-01) against a ticker/template known to match (JTEKTINDIA/A2) → alert correctly flipped to `triggered_today: true` with the right `last_triggered_date` → re-running `check_alerts` for the same date correctly reported zero new triggers (idempotent) → delete correctly soft-deletes (404 on double-delete). Restarted the API server (explicit user confirmation) to load the new router code.
+
+### Tests / verification
+- `tests/unit/test_ta_alerts.py` (new, 4 tests): create/list/delete round-trip, unknown-template rejection, newly-triggered detection + idempotency, partial-match (score < 1.0) never triggers. All pass.
+- `tests/unit/test_ta_screener.py` (existing, 4 tests): still pass, no regression.
+- `tests/quality/` zero-stub suite: still pass.
+- `STEP_NAMES`/`_STEP_DISPATCH` key-set equality checked directly.
+- Specs: added SPEC-TA-006 (formalized, was only referenced informally before) and SPEC-TA-009 to `alphalens_docs/specs/08_specifications.md`; updated the AlphaLens.Technical row in `alphalens_docs/CLAUDE.md`'s screen table to "Real".

@@ -783,6 +783,53 @@ def step_paper_trade(run_date: date_type, db_path: Optional[Path] = None) -> Non
     )
 
 
+def step_check_ta_alerts(run_date: date_type, db_path: Optional[Path] = None) -> None:
+    """
+    Evaluate all 42 TA screener templates against today's feature Parquet
+    (systems/technical_analysis/alerts/daily_alert_checker.py), persisting
+    full matches to ta_signals, then check user-defined alerts
+    (systems/technical_analysis/alerts/alert_store.py) against those
+    matches so newly-triggered alerts are recorded in ta_alert_triggers.
+
+    Parameters
+    ----------
+    run_date : date
+    db_path : Path, optional
+        Unused — both steps reach data via feature Parquet /
+        SIGNALS_DUCKDB_PATH directly (SPEC-DS-005/SPEC-DS-007), not a
+        DuckDB connection passed in from here.
+
+    Returns
+    -------
+    None
+
+    Spec References
+    ----------------
+    SPEC-TA-006, SPEC-TA-009
+
+    PIT Assumptions
+    ----------------
+    None at this layer — both steps only read run_date's own feature
+    Parquet / that date's ta_signals rows, no look-ahead.
+
+    Raises
+    ------
+    Exception
+        Any failure in template evaluation or alert-trigger persistence —
+        propagated so the checkpoint records this step as failed.
+    """
+    from systems.technical_analysis.alerts import alert_store
+    from systems.technical_analysis.alerts.daily_alert_checker import DailyAlertChecker
+
+    date_str = run_date.isoformat()
+    match_counts = DailyAlertChecker().run(run_date=date_str)
+    total_matches = sum(match_counts.values())
+    logger.info(f"check_ta_alerts: {total_matches} template full-matches across {len(match_counts)} templates for {date_str}")
+
+    newly_triggered = alert_store.check_alerts(run_date)
+    logger.info(f"check_ta_alerts: {len(newly_triggered)} user-defined alert(s) newly triggered for {date_str}")
+
+
 _STEP_DISPATCH = {
     "download_bhavcopy": step_download_bhavcopy,
     "download_fno": step_download_fno,
@@ -794,6 +841,7 @@ _STEP_DISPATCH = {
     "run_models": step_run_models,
     "write_signals": step_write_signals,
     "paper_trade": step_paper_trade,
+    "check_ta_alerts": step_check_ta_alerts,
 }
 
 

@@ -73,6 +73,9 @@ def main() -> None:
                         help="Scrape all tickers in ohlcv_adjusted (default: ~2492-ticker active universe)")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Skip tickers that already have a row in the fundamentals table")
+    parser.add_argument("--tickers-file", type=Path,
+                        help="Only scrape tickers listed in this file (one ticker per line), "
+                             "overriding --all-db-tickers / universe pool.")
     args = parser.parse_args()
 
     from config.settings import SCREENER_USERNAME, SCREENER_PASSWORD, DUCKDB_PATH
@@ -97,7 +100,12 @@ def main() -> None:
         sys.exit(1)
 
     # Build ticker list
-    if args.all_db_tickers:
+    if args.tickers_file:
+        tickers = [
+            line.strip() for line in args.tickers_file.read_text().splitlines() if line.strip()
+        ]
+        logger.info("Using --tickers-file pool: %d tickers", len(tickers))
+    elif args.all_db_tickers:
         with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
             tickers = [r[0] for r in conn.execute(
                 "SELECT DISTINCT ticker FROM ohlcv_adjusted ORDER BY ticker"

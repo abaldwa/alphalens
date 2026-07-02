@@ -626,10 +626,56 @@ This is pure API scaffolding; no new feature computation.
   return-correlation matrix computed from OHLCV
 - `GET /market_overview` — advances/declines/sector breadth from the
   latest 2 trading days' OHLCV grouped by the real sector map
-- UI: `dashboard/static/technical/{chart,compare,overview}.html` are real;
-  `screener.html` (needs the still-unimplemented SPEC-TA-003 42-template
-  engine) and `alerts.html` (needs stateful CRUD + a background checker)
-  stay empty-state — both need real new logic, not scaffolding
+- UI: `dashboard/static/technical/{chart,compare,overview}.html` are real.
+  `screener.html` and `alerts.html` were empty-state as of this entry;
+  see SPEC-TA-006 and SPEC-TA-009 below — both are now real too.
+
+### SPEC-TA-006 · Daily Alert Checker (`ta_signals`)
+**[AS BUILT, 2026-07-02]** `systems/technical_analysis/alerts/daily_alert_checker.py`'s
+`DailyAlertChecker.run(run_date)` evaluates all 42 screener templates
+(`systems/technical_analysis/screener/{engine,templates}.py`, SPEC-TA-005)
+against that date's feature Parquet and upserts every full match
+(`score == 1.0`) into the `ta_signals` DuckDB table
+(`SIGNALS_DUCKDB_PATH`), keyed `(date, ticker, template_name)`. Exposed
+read-only via `GET /api/v1/ta/alerts/today` and `GET /api/v1/ta/alerts/{ticker}`
+(`datastore/api/routers/technical.py`). Wired into the daily pipeline as
+the `check_ta_alerts` step (`ingestion/scheduler/daily_pipeline.py`'s
+`step_check_ta_alerts`, `ingestion/scheduler/checkpoint.py`'s `STEPS`)
+— `is_backfillable: True` since it only evaluates that date's own already-
+computed features, no model inference or look-ahead. Tests:
+`tests/unit/test_ta_screener.py`.
+
+### SPEC-TA-009 · User-Defined Alerts (Alert Manager)
+**[AS BUILT, 2026-07-02]** `systems/technical_analysis/alerts/alert_store.py`
+adds user-created, persistent watches on a `(ticker, template_name)` pair,
+reusing SPEC-TA-006's `ta_signals` full-match snapshot rather than
+duplicating the screener's condition-evaluation engine. Two new
+DuckDB tables in `SIGNALS_DUCKDB_PATH`:
+- `ta_alerts` — one row per user-created alert (`alert_id`, `ticker`,
+  `template_name`, `active`, `last_triggered_date`); `delete_alert()`
+  soft-deletes (`active = FALSE`), never hard-deletes.
+- `ta_alert_triggers` — append-only `(alert_id, date)` history, one row
+  per day the alert's condition was fully true; used to distinguish
+  "newly triggered today" from "still matching from yesterday" (an
+  alert is newly-triggered iff no trigger row exists yet for
+  `(alert_id, run_date)` before that call — idempotent on re-run).
+
+`check_alerts(run_date)` (called by the same `check_ta_alerts` pipeline
+step, right after `DailyAlertChecker.run()`) checks every active alert
+against `run_date`'s `ta_signals` full matches and returns the newly-
+triggered `alert_id`s.
+
+New endpoints in `datastore/api/routers/technical.py` (before the
+`/{ticker}/...` routes, same reasoning as the screener/alerts routes):
+`GET /api/v1/ta/user-alerts` (list, enriched with `triggered_today`),
+`POST /api/v1/ta/user-alerts` (create), `DELETE /api/v1/ta/user-alerts/{alert_id}`
+(soft-delete). UI: `dashboard/static/technical/alerts.html` +
+`js/alerts.js` — ticker input uses the site-wide `TickerPicker`
+(SPEC-UI-011), template dropdown from `/api/v1/ta/screener/templates`,
+table shows Watching/Triggered status + Delete action. Tests:
+`tests/unit/test_ta_alerts.py` (create/list/delete round-trip, unknown-
+template rejection, newly-triggered detection + idempotency, partial-
+match rejection).
 
 ---
 

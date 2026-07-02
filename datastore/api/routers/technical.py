@@ -45,12 +45,17 @@ from datastore.api.schemas import (
     TAScreenerRow,
     TATemplateInfo,
     TATemplateListResponse,
+    TAUserAlertCreate,
+    TAUserAlertResponse,
+    TAUserAlertRow,
 )
 from datastore.api.utils.feature_store import read_feature_row, resolve_date
 from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
 from features.pattern_scores import PATTERN_FEATURES
 from features.technical import CORE_TECHNICAL_FEATURES
+from systems.technical_analysis.alerts import alert_store
 from systems.technical_analysis.screener.engine import ScreenerEngine
+from systems.technical_analysis.screener.templates import TEMPLATE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -385,6 +390,109 @@ async def get_alerts_for_ticker(
         for _, row in df.iterrows()
     ]
     return TAAlertResponse(as_of_date=target_date, rows=rows, count=len(rows))
+
+
+# ---------------------------------------------------------------------------
+# User-defined alerts (SPEC-TA-009) — placed before /{ticker}/... routes,
+# same reasoning as screener/alerts above.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/user-alerts", response_model=TAUserAlertResponse)
+async def list_user_alerts(active_only: bool = Query(True, description="Only return active (non-deleted) alerts")) -> TAUserAlertResponse:
+    """List user-created alerts, enriched with trigger state.
+
+    Parameters
+    ----------
+    active_only : bool, optional
+        If True (default), only active (non-deleted) alerts.
+
+    Returns
+    -------
+    TAUserAlertResponse
+
+    Spec References
+    ----------------
+    SPEC-TA-009: GET /api/v1/ta/user-alerts
+    """
+    defs = alert_store.list_alerts(active_only=active_only)
+    rows = [
+        TAUserAlertRow(
+            alert_id=d.alert_id,
+            ticker=d.ticker,
+            template_name=d.template_name,
+            category=d.category,
+            active=d.active,
+            last_triggered_date=d.last_triggered_date,
+            triggered_today=d.triggered_today,
+        )
+        for d in defs
+    ]
+    return TAUserAlertResponse(rows=rows, count=len(rows))
+
+
+@router.post("/user-alerts", response_model=TAUserAlertRow)
+async def create_user_alert(body: TAUserAlertCreate) -> TAUserAlertRow:
+    """Create a new user-defined alert watching (ticker, template_name).
+
+    Parameters
+    ----------
+    body : TAUserAlertCreate
+
+    Returns
+    -------
+    TAUserAlertRow
+        The newly created alert (never triggered yet).
+
+    Spec References
+    ----------------
+    SPEC-TA-009: POST /api/v1/ta/user-alerts
+
+    Raises
+    ------
+    HTTPException
+        400 if template_name is unknown.
+    """
+    if body.template_name not in TEMPLATE_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown template_name '{body.template_name}'")
+    alert_id = alert_store.create_alert(body.ticker, body.template_name)
+    return TAUserAlertRow(
+        alert_id=alert_id,
+        ticker=body.ticker.upper(),
+        template_name=body.template_name,
+        category=TEMPLATE_MAP[body.template_name].category,
+        active=True,
+        last_triggered_date=None,
+        triggered_today=False,
+    )
+
+
+@router.delete("/user-alerts/{alert_id}")
+async def delete_user_alert(alert_id: int) -> Dict[str, bool]:
+    """Deactivate a user-defined alert.
+
+    Parameters
+    ----------
+    alert_id : int
+
+    Returns
+    -------
+    dict
+        {"deleted": True}
+
+    Spec References
+    ----------------
+    SPEC-TA-009: DELETE /api/v1/ta/user-alerts/{alert_id}
+
+    Raises
+    ------
+    HTTPException
+        404 if alert_id doesn't exist or is already inactive.
+    """
+    ok = alert_store.delete_alert(alert_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"alert_id {alert_id} not found or already inactive")
+    return {"deleted": True}
 
 
 # ---------------------------------------------------------------------------

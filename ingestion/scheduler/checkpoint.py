@@ -83,6 +83,12 @@ STEPS = [
     # compute_features needs adjusted OHLCV. macro/fno data is consumed as
     # NaN-tolerant soft inputs — features compute fine without them.
     {"name": "compute_features", "is_backfillable": True, "depends_on": ["adjust_prices"]},
+    # check_ta_alerts: evaluates the 42 TA screener templates + user-defined
+    # alerts against run_date's own feature Parquet only (systems/
+    # technical_analysis/alerts/{daily_alert_checker,alert_store}.py) —
+    # deterministic given that day's features, no model inference, so
+    # unlike run_models/write_signals it IS safe to backfill.
+    {"name": "check_ta_alerts", "is_backfillable": True, "depends_on": ["compute_features"]},
     # Inference chain: each step hard-depends on the previous one.
     {"name": "run_models", "is_backfillable": False, "depends_on": ["compute_features"]},
     {"name": "write_signals", "is_backfillable": False, "depends_on": ["run_models"]},

@@ -31,6 +31,14 @@ async function apiPost(path, body) {
   return resp.json();
 }
 
+async function apiDelete(path) {
+  const resp = await fetch(API_BASE + path, { method: "DELETE" });
+  if (!resp.ok) {
+    throw new Error(`${resp.status} ${resp.statusText} — ${path}`);
+  }
+  return resp.json();
+}
+
 function fmtPct(x, digits = 1) {
   if (x === null || x === undefined || Number.isNaN(x)) return "—";
   return (x * 100).toFixed(digits) + "%";

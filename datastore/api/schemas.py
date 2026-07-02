@@ -871,6 +871,32 @@ class TAAlertResponse(BaseModel):
     count: int = 0
 
 
+class TAUserAlertCreate(BaseModel):
+    """Request body for POST /api/v1/ta/user-alerts."""
+
+    ticker: str
+    template_name: str
+
+
+class TAUserAlertRow(BaseModel):
+    """One user-defined alert (ta_alerts), enriched with trigger state."""
+
+    alert_id: int
+    ticker: str
+    template_name: str
+    category: str
+    active: bool
+    last_triggered_date: Optional[str] = None
+    triggered_today: bool = False
+
+
+class TAUserAlertResponse(BaseModel):
+    """Response for GET/POST /api/v1/ta/user-alerts."""
+
+    rows: List[TAUserAlertRow] = Field(default_factory=list)
+    count: int = 0
+
+
 # ===== Fundamental Analysis API scaffolding (SPEC-FA-008) — the 27
 # sector-relative z-scored ratios + 3 staleness flags (features/fundamental.py)
 # and 12 governance features (features/governance.py) already exist in the

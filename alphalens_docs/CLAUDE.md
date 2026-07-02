@@ -487,7 +487,7 @@ SPEC-UI-008/009).
 | AlphaLens.ML | 5 (Daily Insights, Signal Deep Dive, Multibagger, Positions, Backtest) | Real (Positions now includes Pending Actions review/approve, SPEC-PT-003) | SPEC-UI-001/002/003/003b/005 |
 | AlphaLens.Forensic | 7 (Dashboard, Red Flags, Benford, Cash Flow, Peer Heatmap, Investigation, Universe Scan) | Real | SPEC-UI-004 |
 | AlphaLens.Fundamental | 6 (Dashboard, Peers, Sector, Screener, Thesis, Management) | 4 Real, 2 Partial (Sector/Management have one empty-stated sub-panel each) | SPEC-UI-009, SPEC-FA-008 |
-| AlphaLens.Technical | 5 (Chart, Screener, Compare, Alerts, Market Overview) | 3 Real (Chart/Compare/Overview), 2 Empty (Screener/Alerts need real new logic) | SPEC-UI-008, SPEC-TA-004 |
+| AlphaLens.Technical | 5 (Chart, Screener, Compare, Alerts, Market Overview) | Real | SPEC-UI-008, SPEC-TA-004, SPEC-TA-006, SPEC-TA-009 |
 | AlphaLens.Valuation | 4 (DCF, Relative, Batch, Accuracy) | Empty (no backend) | SPEC-UI-009 |
 
 ---
