@@ -8332,3 +8332,30 @@ Verified end-to-end via curl against the live API: create → list (shows `trigg
 - `tests/quality/` zero-stub suite: still pass.
 - `STEP_NAMES`/`_STEP_DISPATCH` key-set equality checked directly.
 - Specs: added SPEC-TA-006 (formalized, was only referenced informally before) and SPEC-TA-009 to `alphalens_docs/specs/08_specifications.md`; updated the AlphaLens.Technical row in `alphalens_docs/CLAUDE.md`'s screen table to "Real".
+
+
+## AARTECH P&D Block Investigation → run_models Broken Since 2026-06-23 (CRITICAL FIX) — 2026-07-02
+
+### Context
+User flagged a P&D block notification for AARTECH (score 79, "accumulation") and asked to investigate. The block itself turned out to be correct and working as designed — but investigating it surfaced that `run_models`, the pipeline step that generates all buy/sell/exit/regime signals, had been silently failing for **every single day since 2026-06-23** (10 days). 2026-06-22 was the last date with real ML signals — confirmed by `top_buys/2026-07-02` returning `[]` and AARTECH's only `ml_signals` row being from `pnd_detector` (nothing from `signal_5d`/`meta_labeler`/HMM).
+
+### Root cause
+`systems/ml_signal_engine/inference/daily_inference.py`'s `_step_signals_and_meta()` pre-filtered the feature matrix to `CORE_TECHNICAL_FEATURES` (70 columns, Phase-1 technical-only) before calling `signal_model.predict_signals(X)` / `meta_model.predict_full(X)`. Both models internally do `X[self._feature_names]` against their own saved training feature list. `signal_5d` was retrained on 2026-06-23 with the full 150-column feature set (`registry.json`: `"features_count": 150"`, confirmed via the pickled model's `feature_names` — 80 of those columns are fundamentals/governance/MF-holdings/F&O features, e.g. `revenue_growth_yoy`, `roe`, `promoter_pct`, `pcr_oi`) — but the inference call site was never updated to match, so every run after that retrain hit a hard `KeyError` on the 80 missing columns and the whole `run_models` step failed.
+
+### Fix
+`_step_signals_and_meta()`: removed the `CORE_TECHNICAL_FEATURES` pre-filter; pass the full `eligible` feature frame through instead (it already has all 299 columns from that day's feature Parquet — confirmed present). Each model selects its own needed subset internally via `self._feature_names`, so this is correct regardless of which feature subset any given model version was trained on — no more hardcoded assumption at the call site.
+
+### Result
+Re-ran `run_models` for 2026-07-02 for real: succeeded. `top_buys/2026-07-02` now returns real ranked signals (e.g. LIQUIDSBI buy_prob=0.935). Ran the full remaining pipeline (`write_signals`, `paper_trade`) via `run_steps_for_date` — paper trading wrote 9 real pending actions for today, first real trading-day output since 2026-06-22. AARTECH re-confirmed still correctly excluded from scoring (only its `pnd_detector` row exists, `pnd_block=true`) — the P&D pre-filter (SPEC-MODEL-006) worked correctly throughout; it was never the bug.
+
+### Secondary bug found and fixed during verification
+Re-running the pipeline surfaced a **DuckDB same-process connection-config conflict**: several API routers (`alerts.py`, `regime.py`, `watchlist.py`, `multibagger.py`, `signals.py`, `forensic.py`) cache a long-lived, default (`read_only=False`, `persist=True`) connection to `SIGNALS_DUCKDB_PATH` for the API process's lifetime. This session's Alert Manager work (`systems/technical_analysis/alerts/alert_store.py`, `technical.py`'s pre-existing `/alerts/today`/`{ticker}`) used `read_only=True, persist=False` — DuckDB rejects a second, differently-configured connection to the same file within one process, so any request to those TA alert endpoints after another SIGNALS_DUCKDB_PATH router had been hit failed with a 500 (silently empty for the pre-existing endpoints, which swallow the exception). First fix attempt (switch to `persist=True`, matching config) solved the same-process conflict but broke **cross-process** compatibility — the scheduler's `check_ta_alerts` step (a separate process from the API) then got permanently locked out, since a `persist=True` connection is held for the API's entire lifetime and DuckDB only allows one writer across processes. Final fix: `persist=False` (releases the lock immediately after each call, scheduler-friendly) while dropping the explicit `read_only=True` (so the config matches the dominant `read_only=False` cached connections other routers hold, avoiding the same-process conflict). This is a genuine compromise, not a complete fix — see "Known gap" below.
+
+### Known gap (not fixed, flagged for follow-up)
+`ta_signals`/`ta_alerts` are written directly by the scheduler process (`daily_alert_checker.py`, `alert_store.check_alerts()`), bypassing the API — contradicting `datastore/api/routers/signals.py`'s documented invariant that "This API server is the *only* writer of signals.duckdb." Once any of the 6 routers above caches its permanent read-write connection, the scheduler can still occasionally lose the race for the brief moment it needs to grab the lock (retried 4x with backoff, but not guaranteed). Real fix would be routing `check_ta_alerts`' writes through the API via HTTP instead of a direct DuckDB connection, matching the rest of the system's "consumers write via the API" architecture principle — out of scope for this session, tracked here for later.
+
+### Tests / verification
+- Reproduced the KeyError directly against a 20-ticker slice of real 2026-07-02 feature data before and after the fix (fails before, succeeds after).
+- Full `run_models` re-run for 2026-07-02 via the real pipeline step function — succeeded, real signals written and verified via `GET /api/v1/signals/ml/top_buys/2026-07-02`.
+- Full `run_steps_for_date` resume from `run_models` — `write_signals`/`paper_trade` also succeeded; `check_ta_alerts` failed on the cross-process lock race described above (non-critical, doesn't block signal generation).
+- `tests/unit/test_ta_alerts.py`, `tests/unit/test_ta_screener.py`: still pass after the connection-config fix.

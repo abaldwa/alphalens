@@ -213,8 +213,21 @@ def _step_signals_and_meta(
     signal_model = _load_model(Signal5DModel, SIGNAL_MODEL_NAME, models_dir)
     meta_model = _load_model(MetaLabeler, META_MODEL_NAME, models_dir)
 
-    feat_cols = [c for c in CORE_TECHNICAL_FEATURES if c in eligible.columns]
-    X = eligible[feat_cols]
+    # [BUG FIX, 2026-07-02] Previously pre-filtered to CORE_TECHNICAL_FEATURES
+    # (70 cols, Phase 1 technical-only) before calling predict_signals/
+    # predict_full, which internally do X[self._feature_names] against
+    # each model's own saved training feature list. Since the 2026-06-23
+    # retrain, signal_5d/meta_labeler were trained on the full 150-column
+    # feature set (technical + fundamental + governance + MF + F&O —
+    # everything in ALL_FEATURE_COLUMNS a given ticker/date has), so the
+    # CORE_TECHNICAL_FEATURES-only X was missing 80 columns the models
+    # actually need -> hard KeyError, run_models failed for every date
+    # since 2026-06-23 (see BuildLog.md). Fix: pass the full eligible
+    # feature frame through — each model selects its own needed subset
+    # via self._feature_names internally, so passing extra columns is
+    # harmless and keeps this call site correct regardless of which
+    # feature subset any given model version was trained on.
+    X = eligible
 
     proba = signal_model.predict_signals(X)
     direction = signal_model.predict(X)  # threshold-based call (SPEC-MODEL-007), not a bare probability argmax

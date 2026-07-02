@@ -131,7 +131,7 @@ def create_alert(ticker: str, template_name: str) -> int:
 
     ticker_upper = ticker.upper()
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
         _ensure_tables(conn)
         row = conn.execute(
             """
@@ -161,7 +161,7 @@ def delete_alert(alert_id: int) -> bool:
     ----------------
     SPEC-TA-009: DELETE /api/v1/ta/user-alerts/{alert_id}
     """
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
         _ensure_tables(conn)
         existing = conn.execute(
             "SELECT 1 FROM ta_alerts WHERE alert_id = ? AND active = TRUE", [alert_id]
@@ -195,7 +195,7 @@ def list_alerts(active_only: bool = True) -> List[AlertDefinition]:
     SPEC-TA-009: GET /api/v1/ta/user-alerts
     """
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
         tables = [
             r[0]
             for r in conn.execute(
@@ -269,7 +269,7 @@ def check_alerts(run_date: date_type) -> List[int]:
     date_str = run_date.isoformat()
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
         _ensure_tables(conn)
         tables = [
             r[0]

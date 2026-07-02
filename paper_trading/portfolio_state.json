@@ -1,0 +1,14 @@
+{
+  "as_of_date": "2026-07-02",
+  "cash": 10000000,
+  "initial_capital": 10000000,
+  "sizing_mode": "equal_weight",
+  "n_target_positions": 10,
+  "positions": [],
+  "equity_curve": [
+    {
+      "date": "2026-07-02",
+      "equity": 10000000
+    }
+  ]
+}

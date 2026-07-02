@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,pnl,pnl_pct
+2026-07-02,_HEARTBEAT_,NONE,0.0,0,00:00:00,,,,,,

@@ -250,7 +250,7 @@ async def get_alerts_today(
     """
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
             # Check if table exists
             tables = [r[0] for r in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
@@ -341,7 +341,7 @@ async def get_alerts_for_ticker(
     ticker_upper = ticker.upper()
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
             tables = [r[0] for r in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
             ).fetchall()]
