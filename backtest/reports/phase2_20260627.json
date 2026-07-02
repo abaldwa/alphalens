@@ -1,0 +1,184 @@
+{
+  "generated_at": "2026-06-27T06:44:00.702405+05:30",
+  "watchlist_size": 20,
+  "phase1": {
+    "model_name": "signal_5d",
+    "from_date": null,
+    "to_date": null,
+    "generated_at": "2026-06-27T11:18:13.108227+05:30",
+    "integrity_passed": true,
+    "integrity_detail": {
+      "critical_failures": []
+    },
+    "aggregate": {
+      "cagr_mean": -0.007958978471635358,
+      "sharpe_mean": 0.21580304290211635,
+      "max_drawdown_worst": -0.24745190037021567,
+      "win_rate_mean": 0.4099810200411495,
+      "profit_factor_mean": 0.9854249031153962,
+      "total_trades": 2317
+    },
+    "folds": [
+      {
+        "fold_index": 0,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2021-12-31 00:00:00",
+        "test_start": "2022-01-03 00:00:00",
+        "test_end": "2022-12-30 00:00:00",
+        "cagr": -0.12084886024510755,
+        "sharpe": -0.6692495518880113,
+        "max_drawdown": -0.24745190037021567,
+        "win_rate": 0.3713733075435203,
+        "profit_factor": 0.6961820001674928,
+        "n_trades": 2068,
+        "final_equity": 880950.3323277816
+      },
+      {
+        "fold_index": 1,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2022-12-30 00:00:00",
+        "test_start": "2023-01-02 00:00:00",
+        "test_end": "2023-12-29 00:00:00",
+        "cagr": 0.009806380567100037,
+        "sharpe": 0.2723350451659316,
+        "max_drawdown": -0.02939359253539669,
+        "win_rate": 0.26126126126126126,
+        "profit_factor": 0.14174217085458224,
+        "n_trades": 111,
+        "final_equity": 1009532.6869222082
+      },
+      {
+        "fold_index": 2,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2023-12-29 00:00:00",
+        "test_start": "2024-01-01 00:00:00",
+        "test_end": "2024-12-31 00:00:00",
+        "cagr": 0.08219794827922655,
+        "sharpe": 2.0795555301396154,
+        "max_drawdown": -0.02036853714298855,
+        "win_rate": 0.625,
+        "profit_factor": 3.454146274680889,
+        "n_trades": 88,
+        "final_equity": 1075771.6362002657
+      },
+      {
+        "fold_index": 3,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2024-12-31 00:00:00",
+        "test_start": "2025-01-01 00:00:00",
+        "test_end": "2025-12-31 00:00:00",
+        "cagr": -0.011670952655428946,
+        "sharpe": -0.6559644359411477,
+        "max_drawdown": -0.013830975069232983,
+        "win_rate": 0.4444444444444444,
+        "profit_factor": 0.26847915946200435,
+        "n_trades": 27,
+        "final_equity": 988421.1356073419
+      },
+      {
+        "fold_index": 4,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2025-12-31 00:00:00",
+        "test_start": "2026-01-01 00:00:00",
+        "test_end": "2026-06-24 00:00:00",
+        "cagr": 0.0007205916960331127,
+        "sharpe": 0.05233862703419369,
+        "max_drawdown": -0.007046503178302747,
+        "win_rate": 0.34782608695652173,
+        "profit_factor": 0.3665749104120125,
+        "n_trades": 23,
+        "final_equity": 1000320.1988947223
+      }
+    ]
+  },
+  "phase2": {
+    "model_name": "signal_63d_watchlist",
+    "from_date": null,
+    "to_date": null,
+    "generated_at": "2026-06-27T12:57:51.268397+05:30",
+    "integrity_passed": true,
+    "integrity_detail": {
+      "critical_failures": []
+    },
+    "aggregate": {
+      "cagr_mean": 0.10231743727466688,
+      "sharpe_mean": 1.4590777097597494,
+      "max_drawdown_worst": -0.03737065312958137,
+      "win_rate_mean": 0.5283365875788673,
+      "profit_factor_mean": 4.113622461449998,
+      "total_trades": 604
+    },
+    "folds": [
+      {
+        "fold_index": 0,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2021-12-31 00:00:00",
+        "test_start": "2022-01-03 00:00:00",
+        "test_end": "2022-12-30 00:00:00",
+        "cagr": 0.04988637629482495,
+        "sharpe": 0.9789885173873552,
+        "max_drawdown": -0.03737065312958137,
+        "win_rate": 0.4696969696969697,
+        "profit_factor": 1.5047603293056415,
+        "n_trades": 198,
+        "final_equity": 1049075.41170923
+      },
+      {
+        "fold_index": 1,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2022-12-30 00:00:00",
+        "test_start": "2023-01-02 00:00:00",
+        "test_end": "2023-12-29 00:00:00",
+        "cagr": 0.03200010874716197,
+        "sharpe": 1.2080767947656212,
+        "max_drawdown": -0.01703743764710663,
+        "win_rate": 0.6176470588235294,
+        "profit_factor": 4.396383757852085,
+        "n_trades": 68,
+        "final_equity": 1031097.538758785
+      },
+      {
+        "fold_index": 2,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2023-12-29 00:00:00",
+        "test_start": "2024-01-01 00:00:00",
+        "test_end": "2024-12-31 00:00:00",
+        "cagr": -0.010779718729575394,
+        "sharpe": -0.42752948853306144,
+        "max_drawdown": -0.023725762383017768,
+        "win_rate": 0.3902439024390244,
+        "profit_factor": 0.5536740959716896,
+        "n_trades": 123,
+        "final_equity": 990028.9717449683
+      },
+      {
+        "fold_index": 3,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2024-12-31 00:00:00",
+        "test_start": "2025-01-01 00:00:00",
+        "test_end": "2025-12-31 00:00:00",
+        "cagr": 0.01747669019208553,
+        "sharpe": 0.4087227583768769,
+        "max_drawdown": -0.03690410346436734,
+        "win_rate": 0.45535714285714285,
+        "profit_factor": 1.1353137954657526,
+        "n_trades": 112,
+        "final_equity": 1017336.7908776845
+      },
+      {
+        "fold_index": 4,
+        "train_start": "2021-06-28 00:00:00",
+        "train_end": "2025-12-31 00:00:00",
+        "test_start": "2026-01-01 00:00:00",
+        "test_end": "2026-06-24 00:00:00",
+        "cagr": 0.4230037298688374,
+        "sharpe": 5.127129966801955,
+        "max_drawdown": -0.025055865398524658,
+        "win_rate": 0.7087378640776699,
+        "profit_factor": 12.97798032865482,
+        "n_trades": 103,
+        "final_equity": 1169746.0103875033
+      }
+    ]
+  }
+}

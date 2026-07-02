@@ -166,7 +166,7 @@ def _parse_purpose(purpose: str, ticker: str) -> Tuple[str, float]:
         r'FROM\s+(?:RS|RE|INR)\.?\s*(\d+(?:\.\d+)?)/?\s*(?:/-\s*)?TO\s+(?:RS|RE|INR)\.?\s*(\d+(?:\.\d+)?)',
         p,
     )
-    if fv_match and ("SPLIT" in p or "SUBDIVIS" in p or "FACE VALUE" in p or "F\.?V\.?" in p):
+    if fv_match and ("SPLIT" in p or "SUBDIVIS" in p or "FACE VALUE" in p or "F.?V.?" in p):
         old_fv = float(fv_match.group(1))
         new_fv = float(fv_match.group(2))
         if new_fv > 0 and old_fv > new_fv:

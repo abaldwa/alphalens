@@ -1,0 +1,115 @@
+{
+  "generated_at": "2026-06-24T12:22:40.563877+05:30",
+  "phase3_gate_threshold": 0.1,
+  "sharpe_improvement": -0.7876410121014581,
+  "ensemble_sharpe_estimate": -2.4090898322468903,
+  "gate_passed": false,
+  "integrity_passed": false,
+  "stacking": {
+    "base_models": [
+      "signal_5d",
+      "signal_21d"
+    ],
+    "weights": {
+      "signal_5d": 0.5,
+      "signal_21d": 0.5
+    },
+    "min_weight_constraint_passed": true,
+    "signal_5d_derived_accuracy": 0.45,
+    "signal_21d_derived_accuracy": 0.45
+  },
+  "comparison": {
+    "sharpe_mean": {
+      "phase2_baseline": -1.6214488201454322,
+      "phase3_signal21d": -3.590551350399078,
+      "ensemble_estimate": -2.4090898322468903
+    },
+    "cagr_mean": {
+      "phase2_baseline": -0.08372777363305872,
+      "phase3_signal21d": -0.1432968958624583,
+      "ensemble_estimate": null
+    },
+    "max_drawdown_mean": {
+      "phase2_baseline": null,
+      "phase3_signal21d": null,
+      "ensemble_estimate": null
+    },
+    "win_rate_mean": {
+      "phase2_baseline": 0.19047619047619047,
+      "phase3_signal21d": 0.35294117647058826,
+      "ensemble_estimate": null
+    }
+  },
+  "phase2": {
+    "model_name": "signal_5d_p2baseline",
+    "from_date": null,
+    "to_date": null,
+    "generated_at": "2026-06-24T12:24:19.945401+05:30",
+    "integrity_passed": false,
+    "integrity_detail": {
+      "critical_failures": [
+        "CRITICAL backtest integrity check(s) failed: check_03_corp_actions: ohlcv_df has no adj_factor column; check_04_survivorship: every historical ticker is still in the current universe \u2014 no delisted/removed names found, survivorship bias risk"
+      ]
+    },
+    "aggregate": {
+      "cagr_mean": -0.08372777363305872,
+      "sharpe_mean": -1.6214488201454322,
+      "max_drawdown_worst": -0.021267915738811722,
+      "win_rate_mean": 0.19047619047619047,
+      "profit_factor_mean": 0.1211490540641856,
+      "total_trades": 63
+    },
+    "folds": [
+      {
+        "fold_index": 0,
+        "train_start": "2022-01-03 00:00:00",
+        "train_end": "2022-12-30 00:00:00",
+        "test_start": "2023-01-02 00:00:00",
+        "test_end": "2023-02-17 00:00:00",
+        "cagr": -0.08372777363305872,
+        "sharpe": -1.6214488201454322,
+        "max_drawdown": -0.021267915738811722,
+        "win_rate": 0.19047619047619047,
+        "profit_factor": 0.1211490540641856,
+        "n_trades": 63,
+        "final_equity": 987928.7590938488
+      }
+    ]
+  },
+  "phase3": {
+    "model_name": "signal_21d_p3variant",
+    "from_date": null,
+    "to_date": null,
+    "generated_at": "2026-06-24T12:25:19.611675+05:30",
+    "integrity_passed": false,
+    "integrity_detail": {
+      "critical_failures": [
+        "CRITICAL backtest integrity check(s) failed: check_03_corp_actions: ohlcv_df has no adj_factor column; check_04_survivorship: every historical ticker is still in the current universe \u2014 no delisted/removed names found, survivorship bias risk"
+      ]
+    },
+    "aggregate": {
+      "cagr_mean": -0.1432968958624583,
+      "sharpe_mean": -3.590551350399078,
+      "max_drawdown_worst": -0.01236940723647081,
+      "win_rate_mean": 0.35294117647058826,
+      "profit_factor_mean": 0.16745702296462178,
+      "total_trades": 51
+    },
+    "folds": [
+      {
+        "fold_index": 0,
+        "train_start": "2022-01-03 00:00:00",
+        "train_end": "2022-12-30 00:00:00",
+        "test_start": "2023-01-02 00:00:00",
+        "test_end": "2023-01-26 00:00:00",
+        "cagr": -0.1432968958624583,
+        "sharpe": -3.590551350399078,
+        "max_drawdown": -0.01236940723647081,
+        "win_rate": 0.35294117647058826,
+        "profit_factor": 0.16745702296462178,
+        "n_trades": 51,
+        "final_equity": 988406.5640577849
+      }
+    ]
+  }
+}

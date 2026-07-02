@@ -86,7 +86,15 @@ class FeatureDefinition:
     staleness_flag_column: Optional[str] = None  # Column name if staleness tracked
 
 
-# Placeholder feature registry — 76 total technical indicators per design
+# No unimplemented placeholder entries (CLAUDE.md Absolute Rule 6) — every
+# entry below was a real, named feature at the time it was written. NOTE:
+# this catalog predates most of features/matrix_builder.py's current
+# ALL_FEATURE_COLUMNS naming (e.g. this registry's "rsi_14" matches, but
+# "close_price"/"sma_20"/"macd" etc. don't — matrix_builder.py uses
+# different current names/has no equivalent). Nothing in production
+# imports features.registry, so this staleness isn't corrupting any live
+# output, but the catalog itself is unreliable until reconciled with
+# ALL_FEATURE_COLUMNS — don't trust it as a feature-discovery source yet.
 FEATURE_REGISTRY: Dict[str, FeatureDefinition] = {
     # ===== PHASE 1 (Price Action) =====
     "close_price": FeatureDefinition(
@@ -636,49 +644,14 @@ FEATURE_REGISTRY: Dict[str, FeatureDefinition] = {
         consumers=["ml_signal_engine"],
         unit="%",
     ),
-    # ===== PHASE 2 (Breadth/Sentiment) — Placeholder =====
-    "nifty_breadth": FeatureDefinition(
-        name="nifty_breadth",
-        category=FeatureCategory.BREADTH,
-        phase=2,
-        update_frequency=UpdateFrequency.DAILY,
-        source_store=DataSource.EXTERNAL,
-        pit_rule=PITRule.NONE,
-        description="NSE breadth (advances/declines)",
-        range=(0.0, 1.0),
-        consumers=["ml_signal_engine"],
-        unit="ratio",
-    ),
-    # Placeholder for additional 30+ features (to reach 76 total)
-    # These will be populated in later phases with actual implementations
 }
-
-# Additional placeholders to demonstrate scale (not all details filled)
-_ADDITIONAL_PLACEHOLDERS = [
-    ("beta_60d", FeatureCategory.MOMENTUM, DataSource.DERIVED),
-    ("alpha_252d", FeatureCategory.MOMENTUM, DataSource.DERIVED),
-    ("sharpe_ratio_252d", FeatureCategory.VOLATILITY, DataSource.DERIVED),
-    ("correlation_nifty_50", FeatureCategory.BREADTH, DataSource.DERIVED),
-    ("vix_proxy", FeatureCategory.SENTIMENT, DataSource.EXTERNAL),
-    ("put_call_ratio", FeatureCategory.SENTIMENT, DataSource.EXTERNAL),
-    ("fii_net_flow_1d", FeatureCategory.SENTIMENT, DataSource.EXTERNAL),
-    ("dii_net_flow_1d", FeatureCategory.SENTIMENT, DataSource.EXTERNAL),
-    ("option_open_interest_put", FeatureCategory.MICROSTRUCTURE, DataSource.EXTERNAL),
-    ("option_open_interest_call", FeatureCategory.MICROSTRUCTURE, DataSource.EXTERNAL),
-]
-
-for name, category, source in _ADDITIONAL_PLACEHOLDERS:
-    FEATURE_REGISTRY[name] = FeatureDefinition(
-        name=name,
-        category=category,
-        phase=2,
-        update_frequency=UpdateFrequency.DAILY,
-        source_store=source,
-        pit_rule=PITRule.NONE,
-        description=f"Placeholder feature: {name}",
-        range=(0.0, 100.0),
-        consumers=["ml_signal_engine"],
-    )
+# No breadth/sentiment/options-flow features (nifty_breadth, vix_proxy,
+# put_call_ratio, FII/DII flow, option OI, etc.) are registered: none of
+# them have a real computation wired into features/matrix_builder.py or a
+# real external data source ingested yet (CLAUDE.md Absolute Rule 6 — a
+# registry entry with no backing computation is itself a stub). Add the
+# entry here only once an ingestion path + matrix_builder.py column exists
+# for it.
 
 
 def validate_feature_registry() -> List[str]:

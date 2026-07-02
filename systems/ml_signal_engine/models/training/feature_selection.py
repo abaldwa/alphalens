@@ -352,7 +352,7 @@ def _compute_shap_importance(
     split_idx = int(n * 0.8)
 
     X_tr, X_te = X_arr[:split_idx], X_arr[split_idx:]
-    y_tr, y_te = y[:split_idx], y[split_idx:]
+    y_tr = y[:split_idx]
 
     # Remap for LightGBM multiclass
     y_tr_clf = np.where(y_tr == -1, 0, np.where(y_tr == 1, 2, 1))

@@ -146,7 +146,14 @@ def _merge_ohlcv_features(
     spine = spine.merge(ohlcv_pass, on="date", how="left")
 
     # Fill any feature column gaps introduced by partial merges.
-    for col in CORE_TECHNICAL_FEATURES + INTRADAY_FEATURES + HMM_REGIME_FEATURES + PND_FEATURES + ADVANCED_TECHNICAL_FEATURES + PATTERN_FEATURES:
+    for col in (
+        CORE_TECHNICAL_FEATURES
+        + INTRADAY_FEATURES
+        + HMM_REGIME_FEATURES
+        + PND_FEATURES
+        + ADVANCED_TECHNICAL_FEATURES
+        + PATTERN_FEATURES
+    ):
         if col not in spine.columns:
             spine[col] = np.nan
     for col in _OHLCV_PASS:
@@ -571,7 +578,10 @@ def assemble_date(
             values: Dict = {}
             for feat in _RE_FEATS:
                 rows_f = avail[avail["feature_name"] == feat]
-                values[feat] = float(rows_f.sort_values("reference_month_end").iloc[-1]["value"]) if not rows_f.empty else np.nan
+                if rows_f.empty:
+                    values[feat] = np.nan
+                else:
+                    values[feat] = float(rows_f.sort_values("reference_month_end").iloc[-1]["value"])
             real_eco = pd.DataFrame([{"ticker": t, **values} for t in panel["ticker"]])
             panel = panel.merge(real_eco, on="ticker", how="left")
         except Exception as exc:

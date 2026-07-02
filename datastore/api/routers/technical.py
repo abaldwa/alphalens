@@ -1,0 +1,537 @@
+"""
+datastore/api/routers/technical.py
+
+Phase: 3.x (Technical Analysis API Scaffolding + Screener + Alerts)
+Specs: SPEC-TA-004, SPEC-TA-005, SPEC-TA-006
+Owner: Platform / DataStore
+Consumers: dashboard/static/technical/{chart,compare,overview,screener,alerts}.html
+
+features/technical.py (76 core indicators), features/advanced_technical.py
+(18 advanced), and features/pattern_scores.py (6 chart-pattern probability
+scores) write 94 real, daily-computed columns into the same Parquet store.
+
+This router adds:
+  - /screener/templates — list all 42 pre-built templates (SPEC-TA-005)
+  - /screener/run/{template_name} — run a named template (SPEC-TA-005)
+  - POST /screener/custom — run user-defined conditions (SPEC-TA-005)
+  - /alerts/today — today's ta_signals rows from the signals DuckDB (SPEC-TA-006)
+  - /alerts/{ticker} — all templates that matched a ticker (SPEC-TA-006)
+
+Screener/alert routes are placed BEFORE the /{ticker}/... parametric routes
+to prevent FastAPI from interpreting "screener" or "alerts" as a ticker name.
+"""
+
+import json
+import logging
+from typing import Dict, List, Optional
+
+import pandas as pd
+from fastapi import APIRouter, Body, HTTPException, Query
+
+from config.settings import DUCKDB_PATH, SIGNALS_DUCKDB_PATH
+from config.universe import load_universe_raw
+from datastore.api.db import get_duckdb_connection
+from datastore.api.schemas import (
+    TAAlertResponse,
+    TAAlertRow,
+    TACompareResponse,
+    TACompareTickerRow,
+    TAIndicatorsResponse,
+    TAMarketOverviewResponse,
+    TAPatternsResponse,
+    TASectorBreadthRow,
+    TAScreenerRequest,
+    TAScreenerResponse,
+    TAScreenerRow,
+    TATemplateInfo,
+    TATemplateListResponse,
+)
+from datastore.api.utils.feature_store import read_feature_row, resolve_date
+from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
+from features.pattern_scores import PATTERN_FEATURES
+from features.technical import CORE_TECHNICAL_FEATURES
+from systems.technical_analysis.screener.engine import ScreenerEngine
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/ta", tags=["Technical Analysis"])
+
+# Module-level engine instance — stateless, safe to reuse across requests
+_screener = ScreenerEngine()
+
+
+# ---------------------------------------------------------------------------
+# Screener endpoints (SPEC-TA-005) — MUST be registered before /{ticker}/...
+# routes so FastAPI does not match "screener" or "alerts" as ticker values.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/screener/templates", response_model=TATemplateListResponse)
+async def list_screener_templates() -> TATemplateListResponse:
+    """List all 42 pre-built screener templates with condition counts.
+
+    Spec References
+    ---------------
+    SPEC-TA-005: GET /api/v1/ta/screener/templates
+    """
+    infos = _screener.list_templates()
+    return TATemplateListResponse(
+        templates=[
+            TATemplateInfo(
+                name=i.name,
+                category=i.category,
+                description=i.description,
+                condition_count=i.condition_count,
+            )
+            for i in infos
+        ],
+        count=len(infos),
+    )
+
+
+@router.get("/screener/run/{template_name}", response_model=TAScreenerResponse)
+async def run_screener_template(
+    template_name: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest"),
+    limit: int = Query(50, ge=1, le=500, description="Maximum results"),
+) -> TAScreenerResponse:
+    """Run a named screener template against the daily feature store.
+
+    Parameters
+    ----------
+    template_name : str
+        Template identifier, e.g. "A1", "E2", "S004".
+    date : str, optional
+        Feature date (YYYY-MM-DD). Defaults to the latest available day.
+    limit : int, optional
+        Maximum results to return (default 50, max 500).
+
+    Returns
+    -------
+    TAScreenerResponse
+        Rows sorted by score desc (full matches first), then by volume.
+
+    Spec References
+    ---------------
+    SPEC-TA-005: GET /api/v1/ta/screener/run/{template_name}
+    """
+    try:
+        results = _screener.screen(template_name, date=date, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    rows = [
+        TAScreenerRow(
+            ticker=r.ticker,
+            date=r.date,
+            template_name=r.template_name,
+            matched_conditions=r.matched_conditions,
+            total_conditions=r.total_conditions,
+            score=r.score,
+            key_values={k: (None if v != v else v) for k, v in r.key_values.items()},
+        )
+        for r in results
+    ]
+    return TAScreenerResponse(
+        template_name=template_name,
+        date=results[0].date if results else resolve_date(date),
+        rows=rows,
+        count=len(rows),
+    )
+
+
+@router.post("/screener/custom", response_model=TAScreenerResponse)
+async def run_custom_screener(
+    body: TAScreenerRequest = Body(...),
+) -> TAScreenerResponse:
+    """Run user-defined screener conditions against the daily feature store.
+
+    Parameters
+    ----------
+    body : TAScreenerRequest
+        JSON body with conditions list, optional date, and optional limit.
+        Condition format: {"feature": "rsi_14", "op": "lt", "value": 30}
+
+    Returns
+    -------
+    TAScreenerResponse
+        Rows sorted by score desc.
+
+    Spec References
+    ---------------
+    SPEC-TA-005: POST /api/v1/ta/screener/custom
+    """
+    raw_conditions = [
+        {k: v for k, v in c.model_dump().items() if v is not None}
+        for c in body.conditions
+    ]
+    results = _screener.screen_custom(raw_conditions, date=body.date, limit=body.limit)
+
+    rows = [
+        TAScreenerRow(
+            ticker=r.ticker,
+            date=r.date,
+            template_name=r.template_name,
+            matched_conditions=r.matched_conditions,
+            total_conditions=r.total_conditions,
+            score=r.score,
+            key_values={k: (None if v != v else v) for k, v in r.key_values.items()},
+        )
+        for r in results
+    ]
+    return TAScreenerResponse(
+        template_name="custom",
+        date=results[0].date if results else resolve_date(body.date),
+        rows=rows,
+        count=len(rows),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Alerts endpoints (SPEC-TA-006)
+# ---------------------------------------------------------------------------
+
+
+def _parse_key_values(raw: Optional[str]) -> Dict[str, Optional[float]]:
+    """Safely parse a JSON key_values string from ta_signals into a dict.
+
+    Parameters
+    ----------
+    raw : str or None
+        JSON string stored in the ta_signals.key_values column, or None.
+
+    Returns
+    -------
+    dict
+        Parsed key-value mapping, or empty dict on any parse error.
+
+    Spec References
+    ---------------
+    SPEC-TA-008: key_values is stored as JSON in ta_signals
+    """
+    if not raw:
+        return {}
+    try:
+        return {k: (None if v is None else float(v)) for k, v in json.loads(raw).items()}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+@router.get("/alerts/today", response_model=TAAlertResponse)
+async def get_alerts_today(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest"),
+    category: Optional[str] = Query(None, description="Filter by category letter, e.g. A"),
+    limit: int = Query(200, ge=1, le=2000, description="Maximum rows"),
+) -> TAAlertResponse:
+    """Return today's ta_signals rows (all templates that fired today).
+
+    Parameters
+    ----------
+    date : str, optional
+        Feature date. Defaults to the most recent date in ta_signals.
+    category : str, optional
+        Filter to a specific category (A-F, S).
+    limit : int, optional
+        Maximum rows (default 200).
+
+    Returns
+    -------
+    TAAlertResponse
+        Rows from the ta_signals table, sorted by category then ticker.
+
+    Spec References
+    ---------------
+    SPEC-TA-006: GET /api/v1/ta/alerts/today
+    """
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, read_only=True, persist=False) as conn:
+            # Check if table exists
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
+            ).fetchall()]
+            if not tables:
+                return TAAlertResponse(count=0)
+
+            if date:
+                target_date = date
+            else:
+                row = conn.execute(
+                    "SELECT MAX(date) FROM ta_signals"
+                ).fetchone()
+                if row is None or row[0] is None:
+                    return TAAlertResponse(count=0)
+                target_date = str(row[0])
+
+            if category:
+                df = conn.execute(
+                    """
+                    SELECT date, ticker, template_name, category, score,
+                           matched_conditions, total_conditions, key_values
+                    FROM ta_signals
+                    WHERE date = ? AND category = ?
+                    ORDER BY category, ticker
+                    LIMIT ?
+                    """,
+                    [target_date, category, limit],
+                ).fetchdf()
+            else:
+                df = conn.execute(
+                    """
+                    SELECT date, ticker, template_name, category, score,
+                           matched_conditions, total_conditions, key_values
+                    FROM ta_signals
+                    WHERE date = ?
+                    ORDER BY category, ticker
+                    LIMIT ?
+                    """,
+                    [target_date, limit],
+                ).fetchdf()
+    except Exception as exc:
+        logger.warning("alerts/today DB query failed: %s", exc)
+        return TAAlertResponse(count=0)
+
+    if df.empty:
+        return TAAlertResponse(as_of_date=target_date, count=0)
+
+    rows = [
+        TAAlertRow(
+            date=str(row["date"]),
+            ticker=str(row["ticker"]),
+            template_name=str(row["template_name"]),
+            category=str(row["category"]),
+            score=float(row["score"]),
+            matched_conditions=int(row["matched_conditions"]),
+            total_conditions=int(row["total_conditions"]),
+            key_values=_parse_key_values(row.get("key_values")),
+        )
+        for _, row in df.iterrows()
+    ]
+    return TAAlertResponse(as_of_date=target_date, rows=rows, count=len(rows))
+
+
+@router.get("/alerts/{ticker}", response_model=TAAlertResponse)
+async def get_alerts_for_ticker(
+    ticker: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest"),
+) -> TAAlertResponse:
+    """Return all templates that matched a specific ticker on the given date.
+
+    Parameters
+    ----------
+    ticker : str
+        NSE ticker symbol (case-insensitive; normalised to upper).
+    date : str, optional
+        Feature date. Defaults to the most recent date in ta_signals.
+
+    Returns
+    -------
+    TAAlertResponse
+        All ta_signals rows for the ticker on the given date.
+
+    Spec References
+    ---------------
+    SPEC-TA-006: GET /api/v1/ta/alerts/{ticker}
+    """
+    ticker_upper = ticker.upper()
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, read_only=True, persist=False) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
+            ).fetchall()]
+            if not tables:
+                return TAAlertResponse(count=0)
+
+            if date:
+                target_date = date
+            else:
+                row = conn.execute(
+                    "SELECT MAX(date) FROM ta_signals WHERE ticker = ?",
+                    [ticker_upper],
+                ).fetchone()
+                if row is None or row[0] is None:
+                    return TAAlertResponse(count=0)
+                target_date = str(row[0])
+
+            df = conn.execute(
+                """
+                SELECT date, ticker, template_name, category, score,
+                       matched_conditions, total_conditions, key_values
+                FROM ta_signals
+                WHERE ticker = ? AND date = ?
+                ORDER BY category, template_name
+                """,
+                [ticker_upper, target_date],
+            ).fetchdf()
+    except Exception as exc:
+        logger.warning("alerts/%s DB query failed: %s", ticker, exc)
+        return TAAlertResponse(count=0)
+
+    if df.empty:
+        return TAAlertResponse(as_of_date=target_date, count=0)
+
+    rows = [
+        TAAlertRow(
+            date=str(row["date"]),
+            ticker=str(row["ticker"]),
+            template_name=str(row["template_name"]),
+            category=str(row["category"]),
+            score=float(row["score"]),
+            matched_conditions=int(row["matched_conditions"]),
+            total_conditions=int(row["total_conditions"]),
+            key_values=_parse_key_values(row.get("key_values")),
+        )
+        for _, row in df.iterrows()
+    ]
+    return TAAlertResponse(as_of_date=target_date, rows=rows, count=len(rows))
+
+
+# ---------------------------------------------------------------------------
+# Existing endpoints (SPEC-TA-004) — kept below screener/alerts routes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{ticker}/indicators", response_model=TAIndicatorsResponse)
+async def get_ta_indicators(
+    ticker: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the latest available day"),
+) -> TAIndicatorsResponse:
+    """All 76 core + 18 advanced technical indicator values for one ticker/day."""
+    resolved_date = resolve_date(date)
+    if resolved_date is None:
+        return TAIndicatorsResponse(ticker=ticker, available=False)
+
+    row = read_feature_row(ticker, resolved_date)
+    if row is None:
+        return TAIndicatorsResponse(ticker=ticker, date=resolved_date, available=False)
+
+    cols = CORE_TECHNICAL_FEATURES + ADVANCED_TECHNICAL_FEATURES
+    indicators = {c: (None if c not in row or pd.isna(row[c]) else float(row[c])) for c in cols}
+    return TAIndicatorsResponse(ticker=ticker, date=resolved_date, available=True, indicators=indicators)
+
+
+@router.get("/{ticker}/patterns", response_model=TAPatternsResponse)
+async def get_ta_patterns(
+    ticker: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the latest available day"),
+) -> TAPatternsResponse:
+    """The 6 real chart-pattern probability scores (features/pattern_scores.py)."""
+    resolved_date = resolve_date(date)
+    if resolved_date is None:
+        return TAPatternsResponse(ticker=ticker, available=False)
+
+    row = read_feature_row(ticker, resolved_date)
+    if row is None:
+        return TAPatternsResponse(ticker=ticker, date=resolved_date, available=False)
+
+    patterns = {c: (None if c not in row or pd.isna(row[c]) else float(row[c])) for c in PATTERN_FEATURES}
+    return TAPatternsResponse(ticker=ticker, date=resolved_date, available=True, patterns=patterns)
+
+
+@router.get("/compare", response_model=TACompareResponse)
+async def get_ta_compare(
+    tickers: str = Query(..., description="Comma-separated tickers, e.g. RELIANCE,TCS,INFY"),
+    days: int = Query(90, ge=10, le=500, description="Calendar days of OHLCV history for the correlation matrix"),
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the latest available feature day"),
+) -> TACompareResponse:
+    """Real RS/beta/alpha (already-computed features) plus a real pairwise
+    close-to-close return correlation matrix computed from OHLCV — both are
+    aggregation over existing real data, not new feature engineering."""
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    resolved_date = resolve_date(date)
+
+    rows: List[TACompareTickerRow] = []
+    if resolved_date is not None:
+        for t in ticker_list:
+            row = read_feature_row(t, resolved_date)
+            if row is None:
+                rows.append(TACompareTickerRow(ticker=t))
+                continue
+            rows.append(TACompareTickerRow(
+                ticker=t,
+                rs_vs_nifty500_21d=None if "rs_vs_nifty500_21d" not in row or pd.isna(row["rs_vs_nifty500_21d"]) else float(row["rs_vs_nifty500_21d"]),
+                beta_63d=None if "beta_63d" not in row or pd.isna(row["beta_63d"]) else float(row["beta_63d"]),
+                alpha_21d=None if "alpha_21d" not in row or pd.isna(row["alpha_21d"]) else float(row["alpha_21d"]),
+            ))
+
+    correlation: Dict[str, Dict[str, float]] = {}
+    if len(ticker_list) >= 2:
+        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+            placeholders = ",".join("?" * len(ticker_list))
+            df = conn.execute(
+                f"""
+                SELECT date, ticker, close FROM ohlcv_adjusted
+                WHERE ticker IN ({placeholders}) AND date >= CURRENT_DATE - INTERVAL '{int(days)} days'
+                ORDER BY date
+                """,
+                ticker_list,
+            ).fetchdf()
+        if not df.empty:
+            pivot = df.pivot(index="date", columns="ticker", values="close")
+            returns = pivot.pct_change().dropna(how="all")
+            corr_matrix = returns.corr()
+            for t1 in corr_matrix.columns:
+                correlation[t1] = {t2: (None if pd.isna(v) else round(float(v), 4)) for t2, v in corr_matrix[t1].items()}
+
+    return TACompareResponse(date=resolved_date, rows=rows, correlation=correlation)
+
+
+@router.get("/market_overview", response_model=TAMarketOverviewResponse)
+async def get_ta_market_overview() -> TAMarketOverviewResponse:
+    """Sector breadth (advances/declines/avg % change) computed from the
+    latest 2 trading days of real OHLCV, grouped by config/universe.py's
+    real sector map — lightweight aggregation, no new feature computation."""
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        dates = conn.execute(
+            "SELECT DISTINCT date FROM ohlcv_adjusted ORDER BY date DESC LIMIT 2"
+        ).fetchall()
+        if len(dates) < 2:
+            return TAMarketOverviewResponse(available=False)
+        latest_date, prev_date = dates[0][0], dates[1][0]
+
+        df = conn.execute(
+            "SELECT ticker, date, close FROM ohlcv_adjusted WHERE date IN (?, ?)",
+            [latest_date, prev_date],
+        ).fetchdf()
+
+    if df.empty:
+        return TAMarketOverviewResponse(available=False)
+
+    # DuckDB returns `date` as datetime.date but pandas pivots a
+    # datetime64 column into Timestamp-typed columns — normalize both
+    # sides to pandas.Timestamp before comparing/indexing.
+    latest_date, prev_date = pd.Timestamp(latest_date), pd.Timestamp(prev_date)
+    pivot = df.pivot_table(index="ticker", columns="date", values="close")
+    if latest_date not in pivot.columns or prev_date not in pivot.columns:
+        return TAMarketOverviewResponse(available=False)
+    pivot = pivot.dropna(subset=[latest_date, prev_date])
+    pivot["change_pct"] = (pivot[latest_date] - pivot[prev_date]) / pivot[prev_date]
+
+    universe = load_universe_raw()
+    sector_map = dict(zip(universe["ticker"], universe["sector"]))
+    pivot["sector"] = pivot.index.map(lambda t: sector_map.get(t, "Unknown"))
+
+    advances = int((pivot["change_pct"] > 0).sum())
+    declines = int((pivot["change_pct"] < 0).sum())
+    unchanged = int((pivot["change_pct"] == 0).sum())
+
+    breadth: List[TASectorBreadthRow] = []
+    for sector, g in pivot.groupby("sector"):
+        breadth.append(TASectorBreadthRow(
+            sector=sector,
+            advances=int((g["change_pct"] > 0).sum()),
+            declines=int((g["change_pct"] < 0).sum()),
+            unchanged=int((g["change_pct"] == 0).sum()),
+            avg_change_pct=float(g["change_pct"].mean()) if not g["change_pct"].empty else None,
+        ))
+    breadth.sort(key=lambda r: r.avg_change_pct or 0, reverse=True)
+
+    return TAMarketOverviewResponse(
+        date=str(latest_date),
+        advances=advances,
+        declines=declines,
+        unchanged=unchanged,
+        sector_breadth=breadth,
+        available=True,
+    )

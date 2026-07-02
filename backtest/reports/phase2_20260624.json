@@ -1,0 +1,100 @@
+{
+  "generated_at": "2026-06-24T07:22:08.225993+05:30",
+  "watchlist_size": 3,
+  "phase1": {
+    "model_name": "signal_5d",
+    "from_date": null,
+    "to_date": null,
+    "generated_at": "2026-06-24T07:24:37.817905+05:30",
+    "integrity_passed": true,
+    "integrity_detail": {
+      "critical_failures": []
+    },
+    "aggregate": {
+      "cagr_mean": -0.029048730611185347,
+      "sharpe_mean": -0.9491893844365642,
+      "max_drawdown_worst": -0.03319900958132225,
+      "win_rate_mean": 0.294305057745918,
+      "profit_factor_mean": 0.4523461173126282,
+      "total_trades": 112
+    },
+    "folds": [
+      {
+        "fold_index": 0,
+        "train_start": "2021-06-25 00:00:00",
+        "train_end": "2024-12-31 00:00:00",
+        "test_start": "2025-01-01 00:00:00",
+        "test_end": "2025-12-31 00:00:00",
+        "cagr": -0.010381064940647056,
+        "sharpe": -0.40464078056014585,
+        "max_drawdown": -0.03312635376113042,
+        "win_rate": 0.3950617283950617,
+        "profit_factor": 0.673175219120587,
+        "n_trades": 81,
+        "final_equity": 989741.8831039362
+      },
+      {
+        "fold_index": 1,
+        "train_start": "2021-06-25 00:00:00",
+        "train_end": "2025-12-31 00:00:00",
+        "test_start": "2026-01-01 00:00:00",
+        "test_end": "2026-06-23 00:00:00",
+        "cagr": -0.04771639628172364,
+        "sharpe": -1.4937379883129824,
+        "max_drawdown": -0.03319900958132225,
+        "win_rate": 0.1935483870967742,
+        "profit_factor": 0.2315170155046694,
+        "n_trades": 31,
+        "final_equity": 977555.6711901112
+      }
+    ]
+  },
+  "phase2": {
+    "model_name": "signal_63d_watchlist",
+    "from_date": null,
+    "to_date": null,
+    "generated_at": "2026-06-24T07:27:17.531366+05:30",
+    "integrity_passed": true,
+    "integrity_detail": {
+      "critical_failures": []
+    },
+    "aggregate": {
+      "cagr_mean": 0.0001274465126686053,
+      "sharpe_mean": -0.8138187771880079,
+      "max_drawdown_worst": -0.019819974945891064,
+      "win_rate_mean": 0.20833333333333334,
+      "profit_factor_mean": 0.7166634491504438,
+      "total_trades": 67
+    },
+    "folds": [
+      {
+        "fold_index": 0,
+        "train_start": "2021-06-25 00:00:00",
+        "train_end": "2024-12-31 00:00:00",
+        "test_start": "2025-01-01 00:00:00",
+        "test_end": "2025-12-31 00:00:00",
+        "cagr": -0.017828421268437422,
+        "sharpe": -2.3297793730370704,
+        "max_drawdown": -0.019819974945891064,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "n_trades": 31,
+        "final_equity": 982381.941041695
+      },
+      {
+        "fold_index": 1,
+        "train_start": "2021-06-25 00:00:00",
+        "train_end": "2025-12-31 00:00:00",
+        "test_start": "2026-01-01 00:00:00",
+        "test_end": "2026-06-23 00:00:00",
+        "cagr": 0.018083314293774633,
+        "sharpe": 0.7021418186610546,
+        "max_drawdown": -0.013824779786376801,
+        "win_rate": 0.4166666666666667,
+        "profit_factor": 1.4333268983008876,
+        "n_trades": 36,
+        "final_equity": 1008355.529454327
+      }
+    ]
+  }
+}

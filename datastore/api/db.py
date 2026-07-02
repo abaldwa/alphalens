@@ -42,6 +42,7 @@ request outright turns that into a short delay rather than a hard error.
 
 import logging
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -216,6 +217,7 @@ def init_sqlite(path: Path) -> None:
 # Global connection pools (simple implementation; upgrade to proper pooling if needed)
 _duckdb_connections: dict = {}
 _sqlite_connections: dict = {}
+_sqlite_locks: dict = {}
 
 
 def _connect_with_retry(path_key: str, read_only: bool):
@@ -337,14 +339,23 @@ def get_sqlite_connection(
     path_key = str(db_path) if db_path else ":memory:"
 
     if path_key not in _sqlite_connections:
-        _sqlite_connections[path_key] = sqlite3.connect(path_key)
+        # check_same_thread=False: the connection is cached process-wide
+        # (APScheduler runs each job in its own worker thread), so the
+        # default thread-affinity check would raise ProgrammingError on
+        # every scheduled job. The lock below serializes actual access
+        # since sqlite3.Connection isn't safe for concurrent use.
+        _sqlite_connections[path_key] = sqlite3.connect(
+            path_key, check_same_thread=False
+        )
+        _sqlite_locks[path_key] = threading.Lock()
 
     conn = _sqlite_connections[path_key]
-    try:
-        yield conn
-    finally:
-        # Keep connection open in pool
-        pass
+    with _sqlite_locks[path_key]:
+        try:
+            yield conn
+        finally:
+            # Keep connection open in pool
+            pass
 
 
 def close_all_connections() -> None:

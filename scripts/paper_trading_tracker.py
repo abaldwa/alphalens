@@ -34,6 +34,8 @@ class PaperTradingTracker:
         entry_time: str,
         exit_price: Optional[float] = None,
         exit_time: Optional[str] = None,
+        exit_date: Optional[str] = None,
+        exit_type: Optional[str] = None,
         pnl: Optional[float] = None,
         pnl_pct: Optional[float] = None,
     ) -> None:
@@ -41,14 +43,30 @@ class PaperTradingTracker:
         Log a paper trading execution.
 
         Args:
-            date: Trade date (YYYY-MM-DD)
+            date: Trade date (YYYY-MM-DD) — the entry date.
             ticker: Stock ticker
             signal_type: Signal type (BUY, SELL, HOLD)
             entry_price: Entry price
             quantity: Quantity
             entry_time: Entry time (HH:MM:SS)
             exit_price: Exit price (optional)
-            exit_time: Exit time (optional)
+            exit_time: Exit time-of-day (HH:MM:SS, optional) — NOT a date;
+                positions are typically held several days, so the exit can
+                fall on a different calendar date than `date`. Use
+                `exit_date` for that.
+            exit_date: Exit date (YYYY-MM-DD, optional). Required for any
+                multi-day-hold trade — load_exit_training_data_from_db()
+                (systems/ml_signal_engine/models/exit/exit_signal.py) uses
+                this to compute real holding duration; it must not be
+                inferred from `exit_time` alone.
+            exit_type: One of exit_signal.EXIT_TYPES (optional) — the real
+                reason the position was closed (target hit, stop hit,
+                max-hold, momentum exhaustion, PnD override, ...), as
+                determined by whatever exit policy closed it. Without this,
+                load_exit_training_data_from_db() can only re-derive a
+                crude 2-bucket label from final pnl_pct — logging the real
+                reason here is what lets the trained ExitSignalModel
+                actually learn the full EXIT_TYPES vocabulary.
             pnl: P&L in rupees (optional)
             pnl_pct: P&L percentage (optional)
         """
@@ -70,6 +88,8 @@ class PaperTradingTracker:
                     "entry_time",
                     "exit_price",
                     "exit_time",
+                    "exit_date",
+                    "exit_type",
                     "pnl",
                     "pnl_pct",
                 ],
@@ -87,6 +107,8 @@ class PaperTradingTracker:
                 "entry_time": entry_time,
                 "exit_price": exit_price or "",
                 "exit_time": exit_time or "",
+                "exit_date": exit_date or "",
+                "exit_type": exit_type or "",
                 "pnl": pnl or "",
                 "pnl_pct": pnl_pct or "",
             })

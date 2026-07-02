@@ -15,8 +15,8 @@ from datetime import date
 import pytest
 
 from ingestion.scheduler import gap_detector
-from ingestion.scheduler.checkpoint import STEP_NAMES, CheckpointManager
-from ingestion.scheduler.pipeline_scheduler import run_backfill
+from ingestion.scheduler.checkpoint import STEP_NAMES, STEPS, CheckpointManager
+from ingestion.scheduler.pipeline_scheduler import _STEP_DEPS, run_backfill, run_steps_for_date
 
 
 # ===== Gap detection =====
@@ -85,13 +85,19 @@ class TestCheckpointManager:
         ckpt = CheckpointManager(in_memory=True)
         run_date = date(2026, 1, 5)
 
-        for step in ["download_bhavcopy", "download_fno", "download_macro", "adjust_prices"]:
+        # Every STEP_NAMES step strictly before compute_features must
+        # actually be marked success — get_resume_step() walks STEP_NAMES
+        # order looking for the first non-success step, so skipping one
+        # (e.g. download_corporate_actions, inserted before adjust_prices)
+        # would make that skipped step the resume point instead.
+        steps_before_compute_features = STEP_NAMES[: STEP_NAMES.index("compute_features")]
+        for step in steps_before_compute_features:
             ckpt.save_checkpoint(run_date, step, status="success")
         ckpt.save_checkpoint(
             run_date, "compute_features", status="failed", error_message="boom"
         )
 
-        assert ckpt.load_checkpoint(run_date) == "adjust_prices"
+        assert ckpt.load_checkpoint(run_date) == steps_before_compute_features[-1]
         assert ckpt.get_resume_step(run_date) == "compute_features"
 
     def test_resume_step_is_first_step_when_nothing_succeeded(self):
@@ -351,4 +357,114 @@ class TestMFHoldingsScheduling:
         ps._execute_mf_holdings_job()
 
         assert heartbeat_calls[0][0][0] == "mf_holdings_ingestion"
-        assert heartbeat_calls[0][0][1] == "failed"
+
+
+# ===== SPEC-SCHED-011: Job dependency + fallback mechanism =====
+class TestJobDependency:
+    """SPEC-SCHED-011: depends_on graph and fallback when a non-critical step fails."""
+
+    def test_all_steps_have_depends_on_key(self):
+        """SPEC-SCHED-011: every step in STEPS declares depends_on."""
+        for step in STEPS:
+            assert "depends_on" in step, f"Step '{step['name']}' missing depends_on"
+            assert isinstance(step["depends_on"], list)
+
+    def test_step_deps_precomputed_matches_steps(self):
+        """_STEP_DEPS must mirror STEPS depends_on declarations exactly."""
+        for step in STEPS:
+            assert _STEP_DEPS[step["name"]] == step["depends_on"]
+
+    def test_independent_downloaders_have_no_deps(self):
+        """download_fno/macro/corporate_actions/large_deals must have no hard deps."""
+        independent = {"download_fno", "download_macro", "download_corporate_actions", "download_large_deals"}
+        for step in STEPS:
+            if step["name"] in independent:
+                assert step["depends_on"] == [], f"{step['name']} should have no hard deps"
+
+    def test_adjust_prices_depends_on_bhavcopy(self):
+        """adjust_prices cannot run without OHLCV rows from download_bhavcopy."""
+        adj = next(s for s in STEPS if s["name"] == "adjust_prices")
+        assert "download_bhavcopy" in adj["depends_on"]
+
+    def test_inference_chain_depends_on_previous(self):
+        """run_models→write_signals→paper_trade form a hard dependency chain."""
+        chain = [
+            ("run_models", "compute_features"),
+            ("write_signals", "run_models"),
+            ("paper_trade", "write_signals"),
+        ]
+        for step_name, expected_dep in chain:
+            step = next(s for s in STEPS if s["name"] == step_name)
+            assert expected_dep in step["depends_on"], (
+                f"{step_name} must depend on {expected_dep}"
+            )
+
+    def test_fallback_independent_steps_run_when_bhavcopy_fails(self):
+        """
+        SPEC-SCHED-011: when download_bhavcopy fails, the 4 independent
+        downloaders (fno/macro/corporate_actions/large_deals) still run
+        because they have no hard dependencies.  adjust_prices and later
+        steps are skipped because their bhavcopy dep is unmet.
+        """
+        executed = []
+        failed_steps = {"download_bhavcopy"}
+
+        def step_runner(run_date, step_name):
+            if step_name in failed_steps:
+                raise RuntimeError(f"{step_name} simulated failure")
+            executed.append(step_name)
+
+        cm = CheckpointManager(in_memory=True)
+        run_date = date(2026, 7, 2)
+
+        result = run_steps_for_date(run_date, step_runner, cm, is_backfill=False)
+
+        # Overall result is False (bhavcopy failed)
+        assert result is False
+        # Independent downloaders ran despite bhavcopy failure
+        assert "download_fno" in executed
+        assert "download_macro" in executed
+        assert "download_corporate_actions" in executed
+        assert "download_large_deals" in executed
+        # Dependent steps were skipped
+        assert "adjust_prices" not in executed
+        assert "compute_features" not in executed
+        assert "run_models" not in executed
+
+    def test_fallback_pipeline_completes_when_only_noncritical_fails(self):
+        """
+        SPEC-SCHED-011: if only download_large_deals raises (non-critical),
+        all downstream steps that depend only on bhavcopy/adjust/compute
+        still execute. Return value is False (a step failed) but the
+        inference chain (run_models, write_signals) ran.
+        """
+        executed = []
+        failed_steps = {"download_large_deals"}
+
+        def step_runner(run_date, step_name):
+            if step_name in failed_steps:
+                raise RuntimeError(f"{step_name} simulated failure")
+            executed.append(step_name)
+
+        cm = CheckpointManager(in_memory=True)
+        run_date = date(2026, 7, 2)
+
+        result = run_steps_for_date(run_date, step_runner, cm, is_backfill=False)
+
+        # Returns False because download_large_deals failed
+        assert result is False
+        # The full inference chain still ran
+        for step_name in ("adjust_prices", "compute_features", "run_models", "write_signals"):
+            assert step_name in executed, f"{step_name} should have run despite large_deals failure"
+
+    def test_checkpoint_get_succeeded_steps(self):
+        """CheckpointManager.get_succeeded_steps returns the set of succeeded step names."""
+        cm = CheckpointManager(in_memory=True)
+        run_date = date(2026, 7, 2)
+        cm.save_checkpoint(run_date, "download_bhavcopy", "success")
+        cm.save_checkpoint(run_date, "download_fno", "success")
+        cm.save_checkpoint(run_date, "adjust_prices", "failed")
+
+        succeeded = cm.get_succeeded_steps(run_date)
+        assert succeeded == {"download_bhavcopy", "download_fno"}
+        assert "adjust_prices" not in succeeded

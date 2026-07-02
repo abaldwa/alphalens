@@ -1,0 +1,20 @@
+{
+  "simulation_type": "historical_paper_trading",
+  "from_date": "2007-01-03",
+  "to_date": "2007-05-17",
+  "trading_days": 90,
+  "skipped_dates": 0,
+  "hold_days": 5,
+  "n_positions": 10,
+  "initial_capital_inr": 10000000,
+  "final_equity_inr": 6252558.78,
+  "total_pnl_inr": -3747441.23,
+  "total_trades": 314,
+  "win_rate_pct": 38.85,
+  "avg_win_pct": 5.541,
+  "avg_loss_pct": -5.473,
+  "sharpe_ratio": -2.2193,
+  "cagr_pct": -73.15,
+  "model": "signal_5d_current",
+  "meta_model": "meta_labeler_current"
+}

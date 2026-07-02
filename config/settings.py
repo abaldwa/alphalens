@@ -150,8 +150,36 @@ DEFAULT_RETRY_COUNT = 3
 # either (the daily pipeline's bhavcopy/macro/F&O steps never call FYERS —
 # only this job and the one-time/manual backfill_runner CLI do).
 BACKFILL_CATCHUP_TIME = "20:00"  # HH:MM, Asia/Kolkata, daily
+# ingestion/scheduler/daily_pipeline.py main()'s schedule_daily_pipeline()
+# call and datastore/api/utils/scheduler_status.py's next-run-time
+# computation both read this single constant so they can never drift apart.
+DAILY_PIPELINE_SCHEDULE_TIME = "18:00"  # HH:MM, Asia/Kolkata, mon-fri
+# 2026-07: second, earlier trigger of the same catch-up-then-today logic
+# (schedule_morning_catchup) -- NSE-sourced steps (download_fno/macro/
+# corporate_actions/large_deals etc.) that failed on an earlier date get
+# retried here instead of sitting idle until the 18:00 run. "Today" itself
+# will still 404 at this hour (NSE publishes a trading day's bhavcopy after
+# that day's own market close, not before) -- the real value is the
+# gap-backfill portion. See schedule_morning_catchup's docstring.
+MORNING_CATCHUP_SCHEDULE_TIME = "07:30"  # HH:MM, Asia/Kolkata, mon-fri
 DEFAULT_RETRY_DELAY_SECONDS = 60
 RETRAIN_OVERDUE_MULTIPLIER = 1.5  # days_since_retrain > interval * this => overdue
+
+# ---------------------------------------------------------------------------
+# 23-hour pipeline window (user-confirmed, 2026-07-02)
+# Trigger at 18:00 IST; all pipeline + model training must complete by
+# 17:00 IST the next day.  Heavy tasks (feature backfill, fundamentals
+# scraping) are pushed to the weekend when the laptop isn't needed for
+# real-time signal generation.
+# ---------------------------------------------------------------------------
+PIPELINE_WINDOW_START = "18:00"  # Updated: 6PM IST (was 3:30 PM)
+PIPELINE_WINDOW_HOURS = 23       # Updated: 23-hour window (was 15 h)
+# Model training fires after the daily pipeline completes (~20:00 IST on a
+# normal trading day; 21:00 to be safe). Checks RETRAIN_OVERDUE_MULTIPLIER.
+MODEL_TRAINING_SCHEDULE_TIME = "20:00"  # HH:MM, Asia/Kolkata, mon-fri
+# Weekend jobs fire Saturday morning — markets are closed, full CPU available.
+WEEKEND_FEATURE_BACKFILL_TIME = "09:00"   # HH:MM, Asia/Kolkata, saturday
+WEEKEND_FUNDAMENTALS_TIME = "10:30"       # HH:MM, Asia/Kolkata, saturday
 
 # ---------------------------------------------------------------------------
 # Observability — SPEC-OBS-001 through SPEC-OBS-005
@@ -181,6 +209,16 @@ MAX_POSITION_PCT = 0.10
 MAX_SECTOR_PCT = 0.40
 MIN_ADT_INR = 1_000_000
 MAX_ORDER_VS_ADTV = 0.05
+
+# ---------------------------------------------------------------------------
+# Paper trading — SPEC-PT-003 (Pending Actions / review-approve)
+# ---------------------------------------------------------------------------
+# When True, scripts/run_daily_paper_trading.py computes candidate entries/
+# exits but does not execute them — it writes paper_trading/pending/{date}.json
+# and a human accepts/rejects each one via POST /api/v1/paper_trading/pending/
+# {action_id}/{accept,reject}. When False, the bot auto-executes immediately
+# (the original Phase 3.x behavior), e.g. for unattended historical replay.
+PAPER_TRADING_REQUIRE_APPROVAL = os.environ.get("PAPER_TRADING_REQUIRE_APPROVAL", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Drift monitoring — SPEC-PIPE-005
@@ -344,6 +382,19 @@ FNO_ELIGIBILITY_LOOKBACK_DAYS = 35
 # usually a stale/zero-volume quote, not real implied volatility.
 IV_SOLVER_MIN_VOL = 0.01
 IV_SOLVER_MAX_VOL = 5.0
+
+# features/matrix_builder.py compute_features step, live/daily path only
+# (2026-07 perf fix — see BuildLog.md). HMM fitting is CPU-bound (one
+# GaussianHMM fit per ticker, hmmlearn has no batch API), so it needs real
+# processes; the fundamentals/shareholding pre-load is pure network I/O
+# against the local DataStore API, so threads are fine and far cheaper.
+# HMM_FEATURE_WORKERS=3 (not the 10 scripts/feature_backfill_hybrid.py's
+# --help suggests for a 14-core box) because 10 spawn-context workers
+# OOM-killed this machine twice on 2026-06-26 against the 501-ticker
+# universe (confirmed via journalctl); the following day's run against the
+# full ~2,644-ticker universe used 3 workers with no OOM.
+HMM_FEATURE_WORKERS = 3
+FEATURE_CACHE_PRELOAD_WORKERS = 16
 
 # ---------------------------------------------------------------------------
 # DataStore API — SPEC-DS-002

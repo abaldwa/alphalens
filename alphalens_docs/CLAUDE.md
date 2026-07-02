@@ -440,7 +440,8 @@ tests/10_hitl_tests.md     ← 7 Human-in-the-Loop test cases
 13_scheduler_resilience.md ← APScheduler, gap detection, backfill, checkpoints
 14_engineering_standards.md← SOLID, RTM, library governance, quality gates, coding standards
 15_future_applications.md ← Requirements for TA, FA, Damodaran Valuation, Forensic apps
-screens/screen_mocks.html  ← Interactive HTML mocks for all screens
+screens/SCREEN_INVENTORY.md← 27-screen/5-app prototype registry (design tokens, component library)
+screens/alphalens_{ml,technical,fundamental,valuation,forensic}.html ← Per-app interactive HTML prototypes
 ```
 
 ---
@@ -471,16 +472,23 @@ Before creating any new module, confirm:
 
 ## Screen References
 
-All 5 UI screens are mocked in `screens/screen_mocks.html`.
-Open this file in a browser to see the target design for every screen.
+**[AS BUILT, 2026-07-01]** The 27-screen, 5-app prototype design lives in
+`screens/SCREEN_INVENTORY.md` (registry) + `screens/alphalens_{ml,
+technical,fundamental,valuation,forensic}.html` (one interactive mock per
+app — open any of these in a browser to see the target design). The live
+dashboard at `dashboard/static/` has been rebuilt to this structure; see
+`specs/08_specifications.md`'s SPEC-UI-001 through SPEC-UI-010 for the
+as-built screen-to-file mapping and which screens are real-data vs.
+empty-state (Technical and Valuation have no backend yet — see
+SPEC-UI-008/009).
 
-| Screen | File | Spec |
-|--------|------|------|
-| A: Daily Dashboard | screen_mocks.html#daily | SPEC-UI-001 |
-| B: Signal Detail | screen_mocks.html#signal | SPEC-UI-002 |
-| C: Multibagger Watchlist | screen_mocks.html#multibagger | SPEC-UI-003 |
-| D: Forensic Alerts | screen_mocks.html#forensic | SPEC-UI-004 |
-| E: Backtest Results | screen_mocks.html#backtest | SPEC-UI-005 |
+| App | Screens | Status | Spec |
+|-----|---------|--------|------|
+| AlphaLens.ML | 5 (Daily Insights, Signal Deep Dive, Multibagger, Positions, Backtest) | Real (Positions now includes Pending Actions review/approve, SPEC-PT-003) | SPEC-UI-001/002/003/003b/005 |
+| AlphaLens.Forensic | 7 (Dashboard, Red Flags, Benford, Cash Flow, Peer Heatmap, Investigation, Universe Scan) | Real | SPEC-UI-004 |
+| AlphaLens.Fundamental | 6 (Dashboard, Peers, Sector, Screener, Thesis, Management) | 4 Real, 2 Partial (Sector/Management have one empty-stated sub-panel each) | SPEC-UI-009, SPEC-FA-008 |
+| AlphaLens.Technical | 5 (Chart, Screener, Compare, Alerts, Market Overview) | 3 Real (Chart/Compare/Overview), 2 Empty (Screener/Alerts need real new logic) | SPEC-UI-008, SPEC-TA-004 |
+| AlphaLens.Valuation | 4 (DCF, Relative, Batch, Accuracy) | Empty (no backend) | SPEC-UI-009 |
 
 ---
 

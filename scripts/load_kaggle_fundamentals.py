@@ -175,7 +175,6 @@ def _build_fundamentals_rows(ticker: str, qpl: pd.DataFrame,
         """Return yearly value from the same FY year-end (March 31) <= qend."""
         if not lookup:
             return None
-        qe_date = date.fromisoformat(qend)
         fy, _ = _fiscal_year_quarter(qend)
         # FY year-end is March 31 of FY year
         fy_end = f"{fy}-03-31"
@@ -217,10 +216,8 @@ def _build_fundamentals_rows(ticker: str, qpl: pd.DataFrame,
         fcf   = (op_cf + capex) if (op_cf is not None and capex is not None) else None  # capex is negative
 
         # Book value per share ≈ (equity_cap + reserves) / shares
-        eq_cap = _nearest_yearly(equity_cap_by_year, qend)
-        res    = _nearest_yearly(reserves_by_year, qend)
-        # shares_outstanding from equity capital (face value assumed ₹1 or ₹10 — skip if unknown)
-        total_equity = ((eq_cap or 0) + (res or 0)) if (eq_cap or res) else None
+        _nearest_yearly(equity_cap_by_year, qend)
+        _nearest_yearly(reserves_by_year, qend)
 
         rows.append({
             "ticker":             ticker,
@@ -272,7 +269,6 @@ def _build_shareholding_rows(ticker: str, sh: pd.DataFrame) -> list:
         fii      = _num(sh.loc["FIIs", col])      if "FIIs"      in sh.index else None
         dii      = _num(sh.loc["DIIs", col])      if "DIIs"      in sh.index else None
         public_  = _num(sh.loc["Public", col])    if "Public"    in sh.index else None
-        govt     = _num(sh.loc["Government", col]) if "Government" in sh.index else None
 
         rows.append({
             "ticker":          ticker,

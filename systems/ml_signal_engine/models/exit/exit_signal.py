@@ -418,15 +418,27 @@ def load_exit_training_data_from_db(logs_dir=None, min_closed_positions: int = M
     trades["exit_price"] = trades["exit_price"].astype(float)
     trades["pnl_pct"] = trades["pnl_pct"].astype(float)
     trades["entry_date"] = pd.to_datetime(trades["date"])
-    trades["exit_date"] = pd.to_datetime(trades.get("exit_time", trades["date"]))
+    # exit_time is a time-of-day (HH:MM:SS), not a date — a multi-day hold's
+    # real exit calendar date must come from exit_date. Falling back to
+    # exit_time here silently mis-dated every multi-day trade to its entry
+    # date, producing a wrong (always ~0) days_held for the exact label this
+    # loader exists to build. See BuildLog.md "Paper Trading Logic Fix".
+    trades["exit_date"] = pd.to_datetime(trades.get("exit_date", trades["date"]))
     trades["days_held"] = (trades["exit_date"] - trades["entry_date"]).dt.days.clip(lower=1)
 
     X = trades[["entry_price", "days_held"]].copy()
     X["unrealised_pnl_pct"] = trades["pnl_pct"]
     X["days_to_next_earnings"] = np.nan  # joined at scoring time from a real earnings calendar
 
-    exit_type = np.where(trades["pnl_pct"] > 0.25, "target_achieved", "thesis_broken")
-    exit_type = pd.Series(exit_type, index=trades.index)
+    # Prefer the real exit reason logged at close time (set by whatever
+    # exit policy — RuleBasedExitPolicy or this model itself — closed the
+    # position). Older rows logged before exit_type existed have an empty
+    # value; for those only, fall back to a crude pnl-derived 2-bucket
+    # split rather than dropping the row, since it is still a real (if
+    # coarse) outcome label.
+    fallback_exit_type = np.where(trades["pnl_pct"] > 0.25, "target_achieved", "thesis_broken")
+    logged_exit_type = trades.get("exit_type", pd.Series("", index=trades.index)).fillna("").astype(str)
+    exit_type = logged_exit_type.where(logged_exit_type.isin(EXIT_TYPES), pd.Series(fallback_exit_type, index=trades.index))
 
     urgency = pd.Series(np.clip(50 + trades["pnl_pct"] * 100, 0, 100), index=trades.index)
     event = (trades["pnl_pct"] < 0).astype(int)

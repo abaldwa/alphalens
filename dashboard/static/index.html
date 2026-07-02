@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens</title>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/shell.css">
+</head>
+<body>
+<div class="app-bar">
+  <div class="app-logo"><div class="dot" style="background:var(--teal)"></div>AlphaLens</div>
+  <span class="app-meta" id="app-meta"></span>
+</div>
+<div class="page">
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Choose an app</span></div>
+    <div class="grid grid-3" id="app-tiles"></div>
+  </div>
+</div>
+<script src="js/api.js"></script>
+<script src="js/shell.js"></script>
+<script>
+  apiGet("/health")
+    .then((h) => { document.getElementById("app-meta").textContent = `${h.status} · v${h.version} · ${h.stock_count} stocks`; })
+    .catch(() => { document.getElementById("app-meta").textContent = "API unreachable"; });
+
+  const APP_STATUS = {
+    ml: { label: "Live", color: "var(--green)", desc: "Daily signals, signal deep dive, multibagger watchlist, position monitor + pending-action review + backdated entries, walk-forward backtest." },
+    forensic: { label: "Live", color: "var(--green)", desc: "Forensic scores, red-flag drill-down, Benford analysis, cash flow quality, peer heatmap, universe scan." },
+    fundamental: { label: "Mostly live", color: "var(--green)", desc: "Sector-relative ratios, governance, quality/growth/management scores, peer ranking, screener presets, thesis synthesis. Sector-unique metrics still empty." },
+    technical: { label: "Partially live", color: "var(--amber)", desc: "Charting, compare, and market overview are live (real indicators/patterns/breadth). Screener and alerts still need real new logic." },
+    valuation: { label: "Not yet built", color: "var(--tx3)", desc: "Damodaran DCF, relative valuation, batch ranking, accuracy tracking — backend not built yet." },
+    ops: { label: "Live", color: "var(--green)", desc: "Scheduled-job heartbeats, today's pipeline step checklist, recent runs, and force-start for a step that hasn't run yet." },
+  };
+
+  const tiles = document.getElementById("app-tiles");
+  APPS.forEach((a) => {
+    const s = APP_STATUS[a.id];
+    tiles.appendChild(
+      el("a", { class: "app-tile", href: a.base + a.screens[0].href }, [
+        el("div", { class: "at-dot", style: `background:${a.color}` }, []),
+        el("div", { class: "at-name" }, [a.name]),
+        el("div", { class: "at-desc" }, [s.desc]),
+        el("div", { class: "at-status", style: `color:${s.color}` }, [s.label]),
+      ])
+    );
+  });
+</script>
+</body>
+</html>

@@ -143,6 +143,32 @@ _CREATE_FUNDAMENTALS = """
         total_debt DOUBLE,
         cash_and_equivalents DOUBLE,
         depreciation DOUBLE,
+        -- [AS BUILT] ebit/net_debt/debt_to_ebitda are computed by
+        -- features/financial_ratios.py from already-scraped raw fields
+        -- (ebitda, depreciation, total_debt, cash_and_equivalents) rather
+        -- than scraped from a website ratio box — see that module's
+        -- docstring and BuildLog.md "Real data sourcing — Financial ratio
+        -- derivation" for why roe/roce/debt_to_equity above stay sparse
+        -- (they need shareholder equity, which neither free scraper
+        -- reliably captures) while these three are ~99%+ computable today.
+        ebit DOUBLE,
+        net_debt DOUBLE,
+        debt_to_ebitda DOUBLE,
+        fcf_margin DOUBLE,
+        capex_intensity DOUBLE,
+        -- [AS BUILT, P3.11] Direct shareholder equity (Equity Capital +
+        -- Reserves, INR Cr) read per fiscal year from Screener.in's
+        -- #balance-sheet table, which renders ALL historical FY columns
+        -- (Mar 2015..Mar 2026) on one page — unlike book_value_per_share
+        -- (still a current-snapshot-only header stat, ~9% populated),
+        -- this is read across every column, not just the rightmost one.
+        -- Patched onto every quarter row of the matching fiscal_year,
+        -- same one-value-per-FY pattern as Trendlyne's ROE_A/DEBT_CE_A
+        -- annual fields (see scripts/backfill_fundamentals_trendlyne.py).
+        -- features/financial_ratios.py prefers this over the
+        -- book_value_per_share*shares_outstanding back-derivation when
+        -- present. See BuildLog.md "P3.11".
+        total_equity DOUBLE,
         -- [AS BUILT, P2.6] Tijori Finance Pro sector-specific operational
         -- metrics (ARPU for telecom, NPA for banking, ANDA approvals for
         -- pharma, etc. — see ingestion/scrapers/tijori.py's _SECTOR_METRICS
@@ -301,6 +327,12 @@ _MIGRATE_ADDED_COLUMNS = {
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS total_debt DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS cash_and_equivalents DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS depreciation DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS ebit DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS net_debt DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS debt_to_ebitda DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fcf_margin DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS capex_intensity DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS total_equity DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_1 DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_2 DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_3 DOUBLE",

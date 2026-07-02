@@ -7,7 +7,7 @@ All tests are offline (no DB, no HTTP, no model inference).
 
 import pytest
 
-from backtest.portfolio import MONITOR_THRESHOLD, REDUCE_FRACTION, SIZING_MODES, PortfolioSimulator, Position, Trade
+from backtest.portfolio import MONITOR_THRESHOLD, REDUCE_FRACTION, SIZING_MODES, PortfolioSimulator, Position
 
 
 # ===== Fixtures =====
@@ -163,7 +163,6 @@ class TestBuySell:
 
     def test_reduce_position_partial_close(self, sim):
         sim.buy("INFY", "IT", 1500.0, "2024-01-02", {})
-        qty_before = sim.positions["INFY"].quantity
         sim.reduce_position("INFY", 1600.0, "2024-01-10")
         assert len(sim.trades) == 1
 

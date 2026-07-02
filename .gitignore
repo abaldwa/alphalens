@@ -24,3 +24,7 @@ catboost_info/
 # FYERS SDK runtime logs (generated at runtime, not source)
 fyersRequests.log
 fyersApi.log
+
+# Top-level runtime pipeline logs (generated at runtime, not source)
+logs/
+*.lock

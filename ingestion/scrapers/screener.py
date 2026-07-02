@@ -131,7 +131,17 @@ _QUARTERS_FIELDS = {
     "Financing Profit": "operating_profit",
 }
 # #balance-sheet row label -> internal field name (only the reliably-present ones — see module docstring)
-_BALANCE_SHEET_FIELDS = {"Borrowings": "total_debt"}
+# [AS BUILT] Some pages (verified against real cached pages, e.g. banks/
+# NBFCs) label this row "Borrowing" (no trailing "s", no "+" expander)
+# instead of "Borrowings+" — both map to the same field.
+_BALANCE_SHEET_FIELDS = {"Borrowings": "total_debt", "Borrowing": "total_debt"}
+# #balance-sheet row label -> internal field name, for the FULL multi-year
+# history parse (_parse_balance_sheet_history) used to derive total_equity
+# per fiscal year — see that function's docstring.
+_BALANCE_SHEET_HISTORY_FIELDS = {
+    "Equity Capital": "equity_capital",
+    "Reserves": "reserves",
+}
 # #shareholding row label -> internal field name
 _SHAREHOLDING_FIELDS = {
     "Promoters": "promoter_pct",
@@ -303,6 +313,32 @@ class ScreenerScraper:
         shareholding_row = _build_shareholding_row(ticker, shareholding)
         return {"fundamentals": fundamentals_row, "shareholding": shareholding_row}
 
+    def export_equity_history(self, ticker: str, html: Optional[str] = None) -> Dict[int, float]:
+        """
+        fiscal_year -> total_equity (INR Cr) for every year Screener's
+        #balance-sheet table shows for this ticker.
+
+        Parameters
+        ----------
+        ticker : str
+        html : str, optional
+            Pre-fetched page HTML (e.g. from a previously cached
+            `SCREENER_RAW_DIR/{ticker}.html`) — when given, NO network
+            call or login is made, letting callers replay history from
+            already-downloaded pages. When omitted, fetches a fresh page
+            (requires login()), same as export_company_data().
+
+        Returns
+        -------
+        dict
+            See `_parse_balance_sheet_history`. Empty if the section
+            wasn't found or no year had both Equity Capital and Reserves.
+        """
+        if html is None:
+            html = self._fetch_company_page(ticker)
+        soup = BeautifulSoup(html, "html.parser")
+        return _parse_balance_sheet_history(soup)
+
     def batch_export(self, tickers: List[str], write: bool = True) -> Dict[str, bool]:
         """
         Export and write fundamentals + shareholding for many tickers, rate-limited.
@@ -426,6 +462,71 @@ def _parse_section_table(
     return result
 
 
+def _parse_balance_sheet_history(soup: BeautifulSoup) -> Dict[int, float]:
+    """
+    Parse EVERY column of the #balance-sheet table (Screener renders one
+    column per fiscal year, e.g. 'Mar 2015'..'Mar 2026' on one page) into
+    fiscal_year -> total_equity (Equity Capital + Reserves, INR Cr).
+
+    Unlike `_parse_section_table` (used for the live current-quarter export,
+    which only reads the rightmost/most-recent column), this reads every
+    column so a single page fetch yields up to ~11 years of equity history
+    — Screener's balance sheet is annual-only, there is no quarterly
+    breakdown, so each fiscal year gets exactly one value, to be patched
+    onto every quarter row of that FY (same pattern as Trendlyne's
+    ROE_A/DEBT_CE_A annual fields).
+
+    Returns
+    -------
+    dict
+        fiscal_year (int, e.g. 2023 for the 'Mar 2023' column) -> total
+        equity in INR Cr. Empty dict if the section/table isn't found, or
+        a given year is skipped if either Equity Capital or Reserves is
+        missing/unparseable for that column (no partial-equity guessing).
+    """
+    section = soup.find(id="balance-sheet")
+    if section is None:
+        return {}
+    table = section.find("table")
+    if table is None:
+        return {}
+
+    rows = table.find_all("tr")
+    if not rows:
+        return {}
+
+    header_cells = rows[0].find_all(["td", "th"])
+    fiscal_years: List[Optional[int]] = []
+    for cell in header_cells[1:]:
+        match = re.search(r"(\d{4})", cell.get_text(strip=True))
+        fiscal_years.append(int(match.group(1)) if match else None)
+
+    per_field: Dict[str, List[Optional[float]]] = {}
+    for row in rows[1:]:
+        cells = row.find_all(["td", "th"])
+        if len(cells) < 2:
+            continue
+        label = cells[0].get_text(strip=True).rstrip("+").strip()
+        if label not in _BALANCE_SHEET_HISTORY_FIELDS:
+            continue
+        field = _BALANCE_SHEET_HISTORY_FIELDS[label]
+        per_field[field] = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
+
+    equity_capital = per_field.get("equity_capital", [])
+    reserves = per_field.get("reserves", [])
+
+    result: Dict[int, float] = {}
+    for i, fy in enumerate(fiscal_years):
+        if fy is None:
+            continue
+        ec = equity_capital[i] if i < len(equity_capital) else None
+        rs = reserves[i] if i < len(reserves) else None
+        if ec is None or rs is None:
+            continue
+        result[fy] = ec + rs
+    return result
+
+
 def _current_quarter_end(today: Optional[date] = None) -> date:
     """Most recently completed Indian fiscal quarter-end on or before `today`."""
     today = today or date.today()
@@ -434,6 +535,28 @@ def _current_quarter_end(today: Optional[date] = None) -> date:
     if past:
         return max(past)
     return date(today.year - 1, 12, 31)
+
+
+# Indian FY: Apr-Jun=Q1, Jul-Sep=Q2, Oct-Dec=Q3, Jan-Mar=Q4. FY label = the
+# calendar year in which March falls (FY-end) — same convention documented
+# and used by scripts/backfill_fundamentals_trendlyne.py's
+# _parse_quarter_label, and the convention already live in the `fundamentals`
+# table's real rows (verified: IIFL's 2021-09-30 row is fiscal_year=2022,
+# quarter=2). The previous `year if month != 3 else year - 1` / calendar-
+# quarter-number formula here disagreed with that — a real bug, caught while
+# adding the equity-history backfill (it produced a wrong-keyed row for
+# IIFL's most recent quarter: (fiscal_year=2025, quarter=1, 2026-03-31)
+# instead of the correct (2026, 4)). Fixed here so Screener's own writes
+# land on the same (ticker, fiscal_year, quarter) key Trendlyne would use
+# for the same quarter, instead of silently creating a duplicate row.
+_FY_QUARTER_MAP = {3: 4, 6: 1, 9: 2, 12: 3}
+
+
+def _indian_fiscal_year_quarter(quarter_end: date) -> "tuple[int, int]":
+    """('Mar 2026'-style quarter_end) -> (fiscal_year=2026, quarter=4)."""
+    quarter = _FY_QUARTER_MAP[quarter_end.month]
+    fiscal_year = quarter_end.year if quarter_end.month == 3 else quarter_end.year + 1
+    return fiscal_year, quarter
 
 
 def _build_fundamentals_row(
@@ -445,6 +568,7 @@ def _build_fundamentals_row(
 
     quarter_end = _current_quarter_end()
     announcement_date = quarter_end + timedelta(days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS)
+    fiscal_year, quarter = _indian_fiscal_year_quarter(quarter_end)
 
     revenue = quarters.get("revenue")
     operating_profit = quarters.get("operating_profit")
@@ -477,8 +601,8 @@ def _build_fundamentals_row(
 
     return {
         "ticker": ticker,
-        "fiscal_year": quarter_end.year if quarter_end.month != 3 else quarter_end.year - 1,
-        "quarter": ((quarter_end.month - 1) // 3) + 1,
+        "fiscal_year": fiscal_year,
+        "quarter": quarter,
         "quarter_end_date": quarter_end,
         "announcement_date": announcement_date,
         "revenue": revenue,

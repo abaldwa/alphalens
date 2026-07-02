@@ -1,0 +1,482 @@
+"""
+systems/technical_analysis/screener/engine.py
+
+Phase: 3.x (Technical Analysis Screener)
+Specs: SPEC-TA-005
+Owner: Technical Analysis / Screener
+Consumers: datastore/api/routers/technical.py,
+           systems/technical_analysis/alerts/daily_alert_checker.py
+
+Screening engine that evaluates named or custom condition templates against
+the daily feature Parquet store (config.settings.FEATURES_DAILY_DIR).
+
+Reads real feature Parquets only — no synthetic data in production paths
+(SPEC-QUALITY-003 + no-stub/synthetic-data policy). Test fixtures using
+synthetic DataFrames are permitted only in tests/unit/test_ta_screener.py
+as explicitly stated in SPEC-SYS-006's testing exemption.
+
+Architecture:
+    ScreenerEngine.screen(template_name) → loads Parquet → applies conditions
+    → returns sorted ScreenerResult list (all conditions must match: score=1.0)
+
+Condition dict format (SPEC-TA-005):
+    {"feature": "rsi_14", "op": "lt", "value": 30}
+    {"feature": "sma_200_ratio", "op": "gt", "value": 1.0}
+    {"feature": "roc_10", "op": "top_pct", "value": 0.20}   # cross-sectional
+    {"feature": "bb_width_pct", "op": "bottom_pct", "value": 0.25}
+
+Supported ops:
+    lt, gt, lte, gte, eq           — column vs scalar
+    between                         — column in [lo, hi] (value=[lo, hi])
+    top_pct                         — column >= quantile(1-value); cross-sectional
+    bottom_pct                      — column <= quantile(value); cross-sectional
+
+Feature-name safety (SPEC-TA-005): if a feature column is absent from the
+Parquet (older backfill date, or feature not yet computed), the condition is
+treated as unmet — the condition still counts toward total_conditions but NOT
+toward matched_conditions. This is the only tolerated NaN/missing behaviour;
+no synthetic fill-ins are ever applied in production paths.
+"""
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from config.settings import FEATURES_DAILY_DIR
+from datastore.api.utils.feature_store import resolve_date
+from systems.technical_analysis.screener.templates import (
+    TEMPLATE_MAP,
+    TEMPLATES,
+    ScreenerTemplate,
+)
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Result / info types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ScreenerResult:
+    """One stock matched by a screener run.
+
+    Parameters
+    ----------
+    ticker : str
+        NSE ticker symbol.
+    date : str
+        Feature date (YYYY-MM-DD) used for this run.
+    template_name : str
+        Template identifier, e.g. "A1", "E2", "S004".
+    matched_conditions : int
+        Number of conditions the ticker satisfied.
+    total_conditions : int
+        Total number of conditions in the template.
+    score : float
+        matched_conditions / total_conditions in [0, 1].
+    key_values : dict
+        Feature values relevant to the template (for display).
+
+    Spec References
+    ---------------
+    SPEC-TA-005: screener result schema
+    """
+
+    ticker: str
+    date: str
+    template_name: str
+    matched_conditions: int
+    total_conditions: int
+    score: float
+    key_values: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class TemplateInfo:
+    """Summary of a screener template for the /screener/templates listing endpoint.
+
+    Parameters
+    ----------
+    name : str
+        Unique template identifier.
+    category : str
+        One-letter category code (A-F, S).
+    description : str
+        Human-readable strategy name.
+    condition_count : int
+        Number of conditions in the template.
+
+    Spec References
+    ---------------
+    SPEC-TA-005: template listing endpoint
+    """
+
+    name: str
+    category: str
+    description: str
+    condition_count: int
+
+
+# ---------------------------------------------------------------------------
+# ScreenerEngine
+# ---------------------------------------------------------------------------
+
+
+class ScreenerEngine:
+    """Evaluates named or custom screener templates against the feature Parquet.
+
+    Parameters
+    ----------
+    None — paths are read from config.settings (SPEC-QUALITY-003).
+
+    Spec References
+    ---------------
+    SPEC-TA-005: Custom Technical Screener with 42 Pre-Built Templates
+    SPEC-QUALITY-003: no hardcoded paths
+
+    PIT Assumptions
+    ---------------
+    Reads the Parquet for the specified date (or the latest available day).
+    Features carry PITRule.NONE for OHLCV-derived technicals (same-day values
+    are knowable) and PITRule.KNOWN_AFTER for fundamentals-derived features
+    (handled upstream in matrix_builder.py — this engine reads the already-
+    PIT-correct Parquet, not raw tables).
+    """
+
+    # Ops that require a second column argument
+    _COL_VS_COL_OPS: frozenset = frozenset({"gt_col", "lt_col", "gte_col", "lte_col"})
+    # Ops that aggregate across the universe (cross-sectional percentile filters)
+    _UNIVERSE_OPS: frozenset = frozenset({"top_pct", "bottom_pct"})
+
+    def _load_df(self, date_str: str) -> Optional[pd.DataFrame]:
+        """Load the full feature Parquet for one date.
+
+        Parameters
+        ----------
+        date_str : str
+            Date in YYYY-MM-DD format.
+
+        Returns
+        -------
+        pd.DataFrame or None
+            Full feature matrix with 'ticker' index column, or None if the
+            file does not exist for this date.
+
+        Spec References
+        ---------------
+        SPEC-TA-005: read real Parquet — no synthetic fallback
+        """
+        day_path = FEATURES_DAILY_DIR / f"{date_str}.parquet"
+        if not day_path.exists():
+            logger.warning("Feature Parquet not found for date %s at %s", date_str, day_path)
+            return None
+        return pd.read_parquet(day_path)
+
+    def _apply_single_condition(
+        self,
+        df: pd.DataFrame,
+        condition: Dict[str, Any],
+        available_cols: frozenset,
+    ) -> Tuple[pd.Series, bool]:
+        """Evaluate one condition dict against the DataFrame, row by row.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The feature DataFrame (one row per ticker).
+        condition : dict
+            Condition dict with at minimum {"feature": str, "op": str}.
+        available_cols : frozenset
+            Set of columns actually present in `df`.
+
+        Returns
+        -------
+        (mask, col_missing) : (pd.Series[bool], bool)
+            mask       — True where the condition is met (False for NaN cells).
+            col_missing — True if the required feature column was absent from
+                          the Parquet (condition treated as unmet per SPEC-TA-005).
+
+        Spec References
+        ---------------
+        SPEC-TA-005: "if feature not in available_cols → condition treated as unmet"
+        """
+        feature = condition.get("feature", "")
+        op = condition.get("op", "")
+        value = condition.get("value")
+        feature2 = condition.get("feature2")
+
+        false_mask = pd.Series(False, index=df.index)
+
+        if feature not in available_cols:
+            return false_mask, True  # column missing → unmet
+
+        col = df[feature]
+
+        try:
+            if op == "lt":
+                mask = col < value
+            elif op == "gt":
+                mask = col > value
+            elif op == "lte":
+                mask = col <= value
+            elif op == "gte":
+                mask = col >= value
+            elif op == "eq":
+                mask = col == value
+            elif op == "between":
+                lo, hi = value[0], value[1]
+                mask = (col >= lo) & (col <= hi)
+            elif op == "top_pct":
+                # Cross-sectional: keep tickers in the top `value` fraction
+                threshold = col.quantile(1.0 - float(value))
+                mask = col >= threshold
+            elif op == "bottom_pct":
+                # Cross-sectional: keep tickers in the bottom `value` fraction
+                threshold = col.quantile(float(value))
+                mask = col <= threshold
+            elif op in self._COL_VS_COL_OPS:
+                if not feature2 or feature2 not in available_cols:
+                    return false_mask, True
+                col2 = df[feature2]
+                if op == "gt_col":
+                    mask = col > col2
+                elif op == "lt_col":
+                    mask = col < col2
+                elif op == "gte_col":
+                    mask = col >= col2
+                else:  # lte_col
+                    mask = col <= col2
+            else:
+                logger.warning("Unknown screener op '%s' — condition treated as unmet", op)
+                return false_mask, False
+        except Exception as exc:
+            logger.warning("Condition evaluation failed for feature '%s' op '%s': %s", feature, op, exc)
+            return false_mask, False
+
+        return mask.fillna(False), False
+
+    def _screen_df(
+        self,
+        df: pd.DataFrame,
+        template: ScreenerTemplate,
+        date_str: str,
+        limit: int,
+    ) -> List[ScreenerResult]:
+        """Apply template conditions to a loaded feature DataFrame.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Full feature matrix for one date (one row per ticker).
+        template : ScreenerTemplate
+            Template with name, category, description, and conditions list.
+        date_str : str
+            Feature date (YYYY-MM-DD), stored in each ScreenerResult.
+        limit : int
+            Maximum number of results to return (sorted by score desc).
+
+        Returns
+        -------
+        list of ScreenerResult
+            Sorted by score descending (best matches first), then by
+            volume_ratio_21d descending within the same score bucket.
+            Each result carries key_values populated from the Parquet.
+
+        Spec References
+        ---------------
+        SPEC-TA-005: screener evaluation logic
+        """
+        if df.empty:
+            return []
+
+        # Ensure 'ticker' column is present
+        if "ticker" not in df.columns:
+            logger.error("Feature Parquet is missing 'ticker' column on date %s", date_str)
+            return []
+
+        available_cols = frozenset(df.columns)
+        total_conditions = len(template.conditions)
+
+        if total_conditions == 0:
+            return []
+
+        # Accumulate per-row condition match counts
+        # Start with zeros; add 1 for each condition met
+        match_counts = pd.Series(0, index=df.index, dtype=int)
+
+        for cond in template.conditions:
+            mask, _missing = self._apply_single_condition(df, cond, available_cols)
+            match_counts += mask.astype(int)
+
+        scores = match_counts / total_conditions
+
+        # Return only full matches (score == 1.0 — all conditions met).
+        # The screener is a strict filter: a stock must satisfy every condition
+        # to be surfaced. Partial matches are not shown to avoid false positives
+        # and keep the output actionable (SPEC-TA-005).
+        result_mask = scores >= 1.0 - 1e-9
+        result_df = df[result_mask].copy()
+        result_df["_score"] = scores[result_mask]
+        result_df["_matched"] = match_counts[result_mask]
+
+        # Sort: score desc, then volume desc as secondary (more active first)
+        sort_cols = ["_score"]
+        sort_asc = [False]
+        if "volume_ratio_21d" in available_cols:
+            result_df["_vol"] = df.loc[result_mask, "volume_ratio_21d"]
+            sort_cols.append("_vol")
+            sort_asc.append(False)
+        result_df = result_df.sort_values(sort_cols, ascending=sort_asc).head(limit)
+
+        # Determine display features
+        display_features = list(dict.fromkeys(
+            template.key_display_features
+            + [c.get("feature", "") for c in template.conditions if c.get("feature")]
+        ))
+        display_features = [f for f in display_features if f and f in available_cols]
+
+        results: List[ScreenerResult] = []
+        for _, row in result_df.iterrows():
+            key_vals: Dict[str, float] = {}
+            for feat in display_features:
+                raw = row.get(feat)
+                if raw is not None and not (isinstance(raw, float) and np.isnan(raw)):
+                    key_vals[feat] = round(float(raw), 6)
+
+            results.append(ScreenerResult(
+                ticker=str(row["ticker"]),
+                date=date_str,
+                template_name=template.name,
+                matched_conditions=int(row["_matched"]),
+                total_conditions=total_conditions,
+                score=round(float(row["_score"]), 4),
+                key_values=key_vals,
+            ))
+
+        return results
+
+    def screen(
+        self,
+        template_name: str,
+        date: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[ScreenerResult]:
+        """Run a named template against the daily feature store.
+
+        Parameters
+        ----------
+        template_name : str
+            Template identifier, e.g. "A1", "E2", "S004".
+        date : str, optional
+            YYYY-MM-DD. Defaults to the latest available feature Parquet date.
+        limit : int, optional
+            Maximum results to return (default 50).
+
+        Returns
+        -------
+        list of ScreenerResult
+            Sorted by score desc, then volume_ratio_21d desc.
+            Returns [] if the template is unknown or no feature data is available.
+
+        Raises
+        ------
+        KeyError
+            If `template_name` is not in the template registry.
+
+        Spec References
+        ---------------
+        SPEC-TA-005: GET /api/v1/ta/screener/run/{template_name}
+        """
+        if template_name not in TEMPLATE_MAP:
+            raise KeyError(
+                f"Unknown template '{template_name}'. "
+                f"Available: {sorted(TEMPLATE_MAP.keys())}"
+            )
+
+        template = TEMPLATE_MAP[template_name]
+        resolved = resolve_date(date)
+        if resolved is None:
+            logger.warning("No feature Parquet available for date '%s'", date)
+            return []
+
+        df = self._load_df(resolved)
+        if df is None:
+            return []
+
+        return self._screen_df(df, template, resolved, limit)
+
+    def screen_custom(
+        self,
+        conditions: List[Dict[str, Any]],
+        date: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[ScreenerResult]:
+        """Run a user-defined list of conditions against the daily feature store.
+
+        Parameters
+        ----------
+        conditions : list of dict
+            Each dict must have {"feature": str, "op": str} and either
+            {"value": scalar/list} or {"feature2": str}.
+            Example: [{"feature": "rsi_14", "op": "lt", "value": 30}]
+        date : str, optional
+            YYYY-MM-DD. Defaults to the latest available feature Parquet date.
+        limit : int, optional
+            Maximum results to return (default 50).
+
+        Returns
+        -------
+        list of ScreenerResult
+            template_name is set to "custom" for all rows.
+
+        Spec References
+        ---------------
+        SPEC-TA-005: POST /api/v1/ta/screener/custom
+        """
+        resolved = resolve_date(date)
+        if resolved is None:
+            logger.warning("No feature Parquet available for date '%s'", date)
+            return []
+
+        df = self._load_df(resolved)
+        if df is None:
+            return []
+
+        # Build a transient template from the custom conditions
+        from systems.technical_analysis.screener.templates import ScreenerTemplate  # local import avoids circular
+
+        custom_template = ScreenerTemplate(
+            name="custom",
+            category="custom",
+            description="Custom screener",
+            conditions=conditions,
+            key_display_features=[c.get("feature", "") for c in conditions if c.get("feature")],
+        )
+
+        return self._screen_df(df, custom_template, resolved, limit)
+
+    def list_templates(self) -> List[TemplateInfo]:
+        """Return summary metadata for all 42 registered templates.
+
+        Returns
+        -------
+        list of TemplateInfo
+            One entry per template, sorted by name.
+
+        Spec References
+        ---------------
+        SPEC-TA-005: GET /api/v1/ta/screener/templates
+        """
+        return [
+            TemplateInfo(
+                name=t.name,
+                category=t.category,
+                description=t.description,
+                condition_count=len(t.conditions),
+            )
+            for t in sorted(TEMPLATES, key=lambda x: x.name)
+        ]

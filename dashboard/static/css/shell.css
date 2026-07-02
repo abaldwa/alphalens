@@ -1,0 +1,41 @@
+/* AlphaLens dashboard — app shell chrome: top app-bar (5-app switcher),
+   sub-tabs (per-app screen nav), page/section/grid layout. */
+
+.app-bar{background:var(--bg2);border-bottom:1px solid var(--bdr);padding:0 24px;display:flex;align-items:center;height:56px;position:sticky;top:0;z-index:100}
+.app-logo{font-weight:700;font-size:18px;letter-spacing:-.03em;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.app-logo .dot{width:10px;height:10px;border-radius:50%}
+.app-tabs{display:flex;gap:4px;margin-left:32px;overflow-x:auto}
+.app-tab{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;color:var(--tx2);transition:.15s;white-space:nowrap}
+.app-tab:hover{background:var(--bg3);color:var(--tx)}
+.app-tab.active{background:var(--bg3);color:var(--tx);font-weight:600}
+.app-meta{margin-left:auto;font-size:12px;color:var(--tx3);font-family:'JetBrains Mono',monospace;white-space:nowrap;padding-left:16px}
+
+.sub-tabs{background:var(--bg2);border-bottom:1px solid var(--bdr);padding:0 24px;display:flex;gap:4px;overflow-x:auto}
+.sub-tab{padding:10px 14px;font-size:12px;font-weight:500;color:var(--tx2);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+.sub-tab:hover{color:var(--tx)}
+.sub-tab.active{color:var(--tx);font-weight:600;border-bottom-color:var(--teal)}
+
+.page{max-width:1400px;margin:0 auto;padding:20px 24px}
+.sec{margin-bottom:20px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:10px}
+.sec-title{font-size:16px;font-weight:600;letter-spacing:-.02em}
+.sec-sub{font-size:12px;color:var(--tx3)}
+.sec-action{font-size:12px;color:var(--blue);cursor:pointer;font-weight:500}
+
+.grid{display:grid;gap:16px}
+.grid-2{grid-template-columns:repeat(2,1fr)}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-4{grid-template-columns:repeat(4,1fr)}
+.grid-5{grid-template-columns:repeat(5,1fr)}
+
+/* app launcher (new top-level index.html) */
+.app-tile{display:block;background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--r2);padding:24px;box-shadow:var(--sh);transition:.15s}
+.app-tile:hover{border-color:var(--bdr2);transform:translateY(-1px)}
+.app-tile .at-dot{width:12px;height:12px;border-radius:50%;margin-bottom:12px}
+.app-tile .at-name{font-size:17px;font-weight:700;letter-spacing:-.02em;margin-bottom:6px}
+.app-tile .at-desc{font-size:12px;color:var(--tx2);line-height:1.5;margin-bottom:10px}
+.app-tile .at-status{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+
+@media (max-width: 900px){
+  .grid-2,.grid-3,.grid-4,.grid-5{grid-template-columns:1fr}
+}

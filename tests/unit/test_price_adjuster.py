@@ -43,7 +43,7 @@ def _insert_ohlcv(conn, ticker, rows, volume=1_000_000, delivery_qty=None):
         "INSERT INTO ohlcv_adjusted "
         "(date, ticker, open, high, low, close, volume, delivery_qty, adj_factor) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [(d, ticker, o, h, l, c, volume, dq, 1.0) for d, o, h, l, c in rows],
+        [(d, ticker, o, h, low, c, volume, dq, 1.0) for d, o, h, low, c in rows],
     )
 
 

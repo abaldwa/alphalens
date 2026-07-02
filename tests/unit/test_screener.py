@@ -28,6 +28,8 @@ from ingestion.scrapers.screener import (
     _build_fundamentals_row,
     _build_shareholding_row,
     _current_quarter_end,
+    _indian_fiscal_year_quarter,
+    _parse_balance_sheet_history,
     _parse_number,
     _parse_section_table,
 )
@@ -163,6 +165,79 @@ class TestBuildShareholdingRow:
 
     def test_no_promoter_row_returns_none(self):
         assert _build_shareholding_row("EMPTYCO", {"promoter_pct": None}) is None
+
+
+# Real screener.in #balance-sheet markup (verified against a live cached
+# page, datastore/raw/screener/IIFL.html): one column per fiscal year,
+# header label "Mar YYYY", "Borrowing" without a trailing "s"/"+" on some
+# pages (banks/NBFCs), "+" expander suffix on Equity-adjacent rows elsewhere.
+_SAMPLE_HTML_WITH_HISTORY = """
+<html><body>
+<section id="balance-sheet">
+<table><tbody>
+<tr><th></th><th>Mar 2023</th><th>Mar 2024</th><th>Mar 2025</th></tr>
+<tr><td class="text">Equity Capital</td><td>76</td><td>76</td><td>85</td></tr>
+<tr><td class="text">Reserves</td><td>8,916</td><td>10,561</td><td>12,327</td></tr>
+<tr><td class="text">Borrowing</td><td>50,000</td><td>52,000</td><td>54,000</td></tr>
+<tr><td class="text">Total Liabilities</td><td>90,000</td><td>95,000</td><td>100,000</td></tr>
+</tbody></table>
+</section>
+</body></html>
+"""
+
+
+class TestParseBalanceSheetHistory:
+    def test_extracts_equity_per_fiscal_year_across_all_columns(self):
+        soup = BeautifulSoup(_SAMPLE_HTML_WITH_HISTORY, "html.parser")
+        history = _parse_balance_sheet_history(soup)
+        assert history == {2023: 8992.0, 2024: 10637.0, 2025: 12412.0}
+
+    def test_missing_section_returns_empty_dict(self):
+        soup = BeautifulSoup("<html><body></body></html>", "html.parser")
+        assert _parse_balance_sheet_history(soup) == {}
+
+    def test_year_with_missing_reserves_is_skipped_not_guessed(self):
+        html = """
+        <section id="balance-sheet"><table><tbody>
+        <tr><th></th><th>Mar 2023</th><th>Mar 2024</th></tr>
+        <tr><td class="text">Equity Capital</td><td>76</td><td>76</td></tr>
+        <tr><td class="text">Reserves</td><td>8,916</td><td>-</td></tr>
+        </tbody></table></section>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        history = _parse_balance_sheet_history(soup)
+        assert history == {2023: 8992.0}  # 2024 dropped, not fabricated as 76
+
+    def test_borrowing_singular_label_matches_total_debt_field(self):
+        soup = BeautifulSoup(_SAMPLE_HTML_WITH_HISTORY, "html.parser")
+        from ingestion.scrapers.screener import _BALANCE_SHEET_FIELDS
+
+        balance_sheet = _parse_section_table(soup, "balance-sheet", _BALANCE_SHEET_FIELDS)
+        assert balance_sheet["total_debt"] == 54000.0  # rightmost column
+
+
+class TestExportEquityHistory:
+    def test_offline_with_pre_fetched_html_makes_no_network_call(self):
+        scraper = ScreenerScraper(username="u", password="p", client=MagicMock())
+        history = scraper.export_equity_history("IIFL", html=_SAMPLE_HTML_WITH_HISTORY)
+        assert history == {2023: 8992.0, 2024: 10637.0, 2025: 12412.0}
+
+
+class TestIndianFiscalYearQuarter:
+    def test_march_quarter_end_is_q4_of_its_own_year(self):
+        # Regression test: the real fundamentals table's convention
+        # (verified against IIFL's live rows) is fiscal_year = the
+        # calendar year March falls in, quarter=4 — a prior version of
+        # this code computed (year - 1, calendar-quarter-1) instead,
+        # producing a wrong-keyed row.
+        assert _indian_fiscal_year_quarter(date(2026, 3, 31)) == (2026, 4)
+
+    def test_june_quarter_end_is_q1_of_next_fiscal_year(self):
+        assert _indian_fiscal_year_quarter(date(2021, 6, 30)) == (2022, 1)
+
+    def test_september_and_december(self):
+        assert _indian_fiscal_year_quarter(date(2021, 9, 30)) == (2022, 2)
+        assert _indian_fiscal_year_quarter(date(2021, 12, 31)) == (2022, 3)
 
 
 class TestCurrentQuarterEnd:

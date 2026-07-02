@@ -634,7 +634,7 @@ def load_multibagger_training_data_from_db(
             "'Real data sourcing — Multibagger'."
         )
 
-    with get_duckdb_connection(db_path) as conn:
+    with get_duckdb_connection(db_path, read_only=True, persist=False) as conn:
         ohlcv = conn.execute(
             """
             SELECT date, ticker, open, high, low, close, volume,
@@ -658,8 +658,8 @@ def load_multibagger_training_data_from_db(
     # For each ticker: compare its most recent close to its close
     # label_window_days trading rows ago. If that ratio >= min_return_multiplier => positive.
     sorted_ohlcv = ohlcv.sort_values(["ticker", "date"])
-    first_close = sorted_ohlcv.groupby("ticker")["close"].nth(0)
-    last_close = sorted_ohlcv.groupby("ticker")["close"].nth(-1)
+    # groupby().last() returns ticker-keyed index; nth(-1) returns integer row positions
+    last_close = sorted_ohlcv.groupby("ticker")["close"].last()
     row_counts = sorted_ohlcv.groupby("ticker")["date"].count()
 
     # Only label tickers with sufficient history for the label window

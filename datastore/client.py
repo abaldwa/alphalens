@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
+import pandas as pd
 
 from config.settings import DATASTORE_API_BASE_URL
 
@@ -142,7 +143,7 @@ class DataStoreClient:
         ------
         httpx.HTTPStatusError, httpx.RequestError
         """
-        import io
+        import json
 
         import pandas as pd
 
@@ -154,13 +155,27 @@ class DataStoreClient:
         with httpx.Client(timeout=120.0) as hclient:
             response = hclient.get(url, params=params)
         response.raise_for_status()
-        df = pd.read_json(io.StringIO(response.text))
+
+        payload = json.loads(response.text)
+        if isinstance(payload, dict):
+            payload = payload.get("data", payload)
+
+        if not payload:
+            return pd.DataFrame(
+                columns=["date", "ticker", "open", "high", "low", "close", "volume", "delivery_pct", "adj_factor"]
+            )
+
+        if isinstance(payload, list):
+            df = pd.DataFrame(payload)
+        else:
+            df = pd.DataFrame([payload])
+
         if df.empty:
             return pd.DataFrame(
-                columns=["date", "ticker", "open", "high", "low", "close",
-                         "volume", "delivery_pct", "adj_factor"]
+                columns=["date", "ticker", "open", "high", "low", "close", "volume", "delivery_pct", "adj_factor"]
             )
-        df["date"] = pd.to_datetime(df["date"])
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
         return df
 
     def get_universe_tickers(self, min_rows: int = 0) -> Dict[str, Any]:

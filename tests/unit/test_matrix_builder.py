@@ -114,6 +114,21 @@ class TestBuildFeatureMatrix:
             assert col in mat.columns
         assert mat.loc[0, "rl_regime_label"] == 0.0  # Phase 1 stub, always populated
 
+    def test_missing_date_column_in_feature_panel_is_tolerated(self, fake_client, monkeypatch):
+        import features.matrix_builder as mb
+
+        def _bad_technical_panel(*args, **kwargs):
+            return pd.DataFrame(columns=["ticker", "close"])
+
+        monkeypatch.setattr(mb, "compute_technical_features", _bad_technical_panel)
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+
+        mat = build_feature_matrix(target_date, ["AAA"], client=fake_client, save=False, compute_hmm=False)
+
+        assert mat.shape[0] == 1
+        assert list(mat.columns[:2]) == ["date", "ticker"]
+        assert mat.loc[0, "ticker"] == "AAA"
+
     def test_advance_decline_ratio_outside_price_ratio_range_is_not_flagged(self, fake_client, caplog):
         """Regression guard for the false-positive found in P1.2: advance_decline_ratio
         legitimately falls outside [0.1, 10.0] for small/lopsided universes and must not

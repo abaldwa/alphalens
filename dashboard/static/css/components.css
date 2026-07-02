@@ -1,0 +1,103 @@
+/* AlphaLens dashboard — shared components, ported verbatim from the
+   alphalens_docs/screens/alphalens_*.html prototype, plus .empty-state
+   (net-new — the prototype has no "backend not built" component). */
+
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--r2);padding:16px;box-shadow:var(--sh)}
+
+.stat{text-align:center}
+.stat-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);margin-bottom:4px}
+.stat-value{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:-.03em}
+.stat-sub{font-size:11px;color:var(--tx3);margin-top:2px}
+
+.insight-card{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;background:linear-gradient(135deg,#f0f4ff 0%,#f0faf8 100%);border:1px solid #d8e2f4;border-radius:var(--r2);padding:14px 16px}
+.insight-metric{text-align:center}
+.insight-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+.insight-val{font-size:17px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.insight-sub{font-size:10px;color:var(--tx3);margin-top:2px}
+.i-entry .insight-label,.i-entry .insight-val{color:var(--blue)}
+.i-returns .insight-label,.i-returns .insight-val{color:var(--green)}
+.i-duration .insight-label,.i-duration .insight-val{color:var(--purple)}
+.i-confidence .insight-label,.i-confidence .insight-val{color:var(--teal)}
+
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;gap:4px}
+.b-green{background:rgba(26,147,56,.08);color:var(--green)}
+.b-red{background:rgba(209,52,56,.08);color:var(--red)}
+.b-amber{background:rgba(194,122,9,.08);color:var(--amber)}
+.b-blue{background:rgba(59,107,245,.07);color:var(--blue)}
+.b-purple{background:rgba(110,86,207,.07);color:var(--purple)}
+.b-teal{background:rgba(10,155,142,.08);color:var(--teal)}
+.b-gray{background:rgba(142,149,168,.1);color:var(--tx3)}
+
+.alert-banner{padding:12px 16px;border-radius:var(--r);margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:500}
+.alert-critical{background:#FEE;border:1px solid #FCC;color:var(--red)}
+.alert-warning{background:#FFF8E6;border:1px solid #FFE4A0;color:var(--amber)}
+.alert-info{background:#EEF4FF;border:1px solid #C4D8FF;color:var(--blue)}
+/* legacy alias used by ported dashboard.js/backtest.js: .alert.alert-{high,medium,low} */
+.alert{padding:10px 14px;border-radius:var(--r);margin-bottom:8px;font-size:13px}
+.alert-high{background:#FEE;border:1px solid #FCC;color:var(--red)}
+.alert-medium{background:#FFF8E6;border:1px solid #FFE4A0;color:var(--amber)}
+.alert-low{background:#EEF4FF;border:1px solid #C4D8FF;color:var(--blue)}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 12px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);border-bottom:2px solid var(--bdr);background:var(--bg)}
+td{padding:10px 12px;border-bottom:1px solid var(--bg3)}
+tr:hover td{background:var(--bg)}
+.up{color:var(--green)}.dn{color:var(--red)}.neutral{color:var(--tx3)}
+.pos{color:var(--green)}.neg{color:var(--red)}
+
+.cross-links{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.cross-link{font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--bdr);color:var(--tx2);cursor:pointer;text-decoration:none;transition:.15s}
+.cross-link:hover{border-color:var(--blue);color:var(--blue);background:rgba(59,107,245,.04)}
+
+.bar{height:6px;border-radius:3px;background:var(--bg3)}
+.bar-fill{height:100%;border-radius:3px}
+
+.regime-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:8px;font-size:12px;font-weight:600}
+.regime-bull{background:rgba(26,147,56,.08);color:var(--green)}
+.regime-bear{background:rgba(209,52,56,.08);color:var(--red)}
+.regime-side{background:rgba(142,149,168,.1);color:var(--tx3)}
+
+.shap-bar{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+.shap-label{width:140px;text-align:right;color:var(--tx2);font-size:11px}
+.shap-track{flex:1;height:16px;background:var(--bg3);border-radius:3px;position:relative;overflow:hidden}
+.shap-fill{height:100%;border-radius:3px;position:absolute;top:0}
+.shap-pos{background:var(--green);right:50%}.shap-neg{background:var(--red);left:50%}
+
+.chart-placeholder{background:var(--bg);border:1px dashed var(--bdr);border-radius:var(--r);height:240px;display:flex;align-items:center;justify-content:center;color:var(--tx3);font-size:13px;text-align:center;padding:16px}
+
+.heatmap-cell{padding:8px;text-align:center;font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;border-radius:4px}
+.h-green{background:rgba(26,147,56,.12);color:var(--green)}
+.h-red{background:rgba(209,52,56,.12);color:var(--red)}
+.h-amber{background:rgba(194,122,9,.12);color:var(--amber)}
+.h-neutral{background:var(--bg3);color:var(--tx3)}
+
+.score-ring{width:80px;height:80px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.ring-green{background:rgba(26,147,56,.08);border:3px solid var(--green);color:var(--green)}
+.ring-red{background:rgba(209,52,56,.08);border:3px solid var(--red);color:var(--red)}
+.ring-amber{background:rgba(194,122,9,.08);border:3px solid var(--amber);color:var(--amber)}
+
+.progress-bar{height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;border-radius:4px;transition:width .3s}
+
+.waterfall-step{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--bg3)}
+.waterfall-label{width:160px;font-size:12px;color:var(--tx2)}
+.waterfall-bar{flex:1;height:24px;background:var(--bg3);border-radius:4px;position:relative;overflow:hidden}
+.waterfall-fill{height:100%;border-radius:4px}
+.waterfall-val{font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace;width:80px;text-align:right}
+
+/* net-new: honest "backend not built" state — same dashed-border language
+   as .chart-placeholder, no fabricated content, no fake spinner */
+.empty-state{background:var(--bg);border:1px dashed var(--bdr);border-radius:var(--r2);padding:40px 24px;text-align:center;color:var(--tx3)}
+.empty-state .es-icon{font-size:28px;margin-bottom:10px;opacity:.6}
+.empty-state .es-title{font-size:14px;font-weight:700;color:var(--tx2);margin-bottom:6px}
+.empty-state .es-detail{font-size:12px;color:var(--tx3);max-width:480px;margin:0 auto;line-height:1.6}
+
+.empty{color:var(--tx3);font-size:13px;padding:16px;text-align:center}
+.error{color:var(--red);font-size:13px;padding:16px;text-align:center}
+.loading{color:var(--tx3);font-size:13px;padding:16px;text-align:center}
+
+input[type=text]{background:var(--bg3);border:1px solid var(--bdr2);color:var(--tx);border-radius:var(--r);padding:8px 12px;font-size:13px;font-family:inherit}
+button{background:var(--blue);color:#fff;border:none;border-radius:var(--r);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+button:hover{opacity:.9}
+
+canvas{width:100%;display:block}

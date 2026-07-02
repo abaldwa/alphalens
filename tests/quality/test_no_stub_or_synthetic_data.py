@@ -1,0 +1,351 @@
+"""
+tests/quality/test_no_stub_or_synthetic_data.py
+
+Phase: cross-cutting (all phases)
+Specs: CLAUDE.md Absolute Rule 6 (no synthetic/mocked/procedurally-generated
+       data anywhere in production code, ever, and no fallback to it)
+Owner: project-wide quality gate
+Consumers: CI / `pytest tests/quality/`
+
+These are static "fitness functions", not behavioural tests: they grep and
+AST-walk production source (everything except tests/, alphalens_docs/,
+.venv, and similar) for patterns that have historically indicated a
+fabricated-data fallback or an unfinished stub implementation, and fail on
+any occurrence that isn't in the ALLOWLIST below.
+
+The allowlist is the single place that tracks today's known,
+BuildLog.md-documented real-data gaps (e.g. analogue_miner.py's synthetic
+33-feature vectors, the empty systems/technical_analysis scaffold). It
+exists so this test can be strict without blocking on debt that's already
+visible elsewhere — but it must shrink over time. Do not add a new entry
+without a corresponding BuildLog.md "Real data sourcing" section explaining
+why the real fix isn't done yet; do not loosen a regex just to silence a
+new finding.
+
+PIT Assumptions
+----------------
+None — pure static analysis, no data access.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+from typing import Iterator
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Only scan directories that ship production code paths. Excludes tests/,
+# alphalens_docs/, baselines/, code_reviews/, dashboard mocks, etc.
+SCAN_DIRS = [
+    "config", "contracts", "datastore", "features", "ingestion",
+    "scripts", "systems", "backtest", "dashboard",
+]
+
+EXCLUDE_DIR_PARTS = {".venv", "__pycache__", ".git", "node_modules", "catboost_info"}
+
+# contracts/interfaces.py legitimately defines abstract methods that raise
+# NotImplementedError by design (IModel, IClassificationModel, etc.) — that
+# is the interface contract, not an unfinished implementation.
+STUB_CHECK_EXCLUDE_DIRS = {"contracts"}
+
+
+def _iter_py_files(dirs: list[str]) -> Iterator[Path]:
+    for d in dirs:
+        base = REPO_ROOT / d
+        if not base.exists():
+            continue
+        for path in base.rglob("*.py"):
+            if EXCLUDE_DIR_PARTS & set(path.parts):
+                continue
+            yield path
+
+
+def _rel(path: Path) -> str:
+    return str(path.relative_to(REPO_ROOT))
+
+
+# ---------------------------------------------------------------------------
+# 1. Synthetic / fabricated data fallbacks
+# ---------------------------------------------------------------------------
+
+# Matches numpy/random data-generation calls. Algorithm seeding
+# (`random_state=42`, `np.random.default_rng(seed)` used only to seed a
+# model/shuffle) is NOT itself a violation — what matters is whether the
+# *output* of the call is used as a stand-in for real market/fundamental
+# data. That judgment call is why this list feeds a human-reviewed
+# allowlist rather than an auto-pass/fail on regex alone.
+_SYNTHETIC_DATA_RE = re.compile(
+    r"np\.random\.(normal|uniform|randint|choice|dirichlet|permutation|rand|randn)\(|"
+    r"rng\.(normal|uniform|randint|choice|dirichlet|permutation|rand|randn)\("
+)
+_KEYWORD_RE = re.compile(r"\b(placeholder|synthetic|fake|dummy)\b", re.IGNORECASE)
+
+# The codebase has a strong, deliberate convention of documenting the
+# *absence* of synthetic data ("there is no synthetic-data fallback",
+# "synthetic fallback has been removed") — those comments are evidence of
+# compliance, not violations, and would otherwise dominate the diff. Skip
+# any line matching a negation around the keyword.
+_NEGATION_RE = re.compile(
+    r"(\bno\b|\bnot\b|\bnever\b|\bwithout\b)[^.\n]{0,60}\b(synthetic|fabricat\w*|placeholder|fake|dummy)\b"
+    r"|\b(synthetic|fabricat\w*|placeholder|fake|dummy)\b[^.\n]{0,60}"
+    r"\b(removed|removal|policy|raises|fallback\b.{0,20}\b(removed|raise))\b",
+    re.IGNORECASE,
+)
+
+# file (relative to repo root) -> set of substrings; a flagged line is
+# allowed through if any of these substrings appears on that line OR on the
+# few lines around it carry one of these markers. Keep entries narrow.
+SYNTHETIC_DATA_ALLOWLIST: dict[str, set[str]] = {
+    # BuildLog.md "Real data sourcing — Multibagger historical archive
+    # features": real company names/return facts, explicitly-documented
+    # SYNTHETIC (not measured) 33-feature vectors used only for analogue
+    # cosine-similarity matching. Tracked fix: backfill real OHLCV at each
+    # entry's historical date and recompute real features.
+    "systems/ml_signal_engine/models/multibagger/analogue_miner.py": {
+        "AVANTI FEEDS", "RELAXO", "PAGE INDUSTRIES", "BAJAJ FINANCE",
+        "HISTORICAL_MULTIBAGGER_ARCHIVE", "stock_name",
+    },
+    # Random-feature overfit/leak test: shuffling real feature *columns* to
+    # verify the model can't beat chance on noise. This is a model-integrity
+    # test, not a data fallback — the values being permuted are real.
+    "backtest/overfit_checks.py": {"rng.permutation"},
+    # Subsamples real out-of-fold rows for SHAP-speed reasons (TabNet
+    # feature-selection validator) — not data fabrication.
+    "systems/ml_signal_engine/models/training/feature_selection.py": {"rng.choice"},
+    # Module docstring *mentioning* removed code for historical context
+    # ("a previous version ... fabricated fake OOF via `rng.dirichlet()`/
+    # `rng.choice()` ... removed") — the call sites themselves are gone;
+    # this is prose, not a live data-fabrication path.
+    "backtest/run_phase3_backtest.py": {"rng.dirichlet()`/`rng.choice()`"},
+    # Monte Carlo DCF (SPEC-VAL-004): sampling WACC around its computed base
+    # value is the model's actual purpose (uncertainty propagation), not a
+    # fabricated-data fallback — base_wacc itself comes from real financials.
+    "systems/damodaran_valuation/scenarios/monte_carlo.py": {"self._rng.normal"},
+    # Downsamples real (ticker, date) training pairs when there are more than
+    # max_samples — not data fabrication, just row selection for memory limits.
+    "systems/ml_signal_engine/models/deep/tft_model.py": {"rng.choice"},
+}
+
+# Keyword-only allowlist (placeholder/synthetic/fake/dummy as a word, where
+# the surrounding code is legitimate — e.g. a documented archive entry, an
+# intentional no-op, or an honest-NaN explanatory comment).
+KEYWORD_ALLOWLIST: dict[str, set[str]] = {
+    "systems/ml_signal_engine/models/multibagger/analogue_miner.py": {
+        "SYNTHETIC", "synthetic"
+    },
+    "systems/ml_signal_engine/models/forensic/forensic_ml.py": {
+        "KNOWN_FRAUD_ARCHIVE", "KNOWN_CLEAN_ARCHIVE", "synthetic", "Synthetic",
+        # Real, named historical fraud case (Satyam, 2009) in the
+        # documented fraud archive — "fake cash" describes the real fraud
+        # type, not a fabricated-data stand-in.
+        "Fictitious revenue + fake cash",
+    },
+    "systems/ml_signal_engine/inference/retrain_phase2.py": {"synthetic"},
+    "systems/ml_signal_engine/inference/train_all_phase1.py": {"synthetic"},
+    "datastore/api/db.py": {"pass"},
+    "features/pattern_scores.py": {"pass"},
+    # Historical note: a since-fixed schema column used to be typed as a
+    # placeholder VARCHAR; the real-valued column has shipped since P1.6.
+    "datastore/schema/create_signals.py": {"Phase 0.2 placeholder typed"},
+    # DI-design comment ("tests can substitute a fake") — describes test
+    # injection capability, not a production data fallback.
+    "features/matrix_builder.py": {"tests can substitute a fake"},
+    # Detects an unedited literal ".env placeholder" string in a real
+    # credentials file to decide whether to fall back to OAuth2 login —
+    # the placeholder being checked for is the user's own un-filled
+    # template value, not fabricated market data.
+    "ingestion/scrapers/fyers_backfill.py": {
+        "catching both an unedited", "placeholder value — falling back",
+    },
+    # Describes a one-off incident where a synthetic test fixture (not
+    # production data) crashed this function; the fix (excluding before
+    # scoring) is real and already implemented above this docstring.
+    "systems/ml_signal_engine/inference/daily_inference.py": {
+        "a synthetic, unrealistic"
+    },
+    # Module docstring describing now-removed code for historical context
+    # (same justification as this file's SYNTHETIC_DATA_ALLOWLIST entry
+    # above) — the fabrication itself is gone, this is prose about it.
+    "backtest/run_phase3_backtest.py": {"fabricated fake OOF via"},
+    # Damodaran's own valuation terminology ("synthetic rating" = a
+    # bond-rating proxy derived from a company's interest-coverage ratio,
+    # per his published ratings-spread table) — not a fabricated-data
+    # stand-in.
+    "systems/damodaran_valuation/dcf/wacc.py": {"synthetic rating"},
+}
+
+
+def _is_allowlisted(rel_path: str, line: str, table: dict[str, set[str]]) -> bool:
+    markers = table.get(rel_path)
+    if not markers:
+        return False
+    return any(marker in line for marker in markers)
+
+
+def test_no_unallowlisted_synthetic_data_generation():
+    violations = []
+    for path in _iter_py_files(SCAN_DIRS):
+        rel = _rel(path)
+        if rel.startswith("tests" + str(Path("/"))):
+            continue
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _SYNTHETIC_DATA_RE.search(line) and not _is_allowlisted(rel, line, SYNTHETIC_DATA_ALLOWLIST):
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    assert not violations, (
+        "Found numpy/rng data-generation calls outside the documented allowlist "
+        "(CLAUDE.md Absolute Rule 6 — no synthetic data, ever, no fallback). "
+        "Either remove the fabricated-data fallback (raise instead, per "
+        "backtest/run_phase1_backtest.py's _fetch_real_benchmark() pattern) or "
+        "add a narrowly-scoped, justified entry to SYNTHETIC_DATA_ALLOWLIST "
+        "referencing a BuildLog.md \"Real data sourcing\" section:\n"
+        + "\n".join(violations)
+    )
+
+
+def test_no_unallowlisted_stub_keywords():
+    violations = []
+    for path in _iter_py_files(SCAN_DIRS):
+        rel = _rel(path)
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        lines = text.splitlines()
+        for lineno, line in enumerate(lines, start=1):
+            if not _KEYWORD_RE.search(line):
+                continue
+            # Negation phrasing ("there is no synthetic-data fallback")
+            # routinely wraps across a line break in this codebase's
+            # prose-style comments — check the keyword's line joined with
+            # the line before and after it, not just the line alone.
+            window = " ".join(lines[max(0, lineno - 2):lineno + 1])
+            if _NEGATION_RE.search(window):
+                continue
+            if not _is_allowlisted(rel, line, KEYWORD_ALLOWLIST):
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    assert not violations, (
+        "Found 'placeholder'/'synthetic'/'fake'/'dummy' outside the documented "
+        "allowlist. Either it's a genuine fabricated-data stand-in (fix it, "
+        "per CLAUDE.md Absolute Rule 6) or it's benign and needs a narrow, "
+        "justified entry in KEYWORD_ALLOWLIST:\n" + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2. Stub function bodies (NotImplementedError / bare pass / Ellipsis-only)
+# ---------------------------------------------------------------------------
+
+def _is_stub_body(body: list[ast.stmt]) -> str | None:
+    stmts = [s for s in body if not isinstance(s, ast.Expr) or not isinstance(s.value, ast.Constant)]
+    if not stmts:
+        return "empty/docstring-only body"
+    if len(stmts) == 1:
+        stmt = stmts[0]
+        if isinstance(stmt, ast.Pass):
+            return "bare `pass` body"
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
+            return "`...`-only body"
+        if isinstance(stmt, ast.Raise) and isinstance(stmt.exc, (ast.Call, ast.Name)):
+            name = stmt.exc.func.id if isinstance(stmt.exc, ast.Call) and isinstance(stmt.exc.func, ast.Name) else (
+                stmt.exc.id if isinstance(stmt.exc, ast.Name) else ""
+            )
+            if name == "NotImplementedError":
+                return "raises NotImplementedError"
+    return None
+
+
+# function qualnames (module_rel_path::FunctionName) already known and
+# tracked as legitimately-incomplete scaffolding (BuildLog.md / phase
+# delivery plan Weeks 33-38 — TA and Damodaran systems are 0% built).
+STUB_FUNCTION_ALLOWLIST: set[str] = set()
+
+# Whole packages that are intentionally-empty scaffolding today (Weeks
+# 33-38 of alphalens_docs/11_phase_delivery_plan.md — not yet built). Listed
+# explicitly so a NEW empty package elsewhere is still caught.
+KNOWN_STUB_PACKAGES = {
+    "systems/fundamental_analysis",
+}
+
+
+def test_no_unallowlisted_stub_function_bodies():
+    violations = []
+    for path in _iter_py_files(SCAN_DIRS):
+        rel = _rel(path)
+        if set(Path(rel).parts) & STUB_CHECK_EXCLUDE_DIRS:
+            continue
+        if any(rel.startswith(pkg) for pkg in KNOWN_STUB_PACKAGES):
+            continue
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                reason = _is_stub_body(node.body)
+                if reason is None:
+                    continue
+                qualname = f"{rel}::{node.name}"
+                if qualname in STUB_FUNCTION_ALLOWLIST:
+                    continue
+                violations.append(f"{rel}:{node.lineno}: def {node.name}() — {reason}")
+    assert not violations, (
+        "Found stub function bodies (bare pass / Ellipsis / unconditional "
+        "NotImplementedError) outside contracts/ (where that's the intended "
+        "abstract-interface pattern) and outside the known-incomplete "
+        "TA/Damodaran/FA system scaffolds. Implement it, delete it, or add a "
+        "justified entry to STUB_FUNCTION_ALLOWLIST:\n" + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. Empty package scaffolds under systems/ — must match the known set
+# ---------------------------------------------------------------------------
+
+def _package_has_real_code(pkg_dir: Path) -> bool:
+    """True if any .py file under pkg_dir (recursively) has executable
+    statements beyond a module docstring."""
+    for py_file in pkg_dir.rglob("*.py"):
+        if EXCLUDE_DIR_PARTS & set(py_file.parts):
+            continue
+        try:
+            tree = ast.parse(py_file.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        body = tree.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]  # drop module docstring
+        if body:
+            return True
+    return False
+
+
+def test_empty_system_scaffolds_match_known_set():
+    """
+    Fails if a NEW empty (__init__.py-only) package appears under systems/
+    that isn't already tracked in KNOWN_STUB_PACKAGES — and reminds you to
+    shrink KNOWN_STUB_PACKAGES (here AND in test_no_unallowlisted_stub_
+    function_bodies above) once a listed system actually gets implemented.
+    """
+    systems_dir = REPO_ROOT / "systems"
+    empty_packages = set()
+    for child in sorted(systems_dir.iterdir()):
+        if not child.is_dir() or EXCLUDE_DIR_PARTS & set(child.parts):
+            continue
+        if not _package_has_real_code(child):
+            empty_packages.add(f"systems/{child.name}")
+
+    unexpected = empty_packages - KNOWN_STUB_PACKAGES
+    assert not unexpected, f"New empty system scaffold(s) not yet tracked: {unexpected}"
+
+    now_implemented = KNOWN_STUB_PACKAGES - empty_packages
+    assert not now_implemented, (
+        f"{now_implemented} now has real code — remove from KNOWN_STUB_PACKAGES "
+        "in this file (both occurrences) so stub-body scanning covers it again."
+    )

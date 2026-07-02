@@ -89,12 +89,12 @@ _MONTH_MAP = {
 
 # ── Quarterly field mapping  (Trendlyne key → DB column) ─────────────────────
 _Q_FIELDS: Dict[str, str] = {
-    "SR_Q":       "revenue",          # Operating Revenues Qtr (INR Cr)
-    "EBIDT_Q":    "ebitda",           # EBITDA Qtr (INR Cr)
-    "OPMPCT_Q":   "operating_margin", # Operating Profit Margin %
-    "NP_Q":       "pat",              # Net Profit Qtr (INR Cr)
-    "EPS_Q":      "eps",              # Basic EPS Qtr (INR)
-    "NETPCT_Q":   "net_margin",       # Net Profit Margin %
+    "SR_Q": "revenue",  # Operating Revenues Qtr (INR Cr)
+    "EBIDT_Q": "ebitda",  # EBITDA Qtr (INR Cr)
+    "OPMPCT_Q": "operating_margin",  # Operating Profit Margin %
+    "NP_Q": "pat",  # Net Profit Qtr (INR Cr)
+    "EPS_Q": "eps",  # Basic EPS Qtr (INR)
+    "NETPCT_Q": "net_margin",  # Net Profit Margin %
     "BVSH_Q":     "book_value_per_share",
     "DEP_Q":      "depreciation",
 }

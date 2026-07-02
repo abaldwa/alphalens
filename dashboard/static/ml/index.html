@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.ML — Daily Insights</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/shell.css">
+</head>
+<body>
+<div class="app-bar" id="app-bar"></div>
+<div class="sub-tabs" id="sub-tabs"></div>
+<div class="page">
+  <div class="sec">
+    <div id="regime-strip"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div id="alerts"></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Top Buy Signals</span><span class="sec-sub">Sorted by buy probability</span></div>
+    <div id="top-buys"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="grid grid-2">
+    <div class="sec">
+      <div class="sec-head"><span class="sec-title" style="font-size:14px">Multibagger Watchlist</span><a href="multibagger.html" class="sec-action">View All &rarr;</a></div>
+      <div id="watchlist-mini"><div class="loading">Loading…</div></div>
+    </div>
+    <div class="sec">
+      <div class="sec-head"><span class="sec-title" style="font-size:14px">Active Positions</span><a href="positions.html" class="sec-action">View All &rarr;</a></div>
+      <div id="positions-mini"><div class="loading">Loading…</div></div>
+    </div>
+  </div>
+</div>
+<script src="../js/api.js"></script>
+<script src="../js/shell.js"></script>
+<script src="../js/empty_state.js"></script>
+<script src="../js/crosslink.js"></script>
+<script src="js/hub.js"></script>
+</body>
+</html>

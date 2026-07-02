@@ -22,6 +22,7 @@ import pytest
 
 from backtest.portfolio import PortfolioSimulator
 from config.settings import EXIT_REDUCE_THRESHOLD, EXIT_URGENT_THRESHOLD
+from scripts.paper_trading_tracker import PaperTradingTracker
 from systems.ml_signal_engine.models.exit.exit_signal import (
     EXIT_TYPES,
     PND_EXIT_SCORE_THRESHOLD,
@@ -195,6 +196,55 @@ class TestExitSignalModelPersistence:
         assert meta["name"] == "ExitSignalModel"
         assert meta["exit_types"] == EXIT_TYPES
         assert meta["training_samples"] == len(X)
+
+
+class TestLoadExitTrainingDataExitDate:
+    """
+    Regression tests for the "Paper Trading Logic Fix" (BuildLog.md):
+    load_exit_training_data_from_db() used to compute exit_date from
+    exit_time (a time-of-day string, not a date), silently mis-dating
+    every multi-day-hold trade and corrupting days_held/duration — the
+    exact label this loader exists to build.
+    """
+
+    def _write_trade(self, tracker, **overrides):
+        row = dict(
+            date="2024-01-02", ticker="TICK", signal_type="BUY",
+            entry_price=100.0, quantity=10, entry_time="09:15:00",
+            exit_price=110.0, exit_time="15:30:00", exit_date="2024-01-12",
+            exit_type="target_achieved", pnl=100.0, pnl_pct=0.10,
+        )
+        row.update(overrides)
+        tracker.log_trade(**row)
+
+    def test_days_held_computed_from_exit_date_not_exit_time(self):
+        with tempfile.TemporaryDirectory() as d:
+            tracker = PaperTradingTracker(logs_dir=d)
+            self._write_trade(tracker)
+            X, urgency, exit_type, duration, event = load_exit_training_data_from_db(
+                logs_dir=d, min_closed_positions=1
+            )
+            # 2024-01-02 -> 2024-01-12 is 10 calendar days. The old buggy
+            # code parsed exit_time ("15:30:00") as a date and would have
+            # produced days_held clipped to 1 (same-day) instead.
+            assert duration.iloc[0] == 10.0
+            assert X["days_held"].iloc[0] == 10.0
+
+    def test_logged_exit_type_used_when_present_and_valid(self):
+        with tempfile.TemporaryDirectory() as d:
+            tracker = PaperTradingTracker(logs_dir=d)
+            self._write_trade(tracker, exit_type="momentum_exhaustion", pnl_pct=0.30)
+            _, _, exit_type, _, _ = load_exit_training_data_from_db(logs_dir=d, min_closed_positions=1)
+            # pnl_pct=0.30 would fall-back to 'target_achieved' under the
+            # old pnl-derived heuristic — the real logged value must win.
+            assert exit_type.iloc[0] == "momentum_exhaustion"
+
+    def test_missing_exit_type_falls_back_to_pnl_derived_heuristic(self):
+        with tempfile.TemporaryDirectory() as d:
+            tracker = PaperTradingTracker(logs_dir=d)
+            self._write_trade(tracker, exit_type=None, pnl_pct=0.30)
+            _, _, exit_type, _, _ = load_exit_training_data_from_db(logs_dir=d, min_closed_positions=1)
+            assert exit_type.iloc[0] == "target_achieved"
 
 
 class TestPortfolioSimulatorExitAction:

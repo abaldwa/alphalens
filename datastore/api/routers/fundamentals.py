@@ -33,9 +33,32 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from config.settings import DUCKDB_PATH
+from config.universe import load_universe_raw
 from datastore.api.db import get_duckdb_connection
 from datastore.api.pit import enforce_pit_fundamentals
-from datastore.api.schemas import FundamentalsResponse, FundamentalsRow, FundamentalsWrite, FundamentalsWriteResult
+from datastore.api.schemas import (
+    FAPeerRow,
+    FAPeersResponse,
+    FARatiosResponse,
+    FAScoresResponse,
+    FAScreenerResponse,
+    FASectorResponse,
+    FundamentalsResponse,
+    FundamentalsRow,
+    FundamentalsWrite,
+    FundamentalsWriteResult,
+)
+from datastore.api.utils.feature_store import read_feature_day, read_feature_row, resolve_date
+from features.fundamental import RATIO_FEATURES, STALENESS_FEATURES
+from features.fundamental_composites import (
+    SCREENER_PRESETS,
+    growth_score,
+    management_quality_score,
+    matches_screener_preset,
+    quality_score,
+    select_peers,
+)
+from features.governance import GOVERNANCE_FEATURES
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +124,148 @@ async def get_fundamentals_history_by_quarters(
 
     data = [FundamentalsRow(**row) for row in df.to_dict(orient="records")]
     return FundamentalsResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))
+
+
+# ===== SPEC-FA-008: Fundamental Analysis API scaffolding over the already-
+# computed sector-relative z-scored ratios (features/fundamental.py) and
+# governance features (features/governance.py), both already merged into
+# the daily feature Parquet by features/matrix_builder.py — see
+# datastore/api/utils/feature_store.py. Registered before the bare
+# /{ticker} and /screener before any dynamic single-segment route, for the
+# same route-ordering reason /{ticker}/history is registered above
+# /{ticker} (this file's own earlier comment; FastAPI matches by
+# registration order, not specificity). =====
+@router.get("/screener", response_model=FAScreenerResponse)
+async def get_fundamental_screener(
+    preset: str = Query(..., description=f"One of: {', '.join(SCREENER_PRESETS.keys())}"),
+) -> FAScreenerResponse:
+    """Tickers matching a named screener preset, evaluated against the
+    latest day's sector-relative z-scored ratios — "quality compounder"
+    etc. mean above/below sector peers, not an absolute % threshold (the
+    feature store only carries z-scores, see features/fundamental.py)."""
+    if preset not in SCREENER_PRESETS:
+        raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'. Valid: {list(SCREENER_PRESETS.keys())}")
+
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        return FAScreenerResponse(preset=preset)
+
+    panel = read_feature_day(resolved_date)
+    if panel is None:
+        return FAScreenerResponse(preset=preset, date=resolved_date)
+
+    matched = [
+        row["ticker"] for _, row in panel.iterrows()
+        if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
+    ]
+    return FAScreenerResponse(preset=preset, date=resolved_date, tickers=matched)
+
+
+@router.get("/sector/{sector}", response_model=FASectorResponse)
+async def get_fundamental_sector(sector: str) -> FASectorResponse:
+    """Sector aggregate of the standard ratio set (real, computed by
+    averaging the day's sector-relative z-scores for tickers in this
+    sector). Sector-*unique* metrics (GNPA for banks, ANDA for pharma —
+    the sector_specific_metric_1-6 columns) are never actually computed
+    anywhere in this codebase, so they're not included — see this
+    response's `note` field."""
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        return FASectorResponse(sector=sector)
+
+    panel = read_feature_day(resolved_date)
+    if panel is None:
+        return FASectorResponse(sector=sector, date=resolved_date)
+
+    universe = load_universe_raw()
+    sector_map = dict(zip(universe["ticker"], universe["sector"]))
+    panel = panel.copy()
+    panel["sector"] = panel["ticker"].map(lambda t: sector_map.get(t, "UNKNOWN"))
+    sector_rows = panel[panel["sector"] == sector]
+    if sector_rows.empty:
+        return FASectorResponse(sector=sector, date=resolved_date, ticker_count=0)
+
+    avg_ratios = {c: (None if pd.isna(sector_rows[c]).all() else float(sector_rows[c].mean())) for c in RATIO_FEATURES if c in sector_rows.columns}
+    return FASectorResponse(sector=sector, date=resolved_date, ticker_count=len(sector_rows), avg_ratios=avg_ratios)
+
+
+@router.get("/{ticker}/ratios", response_model=FARatiosResponse)
+async def get_fundamental_ratios(ticker: str) -> FARatiosResponse:
+    """The 27 sector-relative z-scored ratios + 3 staleness flags for one
+    ticker, already computed and sitting in the daily feature Parquet."""
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        return FARatiosResponse(ticker=ticker)
+
+    row = read_feature_row(ticker, resolved_date)
+    if row is None:
+        return FARatiosResponse(ticker=ticker, date=resolved_date)
+
+    cols = RATIO_FEATURES + STALENESS_FEATURES
+    ratios = {c: (None if c not in row or pd.isna(row[c]) else float(row[c])) for c in cols}
+    return FARatiosResponse(ticker=ticker, date=resolved_date, available=True, ratios=ratios)
+
+
+@router.get("/{ticker}/peers", response_model=FAPeersResponse)
+async def get_fundamental_peers(
+    ticker: str, k: int = Query(5, ge=1, le=20, description="Number of peers")
+) -> FAPeersResponse:
+    """Real peer-selection (was an unimplemented systems/fundamental_analysis/
+    peers/ stub) — same sector, ranked by market-cap proximity, then each
+    peer's already-computed sector-relative ratios."""
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        return FAPeersResponse(ticker=ticker)
+
+    panel = read_feature_day(resolved_date)
+    if panel is None:
+        return FAPeersResponse(ticker=ticker, date=resolved_date)
+
+    universe = load_universe_raw()
+    sector_map = dict(zip(universe["ticker"], universe["sector"]))
+    mcap_map = dict(zip(universe["ticker"], universe["market_cap_cr"]))
+    peer_tickers = select_peers(ticker, panel, sector_map, mcap_map, k=k)
+
+    peer_rows = []
+    for t in peer_tickers:
+        prow = panel[panel["ticker"] == t]
+        if prow.empty:
+            continue
+        r = prow.iloc[0]
+        peer_rows.append(FAPeerRow(
+            ticker=t,
+            roe=None if pd.isna(r.get("roe")) else float(r["roe"]),
+            roce=None if pd.isna(r.get("roce")) else float(r["roce"]),
+            debt_to_equity=None if pd.isna(r.get("debt_to_equity")) else float(r["debt_to_equity"]),
+            pe_ratio=None if pd.isna(r.get("pe_ratio")) else float(r["pe_ratio"]),
+        ))
+
+    return FAPeersResponse(ticker=ticker, date=resolved_date, sector=sector_map.get(ticker), peers=peer_rows)
+
+
+@router.get("/{ticker}/scores", response_model=FAScoresResponse)
+async def get_fundamental_scores(ticker: str) -> FAScoresResponse:
+    """Quality/growth/management-quality composite scores
+    (features/fundamental_composites.py) — net-new small functions over
+    already-computed ratio/governance values, see that module's docstring."""
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        return FAScoresResponse(ticker=ticker)
+
+    row = read_feature_row(ticker, resolved_date)
+    if row is None:
+        return FAScoresResponse(ticker=ticker, date=resolved_date)
+
+    ratios = {c: row.get(c) for c in RATIO_FEATURES if c in row.index}
+    governance = {c: row.get(c) for c in GOVERNANCE_FEATURES if c in row.index}
+
+    return FAScoresResponse(
+        ticker=ticker,
+        date=resolved_date,
+        quality_score=quality_score(ratios),
+        growth_score=growth_score(ratios),
+        management_quality_score=management_quality_score(governance),
+    )
 
 
 @router.get("/{ticker}", response_model=FundamentalsResponse)

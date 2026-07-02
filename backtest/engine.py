@@ -12,9 +12,10 @@ BacktestIntegrityChecker run automatically after every fold.
 
 The P&D detector and exit model are passed in already trained (SPEC-
 MODEL-006's P&D pre-filter and M-07's exit model are both fit on their
-own synthetic archives, independent of the specific OHLCV universe being
-backtested — same as systems/ml_signal_engine/inference/train_all_
-phase1.py's existing pattern). The signal model and meta-labeler ARE
+own real historical archives — load_pnd_training_data_from_db() /
+load_exit_training_data_from_db() — independent of the specific OHLCV
+universe being backtested, same as systems/ml_signal_engine/inference/
+train_all_phase1.py's existing pattern). The signal model and meta-labeler ARE
 walk-forward retrained per fold (via WalkForwardValidator, P1.4) since
 fold-to-fold generalization of the entry signal is the actual subject of
 this backtest.
@@ -50,20 +51,21 @@ logger = logging.getLogger(__name__)
 TRADING_DAYS_PER_YEAR = 252
 # Position-context columns ExitSignalModel.predict_full() expects, matching
 # exit_signal.load_exit_training_data_from_db()'s schema exactly so a model
-# trained on that synthetic archive can score real backtest positions.
+# trained on that real historical archive can score real backtest positions.
 EXIT_CONTEXT_COLUMNS = [
     "entry_price", "days_held", "unrealised_pnl_pct", "days_to_next_earnings",
     "drawdown_from_peak", "momentum_3m", "pnd_score", "hmm_regime",
 ]
-# No real earnings calendar ingested yet (Phase 1 gap) — a deterministic
-# per-ticker placeholder keeps days_to_next_earnings stable across calls
-# without fabricating a fake "live" data source.
-_DAYS_TO_EARNINGS_RANGE = (1, 90)
-# No per-row HMM regime feature wired into this prototype's exit-context
-# block (the per-day HMM fit train_all_phase1.py builds is market-wide,
-# not joined into the per-ticker feature panel used here) — held at a
-# fixed neutral placeholder, documented rather than silently defaulted.
-_HMM_REGIME_PLACEHOLDER = 1.0
+# No real earnings calendar ingested yet (Phase 1 gap, see BuildLog.md
+# "Real data sourcing — earnings calendar") and no per-row HMM regime
+# wired into this prototype's exit-context block (the per-day HMM fit
+# train_all_phase1.py builds is market-wide, not joined into the
+# per-ticker feature panel used here, see BuildLog.md "Real data sourcing
+# — HMM regime in backtest exit context"). Both stay honestly NaN per
+# CLAUDE.md Absolute Rule 6 (no fabricated stand-in values) — LightGBM
+# (exit_signal.py's ExitSignalModel) handles NaN features natively, same
+# convention exit_signal.py itself already uses for days_to_next_earnings
+# at live-scoring time (see exit_signal.py's load_exit_training_data_from_db).
 
 
 @dataclass
@@ -92,6 +94,11 @@ class BacktestResults:
     integrity_passed: bool
     integrity_detail: Dict[str, Any] = field(default_factory=dict)
     generated_at: Any = field(default_factory=now_ist)
+    # SPEC-MODEL-003 (M-13 stacking): per-row out-of-fold signal-model
+    # predictions, populated only when run_full_backtest(collect_oof=True)
+    # is used (see scripts/train_stacking.py). None for every other caller
+    # (run_phase1/2/3_backtest.py) — default keeps their behavior unchanged.
+    oof_df: Optional[pd.DataFrame] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -173,12 +180,6 @@ def compute_fold_metrics(
     }
 
 
-def _days_to_earnings_placeholder(tickers: pd.Index) -> pd.Series:
-    lo, hi = _DAYS_TO_EARNINGS_RANGE
-    values = [lo + (abs(hash(t)) % (hi - lo)) for t in tickers]
-    return pd.Series(values, index=tickers, dtype=float)
-
-
 class BacktestEngine:
     """SPEC-BT-001..004: walk-forward backtest harness for the Phase 1 signal stack."""
 
@@ -229,9 +230,9 @@ class BacktestEngine:
         # model" position as the existing P&D pre-filter.
         self.watchlist_tickers = watchlist_tickers
         # universe_tickers / historical_tickers both default to the ohlcv
-        # panel's own ticker set (existing synthetic-data behavior, where
-        # there's no meaningful distinction between "currently investable"
-        # and "ever observed"). Real-data callers should pass both
+        # panel's own ticker set (the degenerate case where there's no
+        # meaningful distinction between "currently investable" and "ever
+        # observed" — both real data, just under-specified). Callers should pass both
         # explicitly and DIFFERENTLY — e.g. universe_tickers=config.
         # universe.get_tickers() (the curated, currently-investable set)
         # and historical_tickers=the full set of tickers the DataStore has
@@ -248,30 +249,23 @@ class BacktestEngine:
         self._pnd_features = compute_pnd_features(ohlcv).set_index(["date", "ticker"])
         self._price_lookup = ohlcv.set_index(["date", "ticker"])["close"]
         self._momentum = self._build_momentum()
-        self._days_to_earnings = _days_to_earnings_placeholder(pd.Index(sorted(ohlcv["ticker"].unique())))
 
     def _build_dataset(self) -> pd.DataFrame:
-        dates = pd.DatetimeIndex(sorted(self.ohlcv["date"].unique()))
-        if self.benchmark is not None:
-            # Real benchmark supplied by the caller (e.g. run_phase1_backtest.py
-            # fetching NIFTYBEES/NIF100BEES/MONIFTY500 via DataStoreClient).
-            benchmark = self.benchmark
-        else:
-            # No real benchmark available — synthetic stand-in so Category 7
-            # (relative-strength) features populate with *something* rather
-            # than going permanently NaN. Same documented pattern as P1.5's
-            # train_all_phase1.py.
-            rng = np.random.default_rng(999)
-            benchmark = pd.DataFrame(
-                {
-                    "date": dates,
-                    **{
-                        f"{name}_close": 100 * np.cumprod(1 + rng.normal(0.0002, 0.01, len(dates)))
-                        for name in ("nifty50", "nifty100", "nifty500")
-                    },
-                }
+        if self.benchmark is None:
+            # CLAUDE.md Absolute Rule 6: no synthetic/procedurally-generated
+            # data, ever, and no fallback to it. Callers must fetch a real
+            # benchmark (e.g. run_phase1_backtest.py's _fetch_real_benchmark()
+            # via NIFTYBEES/NIF100BEES/MONIFTY500) — there is no synthetic
+            # stand-in here.
+            raise ValueError(
+                "BacktestEngine requires a real benchmark DataFrame (NIFTYBEES/NIF100BEES/"
+                "MONIFTY500 OHLCV via DataStoreClient) — pass benchmark=... explicitly; "
+                "there is no synthetic-benchmark fallback. See run_phase1_backtest.py's "
+                "_fetch_real_benchmark()."
             )
-        features = compute_technical_features(self.ohlcv, benchmark)
+        # Real benchmark supplied by the caller (e.g. run_phase1_backtest.py
+        # fetching NIFTYBEES/NIF100BEES/MONIFTY500 via DataStoreClient).
+        features = compute_technical_features(self.ohlcv, self.benchmark)
 
         atr_parts = []
         for ticker, g in self.ohlcv.sort_values(["ticker", "date"]).groupby("ticker", sort=False):
@@ -358,11 +352,11 @@ class BacktestEngine:
                 {
                     "ticker": t, "entry_price": pos.entry_price, "days_held": float(days_held),
                     "unrealised_pnl_pct": (price - pos.entry_price) / pos.entry_price,
-                    "days_to_next_earnings": self._days_to_earnings.get(t, 45.0),
+                    "days_to_next_earnings": np.nan,
                     "drawdown_from_peak": (price - pos.peak_price) / pos.peak_price if pos.peak_price else 0.0,
                     "momentum_3m": 0.0 if pd.isna(momentum) else momentum,
                     "pnd_score": pnd_scores.get(t, 0.0),
-                    "hmm_regime": _HMM_REGIME_PLACEHOLDER,
+                    "hmm_regime": np.nan,
                 }
             )
         exit_ctx = pd.DataFrame(rows).set_index("ticker")[EXIT_CONTEXT_COLUMNS]
@@ -427,7 +421,8 @@ class BacktestEngine:
         return {"passed": passed, "detail": detail}
 
     def run_full_backtest(
-        self, model_name: str, from_date: Optional[Any] = None, to_date: Optional[Any] = None, folds: int = 5
+        self, model_name: str, from_date: Optional[Any] = None, to_date: Optional[Any] = None, folds: int = 5,
+        collect_oof: bool = False,
     ) -> BacktestResults:
         """
         Run the full P&D -> Signal -> MetaLabel -> Exit walk-forward
@@ -442,6 +437,13 @@ class BacktestEngine:
         folds : int
             Requested number of walk-forward folds; reduced automatically
             if the date range doesn't span enough distinct years.
+        collect_oof : bool
+            When True, accumulate each fold's test-set signal-model
+            predictions (date, ticker, fold, y_true, proba_sell/hold/buy)
+            into BacktestResults.oof_df — used by scripts/train_stacking.py
+            (M-13) to build genuine out-of-fold training data for the
+            stacking meta-learner. Default False preserves the exact
+            existing behavior/return shape for all other callers.
 
         Returns
         -------
@@ -470,6 +472,7 @@ class BacktestEngine:
 
         fold_results: List[FoldResult] = []
         integrity: Dict[str, Any] = {"passed": False, "detail": {}}
+        oof_rows: List[pd.DataFrame] = []
 
         for i, (train_fold, test_fold) in enumerate(date_folds):
             train_df, val_df = validator.get_train_validation_split(train_fold, val_fraction=0.2)
@@ -491,6 +494,22 @@ class BacktestEngine:
                 meta_model.train(meta_X[meta_mask], meta_labels[meta_mask])
             else:
                 logger.warning("fold %d: too few Act-labeled rows to train MetaLabeler — entries unfiltered by meta", i)
+
+            if collect_oof:
+                proba = signal_model.predict_proba(test_fold[CORE_TECHNICAL_FEATURES])
+                oof_rows.append(
+                    pd.DataFrame(
+                        {
+                            "date": test_fold["date"].to_numpy(),
+                            "ticker": test_fold["ticker"].to_numpy(),
+                            "fold": i,
+                            "y_true": test_fold["_label"].to_numpy(),
+                            "proba_sell": proba["sell"].to_numpy(),
+                            "proba_hold": proba["hold"].to_numpy(),
+                            "proba_buy": proba["buy"].to_numpy(),
+                        }
+                    )
+                )
 
             portfolio = self._simulate(test_fold, signal_model, meta_model)
             metrics = compute_fold_metrics(portfolio.equity_curve, portfolio.trades_df, self.initial_capital)
@@ -516,8 +535,11 @@ class BacktestEngine:
             "total_trades": int(sum(f.n_trades for f in fold_results)),
         }
 
+        oof_df = pd.concat(oof_rows, ignore_index=True) if oof_rows else None
+
         return BacktestResults(
             model_name=model_name, from_date=from_date, to_date=to_date,
             fold_results=fold_results, aggregate=aggregate,
             integrity_passed=integrity["passed"], integrity_detail=integrity["detail"],
+            oof_df=oof_df,
         )

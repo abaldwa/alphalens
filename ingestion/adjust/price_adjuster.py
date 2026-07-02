@@ -64,9 +64,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTINUITY_GAP_PCT = 1.0   # SPEC-PIPE-002
-ADJ_FACTOR_TOLERANCE   = 1e-9
-_GUARD_ZERO            = 1e-12  # prevents division-by-zero in factor recovery
+MAX_CONTINUITY_GAP_PCT = 1.0  # SPEC-PIPE-002
+ADJ_FACTOR_TOLERANCE = 1e-9
+_GUARD_ZERO = 1e-12  # prevents division-by-zero in factor recovery
 
 
 def _dividend_price_factor(conn, ticker: str, ex_date: str, dividend: float) -> float:
@@ -197,7 +197,7 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
         v_factors.append(vf)
 
     actions_df["price_factor"] = p_factors
-    actions_df["vol_factor"]   = v_factors
+    actions_df["vol_factor"] = v_factors
 
     valid = (np.array(p_factors) > 0) & (np.array(v_factors) > 0)
     if not valid.all():
@@ -209,21 +209,21 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
 
     # Vectorised cumulative factor computation ---------------------------------
     # affects[i, j] = True  iff  row_date[i] < ex_date[j]
-    ex_dates  = pd.to_datetime(actions_df["ex_date"]).to_numpy()
-    p_arr     = actions_df["price_factor"].to_numpy(dtype="float64")
-    v_arr     = actions_df["vol_factor"].to_numpy(dtype="float64")
+    ex_dates = pd.to_datetime(actions_df["ex_date"]).to_numpy()
+    p_arr = actions_df["price_factor"].to_numpy(dtype="float64")
+    v_arr = actions_df["vol_factor"].to_numpy(dtype="float64")
     row_dates = pd.to_datetime(ohlcv_df["date"]).to_numpy()
 
-    affects         = row_dates[:, None] < ex_dates[None, :]
+    affects = row_dates[:, None] < ex_dates[None, :]
     target_price_adj = np.exp((affects * np.log(p_arr)[None, :]).sum(axis=1))
-    target_vol_adj   = np.exp((affects * np.log(v_arr)[None, :]).sum(axis=1))
+    target_vol_adj = np.exp((affects * np.log(v_arr)[None, :]).sum(axis=1))
 
     # Idempotency gate ---------------------------------------------------------
     cur_p = ohlcv_df["adj_factor"].fillna(1.0).to_numpy(dtype="float64")
     cur_v = ohlcv_df["vol_adj_factor"].fillna(1.0).to_numpy(dtype="float64")
 
-    price_needs  = ~np.isclose(cur_p, target_price_adj, atol=ADJ_FACTOR_TOLERANCE)
-    vol_needs    = ~np.isclose(cur_v, target_vol_adj,   atol=ADJ_FACTOR_TOLERANCE)
+    price_needs = ~np.isclose(cur_p, target_price_adj, atol=ADJ_FACTOR_TOLERANCE)
+    vol_needs = ~np.isclose(cur_v, target_vol_adj, atol=ADJ_FACTOR_TOLERANCE)
     needs_update = price_needs | vol_needs
 
     if not needs_update.any():
@@ -232,9 +232,9 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
         return
 
     # Build staging data -------------------------------------------------------
-    mask  = needs_update
-    tp    = target_price_adj[mask]
-    tv    = target_vol_adj[mask]
+    mask = needs_update
+    tp = target_price_adj[mask]
+    tv = target_vol_adj[mask]
     adj_f = cur_p[mask].clip(min=_GUARD_ZERO)
     vol_f = cur_v[mask].clip(min=_GUARD_ZERO)
 
@@ -246,15 +246,15 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
     # First run (adj_factor=1.0): raw = current, which IS the NSE price.
     # Re-run: ON CONFLICT keeps already-stored raw_* values; these computed
     # values are only used for the first INSERT and then ignored.
-    stage["raw_open"]  = stage["open"].to_numpy()  / adj_f
-    stage["raw_high"]  = stage["high"].to_numpy()  / adj_f
-    stage["raw_low"]   = stage["low"].to_numpy()   / adj_f
+    stage["raw_open"] = stage["open"].to_numpy() / adj_f
+    stage["raw_high"] = stage["high"].to_numpy() / adj_f
+    stage["raw_low"] = stage["low"].to_numpy() / adj_f
     stage["raw_close"] = stage["close"].to_numpy() / adj_f
     stage["raw_volume"] = np.round(
         stage["volume"].to_numpy(dtype="float64") / vol_f
     ).astype("int64")
 
-    dq     = stage["delivery_qty"]
+    dq = stage["delivery_qty"]
     has_dq = dq.notna()
     raw_dq = pd.array([pd.NA] * len(stage), dtype="Int64")
     if has_dq.any():
@@ -264,9 +264,9 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
     stage["raw_delivery_qty"] = raw_dq
 
     # New adjusted values: new = raw × target_factor
-    stage["new_open"]  = stage["raw_open"].to_numpy()  * tp
-    stage["new_high"]  = stage["raw_high"].to_numpy()  * tp
-    stage["new_low"]   = stage["raw_low"].to_numpy()   * tp
+    stage["new_open"] = stage["raw_open"].to_numpy() * tp
+    stage["new_high"] = stage["raw_high"].to_numpy() * tp
+    stage["new_low"] = stage["raw_low"].to_numpy() * tp
     stage["new_close"] = stage["raw_close"].to_numpy() * tp
     stage["new_volume"] = np.round(
         stage["raw_volume"].to_numpy(dtype="float64") * tv
@@ -280,9 +280,9 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
         ).astype("int64")
     stage["new_delivery_qty"] = new_dq
 
-    stage["new_adj_factor"]     = tp
+    stage["new_adj_factor"] = tp
     stage["new_vol_adj_factor"] = tv
-    stage["ticker_col"]         = ticker
+    stage["ticker_col"] = ticker
 
     # Step A: INSERT into ohlcv_ca_audit ---------------------------------------
     # raw_* columns preserved on conflict (first NSE value wins forever).
@@ -402,20 +402,20 @@ def check_price_continuity(
     if df.empty:
         return True
 
-    dates  = pd.to_datetime(df["date"]).to_numpy()
+    dates = pd.to_datetime(df["date"]).to_numpy()
     closes = df["close"].to_numpy(dtype="float64")
     all_ok = True
 
     for ex_date in ex_dates:
-        ex_dt           = pd.Timestamp(ex_date).to_datetime64()
-        before_idx      = np.searchsorted(dates, ex_dt) - 1
+        ex_dt = pd.Timestamp(ex_date).to_datetime64()
+        before_idx = np.searchsorted(dates, ex_dt) - 1
         on_or_after_idx = np.searchsorted(dates, ex_dt)
 
         if before_idx < 0 or on_or_after_idx >= len(dates):
             continue
 
         prev_close = closes[before_idx]
-        ex_close   = closes[on_or_after_idx]
+        ex_close = closes[on_or_after_idx]
         if prev_close == 0:
             continue
 

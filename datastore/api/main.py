@@ -32,20 +32,30 @@ existed since P0.2. Removed in favor of the real, PIT-enforcing router
 versions.
 """
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from config.settings import DATASTORE_API_HOST, DATASTORE_API_PORT
-from config.timezone import now_ist
+from config.settings import (
+    DATASTORE_API_HOST,
+    DATASTORE_API_PORT,
+    FEATURES_DAILY_DIR,
+    MODEL_REGISTRY_PATH,
+    PIPELINE_LOG_DB_PATH,
+)
+from datastore.api.db import get_sqlite_connection
 
 from . import schemas
 from .routers import (
     alerts,
+    backtest_reports,
     corporate_actions,
     fno,
     forensic,
@@ -53,10 +63,14 @@ from .routers import (
     governance,
     multibagger,
     ohlcv,
+    ops,
+    paper_trading,
     regime,
     shareholding,
     signals,
     system,
+    technical,
+    valuation,
     watchlist,
 )
 
@@ -122,6 +136,36 @@ app.include_router(shareholding.router)
 app.include_router(governance.router)
 app.include_router(corporate_actions.router)
 app.include_router(fno.router)
+# [AS BUILT, P3.x] paper_trading/backtest_reports added for the Automated
+# Daily Paper Trading + Web UI build (see plan: scalable-bubbling-reddy.md).
+app.include_router(paper_trading.router)
+app.include_router(backtest_reports.router)
+# [AS BUILT, SPEC-TA-004] Technical Analysis API scaffolding over the
+# already-computed features/{technical,advanced_technical,pattern_scores}.py
+# output — see plan: squishy-frolicking-whisper.md.
+app.include_router(technical.router)
+# [AS BUILT, SPEC-SCHED-014] Job Autoruns / Ops page — API scaffolding over
+# the pre-existing scheduler infrastructure (ingestion/scheduler/checkpoint.py,
+# pipeline_checkpoints/scheduler_heartbeats tables).
+app.include_router(ops.router)
+# [AS BUILT, 2026-07-02] Damodaran Valuation API — lifecycle classification,
+# FCFF/ExcessReturn/CommodityNormalized DCF, Monte Carlo, relative PE.
+# See systems/damodaran_valuation/ and tests/unit/test_damodaran.py (44 tests).
+app.include_router(valuation.router)
+
+# ===== Static UI (P3.x — zero-new-dependency web UI, StaticFiles ships with
+# Starlette/FastAPI already; rebuilt to the 27-screen/5-app prototype layout
+# per plan squishy-frolicking-whisper.md) — dashboard/static/index.html is a
+# 5-app launcher (ml/, technical/, fundamental/, valuation/, forensic/
+# subdirectories, one HTML+JS page per screen, light theme per
+# alphalens_docs/screens/SCREEN_INVENTORY.md). Only ml/ (5 screens) and
+# forensic/ (7 screens) are fully real-data; fundamental/ is partially real
+# (dashboard.html, management.html); technical/ and valuation/ render an
+# honest "not yet available" empty-state since their backends
+# (systems/technical_analysis/, systems/damodaran_valuation/) don't exist
+# yet — see dashboard/static/js/empty_state.js's BACKEND_STATUS map. All
+# served read-only from this same API process. =====
+app.mount("/ui", StaticFiles(directory="dashboard/static", html=True), name="ui")
 
 
 # ===== Features Endpoints =====
@@ -159,17 +203,54 @@ async def get_features(
         HTTPException 404: If ticker not found
         HTTPException 400: If date range or feature names invalid
     """
-    # TODO: Phase 1 — implement actual query
     if not ticker:
         raise HTTPException(status_code=400, detail="Ticker cannot be empty")
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="end_date must be >= start_date")
+
+    # Feature matrices are written one Parquet per calendar day under
+    # FEATURES_DAILY_DIR (features/matrix_builder.py's
+    # _save_feature_matrix()) — no DuckDB feature table exists, so this
+    # reads each day's file in range rather than issuing a SQL query.
+    rows: List[schemas.FeatureMatrixRow] = []
+    for day in pd.date_range(start_date, end_date, freq="D"):
+        day_path = FEATURES_DAILY_DIR / f"{day.date().isoformat()}.parquet"
+        if not day_path.exists():
+            continue
+        day_df = pd.read_parquet(day_path)
+        ticker_rows = day_df[day_df["ticker"] == ticker]
+        if ticker_rows.empty:
+            continue
+        row = ticker_rows.iloc[0]
+        all_feature_cols = [c for c in day_df.columns if c not in ("date", "ticker")]
+        cols = feature_names if feature_names else all_feature_cols
+        missing_cols = [c for c in cols if c not in day_df.columns]
+        if missing_cols:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown feature name(s): {missing_cols}"
+            )
+        feature_values = {c: (None if pd.isna(row[c]) else float(row[c])) for c in cols}
+        rows.append(
+            schemas.FeatureMatrixRow(
+                date=day,
+                ticker=ticker,
+                feature_values=feature_values,
+                missing_feature_count=sum(1 for v in feature_values.values() if v is None),
+            )
+        )
+
+    if not rows:
+        raise HTTPException(
+            status_code=404, detail=f"No feature data for {ticker} in [{start_date}, {end_date}]"
+        )
 
     return schemas.FeatureMatrixResponse(
         ticker=ticker,
         start_date=start_date,
         end_date=end_date,
         feature_names=feature_names or [],
-        data=[],
-        record_count=0,
+        data=rows,
+        record_count=len(rows),
     )
 
 
@@ -199,11 +280,55 @@ async def get_models(
     Raises:
         HTTPException 404: If model_name provided but not found
     """
-    # TODO: Phase 1 — implement actual query
+    # train_all_phase1.py / retrain_phase2.py write one entry per model to
+    # MODEL_REGISTRY_PATH (datastore/models/registry.json) keyed by model
+    # name — no DuckDB/SQLite table backs this, the JSON file IS the
+    # registry. Older entries (hmm_market, conformal_signal5d) predate this
+    # endpoint's contract and only carry saved_path/saved_at — these still
+    # surface (version/model_type default to "unknown") rather than being
+    # silently dropped.
+    if not MODEL_REGISTRY_PATH.exists():
+        raise HTTPException(status_code=404, detail="Model registry not found")
+
+    raw_registry = json.loads(MODEL_REGISTRY_PATH.read_text())
+    models: List[schemas.ModelMetadata] = []
+    for key, entry in raw_registry.items():
+        name = entry.get("name", key)
+        if model_name and name != model_name:
+            continue
+        created_at_raw = entry.get("created_at") or entry.get("saved_at")
+        models.append(
+            schemas.ModelMetadata(
+                name=name,
+                version=entry.get("version", "unknown"),
+                model_type=entry.get("model_type", "unknown"),
+                created_at=created_at_raw,
+                features_used=entry.get("feature_names", []),
+                accuracy_on_validation=entry.get("accuracy_on_validation"),
+                # additional_metrics is Dict[str, float] — registry.json's
+                # "diagnostics" is a nested dict of dicts (class ratios,
+                # best params, per-class F1), not a flat float map, so it
+                # doesn't fit this schema field as-is.
+                additional_metrics=None,
+                hyperparameters=entry.get("hyperparams"),
+                training_samples=entry.get("training_samples"),
+                training_time_seconds=entry.get("training_time_seconds"),
+            )
+        )
+
+    if model_name and not models:
+        raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found in registry")
+
+    latest_by_name: dict = {}
+    for m in models:
+        existing = latest_by_name.get(m.name)
+        if existing is None or m.created_at > existing.created_at:
+            latest_by_name[m.name] = m
+
     return schemas.ModelRegistry(
-        models=[],
-        total_models=0,
-        latest_model_by_name={},
+        models=models,
+        total_models=len(models),
+        latest_model_by_name=latest_by_name,
     )
 
 
@@ -231,20 +356,60 @@ async def get_pipeline_status(
     Raises:
         HTTPException 404: If no pipeline run on this date
     """
-    # TODO: Phase 1 — implement actual query
+    # ingestion/scheduler/checkpoint.py writes one pipeline_runs row per day
+    # and one pipeline_checkpoints row per pipeline step that day, both into
+    # PIPELINE_LOG_DB_PATH — same store routers/system.py's /health reads
+    # for the latest run; this endpoint adds per-date and per-step detail.
+    date_str = date.strftime("%Y-%m-%d")
+    with get_sqlite_connection(PIPELINE_LOG_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT status, stocks_processed, started_at, completed_at, error_message "
+            "FROM pipeline_runs WHERE date = ? ORDER BY run_id DESC LIMIT 1",
+            (date_str,),
+        )
+        run_row = cursor.fetchone()
+        if run_row is None:
+            raise HTTPException(status_code=404, detail=f"No pipeline run found for {date_str}")
+        status, stocks_processed, started_at, completed_at, error_message = run_row
+
+        cursor.execute(
+            "SELECT step_name FROM pipeline_checkpoints WHERE date = ? ORDER BY step_index DESC LIMIT 1",
+            (date_str,),
+        )
+        step_row = cursor.fetchone()
+        stage = step_row[0] if step_row else "unknown"
+
+        cursor.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) "
+            "FROM pipeline_checkpoints WHERE date = ?",
+            (date_str,),
+        )
+        total_steps, completed_steps, failed_steps = cursor.fetchone()
+        completed_steps = completed_steps or 0
+        failed_steps = failed_steps or 0
+        completeness_pct = (completed_steps / total_steps * 100.0) if total_steps else 0.0
+
+    duration_seconds = None
+    if started_at and completed_at:
+        duration_seconds = (
+            datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)
+        ).total_seconds()
+
     return schemas.PipelineStatus(
         date=date,
-        status="pending",
-        stage="not_started",
-        records_processed=0,
+        status=status,
+        stage=stage,
+        records_processed=stocks_processed or 0,
         records_skipped=0,
-        records_failed=0,
-        data_completeness_pct=0.0,
-        started_at=now_ist(),
-        completed_at=None,
-        duration_seconds=None,
-        error_summary=None,
-        notes="Placeholder",
+        records_failed=failed_steps,
+        data_completeness_pct=completeness_pct,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_seconds=duration_seconds,
+        error_summary=error_message,
+        notes=None,
     )
 
 

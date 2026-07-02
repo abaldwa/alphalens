@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.ML — Position Monitor</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/shell.css">
+</head>
+<body>
+<div class="app-bar" id="app-bar"></div>
+<div class="sub-tabs" id="sub-tabs"></div>
+<div class="page">
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Paper Trading Gate 7</span><span class="sec-sub">&gt;=90 NSE trading days of continuous live daily pipeline runs</span></div>
+    <div id="gate-status"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Pending Actions</span><span class="sec-sub">Bot-proposed trades awaiting your accept/reject (SPEC-PT-003)</span></div>
+    <div id="pending-actions"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Backdated Entry</span><span class="sec-sub">Review a past date's recommendations and open a position dated to that day</span></div>
+    <div class="alert-banner alert-info">Backdated entries log the same way as live trades and count toward Gate 7's day tally above, like any other trade (accepted trade-off — see SPEC-PT-003).</div>
+    <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+      <input type="date" id="backdate-input">
+      <button id="load-backdate-btn">Load Recommendations</button>
+    </div>
+    <div id="backdate-table"><div class="empty">Pick a date to see that day's recommendations</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Portfolio Snapshot</span><span class="sec-sub" id="state-date"></span></div>
+    <div id="portfolio-state"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Open Positions</span></div>
+    <div id="positions"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Equity Curve</span></div>
+    <canvas id="equity-chart" height="120"></canvas>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Recent Closed Trades</span></div>
+    <div id="trades"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+<script src="../js/api.js"></script>
+<script src="../js/shell.js"></script>
+<script src="../js/empty_state.js"></script>
+<script src="js/positions.js"></script>
+</body>
+</html>

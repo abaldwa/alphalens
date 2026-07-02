@@ -59,6 +59,11 @@ What's wired vs. deferred:
   verification step, respectively — see each function's own docstring.
   Each future phase fills in its dispatch entry here without touching
   pipeline_scheduler.py or checkpoint.py (SOLID-O).
+- paper_trade: [AS BUILT, P3.x] wired to scripts/run_daily_paper_trading.py
+  — the automated daily paper-trading bot, run after write_signals so it
+  always acts on today's already-written, already-verified ml_signals
+  rows. Not backfillable (checkpoint.py's STEPS), same reasoning as
+  run_models/write_signals.
 """
 
 import json
@@ -545,16 +550,37 @@ def step_compute_features(run_date: date_type, db_path: Optional[Path] = None, c
     """
     from datetime import datetime, timedelta
 
-    from config.settings import FEATURES_PND_DAILY_DIR
+    from config.settings import (
+        FEATURE_CACHE_PRELOAD_WORKERS,
+        FEATURES_PND_DAILY_DIR,
+        HMM_FEATURE_WORKERS,
+    )
     from config.universe import get_tickers
     from datastore.client import DataStoreClient
+    from features.backfill_cache import BackfillDataCache
     from features.matrix_builder import build_feature_matrix
     from features.pnd_features import PND_FEATURES, compute_pnd_features
 
     date_str = run_date.isoformat()
     tickers = get_tickers()
 
-    matrix = build_feature_matrix(date_str, tickers, compute_hmm=compute_hmm, data_cache=data_cache)
+    # 2026-07 perf fix: the live/daily path never wired up a data_cache, so
+    # every panel needing fundamentals/shareholding (deep_forensic etc.) hit
+    # the DataStore API per-ticker individually -- ~5,300 sequential HTTP
+    # round-trips, ~27 min of a ~2h run against the full universe. Build the
+    # same pre-loader the mass backfill scripts use, threaded (I/O-bound,
+    # cheap) since this is only ONE date, not thousands.
+    if data_cache is None:
+        client_for_cache = DataStoreClient()
+        to_dt = datetime.combine(run_date, datetime.min.time())
+        data_cache = BackfillDataCache(
+            client_for_cache, tickers, to_dt, n_workers=FEATURE_CACHE_PRELOAD_WORKERS
+        )
+
+    matrix = build_feature_matrix(
+        date_str, tickers, compute_hmm=compute_hmm, data_cache=data_cache,
+        hmm_workers=HMM_FEATURE_WORKERS,
+    )
     logger.info(f"compute_features: built {len(matrix)}-row ALL_FEATURE_COLUMNS matrix for {date_str}")
 
     # Re-use PND columns already computed inside build_feature_matrix (which has a 760-day
@@ -712,6 +738,51 @@ def step_write_signals(run_date: date_type, db_path: Optional[Path] = None) -> N
     logger.info(f"write_signals: confirmed {result['tickers_scored']} signal rows written for {date_str}")
 
 
+def step_paper_trade(run_date: date_type, db_path: Optional[Path] = None) -> None:
+    """
+    Run the automated daily paper trading bot: act on today's already-
+    written ml_signals (scripts/run_daily_paper_trading.py), persisting
+    any new entries/exits to paper_trading/portfolio_state.json and
+    paper_trading/executions/<date>.csv (Phase 3 Gate 7's source of
+    truth — see that script's module docstring for the full design).
+
+    Parameters
+    ----------
+    run_date : date
+    db_path : Path, optional
+        Unused — the bot reaches all data through the DataStore API
+        (DATASTORE_API_BASE_URL), like step_compute_features/step_run_models.
+
+    Returns
+    -------
+    None
+
+    Spec References
+    ----------------
+    SPEC-BT-002, SPEC-MODEL-002, SPEC-OBS-004
+
+    PIT Assumptions
+    ----------------
+    None at this layer — only acts on today's already-PIT-correct ml_signals.
+
+    Raises
+    ------
+    FileNotFoundError
+        If step_write_signals hasn't run for run_date yet (no ml_signals rows).
+    Exception
+        Any DataStore API or model-scoring failure — propagated so the
+        checkpoint records this step as failed rather than silently
+        skipping a real trading day.
+    """
+    from scripts.run_daily_paper_trading import run_daily_paper_trading
+
+    result = run_daily_paper_trading(run_date=run_date)
+    logger.info(
+        f"paper_trade: {result['date']} open_positions={result['open_positions']} "
+        f"new_buys={result['new_buys']} equity=₹{result['equity']:.0f}"
+    )
+
+
 _STEP_DISPATCH = {
     "download_bhavcopy": step_download_bhavcopy,
     "download_fno": step_download_fno,
@@ -722,6 +793,7 @@ _STEP_DISPATCH = {
     "compute_features": step_compute_features,
     "run_models": step_run_models,
     "write_signals": step_write_signals,
+    "paper_trade": step_paper_trade,
 }
 
 
@@ -889,12 +961,16 @@ def main() -> None:
             print(f"  Within 90-minute budget (SPEC-SYS-002): {result['within_budget']}")
         return
 
+    from config.settings import DAILY_PIPELINE_SCHEDULE_TIME, MORNING_CATCHUP_SCHEDULE_TIME
     from ingestion.scheduler.checkpoint import CheckpointManager
     from ingestion.scheduler.pipeline_scheduler import (
         create_scheduler,
-        schedule_backfill_catchup,
         schedule_daily_pipeline,
         schedule_mf_holdings_ingestion,
+        schedule_morning_catchup,
+        schedule_model_training,
+        schedule_weekend_feature_backfill,
+        schedule_weekend_fundamentals,
     )
 
     logger.info("Startup catch-up: checking for missed trading days, then running today's pipeline")
@@ -902,13 +978,54 @@ def main() -> None:
 
     checkpoint_manager = CheckpointManager()
     scheduler = create_scheduler()
-    schedule_daily_pipeline(scheduler, step_runner, checkpoint_manager, schedule_time="18:00")
-    schedule_backfill_catchup(scheduler)  # SPEC-SCHED-012
+    # 2026-07-01: briefly moved to 20:00 for same-evening testing, reverted
+    # back to DAILY_PIPELINE_SCHEDULE_TIME (18:00) the same day at the
+    # user's request -- this is the standing schedule.
+    # schedule_backfill_catchup (SPEC-SCHED-012) is intentionally NOT
+    # registered here: it exists only to backfill gaps via FYERS, whose
+    # access tokens require an interactive daily login (see
+    # _execute_backfill_catchup's docstring) -- everything this pipeline
+    # needs is sourced from the NSE website directly, so that job has no
+    # unattended use here.
+    schedule_daily_pipeline(
+        scheduler, step_runner, checkpoint_manager, schedule_time=DAILY_PIPELINE_SCHEDULE_TIME
+    )
+    # 2026-07: earlier second trigger so NSE-sourced steps that failed on a
+    # prior date (download_fno/macro/corporate_actions/large_deals etc.)
+    # get retried hours before the 18:00 run, instead of appearing "never
+    # run" on the Ops page all day. See schedule_morning_catchup's
+    # docstring for why this reuses the same catch-up logic rather than
+    # something bespoke.
+    schedule_morning_catchup(
+        scheduler, step_runner, checkpoint_manager, schedule_time=MORNING_CATCHUP_SCHEDULE_TIME
+    )
     schedule_mf_holdings_ingestion(scheduler)  # P2.2: twice-monthly, primary source Groww
+    # 2026-07-02: 23-hour window + job-dependency scheduler.
+    # Model training fires after the daily pipeline (~20:00 IST) and runs
+    # overnight if needed — well within the 6 PM–5 PM 23-hour window.
+    schedule_model_training(scheduler)
+    # Weekend jobs: feature backfill (09:00 IST Sat) + fundamentals (10:30 IST Sat).
+    schedule_weekend_feature_backfill(scheduler)
+    schedule_weekend_fundamentals(scheduler)
     scheduler.start()
+    # The job store (SCHEDULER_DB_PATH) is persistent across process restarts
+    # (SPEC-SCHED-001), so a "backfill_catchup" job registered by an older
+    # version of this function keeps firing forever unless explicitly
+    # removed here -- simply deleting the schedule_backfill_catchup() call
+    # above does not retroactively unschedule it. Must run AFTER
+    # scheduler.start(): remove_job() raises JobLookupError against every
+    # job, even ones that genuinely exist in the persisted store, until the
+    # scheduler has started and wired up its jobstores -- confirmed by
+    # testing (this bug meant every prior restart silently failed to remove
+    # the stale job, caught by the bare except below).
+    try:
+        scheduler.remove_job("backfill_catchup")
+        logger.info("Removed stale persisted 'backfill_catchup' job (FYERS-only, no longer scheduled)")
+    except Exception:
+        pass
     logger.info(
-        "Scheduler started: daily pipeline registered for 18:00 IST (mon-fri), "
-        "backfill catch-up registered for 20:00 IST (daily), "
+        f"Scheduler started: daily pipeline registered for {DAILY_PIPELINE_SCHEDULE_TIME} IST (mon-fri), "
+        f"morning catch-up registered for {MORNING_CATCHUP_SCHEDULE_TIME} IST (mon-fri), "
         "MF holdings ingestion registered for 08:00 IST (5th & 20th of each month)"
     )
 

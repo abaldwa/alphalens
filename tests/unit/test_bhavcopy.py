@@ -18,7 +18,7 @@ from ingestion.scrapers import bhavcopy
 from config.settings import MIN_STOCKS_FOR_INFERENCE
 
 
-def _make_raw_bhavcopy(n_eq: int = 460, delivery_pct: float = 50.0) -> pd.DataFrame:
+def _make_raw_bhavcopy(n_eq: int = MIN_STOCKS_FOR_INFERENCE, delivery_pct: float = 50.0) -> pd.DataFrame:
     """Build a synthetic raw NSE sec_bhavdata_full DataFrame with n_eq EQ rows."""
     traded_qty = 100_000
     delivery_qty = int(traded_qty * delivery_pct / 100)
@@ -51,14 +51,14 @@ def _make_raw_bhavcopy(n_eq: int = 460, delivery_pct: float = 50.0) -> pd.DataFr
 
 def test_download_returns_dataframe_with_required_columns(monkeypatch):
     """SPEC-PIPE-001: download_bhavcopy must return exactly REQUIRED_COLUMNS, EQ-only."""
-    raw = _make_raw_bhavcopy(n_eq=460)
+    raw = _make_raw_bhavcopy()  # uses MIN_STOCKS_FOR_INFERENCE as default
     monkeypatch.setattr(bhavcopy, "_fetch_bhavcopy_csv", lambda trade_date: raw)
     monkeypatch.setattr(bhavcopy, "_save_raw", lambda trade_date, raw_df: None)
 
     df = bhavcopy.download_bhavcopy("2026-01-15")
 
     assert list(df.columns) == bhavcopy.REQUIRED_COLUMNS
-    assert len(df) == 460  # the BE row must have been filtered out
+    assert len(df) == MIN_STOCKS_FOR_INFERENCE  # the BE row must have been filtered out
     assert set(df["series"]) == {"EQ"}
 
 

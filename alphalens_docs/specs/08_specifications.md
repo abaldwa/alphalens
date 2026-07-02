@@ -394,33 +394,231 @@ current/latest per-share basis. Today's NSE-reported price is always preserved u
 
 ## SPEC-UI: User Interface Specifications
 
-### SPEC-UI-001 · Daily Dashboard (Screen A)
-- Shows: top 5 buy signals, exit urgency, P&D warnings, multibagger top-5, regime summary
+**[AS BUILT, 2026-07-01]** The dashboard was rebuilt from a single 6-page
+dark-theme app into the 27-screen, 5-app structure defined in
+`alphalens_docs/screens/SCREEN_INVENTORY.md` (AlphaLens.ML, .Technical,
+.Fundamental, .Valuation, .Forensic), served from `dashboard/static/{ml,
+technical,fundamental,valuation,forensic}/` and mounted at `/ui` by
+`datastore/api/main.py`. SPEC-UI-001 through 005 below are updated in
+place to point at the new screen locations (the screen *names* and IDs
+they originally described map onto the ML and Forensic apps below).
+SPEC-UI-006 (dark theme) is superseded — see SPEC-UI-006 itself.
+SPEC-UI-007 through 010 are new, covering the app-shell/cross-link
+pattern, the Technical/Fundamental/Valuation apps, and the no-fabrication
+empty-state rule. Plan: `squishy-frolicking-whisper.md`.
+
+### SPEC-UI-001 · Daily Insight Hub (ML-A, was "Daily Dashboard / Screen A")
+- File: `dashboard/static/ml/index.html` + `ml/js/hub.js`
+- Shows: top 5 buy signals (as insight cards + full table), today's
+  alerts, multibagger top-3, active-positions top-3, regime strip
 - ALL data reads from DataStore API (SPEC-DS-002); no direct database access
 - Updates once per day after pipeline completes; refresh-on-demand
 
-### SPEC-UI-002 · Signal Detail (Screen B)
-- Per-stock: SHAP waterfall, all model scores, conformal intervals, regime history
-- Reads: /api/v1/signals/ml/{ticker}, /api/v1/features/{ticker}
+### SPEC-UI-002 · Signal Deep Dive (ML-B, was "Signal Detail / Screen B")
+- File: `dashboard/static/ml/signal.html` + `ml/js/signal.js`
+- Per-stock: SHAP bars (parsed from `shap_top5_json`, only rendered when
+  present — never fabricated), all per-horizon model scores, conformal
+  intervals, latest OHLCV price card, 30-day regime history chart
+- Reads: `/api/v1/signals/ml/{ticker}/{date}`,
+  `/api/v1/signals/ml/forensic/{ticker}`,
+  `/api/v1/signals/ml/multibagger/{ticker}`, `/api/v1/ohlcv/{ticker}/latest`,
+  `/api/v1/macro/regime/history`
 
-### SPEC-UI-003 · Multibagger Watchlist (Screen C)
-- Top 20 ranked by multibagger probability
-- Survival curves, archetypes, historical analogues
-- Updated weekly; reads /api/v1/watchlist/current
+### SPEC-UI-003 · Multibagger Watchlist (ML-C, was "Screen C")
+- File: `dashboard/static/ml/multibagger.html` + `ml/js/multibagger.js`
+- Top-N ranked by multibagger probability (full prototype table: tier,
+  archetype, 6/12/18/24/36-month survival columns)
+- Updated weekly; reads `/api/v1/watchlist/current`
 
-### SPEC-UI-004 · Forensic Alert (Screen D)
-- All stocks with forensic_flag red or amber
-- Classical score breakdown, trend chart, pattern match
-- Reads: /api/v1/signals/forensic/{ticker}
+### SPEC-UI-003b · Position Monitor (ML-D, net-new, folds in former
+  standalone Paper Trading screen)
+- File: `dashboard/static/ml/positions.html` + `ml/js/positions.js`
+- Gate 7 progress, portfolio snapshot, open positions table, equity-curve
+  chart, recent closed trades — `/api/v1/paper_trading/*` has no
+  dedicated screen ID of its own in `SCREEN_INVENTORY.md`, so it lives
+  here since it's real, ticker-position data closely tied to ML-D's
+  "Position Monitor" concept
 
-### SPEC-UI-005 · Backtest Results (Screen E)
-- Fold-by-fold results, integrity checks, benchmark comparisons
-- Reads: /api/v1/backtest/results/{model}
+### SPEC-UI-004 · Forensic Dashboard suite (FOREN-A through G, was
+  "Forensic Alert / Screen D")
+- Files: `dashboard/static/forensic/{dashboard,redflag,benford,cashflow,
+  heatmap,report,universe}.html` + matching `forensic/js/*.js`
+- FOREN-A score ring + classical/ML scores + SHAP + pattern match;
+  FOREN-B per-metric red-flag drill-down (severity thresholds are the
+  real `classical_scores.py` constants — Beneish -1.78, Altman 1.81/2.99,
+  Piotroski <=2, Sloan accrual >0.10 — not invented cutoffs); FOREN-C
+  Benford MAD (digit-distribution histogram is empty-stated — the API
+  doesn't expose per-digit counts); FOREN-D accrual-quality + FCF/PAT
+  quarterly table; FOREN-E peer heatmap (N+1 fetch over `/flagged`);
+  FOREN-F templated (non-generative) investigation report with
+  browser-print PDF export; FOREN-G universe scan ranked table
+- Reads: `/api/v1/signals/ml/forensic/{summary,flagged,{ticker}}`,
+  `/api/v1/fundamentals/{ticker}/history`
 
-### SPEC-UI-006 · Performance
+### SPEC-UI-005 · Backtest Dashboard (ML-E, was "Backtest Results / Screen E")
+- File: `dashboard/static/ml/backtest.html` + `ml/js/backtest.js`
+- Fold-by-fold results, integrity-passed badge, aggregate stat cards —
+  rendered generically over whichever `phase1`/`phase2`/`phase3` keys a
+  given report JSON contains (reports are free-form dicts, no fixed schema)
+- Reads: `/api/v1/backtest/reports`, `/api/v1/backtest/reports/{name}`
+
+### SPEC-UI-006 · Design System and Performance
+- **[AS BUILT, 2026-07-01] Light theme, superseding the original dark-theme
+  mandate** — `dashboard/static/css/{tokens,components,shell}.css`, ported
+  verbatim from the `alphalens_docs/screens/alphalens_*.html` prototypes
+  (DM Sans + JetBrains Mono, `bg #F8F9FC`/`card #FFF`/`teal #0A9B8E` palette)
 - Dashboard renders in < 3 seconds
-- Exportable to CSV: signal list, positions, watchlist
-- Dark theme
+- No CSV export implemented (was aspirational in the original spec; not
+  built in either the dark-theme or light-theme UI — out of scope for the
+  2026-07-01 rebuild, which was UI-structure/theme only)
+
+### SPEC-UI-007 · 5-App Shell and Cross-Linking
+- `dashboard/static/js/shell.js`'s `APPS` config + `renderAppShell()`
+  drive a 2-tier nav: top app-bar switches between the 5 apps, a
+  `.sub-tabs` row switches between that app's own screens
+- `dashboard/static/js/crosslink.js`'s `buildCrossLinks(ticker)` renders
+  "View in X" links to the same ticker in the other 4 apps; links to
+  apps with no backend still navigate — the target renders its own
+  empty-state (SPEC-UI-010) rather than the link being hidden
+
+### SPEC-UI-008 · AlphaLens.Technical (TA-A through E)
+- Files: `dashboard/static/technical/{chart,screener,compare,alerts,
+  overview}.html`
+- **No backend exists** (`systems/technical_analysis/` is an empty stub —
+  no indicators, pattern detection, or screener engine). All 5 screens
+  render SPEC-UI-010's empty-state only; do not wire raw
+  `/api/v1/features/{ticker}` columns into TA-A as a faux screener (that
+  would be misleading half-functionality)
+
+### SPEC-UI-009 · AlphaLens.Fundamental (FA-A through F) and
+  AlphaLens.Valuation (VAL-A through D)
+- Files: `dashboard/static/fundamental/{dashboard,peers,sector,screener,
+  thesis,management}.html`, `dashboard/static/valuation/{dcf,relative,
+  batch,accuracy}.html`
+- FA-A (raw quarterly fundamentals) and FA-F (governance/shareholding)
+  are Partial: real data renders, but sub-panels needing unbuilt analysis
+  (peer-relative traffic-light ranking, related-party-transaction tables)
+  are empty-stated and visually separated from the real data, never blended
+- FA-B/C/D/E are No-Backend (`systems/fundamental_analysis/` stub beyond
+  raw fundamentals)
+- All 4 Valuation screens are No-Backend (`systems/damodaran_valuation/`
+  is an empty stub; Damodaran valuation remains deferred per this file's
+  Phase 3+ scope note)
+
+### SPEC-UI-010 · No-Fabrication Empty State
+- `dashboard/static/js/empty_state.js`'s `renderEmptyState()` +
+  `BACKEND_STATUS` map is the **only** sanctioned way to represent a
+  screen or sub-panel with no real backend. Per Absolute Rule #6 (no
+  synthetic/mocked data, ever), no screen renders prototype sample data
+  (e.g. `TATAMOTORS`, `₹825`, `+4.2%`) as placeholder content — verified
+  by a `grep` audit for known prototype sample tokens across
+  `dashboard/static/` at the end of the 2026-07-01 rebuild (zero matches)
+
+---
+
+## SPEC-PT: Paper Trading Specifications
+
+### SPEC-PT-003 · Pending Actions (Review/Approve)
+**[AS BUILT, 2026-07-01]** `config.settings.PAPER_TRADING_REQUIRE_APPROVAL`
+(default `True`) switches `scripts/run_daily_paper_trading.py` from
+auto-execute to propose-then-approve: candidate exits/entries are computed
+exactly as before (`systems/ml_signal_engine/inference/paper_trading_step.py`'s
+new `propose_daily_exits`/`propose_daily_entries`, siblings of the
+unchanged `apply_daily_exits`/`apply_daily_entries` that still back the
+unattended historical-bootstrap sim) but written to
+`paper_trading/pending/{date}.json` instead of executed immediately.
+- `GET /api/v1/paper_trading/pending` — today's (or latest) unactioned proposals
+- `POST /api/v1/paper_trading/pending/{action_id}/accept` — executes via
+  `PortfolioSimulator.buy/sell/reduce_position` (re-fetching the live price,
+  not the propose-time one) and logs through `PaperTradingTracker`
+  identically to a bot-executed trade
+- `POST /api/v1/paper_trading/pending/{action_id}/reject` — no portfolio mutation
+- All reads/writes of `portfolio_state.json` (bot and accept-endpoint alike)
+  are serialized through `datastore/api/utils/file_lock.py`'s `flock`-based lock
+- Gate 7's "CSV exists ⇔ bot genuinely ran" invariant is unaffected — the
+  heartbeat/open-row CSV log still happens every run regardless of whether
+  a human has acted on that day's proposals yet
+- A pending file from a prior date is discarded (not executed) at the
+  start of the next run — its candidates were scored against stale signals
+- UI: `dashboard/static/ml/positions.html`'s "Pending Actions" panel
+
+### SPEC-PT-003 addendum · Backdated Entries
+**[AS BUILT, 2026-07-01]** `POST /api/v1/paper_trading/backdated_buy`
+`{ticker, date, quantity?}` — lets the user review a past date's real
+recommendations (`GET /api/v1/signals/ml/top_buys/{date}`, which already
+supports any historical date) and open a position dated to that day at
+that day's real close (`GET /api/v1/ohlcv/{ticker}?from=D&to=D`). Calls
+the same `PortfolioSimulator.buy()` and `PaperTradingTracker.log_trade()`
+every other trade path uses — no new trade-execution logic.
+
+**Explicit, user-confirmed trade-off:** backdated trades log into the same
+`paper_trading/executions/{date}.csv` files Gate 7 counts toward its
+>=90-day genuine-forward-time-operation proof, exactly like a live trade
+— no separate directory, no special-casing. This means a backdated entry
+inflates Gate 7's day-count with a day the bot didn't actually run live
+on. Three alternatives (separate log directory; skip CSV logging
+entirely; accept as-is) were presented to the user during planning; **the
+user chose to accept the distortion rather than special-case backdated
+trades.** This is intentional and documented (code docstring in
+`datastore/api/routers/paper_trading.py`, a persistent info banner on the
+UI's Backdated Entry section) — not an oversight, and must not be
+"corrected" without re-confirming with the user first.
+
+---
+
+## SPEC-TA: Technical Analysis API Specifications
+
+### SPEC-TA-004 · Technical Analysis API Scaffolding
+**[AS BUILT, 2026-07-01]** `datastore/api/routers/technical.py`
+(`/api/v1/ta/*`) exposes the 94 real technical features already computed
+daily by `features/technical.py` (76 core), `features/advanced_technical.py`
+(18 advanced), and `features/pattern_scores.py` (6 pattern scores) — all
+already merged into the daily feature Parquet by `features/matrix_builder.py`.
+This is pure API scaffolding; no new feature computation.
+- `GET /{ticker}/indicators`, `GET /{ticker}/patterns` — read straight
+  from the daily Parquet (`datastore/api/utils/feature_store.py`)
+- `GET /compare?tickers=A,B,C` — real RS/beta/alpha plus a real pairwise
+  return-correlation matrix computed from OHLCV
+- `GET /market_overview` — advances/declines/sector breadth from the
+  latest 2 trading days' OHLCV grouped by the real sector map
+- UI: `dashboard/static/technical/{chart,compare,overview}.html` are real;
+  `screener.html` (needs the still-unimplemented SPEC-TA-003 42-template
+  engine) and `alerts.html` (needs stateful CRUD + a background checker)
+  stay empty-state — both need real new logic, not scaffolding
+
+---
+
+## SPEC-FA: Fundamental Analysis API Specifications
+
+### SPEC-FA-008 · Composite Scores, Peer Ranking, Screener, API Scaffolding
+**[AS BUILT, 2026-07-01]** The 30 fundamental ratios (27 sector-relative
+z-scored per SPEC-FEAT-002) and 12 governance features were already
+computed daily and merged into the feature Parquet — only composite
+scoring and peer-ranking were missing, never implemented in the
+`systems/fundamental_analysis/{quality,growth,management,peers}/` stubs.
+New `features/fundamental_composites.py`: `quality_score`/`growth_score`
+(weighted sector-z-score composites, 0-100 display scale, documented
+non-tuned weights), `management_quality_score` (raw governance fields —
+not z-scored), `select_peers` (sector + market-cap-proximity ranking),
+3 screener presets (`quality_compounder`, `garp`, `turnaround` — defined
+as sector-relative z-score thresholds, since the feature store only
+carries z-scores, not raw percentages; "quality compounder" means "above
+sector peers," not an absolute threshold).
+
+New endpoints in `datastore/api/routers/fundamentals.py` (registered
+before the dynamic `/{ticker}` route): `GET /{ticker}/ratios`,
+`GET /{ticker}/peers`, `GET /sector/{sector}` (real standard-ratio
+aggregate; sector-*unique* metrics like GNPA/ANDA are never computed by
+anything in this codebase, so stay unexposed), `GET /screener`,
+`GET /{ticker}/scores`.
+
+UI: `fundamental/dashboard.html` (FA-A) traffic-light now real;
+`peers.html` (FA-B), `screener.html` (FA-D) fully real; `sector.html`
+(FA-C) real standard-ratio aggregate with sector-unique metrics kept
+separately empty-stated; `thesis.html` (FA-E) real templated
+strengths/risks synthesis (non-generative, same pattern as Forensic's
+FOREN-F); `management.html` (FA-F) gained the real
+`management_quality_score` badge.
 
 ---
 
@@ -613,9 +811,54 @@ current/latest per-share basis. Today's NSE-reported price is always preserved u
 - DuckDB inserts: wrapped in transactions; rollback on failure
 
 ### SPEC-SCHED-011 · Step Dependencies
-- Each pipeline step declares depends_on (list of prerequisite step IDs)
-- Step only executes if all dependencies have status='success' in current run
-- If dependency failed/skipped: dependent step is skipped with reason logged
+**[AS BUILT, 2026-07-02]** Each step in `ingestion/scheduler/checkpoint.py`'s
+`STEPS` list declares `depends_on: List[str]` (list of prerequisite step names).
+`pipeline_scheduler.run_steps_for_date` implements the fallback mechanism:
+- When a step fails, the pipeline does NOT abort immediately.
+- Each subsequent step's `depends_on` is checked against the set of steps that
+  have `status='success'` for this date (across prior runs AND the current run).
+- If all dependencies are met → step runs normally.
+- If any dependency is unmet → step is recorded as `'skipped'` with reason logged; pipeline continues.
+- `'skipped'` steps (unlike `'success'`) are retried on the next run, so fixing
+  a prerequisite automatically unlocks its dependents.
+- Return value: `False` if any attempted step raised (even if later steps ran).
+
+**Dependency graph (2026-07-02):**
+```
+download_bhavcopy:            depends_on: []  (foundation — any failure here is critical)
+download_fno:                 depends_on: []  (independent, non-critical)
+download_macro:               depends_on: []  (independent, non-critical)
+download_corporate_actions:   depends_on: []  (independent, non-critical)
+download_large_deals:         depends_on: []  (independent, non-critical)
+adjust_prices:                depends_on: [download_bhavcopy]
+compute_features:             depends_on: [adjust_prices]
+run_models:                   depends_on: [compute_features]
+write_signals:                depends_on: [run_models]
+paper_trade:                  depends_on: [write_signals]
+```
+
+Key invariant: the 4 independent downloaders (fno/macro/corporate_actions/
+large_deals) never block `compute_features`. Their data is consumed as
+NaN-tolerant soft inputs within the feature computation itself.
+
+### SPEC-SCHED-015 · 23-Hour Pipeline Window and Overnight Training
+**[AS BUILT, 2026-07-02]** Replaces the earlier 15-hour window (SPEC-SYS-002).
+- **Trigger**: 18:00 IST (6 PM) daily on trading days
+- **Deadline**: 17:00 IST next day (23 hours) — user-confirmed acceptable window
+- **Model training**: Separate `model_training` job fires at 20:00 IST (mon-fri),
+  after the daily pipeline completes. Checks `datastore/models/registry.json` for
+  overdue models (SPEC-SCHED-007) and triggers retraining via subprocess.
+  Each model has an 8-hour subprocess timeout — well within the 23-hour window.
+  Implemented in `ingestion/scheduler/pipeline_scheduler.py::_execute_model_training_job`.
+- **Weekend jobs** (Saturday only, market closed, full CPU available):
+  - `weekend_feature_backfill`: 09:00 IST — runs `scripts/feature_backfill_hybrid.py`
+    with `--stage2-chunk-size 400` to fill any feature Parquet gaps from the week
+  - `weekend_fundamentals`: 10:30 IST — runs `scripts/backfill_fundamentals_trendlyne.py`
+    to refresh fundamentals from Screener.in / Trendlyne for newly-published quarters
+- Settings constants: `MODEL_TRAINING_SCHEDULE_TIME`, `WEEKEND_FEATURE_BACKFILL_TIME`,
+  `WEEKEND_FUNDAMENTALS_TIME` in `config/settings.py`
+- Heartbeat staleness thresholds updated in
+  `datastore/api/utils/scheduler_status.py::HEARTBEAT_STALE_AFTER`
 
 ### SPEC-SCHED-012 · Backfill Catch-Up Scheduling
 - Registered as its own recurring job (`backfill_catchup`), separate from
@@ -705,6 +948,30 @@ current/latest per-share basis. Today's NSE-reported price is always preserved u
   that observable short of reading the scheduler process's own log file
   via `/proc/<pid>/fd` by hand. See BuildLog.md "Scheduler/DuckDB
   concurrency resilience" for the full investigation and fix.
+
+### SPEC-SCHED-014 · Job Autoruns (Ops) API and Page
+**[AS BUILT, 2026-07-01]** Not part of the 27-screen prototype spec — an
+operational page the user asked for directly. Pure API scaffolding over
+the scheduler infrastructure SPEC-SCHED-002/005/013 above already built;
+no new scheduling logic.
+- `GET /api/v1/ops/heartbeats` — the same data `GET /health`'s `scheduler`
+  field exposes, both now sourced from one shared
+  `datastore/api/utils/scheduler_status.get_scheduler_heartbeats()`
+- `GET /api/v1/ops/runs?limit=` — recent `pipeline_runs` rows
+- `GET /api/v1/ops/steps?date=` — every `checkpoint.STEPS` entry's
+  checkpoint status for one date (`'never_run'` if no row exists)
+- `POST /api/v1/ops/steps/{step_name}/force?date=` — runs exactly one
+  step via the real `daily_pipeline.step_runner`/`_STEP_DISPATCH`, guarded
+  the same way `pipeline_scheduler.run_steps_for_date()` guards its own
+  loop: 409 if any lower-`step_index` step hasn't succeeded yet for that
+  date (SPEC-SCHED-011's step-dependency ordering applies here too — a
+  force-run must never skip ahead of an unmet prerequisite). Runs via
+  `asyncio.to_thread` so it doesn't block the event loop for other
+  requests while a slow step executes.
+- UI: `dashboard/static/ops/index.html`, a 6th entry in `js/shell.js`'s
+  `APPS` (id `"ops"`) — deliberately excluded from `crosslink.js`'s
+  "View in X" links (no per-ticker meaning) via an explicit
+  `CROSSLINK_APP_IDS` allowlist rather than "all apps except current."
 
 ---
 

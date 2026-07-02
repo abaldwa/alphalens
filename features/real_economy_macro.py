@@ -43,7 +43,7 @@ When the Parquet is absent or empty, all features return NaN.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd

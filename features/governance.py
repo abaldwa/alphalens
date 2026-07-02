@@ -34,7 +34,7 @@ not a PIT violation.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -66,7 +66,7 @@ def compute_governance_features(
     as_of: datetime,
     lookback_years: int = 2,
     pre_loaded_rows=None,
-    ticker_ohlcv: "Optional[pd.DataFrame]" = None,
+    ticker_ohlcv: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
     Compute all 12 governance features for one ticker.
@@ -172,7 +172,7 @@ def compute_governance_features_panel(
     tickers: List[str],
     as_of: datetime,
     data_cache=None,
-    ohlcv_panel: "Optional[pd.DataFrame]" = None,
+    ohlcv_panel: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Compute the 12-feature governance panel for many tickers.

@@ -46,30 +46,29 @@ def _make_bhavcopy(n_stocks: int, anomaly_pct_change: float = 0.0) -> pd.DataFra
 # ---------------------------------------------------------------------------
 
 
-def test_completeness_gate_blocks_at_449_stocks():
-    """SPEC-SYS-003: stock_count < 450 must set ok=False, even with no missing/anomalies."""
-    assert MIN_STOCKS_FOR_INFERENCE == 450
-    n = MIN_STOCKS_FOR_INFERENCE - 1  # 449
-    df = _make_bhavcopy(n)
-    expected_tickers = df["ticker"].tolist()  # nothing "missing" by this measure
-
-    result = validator.validate_bhavcopy(df, expected_tickers=expected_tickers)
-
-    assert result["stock_count"] == 449
-    assert result["missing"] == []
-    assert result["anomalies"] == []
-    assert result["ok"] is False
-
-
-def test_completeness_gate_passes_at_450_stocks():
-    """SPEC-SYS-003: exactly 450 stocks, no missing/anomalies, must pass."""
-    n = MIN_STOCKS_FOR_INFERENCE  # 450
+def test_completeness_gate_blocks_below_threshold():
+    """SPEC-SYS-003: stock_count < MIN_STOCKS_FOR_INFERENCE must set ok=False."""
+    n = MIN_STOCKS_FOR_INFERENCE - 1
     df = _make_bhavcopy(n)
     expected_tickers = df["ticker"].tolist()
 
     result = validator.validate_bhavcopy(df, expected_tickers=expected_tickers)
 
-    assert result["stock_count"] == 450
+    assert result["stock_count"] == n
+    assert result["missing"] == []
+    assert result["anomalies"] == []
+    assert result["ok"] is False
+
+
+def test_completeness_gate_passes_at_threshold():
+    """SPEC-SYS-003: exactly MIN_STOCKS_FOR_INFERENCE stocks, no missing/anomalies, must pass."""
+    n = MIN_STOCKS_FOR_INFERENCE
+    df = _make_bhavcopy(n)
+    expected_tickers = df["ticker"].tolist()
+
+    result = validator.validate_bhavcopy(df, expected_tickers=expected_tickers)
+
+    assert result["stock_count"] == n
     assert result["ok"] is True
 
 

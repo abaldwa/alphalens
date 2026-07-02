@@ -39,7 +39,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -59,10 +59,18 @@ from systems.ml_signal_engine.models.deep.tft_model import (
     QUANTILE_LEVELS,
     SEQ_LEN,
     _BUY_THRESHOLD,
+    _FULL_RECENT_FILES,
+    _FULL_TRAIN_FILES,
+    _FULL_VAL_FILES,
+    _MAX_TRAIN_SEQ,
+    _MAX_VAL_SEQ,
+    _MIN_FOLD_FILES,
+    _QUICK_FILES,
+    _QUICK_MAX_SEQ,
     _SELL_THRESHOLD,
-    _build_sequences,
     _quantiles_to_proba,
     _require_torch,
+    _stream_sequences_from_files,
 )
 
 logger = logging.getLogger(__name__)
@@ -265,7 +273,7 @@ class BiLSTMSignalModel(IClassificationModel, IExplainableModel):
         hidden_dim: int = _BILSTM_HIDDEN,
         lstm_layers: int = _BILSTM_LAYERS,
         dropout: float = _BILSTM_DROPOUT,
-        batch_size: int = 128,
+        batch_size: int = 256,
         learning_rate: float = 5e-4,
         epochs: int = 50,
         early_stopping_patience: int = 10,
@@ -558,6 +566,139 @@ class BiLSTMSignalModel(IClassificationModel, IExplainableModel):
         return total
 
 
+# ── Overnight training entry point ────────────────────────────────────────────
+#
+# [AS BUILT, P3.x] This module previously re-exported tft_model.py's
+# schedule_overnight_training unchanged, which always instantiates
+# TFTSignalModel — calling train_deep_models.py with --model bilstm would
+# silently train (and save) a second TFT model mislabeled as bilstm_signal.
+# Fixed by giving BiLSTM its own copy of the walk-forward training loop,
+# identical to tft_model.py's in structure (same Parquet loading / fold-
+# split / sequence-building) but instantiating BiLSTMSignalModel.
+
+
+def schedule_overnight_training(
+    feature_parquet_dir: str,
+    model_output_dir: str,
+    horizon_days: int = 21,
+    n_folds: int = 3,
+    quick: bool = False,
+) -> None:
+    """
+    Overnight BiLSTM training run (SPEC-MODEL-003 walk-forward).
+
+    Loads daily Parquet feature files, constructs 63-day sequences,
+    builds triple-barrier labels, and trains one BiLSTM (+ optional
+    Mamba-2) per fold.
+
+    Parameters
+    ----------
+    feature_parquet_dir : str
+        Path to datastore/features/daily/ directory.
+    model_output_dir : str
+        Destination for model weights (SPEC-MODEL-005).
+    horizon_days : int
+        Return label horizon: 5, 21, or 63.
+    n_folds : int
+        Number of walk-forward folds.
+    quick : bool
+        If True, uses 2 epochs (CI / smoke-test on real, possibly small,
+        Parquet feature data) — there is no synthetic-data mode.
+
+    Estimated runtime
+    -----------------
+    CPU (Ryzen 5 7535U), 500 stocks, 5yr history, 50 epochs: 4-6 hours
+    (same order of magnitude as TFT — see tft_model.py's
+    schedule_overnight_training).
+
+    Raises
+    ------
+    FileNotFoundError
+        If `feature_parquet_dir` has no Parquet files. There is no
+        synthetic-data fallback — run the daily feature pipeline
+        (features/matrix_builder.py) first to populate it.
+    """
+    _require_torch()
+    import gc
+    import pandas as pd
+
+    logger.info(
+        f"BiLSTM overnight training: horizon={horizon_days}d, folds={n_folds}, quick={quick}"
+    )
+
+    parquet_dir = Path(feature_parquet_dir)
+    all_files = sorted(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
+    if not all_files:
+        raise FileNotFoundError(
+            f"No Parquet files in {parquet_dir}. There is no synthetic-data fallback — "
+            "run the daily feature pipeline (features/matrix_builder.py) first to populate "
+            "it."
+        )
+
+    # Read schema from one file only — no large upfront load.
+    sample = pd.read_parquet(all_files[-1])
+    _DUCKDB_INTERNAL = {"__fragment_index", "__batch_index", "__last_in_fragment",
+                        "__filename"}
+    id_cols = {"date", "ticker"}
+    feature_cols = [c for c in sample.columns
+                    if c not in id_cols and c not in _DUCKDB_INTERNAL]
+    n_features = len(feature_cols)
+    del sample
+    gc.collect()
+    logger.info(f"Schema: {n_features} features across {len(all_files)} date files")
+
+    if quick:
+        all_files = all_files[-_QUICK_FILES:]
+        n_folds = 1
+    else:
+        all_files = all_files[-_FULL_RECENT_FILES:]
+
+    fold_size = max(_MIN_FOLD_FILES, len(all_files) // (n_folds + 1))
+    output_dir = Path(model_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for fold in range(n_folds):
+        train_end = min((fold + 1) * fold_size, len(all_files))
+        val_end = min(train_end + fold_size, len(all_files))
+        if val_end <= train_end:
+            logger.warning(f"Fold {fold}: not enough files for a validation window, stopping")
+            break
+        train_files = all_files[:train_end][-(_QUICK_FILES if quick else _FULL_TRAIN_FILES):]
+        val_files = all_files[train_end:val_end]
+
+        logger.info(f"Fold {fold}: {len(train_files)} train files, {len(val_files)} val files")
+
+        max_tr = _QUICK_MAX_SEQ if quick else _MAX_TRAIN_SEQ
+        max_v = _QUICK_MAX_SEQ if quick else _MAX_VAL_SEQ
+
+        val_files_capped = val_files[-(_QUICK_FILES if quick else _FULL_VAL_FILES):]
+
+        X_tr, y_tr = _stream_sequences_from_files(
+            train_files, feature_cols, horizon_days, SEQ_LEN, max_samples=max_tr)
+        gc.collect()
+
+        val_context = train_files[-SEQ_LEN:]
+        X_v, y_v = _stream_sequences_from_files(
+            list(val_context) + list(val_files_capped),
+            feature_cols, horizon_days, SEQ_LEN, max_samples=max_v, rng_seed=43)
+        gc.collect()
+
+        if len(X_tr) == 0 or len(X_v) == 0:
+            logger.warning(f"Fold {fold}: insufficient data, skipping")
+            continue
+
+        model = BiLSTMSignalModel(n_features=n_features, quick=quick)
+        model.train(X_tr, y_tr, X_v, y_v)
+        del X_tr, y_tr, X_v, y_v
+        gc.collect()
+
+        model_path = output_dir / f"bilstm_signal_{horizon_days}d_v{model._version}_fold{fold}"
+        model.save(str(model_path))
+        del model
+        gc.collect()
+        logger.info(f"Fold {fold} model saved to {model_path}.pt")
+
+
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -565,15 +706,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train BiLSTM deep model (M-12)")
     parser.add_argument("--quick", action="store_true",
                         help="2 epochs × 50 samples — CI smoke-test mode")
-    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--horizon", type=int, default=21)
+    parser.add_argument("--feature-dir", default="datastore/features/daily")
     parser.add_argument("--output-dir", default="datastore/models")
     args = parser.parse_args()
 
     schedule_overnight_training(
+        feature_parquet_dir=args.feature_dir,
+        model_output_dir=args.output_dir,
         horizon_days=args.horizon,
         n_folds=args.folds,
-        output_dir=args.output_dir,
         quick=args.quick,
     )

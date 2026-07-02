@@ -476,6 +476,22 @@ class ForensicWriteResult(BaseModel):
     written: bool
 
 
+class ForensicFlaggedRow(BaseModel):
+    """One flagged ticker, for GET /api/v1/signals/ml/forensic/flagged."""
+
+    ticker: str
+    date: datetime
+    forensic_composite: Optional[float] = None
+    forensic_flag_label: Optional[str] = None
+
+
+class ForensicFlaggedResponse(BaseModel):
+    """All tickers carrying any of the requested flag labels on the most recent scored date."""
+
+    as_of_date: Optional[datetime] = None
+    rows: List[ForensicFlaggedRow] = Field(default_factory=list)
+
+
 class ForensicSummaryResponse(BaseModel):
     """Universe-wide forensic flag counts for the most recent scored date.
     Labels: green/yellow/orange/red/black (M-09/M-10 5-level taxonomy).
@@ -528,6 +544,21 @@ class RegimeResponse(BaseModel):
     available: bool = Field(description="False if no regime row has been written yet")
 
 
+class RegimeHistoryRow(BaseModel):
+    """One day's market-wide HMM regime state, for GET /api/v1/macro/regime/history."""
+
+    date: Optional[datetime] = None
+    hmm_regime: Optional[str] = None
+    hmm_regime_prob: Optional[float] = None
+    hmm_stability: Optional[float] = None
+
+
+class RegimeHistoryResponse(BaseModel):
+    """Last N days of market-wide HMM regime state (SPEC-UI-002 Signal Detail screen)."""
+
+    days: List[RegimeHistoryRow] = Field(default_factory=list)
+
+
 # ===== Watchlist (SPEC-UI-003 — Phase 1 stub, M-08 multibagger model is Phase 2) =====
 class WatchlistResponse(BaseModel):
     """Phase 1 stub — ml_multibagger (M-08) is not built until Phase 2."""
@@ -570,6 +601,11 @@ class SchedulerJobHeartbeat(BaseModel):
     last_status: Optional[str] = None  # 'success' | 'failed' | 'skipped' | None (never attempted)
     last_error: Optional[str] = None
     last_success_at: Optional[datetime] = None
+    next_run_time: Optional[datetime] = Field(
+        default=None,
+        description="Next scheduled fire time (Asia/Kolkata), computed analytically from the "
+        "job's cron config — not read from the persisted APScheduler job store.",
+    )
     is_stale: bool = Field(
         default=False,
         description="True if no attempt has been recorded within the job's expected interval "
@@ -585,3 +621,415 @@ class SystemHealthResponse(BaseModel):
     stock_count: int = 0
     drift: DriftStatus = Field(default_factory=DriftStatus)
     scheduler: List[SchedulerJobHeartbeat] = Field(default_factory=list)
+
+
+# ===== Paper Trading (Automated Daily Paper Trading, P3.x) =====
+class PaperTradingPosition(BaseModel):
+    """One open position, as persisted in paper_trading/portfolio_state.json."""
+
+    ticker: str
+    sector: str
+    entry_date: str
+    entry_price: float
+    quantity: int
+    peak_price: float
+    current_price: Optional[float] = None
+    unrealised_pnl_pct: Optional[float] = None
+
+
+class PaperTradingStateResponse(BaseModel):
+    """GET /api/v1/paper_trading/state — current portfolio snapshot."""
+
+    as_of_date: Optional[str] = None
+    cash: float = 0.0
+    total_equity: float = 0.0
+    initial_capital: float = 0.0
+    positions: List[PaperTradingPosition] = Field(default_factory=list)
+    available: bool = Field(
+        default=False, description="False if no portfolio state has been written yet"
+    )
+
+
+class PaperTradingTrade(BaseModel):
+    """One closed trade row, as logged by scripts/paper_trading_tracker.py."""
+
+    date: str
+    ticker: str
+    signal_type: str
+    entry_price: float
+    quantity: int
+    entry_time: str
+    exit_price: Optional[float] = None
+    exit_time: Optional[str] = None
+    exit_date: Optional[str] = None
+    exit_type: Optional[str] = None
+    pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None
+
+
+class PaperTradingTradesResponse(BaseModel):
+    """GET /api/v1/paper_trading/trades — closed trades, sorted by exit_date desc."""
+
+    trades: List[PaperTradingTrade] = Field(default_factory=list)
+    count: int = 0
+
+
+class EquityCurvePoint(BaseModel):
+    date: str
+    equity: float
+
+
+class EquityCurveResponse(BaseModel):
+    """GET /api/v1/paper_trading/equity_curve."""
+
+    points: List[EquityCurvePoint] = Field(default_factory=list)
+
+
+class GateStatusResponse(BaseModel):
+    """GET /api/v1/paper_trading/gate_status — Phase 3 Gate 7 progress
+    (>=90 NSE trading days of continuous live daily pipeline runs)."""
+
+    days_count: int = 0
+    gate_threshold: int = 90
+    gate_cleared: bool = False
+
+
+# ===== Paper Trading Pending Actions (SPEC-PT-003, review/approve) =====
+class PendingActionRow(BaseModel):
+    """One proposed trade awaiting human accept/reject, as persisted in
+    paper_trading/pending/{date}.json by scripts/run_daily_paper_trading.py
+    when PAPER_TRADING_REQUIRE_APPROVAL is set."""
+
+    action_id: str
+    date: str
+    action_type: str  # 'buy' | 'sell' | 'reduce'
+    ticker: str
+    sector: Optional[str] = None
+    price: Optional[float] = None  # propose-time price, display only — accept re-fetches live price
+    reason: str
+    status: str = "pending"  # 'pending' | 'accepted' | 'rejected'
+
+
+class PendingActionsResponse(BaseModel):
+    """GET /api/v1/paper_trading/pending."""
+
+    date: Optional[str] = None
+    actions: List[PendingActionRow] = Field(default_factory=list)
+
+
+class ActionDecisionResponse(BaseModel):
+    """POST /api/v1/paper_trading/pending/{action_id}/{accept,reject}."""
+
+    action_id: str
+    status: str  # 'accepted' | 'rejected'
+    executed: bool = False
+    detail: Optional[str] = None
+
+
+# ===== Technical Analysis API scaffolding (SPEC-TA-004) — the 94 real
+# features computed by features/technical.py, features/advanced_technical.py,
+# features/pattern_scores.py already exist in the daily feature Parquets;
+# these endpoints shape them for the UI instead of exposing the raw
+# /api/v1/features/{ticker} dict directly. =====
+class TAIndicatorsResponse(BaseModel):
+    """GET /api/v1/ta/{ticker}/indicators."""
+
+    ticker: str
+    date: Optional[str] = None
+    available: bool = False
+    indicators: Dict[str, Optional[float]] = Field(default_factory=dict)
+
+
+class TAPatternsResponse(BaseModel):
+    """GET /api/v1/ta/{ticker}/patterns."""
+
+    ticker: str
+    date: Optional[str] = None
+    available: bool = False
+    patterns: Dict[str, Optional[float]] = Field(default_factory=dict)
+
+
+class TACompareTickerRow(BaseModel):
+    ticker: str
+    rs_vs_nifty500_21d: Optional[float] = None
+    beta_63d: Optional[float] = None
+    alpha_21d: Optional[float] = None
+
+
+class TACompareResponse(BaseModel):
+    """GET /api/v1/ta/compare?tickers=A,B,C."""
+
+    date: Optional[str] = None
+    rows: List[TACompareTickerRow] = Field(default_factory=list)
+    correlation: Dict[str, Dict[str, float]] = Field(
+        default_factory=dict, description="Pairwise close-to-close return correlation, computed from real OHLCV"
+    )
+
+
+class TASectorBreadthRow(BaseModel):
+    sector: str
+    advances: int = 0
+    declines: int = 0
+    unchanged: int = 0
+    avg_change_pct: Optional[float] = None
+
+
+class TAMarketOverviewResponse(BaseModel):
+    """GET /api/v1/ta/market_overview."""
+
+    date: Optional[str] = None
+    advances: int = 0
+    declines: int = 0
+    unchanged: int = 0
+    sector_breadth: List[TASectorBreadthRow] = Field(default_factory=list)
+    available: bool = False
+
+
+# ===== Technical Analysis Screener & Alerts (SPEC-TA-005, SPEC-TA-006) =====
+# Schemas for the screener (named templates + custom conditions) and the
+# daily alert checker (ta_signals table read-back). Added alongside the
+# existing TA scaffolding schemas above; keeps all TA schemas together in
+# one block for easy navigation.
+
+class TATemplateInfo(BaseModel):
+    """One template's summary metadata, for GET /api/v1/ta/screener/templates."""
+
+    name: str
+    category: str
+    description: str
+    condition_count: int
+
+
+class TATemplateListResponse(BaseModel):
+    """GET /api/v1/ta/screener/templates — all 42 pre-built templates."""
+
+    templates: List[TATemplateInfo] = Field(default_factory=list)
+    count: int = 0
+
+
+class TAScreenerCondition(BaseModel):
+    """One condition in a custom screener request.
+
+    op: "lt" | "gt" | "lte" | "gte" | "eq" | "between" | "top_pct" | "bottom_pct"
+    value: scalar for lt/gt/lte/gte/eq/top_pct/bottom_pct; [lo, hi] list for between.
+    feature2: optional second column name for col-vs-col ops (gt_col etc.).
+    """
+
+    feature: str
+    op: str
+    value: Optional[Any] = None
+    feature2: Optional[str] = None
+
+
+class TAScreenerRequest(BaseModel):
+    """POST /api/v1/ta/screener/custom body."""
+
+    conditions: List[TAScreenerCondition]
+    date: Optional[str] = Field(default=None, description="YYYY-MM-DD; defaults to latest")
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class TAScreenerRow(BaseModel):
+    """One result row from a screener run."""
+
+    ticker: str
+    date: str
+    template_name: str
+    matched_conditions: int
+    total_conditions: int
+    score: float
+    key_values: Dict[str, Optional[float]] = Field(default_factory=dict)
+
+
+class TAScreenerResponse(BaseModel):
+    """Response for /screener/run/{template_name} and /screener/custom."""
+
+    template_name: str
+    date: Optional[str] = None
+    rows: List[TAScreenerRow] = Field(default_factory=list)
+    count: int = 0
+
+
+class TAAlertRow(BaseModel):
+    """One row from the ta_signals table (daily alert match)."""
+
+    date: str
+    ticker: str
+    template_name: str
+    category: str
+    score: float
+    matched_conditions: int
+    total_conditions: int
+    key_values: Dict[str, Optional[float]] = Field(default_factory=dict)
+
+
+class TAAlertResponse(BaseModel):
+    """Response for /alerts/today and /alerts/{ticker}."""
+
+    as_of_date: Optional[str] = None
+    rows: List[TAAlertRow] = Field(default_factory=list)
+    count: int = 0
+
+
+# ===== Fundamental Analysis API scaffolding (SPEC-FA-008) — the 27
+# sector-relative z-scored ratios + 3 staleness flags (features/fundamental.py)
+# and 12 governance features (features/governance.py) already exist in the
+# daily feature Parquet; features/fundamental_composites.py adds the small
+# net-new composite-scoring/peer-selection/screener logic. =====
+class FARatiosResponse(BaseModel):
+    """GET /api/v1/fundamentals/{ticker}/ratios."""
+
+    ticker: str
+    date: Optional[str] = None
+    available: bool = False
+    ratios: Dict[str, Optional[float]] = Field(
+        default_factory=dict, description="27 sector-relative z-scored ratios + 3 staleness flags"
+    )
+
+
+class FAPeerRow(BaseModel):
+    ticker: str
+    roe: Optional[float] = None
+    roce: Optional[float] = None
+    debt_to_equity: Optional[float] = None
+    pe_ratio: Optional[float] = None
+
+
+class FAPeersResponse(BaseModel):
+    """GET /api/v1/fundamentals/{ticker}/peers."""
+
+    ticker: str
+    date: Optional[str] = None
+    sector: Optional[str] = None
+    peers: List[FAPeerRow] = Field(default_factory=list)
+
+
+class FASectorResponse(BaseModel):
+    """GET /api/v1/fundamentals/sector/{sector}."""
+
+    sector: str
+    date: Optional[str] = None
+    ticker_count: int = 0
+    avg_ratios: Dict[str, Optional[float]] = Field(default_factory=dict)
+    note: str = "Sector-unique metrics (e.g. GNPA for banks, ANDA for pharma) are not computed anywhere yet — only sector aggregates of the standard ratio set are shown."
+
+
+class FAScreenerResponse(BaseModel):
+    """GET /api/v1/fundamentals/screener?preset=."""
+
+    preset: str
+    date: Optional[str] = None
+    tickers: List[str] = Field(default_factory=list)
+
+
+class FAScoresResponse(BaseModel):
+    """GET /api/v1/fundamentals/{ticker}/scores."""
+
+    ticker: str
+    date: Optional[str] = None
+    quality_score: Optional[float] = None
+    growth_score: Optional[float] = None
+    management_quality_score: Optional[float] = None
+
+
+# ===== Job Autoruns / Ops API (SPEC-SCHED-014) — exposes the scheduler
+# infrastructure that already exists (ingestion/scheduler/checkpoint.py's
+# STEPS, the pipeline_checkpoints/scheduler_heartbeats tables) rather than
+# building any new scheduling logic. =====
+class OpsStepRow(BaseModel):
+    step_name: str
+    step_index: int
+    is_backfillable: bool
+    status: str = "never_run"  # 'never_run' | 'running' | 'success' | 'failed' | 'skipped'
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error_message: Optional[str] = None
+    last_success_date: Optional[str] = Field(
+        default=None,
+        description="Most recent date (any date, not just the one this row is scoped to) this "
+        "step's checkpoint recorded status='success'.",
+    )
+    next_scheduled_run: Optional[datetime] = Field(
+        default=None,
+        description="Earliest next fire time across every recurring job that can run this step "
+        "(daily_pipeline, morning_catchup) — same value for every row.",
+    )
+
+
+class OpsStepsResponse(BaseModel):
+    """GET /api/v1/ops/steps."""
+
+    date: str
+    steps: List[OpsStepRow] = Field(default_factory=list)
+
+
+class OpsFailedStepInfo(BaseModel):
+    """One step's failed checkpoint, attached to an OpsRunRow with status='failed'."""
+
+    step_name: str
+    error_message: Optional[str] = None
+
+
+class OpsRunRow(BaseModel):
+    run_id: Optional[int] = None
+    date: Optional[str] = None
+    status: Optional[str] = None
+    stocks_processed: Optional[int] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error_message: Optional[str] = None
+    failed_steps: List[OpsFailedStepInfo] = Field(
+        default_factory=list,
+        description="Every step with a 'failed' checkpoint for this run's date (pipeline_runs "
+        "itself never recorded which step failed or why — error_message above is always None; "
+        "this is looked up from pipeline_checkpoints instead).",
+    )
+
+
+class OpsRunsResponse(BaseModel):
+    """GET /api/v1/ops/runs."""
+
+    runs: List[OpsRunRow] = Field(default_factory=list)
+
+
+class OpsForceStepResult(BaseModel):
+    """One (step, date) outcome within an OpsForceStepResponse.results list."""
+
+    step_name: str
+    date: str
+    status: str  # 'success' | 'failed'
+    error_message: Optional[str] = None
+
+
+class OpsForceStepResponse(BaseModel):
+    """POST /api/v1/ops/steps/{step_name}/force.
+
+    date/status/error_message describe the most recent date attempted
+    (kept for backward compatibility with callers reading a single result);
+    results carries every date's outcome when an explicit `date` query param
+    was omitted and the endpoint auto-backfilled multiple missing trading days.
+    """
+
+    step_name: str
+    date: str
+    status: str  # 'success' | 'failed'
+    error_message: Optional[str] = None
+    results: List[OpsForceStepResult] = Field(default_factory=list)
+
+
+# ===== Paper Trading Backdated Entries (SPEC-PT-003 addendum) =====
+class BackdatedBuyRequest(BaseModel):
+    """POST /api/v1/paper_trading/backdated_buy."""
+
+    ticker: str
+    date: str  # YYYY-MM-DD
+    quantity: Optional[int] = None  # if omitted, PortfolioSimulator sizes it
+
+
+class BackdatedBuyResponse(BaseModel):
+    ticker: str
+    date: str
+    entry_price: Optional[float] = None
+    quantity: Optional[int] = None
+    executed: bool = False
+    detail: Optional[str] = None

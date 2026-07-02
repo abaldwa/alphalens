@@ -20,7 +20,7 @@ from fastapi import APIRouter, Query
 
 from config.settings import SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
-from datastore.api.schemas import RegimeResponse
+from datastore.api.schemas import RegimeHistoryResponse, RegimeHistoryRow, RegimeResponse
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,28 @@ router = APIRouter(prefix="/api/v1/macro", tags=["Macro"])
 
 HMM_MARKET_MODEL_NAME = "hmm_market"
 HMM_MARKET_TICKER = "MARKET"
+
+
+# [AS BUILT, P3.x] /regime/history (SPEC-UI-002 Signal Detail screen).
+@router.get("/regime/history", response_model=RegimeHistoryResponse)
+async def get_regime_history(
+    days: int = Query(30, ge=1, le=365, description="Number of most recent days to return"),
+) -> RegimeHistoryResponse:
+    """Last `days` market-wide HMM regime rows, ascending by date (SPEC-UI-002)."""
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT date, hmm_regime, hmm_regime_prob, hmm_stability FROM ml_signals
+            WHERE ticker = ? AND model_name = ? ORDER BY date DESC LIMIT ?
+            """,
+            [HMM_MARKET_TICKER, HMM_MARKET_MODEL_NAME, days],
+        ).fetchall()
+
+    history = [
+        RegimeHistoryRow(date=r[0], hmm_regime=r[1], hmm_regime_prob=r[2], hmm_stability=r[3])
+        for r in reversed(rows)
+    ]
+    return RegimeHistoryResponse(days=history)
 
 
 @router.get("/regime", response_model=RegimeResponse)

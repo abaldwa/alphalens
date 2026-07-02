@@ -18,9 +18,8 @@ Key mandated tests (from build prompt):
   - Real economy: forward-filled correctly (no lookahead — availability_date enforced)
 """
 
-import math
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

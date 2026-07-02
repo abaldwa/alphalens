@@ -280,10 +280,16 @@ def _fit_and_decode_one_ticker(ticker: str, g: pd.DataFrame, n_restarts: int, n_
     return out
 
 
+def _fit_and_decode_one_ticker_star(args: Tuple[str, pd.DataFrame, int, int]) -> pd.DataFrame:
+    """Pickled-args shim for Pool.imap — spawn workers can't use starmap kwargs cleanly."""
+    return _fit_and_decode_one_ticker(*args)
+
+
 def compute_hmm_regime_features(
     ohlcv: pd.DataFrame,
     n_restarts: int = DEFAULT_N_RESTARTS,
     n_iter: int = DEFAULT_N_ITER,
+    n_workers: int = 1,
 ) -> pd.DataFrame:
     """
     Fit one HMMRegimeDetector per ticker and return the 6 regime features.
@@ -298,6 +304,18 @@ def compute_hmm_regime_features(
     n_restarts, n_iter : int
         Passed through to HMMRegimeDetector — override for higher-fidelity
         offline fits (02_models.md suggests 10-20 restarts x 1000 iters).
+    n_workers : int
+        1 (default) keeps the original single-process loop, unchanged for
+        every existing caller/test. >1 fits tickers concurrently via a
+        spawn-context multiprocessing.Pool — spawn (not fork) so each
+        worker starts fresh rather than inheriting the parent's RSS; each
+        task ships only that ticker's own observable slice. Keep this
+        conservative: this exact per-ticker-fit parallelization pattern
+        (scripts/feature_backfill_hybrid.py) OOM-killed this machine twice
+        (2026-06-26, confirmed via journalctl) at n_workers=10 against the
+        501-ticker universe; the following day's run against the full
+        ~2,644-ticker universe used n_workers=3 with no OOM. Default stays
+        1 (opt-in) — callers on this machine should pass 3, not 10.
 
     Returns
     -------
@@ -329,9 +347,52 @@ def compute_hmm_regime_features(
         raise ValueError(f"ohlcv is missing required columns: {missing}")
 
     obs_df = compute_hmm_observables(ohlcv)
-    parts = [
-        _fit_and_decode_one_ticker(ticker, g, n_restarts, n_iter)
-        for ticker, g in obs_df.groupby("ticker", sort=False)
-    ]
+    groups = list(obs_df.groupby("ticker", sort=False))
+
+    if n_workers <= 1 or len(groups) <= 1:
+        parts = [
+            _fit_and_decode_one_ticker(ticker, g, n_restarts, n_iter)
+            for ticker, g in groups
+        ]
+    else:
+        import multiprocessing
+
+        # CRITICAL: numpy/scipy (via hmmlearn's EM) already parallelize each
+        # single fit internally through OpenBLAS/MKL -- confirmed empirically
+        # (a "sequential" single-process fit here showed 55 OS threads and
+        # ~350% average CPU on this machine, not the ~100% a naive single-
+        # threaded loop would suggest). Stacking n_workers processes on top
+        # without capping that inner thread pool causes severe oversubscription
+        # (n_workers x BLAS's own thread count, all fighting for the same
+        # cores) that made a real production run 3x SLOWER than the original
+        # sequential loop despite the extra processes (measured: 20-ticker
+        # benchmark went 331s sequential -> 257s parallel-unpinned -> 19.8s
+        # parallel-pinned). Spawned children inherit os.environ at process
+        # creation, before their own numpy import initializes BLAS, so
+        # setting these here (before Pool creation) reliably caps each
+        # worker to one BLAS thread and lets the outer process-level
+        # parallelism actually win. Restored after the pool exits so this
+        # doesn't leak into unrelated code running later in this process.
+        _blas_env_vars = (
+            "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
+        )
+        import os
+        _prev_env = {var: os.environ.get(var) for var in _blas_env_vars}
+        try:
+            for var in _blas_env_vars:
+                os.environ[var] = "1"
+
+            worker_args = [(ticker, g, n_restarts, n_iter) for ticker, g in groups]
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes=n_workers) as pool:
+                parts = list(pool.imap(_fit_and_decode_one_ticker_star, worker_args))
+        finally:
+            for var, val in _prev_env.items():
+                if val is None:
+                    os.environ.pop(var, None)
+                else:
+                    os.environ[var] = val
+
     result = pd.concat(parts, ignore_index=True)
     return result[["date", "ticker"] + HMM_REGIME_FEATURES]

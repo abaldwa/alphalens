@@ -151,6 +151,24 @@ def _build_benchmark_wide(benchmark_panel: pd.DataFrame) -> Optional[pd.DataFram
     return wide
 
 
+def _extract_target_date_panel(
+    panel: pd.DataFrame, target_date: pd.Timestamp, feature_columns: List[str]
+) -> pd.DataFrame:
+    """Return the rows for target_date, tolerating feature panels that have no date column."""
+    if panel.empty:
+        return pd.DataFrame(columns=["ticker"] + feature_columns)
+
+    if "date" not in panel.columns:
+        out = panel.copy()
+        out["date"] = target_date
+        return out[["ticker"] + feature_columns]
+
+    filtered = panel[panel["date"] == target_date]
+    if filtered.empty:
+        return pd.DataFrame(columns=["ticker"] + feature_columns)
+    return filtered.drop(columns=["date"])
+
+
 def _validate_feature_matrix(matrix: pd.DataFrame) -> None:
     """
     SPEC-PIPE-005 quality gates: null rate, delivery_pct range, ratio range.
@@ -209,6 +227,7 @@ def build_feature_matrix(
     save: bool = True,
     compute_hmm: bool = True,
     data_cache=None,
+    hmm_workers: int = 1,
 ) -> pd.DataFrame:
     """
     Build the full daily feature matrix for `tickers` on `date`.
@@ -233,6 +252,10 @@ def build_feature_matrix(
         docstring) — set False to skip it (HMM_REGIME_FEATURES columns
         come back all-NaN) for fast iteration/tests that don't need regime
         features.
+    hmm_workers : int
+        Forwarded to compute_hmm_regime_features's n_workers (default 1 =
+        original single-process behavior). See that function's docstring
+        for the OOM history behind not defaulting this higher.
 
     Returns
     -------
@@ -275,8 +298,15 @@ def build_feature_matrix(
 
     client = client or DataStoreClient()
 
-    # One bulk HTTP call for all tickers (universe + benchmarks) instead of 500+ per-ticker calls.
-    bulk_panel = client.get_ohlcv_bulk(from_date, to_date)
+    # One bulk HTTP call for all tickers (universe + benchmarks) when the
+    # client supports it; otherwise fall back to the existing per-ticker path.
+    bulk_panel = None
+    bulk_loader = getattr(client, "get_ohlcv_bulk", None)
+    if callable(bulk_loader):
+        try:
+            bulk_panel = bulk_loader(from_date, to_date)
+        except Exception as exc:
+            logger.warning("Bulk OHLCV fetch failed, falling back to per-ticker fetch: %s", exc)
 
     universe_panel = _fetch_ohlcv_panel(client, tickers, from_date, to_date, _bulk_panel=bulk_panel)
     benchmark_panel = _fetch_ohlcv_panel(
@@ -294,15 +324,15 @@ def build_feature_matrix(
         technical = compute_technical_features(universe_panel, benchmark_wide)
         intraday = compute_intraday_features(universe_panel)
         hmm = (
-            compute_hmm_regime_features(universe_panel)
+            compute_hmm_regime_features(universe_panel, n_workers=hmm_workers)
             if compute_hmm
             else pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
         )
         pnd = compute_pnd_features(universe_panel)
-    today_technical = technical[technical["date"] == target_date].drop(columns=["date"])
-    today_intraday = intraday[intraday["date"] == target_date].drop(columns=["date"])
-    today_hmm = hmm[hmm["date"] == target_date].drop(columns=["date"]) if not hmm.empty else hmm.drop(columns=["date"])
-    today_pnd = pnd[pnd["date"] == target_date].drop(columns=["date"]) if not pnd.empty else pnd.drop(columns=["date"])
+    today_technical = _extract_target_date_panel(technical, target_date, CORE_TECHNICAL_FEATURES)
+    today_intraday = _extract_target_date_panel(intraday, target_date, INTRADAY_FEATURES)
+    today_hmm = _extract_target_date_panel(hmm, target_date, HMM_REGIME_FEATURES)
+    today_pnd = _extract_target_date_panel(pnd, target_date, PND_FEATURES)
 
     calendar_row = compute_calendar_features(target_date)
 

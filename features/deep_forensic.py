@@ -35,7 +35,7 @@ filing_date <= as_of. No quarter_end_date used as a join key.
 
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import numpy as np

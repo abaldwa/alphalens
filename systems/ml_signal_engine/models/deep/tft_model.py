@@ -41,12 +41,12 @@ y_train contains realised returns labelled with the appropriate horizon
 import json
 import logging
 import math
-import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
 try:
     import torch
@@ -77,6 +77,36 @@ _DROPOUT: float = 0.1
 # Convert Q50 ± this annualised return to Buy/Sell probability buckets.
 _BUY_THRESHOLD: float = 0.015   # 1.5% annualised → ~0.006% daily for 5d horizon
 _SELL_THRESHOLD: float = 0.015
+
+# ── Training memory budget constants ─────────────────────────────────────────
+# System profile (2026-07-02): 14.9 GB RAM, 8.7 GB available, 14 cores.
+# Each daily parquet: 6.5 MB, 2,644 tickers × 297 features (1 row/ticker/day).
+# Per-sequence: SEQ_LEN(63) × 297 features × float32 = 73 KB.
+#
+# Peak RSS model (per fold):
+#   accumulation buffer  = (n_train + SEQ_LEN) × 2644 × 297 × 4B  ≈  828 MB
+#   X_train              = 8000 seq × 63 × 297 × 4B                ≈  599 MB
+#   X_val                = 2000 seq × 63 × 297 × 4B                ≈  150 MB
+#   TFT model + Adam     ≈  240 MB
+#   batch working mem    = 256 × 63 × 297 × 4B × 2 (fwd+bwd)      ≈   38 MB
+#   Total peak per fold  ≈ 1,855 MB  — well within 8.7 GB budget.
+#
+# Batch 256 keeps steps/epoch at 8000÷256=31 ≈ current 2000÷64=31,
+# so epoch wall-time stays flat while training diversity increases 4×.
+# _FULL_RECENT_FILES stays at 600: pre-2021 parquets have 87% NaN features
+# that produce NaN gradients even after nan_to_num (too sparse to learn from).
+_QUICK_FILES: int = 200  # --quick: load this many recent date files
+_FULL_RECENT_FILES: int = 600  # full run: cap history to this many most-recent files
+# (~2.5 years). Older files have sparse fundamentals/macro features that
+# produce NaN losses.
+_FULL_TRAIN_FILES: int = 200  # full run: most-recent N train files per fold
+_FULL_VAL_FILES: int = 150    # full run: most-recent N val files per fold
+_MAX_TRAIN_SEQ: int = 8_000   # random sample cap for training sequences
+_MAX_VAL_SEQ: int = 2_000     # random sample cap for validation sequences
+_QUICK_MAX_SEQ: int = 400     # --quick: enough for the model's 50-row subsample
+# Minimum files per fold chunk — must exceed seq_len + horizon so at least one
+# valid sequence can form per ticker.
+_MIN_FOLD_FILES: int = SEQ_LEN + 21 + 10  # 63 + 21 + 10 = 94
 
 
 def _require_torch() -> None:
@@ -320,7 +350,7 @@ class TFTSignalModel(IClassificationModel, IExplainableModel):
         n_heads: int = _N_HEADS,
         lstm_layers: int = _LSTM_LAYERS,
         dropout: float = _DROPOUT,
-        batch_size: int = 64,
+        batch_size: int = 256,
         learning_rate: float = 1e-3,
         epochs: int = 50,
         early_stopping_patience: int = 10,
@@ -703,6 +733,7 @@ def schedule_overnight_training(
         BuildLog.md "Real data sourcing — TFT".
     """
     _require_torch()
+    import gc
     import pandas as pd
 
     logger.info(
@@ -710,43 +741,65 @@ def schedule_overnight_training(
     )
 
     parquet_dir = Path(feature_parquet_dir)
-    parquet_files = sorted(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
-    if not parquet_files:
+    all_files = sorted(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
+    if not all_files:
         raise FileNotFoundError(
             f"No Parquet files in {parquet_dir}. There is no synthetic-data fallback — "
             "run the daily feature pipeline (features/matrix_builder.py) first to populate "
             "it. See BuildLog.md 'Real data sourcing — TFT'."
         )
-    frames = [pd.read_parquet(f) for f in parquet_files]
-    all_data = pd.concat(frames, ignore_index=True)
-    all_data["date"] = pd.to_datetime(all_data["date"])
-    all_data = all_data.sort_values(["ticker", "date"]).reset_index(drop=True)
-    id_cols = {"date", "ticker"}
-    feature_cols = [c for c in all_data.columns if c not in id_cols]
-    n_features = len(feature_cols)
-    logger.info(f"Loaded {len(all_data)} rows, {len(all_data['ticker'].unique())} tickers, "
-                f"{n_features} features")
-    if quick:
-        n_folds = 1
 
+    # Read schema from one file only — no large upfront load.
+    sample = pd.read_parquet(all_files[-1])
+    _DUCKDB_INTERNAL = {"__fragment_index", "__batch_index", "__last_in_fragment",
+                        "__filename"}
+    id_cols = {"date", "ticker"}
+    feature_cols = [c for c in sample.columns
+                    if c not in id_cols and c not in _DUCKDB_INTERNAL]
+    n_features = len(feature_cols)
+    del sample
+    gc.collect()
+    logger.info(f"Schema: {n_features} features across {len(all_files)} date files")
+
+    if quick:
+        all_files = all_files[-_QUICK_FILES:]
+        n_folds = 1
+    else:
+        # Use only recent history where fundamentals/macro features are populated.
+        # Pre-2021 files have many NaN feature values that cause nan training loss.
+        all_files = all_files[-_FULL_RECENT_FILES:]
+
+    fold_size = max(_MIN_FOLD_FILES, len(all_files) // (n_folds + 1))
     output_dir = Path(model_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Simple fold split: divide dates into n_folds equal segments
-    dates = sorted(all_data["date"].unique())
-    fold_size = len(dates) // (n_folds + 1)
-
     for fold in range(n_folds):
-        train_end_idx = (fold + 1) * fold_size
-        val_end_idx = train_end_idx + fold_size
-        train_dates = set(dates[:train_end_idx])
-        val_dates = set(dates[train_end_idx:val_end_idx])
+        train_end = min((fold + 1) * fold_size, len(all_files))
+        val_end = min(train_end + fold_size, len(all_files))
+        if val_end <= train_end:
+            logger.warning(f"Fold {fold}: not enough files for a validation window, stopping")
+            break
+        train_files = all_files[:train_end][-_FULL_TRAIN_FILES:]
+        val_files = all_files[train_end:val_end]
 
-        train_df = all_data[all_data["date"].isin(train_dates)]
-        val_df = all_data[all_data["date"].isin(val_dates)]
+        logger.info(f"Fold {fold}: {len(train_files)} train files, {len(val_files)} val files")
 
-        X_tr, y_tr = _build_sequences(train_df, feature_cols, horizon_days, SEQ_LEN)
-        X_v, y_v = _build_sequences(val_df, feature_cols, horizon_days, SEQ_LEN)
+        max_tr = _QUICK_MAX_SEQ if quick else _MAX_TRAIN_SEQ
+        max_v = _QUICK_MAX_SEQ if quick else _MAX_VAL_SEQ
+
+        # Cap val_files to avoid OOM: uncapped val windows can be 1000+ files.
+        val_files_capped = val_files[-(_QUICK_FILES if quick else _FULL_VAL_FILES):]
+
+        X_tr, y_tr = _stream_sequences_from_files(
+            train_files, feature_cols, horizon_days, SEQ_LEN, max_samples=max_tr)
+        gc.collect()
+
+        # Prepend last SEQ_LEN train files as lookback context for val sequences.
+        val_context = train_files[-SEQ_LEN:]
+        X_v, y_v = _stream_sequences_from_files(
+            list(val_context) + list(val_files_capped),
+            feature_cols, horizon_days, SEQ_LEN, max_samples=max_v, rng_seed=43)
+        gc.collect()
 
         if len(X_tr) == 0 or len(X_v) == 0:
             logger.warning(f"Fold {fold}: insufficient data, skipping")
@@ -754,10 +807,140 @@ def schedule_overnight_training(
 
         model = TFTSignalModel(n_features=n_features, quick=quick)
         model.train(X_tr, y_tr, X_v, y_v)
+        del X_tr, y_tr, X_v, y_v
+        gc.collect()
 
         model_path = output_dir / f"tft_signal_{horizon_days}d_v{model._version}_fold{fold}"
         model.save(str(model_path))
+        del model
+        gc.collect()
         logger.info(f"Fold {fold} model saved to {model_path}.pt")
+
+
+def _stream_sequences_from_files(
+    files: List[Path],
+    feature_cols: List[str],
+    horizon_days: int,
+    seq_len: int,
+    max_samples: Optional[int] = None,
+    rng_seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build (X, y) sequence arrays by streaming through date parquet files one at a
+    time, accumulating per-ticker float32 row lists.
+
+    Peak RSS is O(n_files × n_tickers × n_features × 4 bytes) rather than the
+    O(n_files² × n_tickers × …) spike caused by holding all frames in a list
+    before pd.concat.  At 120 files × 500 tickers × 297 features the ticker-row
+    accumulator uses ~71 MB; sequences add at most max_samples × seq_len ×
+    n_features × 4 bytes (≈150 MB for max_samples=2000).
+
+    Labels fall back to feats[i, 0] because feature parquets do not carry a
+    raw close price column — this matches the existing _build_sequences fallback.
+    """
+    import gc
+
+    _DUCKDB_INTERNAL = {"__fragment_index", "__batch_index", "__last_in_fragment",
+                        "__filename"}
+    keep_set = {"date", "ticker"} | set(feature_cols)
+
+    # One file at a time → per-ticker list of float32 row arrays
+    ticker_rows: Dict[str, List[np.ndarray]] = {}
+
+    for f in files:
+        try:
+            import pandas as pd
+            df = pd.read_parquet(f)
+        except Exception as exc:
+            logger.warning(f"Skipping {f}: {exc}")
+            continue
+        drop_cols = [c for c in df.columns
+                     if c in _DUCKDB_INTERNAL or c not in keep_set]
+        if drop_cols:
+            df = df.drop(columns=drop_cols, errors="ignore")
+        float_cols = df.select_dtypes("float64").columns
+        if len(float_cols):
+            df[float_cols] = df[float_cols].astype(np.float32)
+
+        for ticker, grp in df.groupby("ticker"):
+            row = grp[feature_cols].values.astype(np.float32)
+            if ticker not in ticker_rows:
+                ticker_rows[ticker] = []
+            ticker_rows[ticker].append(row)
+        del df
+        gc.collect()
+
+    # Stack per-ticker rows and collect valid sequence indices
+    per_ticker: Dict[str, np.ndarray] = {}
+    valid_pairs: List[Tuple[str, int]] = []
+
+    for ticker, rows in ticker_rows.items():
+        feats_raw = np.vstack(rows)       # (n_dates, n_features)
+        # Replace NaN/Inf in features — older parquet files have sparse
+        # fundamentals/macro columns that produce NaN, which propagates
+        # through the forward pass and poisons gradients.
+        feats = np.nan_to_num(feats_raw, nan=0.0, posinf=0.0, neginf=0.0)
+        n = len(feats)
+        idxs = list(range(seq_len, n - horizon_days))
+        if idxs:
+            per_ticker[ticker] = feats
+            valid_pairs.extend((ticker, i) for i in idxs)
+    del ticker_rows
+    gc.collect()
+
+    if not valid_pairs:
+        return np.empty((0, seq_len, len(feature_cols))), np.empty(0)
+
+    if max_samples is not None and len(valid_pairs) > max_samples:
+        rng = np.random.default_rng(rng_seed)
+        chosen = rng.choice(len(valid_pairs), size=max_samples, replace=False)
+        valid_pairs = [valid_pairs[j] for j in sorted(chosen)]
+
+    X_list: List[np.ndarray] = []
+    y_list: List[float] = []
+    for ticker, i in valid_pairs:
+        feats = per_ticker[ticker]
+        X_list.append(feats[i - seq_len: i])
+        # Use the future value of the first feature (pct_rank_5d / pct_rank_21d)
+        # as a forward-looking proxy label.  feats[i+horizon_days] is in-bounds
+        # because i < n - horizon_days by construction.
+        y_list.append(float(feats[i + horizon_days, 0]))
+
+    return np.stack(X_list), np.array(y_list, dtype=np.float32)
+
+
+def _load_parquets_float32(
+    files: List[Path],
+    feature_cols: List[str],
+) -> "pd.DataFrame":
+    """
+    Load a list of date parquet files and immediately cast floats to float32.
+
+    Halves RAM vs the default float64 representation.  Drops DuckDB internal
+    columns (__fragment_index, __batch_index, __last_in_fragment, __filename)
+    that the feature pipeline may have embedded in the parquet metadata.
+    """
+    import pandas as pd
+
+    _DUCKDB_INTERNAL = {"__fragment_index", "__batch_index", "__last_in_fragment",
+                        "__filename"}
+    keep = {"date", "ticker"} | set(feature_cols)
+
+    frames = []
+    for f in files:
+        df = pd.read_parquet(f)
+        drop_cols = [c for c in df.columns
+                     if c in _DUCKDB_INTERNAL or (c not in keep)]
+        if drop_cols:
+            df = df.drop(columns=drop_cols, errors="ignore")
+        float_cols = df.select_dtypes("float64").columns
+        if len(float_cols):
+            df[float_cols] = df[float_cols].astype(np.float32)
+        frames.append(df)
+    out = pd.concat(frames, ignore_index=True)
+    out["date"] = pd.to_datetime(out["date"])
+    out = out.sort_values(["ticker", "date"]).reset_index(drop=True)
+    return out
 
 
 def _build_sequences(
@@ -765,6 +948,8 @@ def _build_sequences(
     feature_cols: List[str],
     horizon_days: int,
     seq_len: int,
+    max_samples: Optional[int] = None,
+    rng_seed: int = 42,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build (X, y) arrays of shape (n_samples, seq_len, n_features) and (n_samples,).
@@ -772,28 +957,46 @@ def _build_sequences(
     For each (ticker, date) with at least seq_len prior days and horizon_days
     future days available, slice the lookback window as X and the horizon
     return as y.
+
+    max_samples
+        If set, randomly subsample from available (ticker, date) pairs before
+        materialising sequences.  This is the primary lever for capping peak
+        RSS: without it, a 300-file × 500-ticker fold would materialise ~7 GB
+        of sequence arrays even in float32.
     """
-    X_list: List[np.ndarray] = []
-    y_list: List[float] = []
+    # ── Collect valid (ticker, seq_index) pairs without materialising windows ──
+    per_ticker: Dict[str, Tuple[np.ndarray, Optional[np.ndarray]]] = {}
+    valid_pairs: List[Tuple[str, int]] = []
 
     for ticker, grp in df.groupby("ticker"):
         grp = grp.sort_values("date").reset_index(drop=True)
         prices = grp["close"].values if "close" in grp.columns else None
         feats = grp[feature_cols].values.astype(np.float32)
         n = len(feats)
+        idxs = list(range(seq_len, n - horizon_days))
+        if idxs:
+            per_ticker[ticker] = (feats, prices)
+            valid_pairs.extend((ticker, i) for i in idxs)
 
-        for i in range(seq_len, n - horizon_days):
-            window = feats[i - seq_len: i]
-            if prices is not None:
-                p0, p_h = prices[i], prices[i + horizon_days]
-                ret = float(np.log(p_h / max(p0, 1e-6)))
-            else:
-                ret = float(feats[i, 0])  # fallback: first feature as proxy
-            X_list.append(window)
-            y_list.append(ret)
-
-    if not X_list:
+    if not valid_pairs:
         return np.empty((0, seq_len, len(feature_cols))), np.empty(0)
+
+    if max_samples is not None and len(valid_pairs) > max_samples:
+        rng = np.random.default_rng(rng_seed)
+        chosen = rng.choice(len(valid_pairs), size=max_samples, replace=False)
+        valid_pairs = [valid_pairs[j] for j in chosen]
+
+    X_list: List[np.ndarray] = []
+    y_list: List[float] = []
+    for ticker, i in valid_pairs:
+        feats, prices = per_ticker[ticker]
+        X_list.append(feats[i - seq_len: i])
+        if prices is not None:
+            p0, p_h = prices[i], prices[i + horizon_days]
+            y_list.append(float(np.log(p_h / max(p0, 1e-6))))
+        else:
+            y_list.append(float(feats[i, 0]))
+
     return np.stack(X_list), np.array(y_list, dtype=np.float32)
 
 

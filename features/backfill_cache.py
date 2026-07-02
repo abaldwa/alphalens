@@ -28,7 +28,7 @@ Usage (feature_backfill.py)
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
@@ -61,7 +61,7 @@ class BackfillDataCache:
         Latest date in the backfill — pre-load fetches history up to here.
     """
 
-    def __init__(self, client, tickers: List[str], to_date: datetime) -> None:
+    def __init__(self, client, tickers: List[str], to_date: datetime, n_workers: int = 1) -> None:
         self._fundamentals: Dict[str, List[Dict[str, Any]]] = {}
         self._shareholding: Dict[str, List[Dict[str, Any]]] = {}
         self._corp_actions: Dict[str, List[Dict[str, Any]]] = {}
@@ -72,31 +72,54 @@ class BackfillDataCache:
             n, to_date.date().isoformat() if hasattr(to_date, 'date') else str(to_date),
         )
 
-        for i, ticker in enumerate(tickers):
-            if i % 100 == 0:
-                logger.info("  BackfillDataCache pre-load %d/%d", i, n)
-
+        def _load_one(ticker: str) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
             try:
-                self._fundamentals[ticker] = client.get_fundamentals_history(
+                fundamentals = client.get_fundamentals_history(
                     ticker, to_date, lookback_years=_MAX_LOOKBACK_YEARS
                 )
             except Exception as exc:
                 logger.debug("BackfillDataCache fundamentals %s: %s", ticker, exc)
-                self._fundamentals[ticker] = []
-
+                fundamentals = []
             try:
-                self._shareholding[ticker] = client.get_shareholding_history(
+                shareholding = client.get_shareholding_history(
                     ticker, to_date, lookback_years=_MAX_LOOKBACK_YEARS
                 )
             except Exception as exc:
                 logger.debug("BackfillDataCache shareholding %s: %s", ticker, exc)
-                self._shareholding[ticker] = []
-
+                shareholding = []
             try:
-                self._corp_actions[ticker] = client.get_corporate_actions(ticker)
+                corp_actions = client.get_corporate_actions(ticker)
             except Exception as exc:
                 logger.debug("BackfillDataCache corp_actions %s: %s", ticker, exc)
-                self._corp_actions[ticker] = []
+                corp_actions = []
+            return ticker, fundamentals, shareholding, corp_actions
+
+        if n_workers <= 1:
+            for i, ticker in enumerate(tickers):
+                if i % 100 == 0:
+                    logger.info("  BackfillDataCache pre-load %d/%d", i, n)
+                _, self._fundamentals[ticker], self._shareholding[ticker], self._corp_actions[ticker] = (
+                    _load_one(ticker)
+                )
+        else:
+            # Threaded, not multiprocessed: this is pure network I/O against
+            # the local DataStore API, so the GIL is released during each
+            # request and threads add negligible memory (unlike the HMM
+            # fit's process pool, which is CPU-bound and needs real
+            # processes — see regime_detector.compute_hmm_regime_features).
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            done = 0
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = {pool.submit(_load_one, ticker): ticker for ticker in tickers}
+                for future in as_completed(futures):
+                    ticker, fundamentals, shareholding, corp_actions = future.result()
+                    self._fundamentals[ticker] = fundamentals
+                    self._shareholding[ticker] = shareholding
+                    self._corp_actions[ticker] = corp_actions
+                    done += 1
+                    if done % 100 == 0:
+                        logger.info("  BackfillDataCache pre-load %d/%d", done, n)
 
         logger.info("BackfillDataCache: pre-load complete for %d tickers.", n)
 

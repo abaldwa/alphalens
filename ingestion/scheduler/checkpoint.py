@@ -40,19 +40,57 @@ logger = logging.getLogger(__name__)
 # SPEC-SCHED-006: each step declares is_backfillable. Steps after feature
 # computation are model inference / signal-writing and must never run
 # during backfill — gap days get data + features only, never predictions.
+#
+# SPEC-SCHED-011: each step declares depends_on (list of prerequisite step
+# names). run_steps_for_date evaluates dependencies before executing each
+# step: if any required dependency failed or was skipped, this step is
+# skipped too. Steps with no hard dependencies (download_fno, download_macro,
+# download_corporate_actions, download_large_deals) run unconditionally —
+# their failures are isolated and never cascade.
+#
+# depends_on semantics:
+#   [] (empty) — no hard prerequisite; step always attempted (unless already
+#       succeeded). Step implementations handle their own soft failures
+#       internally (try/except, returning normally even on source outage).
+#   ["step_x"] — only runs if step_x completed with status='success' for
+#       this date. If step_x failed/was-skipped, this step is skipped with
+#       reason logged; no pipeline abort.
+#
+# This enables the fallback the user requested: a failure in a non-critical
+# step (e.g. download_large_deals) never blocks compute_features, because
+# compute_features only depends on adjust_prices (which only depends on
+# download_bhavcopy). The 4 parallel downloader steps are fully independent.
 STEPS = [
-    {"name": "download_bhavcopy", "is_backfillable": True},
-    {"name": "download_fno", "is_backfillable": True},
-    {"name": "download_macro", "is_backfillable": True},
+    # Foundation: OHLCV is the hard prerequisite for everything downstream.
+    {"name": "download_bhavcopy", "is_backfillable": True, "depends_on": []},
+    # Independent downloaders: failures are isolated; each handles its own
+    # source outages via try/except and returns normally on failure.
+    {"name": "download_fno", "is_backfillable": True, "depends_on": []},
+    {"name": "download_macro", "is_backfillable": True, "depends_on": []},
     # Corporate actions must land before adjust_prices so the adjuster sees
-    # the full ledger when it eventually runs (PRICE_ADJUSTMENT_ENABLED controls
-    # whether adjust_prices actually applies factors — see config/settings.py).
-    {"name": "download_corporate_actions", "is_backfillable": True},
-    {"name": "download_large_deals", "is_backfillable": True},
-    {"name": "adjust_prices", "is_backfillable": True},
-    {"name": "compute_features", "is_backfillable": True},
-    {"name": "run_models", "is_backfillable": False},
-    {"name": "write_signals", "is_backfillable": False},
+    # the full ledger when it eventually runs (PRICE_ADJUSTMENT_ENABLED
+    # controls whether adjust_prices actually applies factors — see
+    # config/settings.py). Soft dep on bhavcopy only at the scheduler level:
+    # no OHLCV rows exist yet for today if bhavcopy failed, so the adjuster
+    # would be a no-op — but the corporate_actions table is useful for future
+    # dates regardless, so we still attempt download even if bhavcopy failed.
+    {"name": "download_corporate_actions", "is_backfillable": True, "depends_on": []},
+    {"name": "download_large_deals", "is_backfillable": True, "depends_on": []},
+    # adjust_prices is the first hard-dependency step: it needs OHLCV rows
+    # (written by download_bhavcopy) to be present. If bhavcopy failed there
+    # are no rows to adjust — skip.
+    {"name": "adjust_prices", "is_backfillable": True, "depends_on": ["download_bhavcopy"]},
+    # compute_features needs adjusted OHLCV. macro/fno data is consumed as
+    # NaN-tolerant soft inputs — features compute fine without them.
+    {"name": "compute_features", "is_backfillable": True, "depends_on": ["adjust_prices"]},
+    # Inference chain: each step hard-depends on the previous one.
+    {"name": "run_models", "is_backfillable": False, "depends_on": ["compute_features"]},
+    {"name": "write_signals", "is_backfillable": False, "depends_on": ["run_models"]},
+    # [AS BUILT, P3.x] paper_trade: not backfillable, same reasoning as
+    # run_models/write_signals — a gap day's signals were never genuinely
+    # live, so trading on them after the fact would let backfill silently
+    # inflate Phase 3 Gate 7's forward-time day count.
+    {"name": "paper_trade", "is_backfillable": False, "depends_on": ["write_signals"]},
 ]
 STEP_NAMES = [step["name"] for step in STEPS]
 _BACKFILLABLE = {step["name"]: step["is_backfillable"] for step in STEPS}
@@ -235,6 +273,40 @@ class CheckpointManager:
 
         logger.info(f"Checkpoint saved: {run_date} / {step_name} -> {status}")
 
+    def get_succeeded_steps(self, run_date: date_type) -> set:
+        """
+        Return the set of step names that have status='success' for run_date.
+
+        Used by run_steps_for_date to pre-seed the succeeded-steps set so
+        that SPEC-SCHED-011 dependency checks work correctly on a resume
+        (steps that succeeded in a prior run of this date count as satisfied
+        prerequisites for later steps).
+
+        Parameters
+        ----------
+        run_date : date
+
+        Returns
+        -------
+        set of str
+            Step names with status='success' for this date, possibly empty.
+
+        Spec References
+        ----------------
+        SPEC-SCHED-011: dependency pre-seeding across run boundaries.
+
+        Raises
+        ------
+        None
+        """
+        with get_sqlite_connection(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT step_name FROM pipeline_checkpoints "
+                "WHERE date = ? AND status = 'success'",
+                (run_date.isoformat(),),
+            ).fetchall()
+        return {row[0] for row in rows}
+
     def load_checkpoint(self, run_date: date_type) -> Optional[str]:
         """
         Return the name of the last successfully completed step for a date.
@@ -278,9 +350,11 @@ class CheckpointManager:
         """
         Return the step to resume from next for a date.
 
-        The first step in STEPS order that does NOT have status='success'
-        for run_date — this is either a step that previously failed (so it
-        is retried) or a step that has never been attempted.
+        The first step in STEPS order that is not yet terminal ('success'
+        or 'skipped') for run_date — i.e. steps that previously failed or
+        have never been attempted. 'skipped' steps are re-evaluated on
+        resume because their unmet dependency may have been fixed (e.g. a
+        previously failed prerequisite was force-run via the Ops API).
 
         Parameters
         ----------
@@ -289,13 +363,17 @@ class CheckpointManager:
         Returns
         -------
         str or None
-            Step name to resume from, or None if every step has already
-            succeeded (nothing left to do for this date).
+            Step name to resume from, or None if every step is terminal
+            ('success' or 'skipped-with-still-unmet-deps' aside, see note
+            below). For completeness: if every applicable step has
+            status='success', returns None (nothing to do).
 
         Spec References
         ----------------
         SPEC-SCHED-002: "next run resumes from step N (does not re-execute
         1 to N-1)".
+        SPEC-SCHED-011: skipped-due-to-unmet-dep steps are re-evaluated on
+        the next startup so they can run once their dependency is fixed.
 
         PIT Assumptions
         ----------------
@@ -306,7 +384,7 @@ class CheckpointManager:
         None
         """
         with get_sqlite_connection(self._db_path) as conn:
-            succeeded = {
+            done = {
                 row[0]
                 for row in conn.execute(
                     "SELECT step_name FROM pipeline_checkpoints "
@@ -315,7 +393,10 @@ class CheckpointManager:
                 ).fetchall()
             }
 
+        # Resume from the first step that hasn't definitively succeeded.
+        # Skipped and failed steps are both retried so a fixed prerequisite
+        # can unlock its dependents.
         for step_name in STEP_NAMES:
-            if step_name not in succeeded:
+            if step_name not in done:
                 return step_name
         return None

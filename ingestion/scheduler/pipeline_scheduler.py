@@ -48,6 +48,10 @@ from ingestion.scheduler.gap_detector import detect_gaps, is_trading_day
 
 logger = logging.getLogger(__name__)
 
+# Pre-compute the depends_on lookup for fast access in run_steps_for_date.
+# {step_name: [dep_name, ...]} — empty list means no hard prerequisites.
+_STEP_DEPS: dict = {step["name"]: step.get("depends_on", []) for step in STEPS}
+
 _INSERT_PIPELINE_RUN = """
     INSERT INTO pipeline_runs (date, started_at, completed_at, status, stocks_processed, error_message)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -137,12 +141,19 @@ def run_steps_for_date(
     is_backfill: bool = False,
 ) -> bool:
     """
-    Execute STEPS for one date with checkpoint-resume and backfill ML-skip.
+    Execute STEPS for one date with checkpoint-resume, backfill ML-skip,
+    and dependency-based fallback (SPEC-SCHED-011).
 
     Resumes from CheckpointManager.get_resume_step(run_date) rather than
     always starting at step 0, so already-succeeded steps are never
-    re-executed (SPEC-SCHED-002). Stops at the first failure for this date
-    — the failed step's checkpoint is what the next run resumes from.
+    re-executed (SPEC-SCHED-002).
+
+    On a step failure the pipeline does NOT immediately abort. Instead it
+    evaluates each subsequent step's depends_on list against the current
+    success/failure state for this date. A step is skipped (not failed) if
+    any of its hard prerequisites did not succeed — allowing independent
+    steps to still execute. A step whose dependencies are all 'success'
+    runs normally even if an unrelated earlier step failed.
 
     Parameters
     ----------
@@ -158,13 +169,15 @@ def run_steps_for_date(
     Returns
     -------
     bool
-        True if every applicable step succeeded (or was skipped as
-        non-backfillable); False if a step failed.
+        True if every applicable step succeeded or was intentionally
+        skipped (non-backfillable or dependency not met).
+        False if any step that was attempted actually raised an exception.
 
     Spec References
     ----------------
     SPEC-SCHED-002: checkpoint-resume on failure.
     SPEC-SCHED-006: no model inference during backfill.
+    SPEC-SCHED-011: step dependency evaluation; fallback mechanism.
 
     PIT Assumptions
     ----------------
@@ -184,15 +197,40 @@ def run_steps_for_date(
 
     resume_index = STEP_NAMES.index(resume_step)
 
-    for index, step in enumerate(STEPS):
-        if index < resume_index:
-            continue  # SPEC-SCHED-002: already succeeded in a previous run
+    # Pre-seed with steps that already succeeded (from prior runs of this
+    # date). SPEC-SCHED-011: dependency checks must honour cross-run state
+    # so a fixed prerequisite unlocks its dependents on resume.
+    succeeded_this_run: set = checkpoint_manager.get_succeeded_steps(run_date)
 
+    any_step_failed = False
+
+    for index, step in enumerate(STEPS):
         step_name = step["name"]
+
+        if index < resume_index:
+            # SPEC-SCHED-002: already succeeded in a previous run; treat as
+            # succeeded for dependency resolution.
+            succeeded_this_run.add(step_name)
+            continue
 
         if is_backfill and not step["is_backfillable"]:
             logger.info(
                 f"Skipping non-backfillable step '{step_name}' for {run_date} (backfill)"
+            )
+            continue
+
+        # SPEC-SCHED-011: dependency check. If any required predecessor did
+        # not succeed (failed, was skipped, or never ran), skip this step and
+        # record it as 'skipped' with the blocking dependency named.
+        deps = _STEP_DEPS.get(step_name, [])
+        unmet = [d for d in deps if d not in succeeded_this_run]
+        if unmet:
+            reason = f"dependency not met: {unmet}"
+            checkpoint_manager.save_checkpoint(
+                run_date, step_name, status="skipped", error_message=reason
+            )
+            logger.warning(
+                f"Skipping '{step_name}' for {run_date} — {reason}"
             )
             continue
 
@@ -204,11 +242,14 @@ def run_steps_for_date(
                 run_date, step_name, status="failed", error_message=str(exc)
             )
             logger.error(f"Step '{step_name}' failed for {run_date}: {exc}")
-            return False
+            any_step_failed = True
+            # Do NOT return immediately — continue evaluating later steps
+            # whose dependencies may still be fully met (SPEC-SCHED-011).
         else:
             checkpoint_manager.save_checkpoint(run_date, step_name, status="success")
+            succeeded_this_run.add(step_name)
 
-    return True
+    return not any_step_failed
 
 
 def run_backfill(
@@ -456,7 +497,9 @@ def run_startup_sequence(
     return ok
 
 
-def _execute_daily_job(step_runner: StepRunner, checkpoint_manager: CheckpointManager) -> None:
+def _execute_daily_job(
+    step_runner: StepRunner, checkpoint_manager: CheckpointManager, job_id: str = "daily_pipeline"
+) -> None:
     """
     Module-level job target invoked by the persistent scheduler.
 
@@ -473,6 +516,13 @@ def _execute_daily_job(step_runner: StepRunner, checkpoint_manager: CheckpointMa
     ----------
     step_runner : StepRunner
     checkpoint_manager : CheckpointManager
+    job_id : str
+        Which recurring job is calling this (2026-07: also reused by
+        schedule_morning_catchup for an earlier-in-the-day second trigger
+        of the identical catch-up-then-today logic). Threaded through so
+        each job's heartbeat is recorded under its own id — hardcoding
+        "daily_pipeline" here would make the two jobs' attempts
+        indistinguishable in scheduler_heartbeats/the Ops page.
 
     Returns
     -------
@@ -500,10 +550,10 @@ def _execute_daily_job(step_runner: StepRunner, checkpoint_manager: CheckpointMa
     try:
         ok = run_startup_sequence(step_runner, checkpoint_manager, today=now_ist().date())
         error = None if ok else "pipeline run returned False"
-        _record_heartbeat("daily_pipeline", "success" if ok else "failed", error)
+        _record_heartbeat(job_id, "success" if ok else "failed", error)
     except Exception as exc:
-        logger.error(f"daily_pipeline job raised an unexpected exception: {exc}", exc_info=True)
-        _record_heartbeat("daily_pipeline", "failed", str(exc))
+        logger.error(f"{job_id} job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat(job_id, "failed", str(exc))
 
 
 def _execute_backfill_catchup() -> None:
@@ -708,13 +758,70 @@ def schedule_daily_pipeline(
     scheduler.add_job(
         _execute_daily_job,
         CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri", timezone="Asia/Kolkata"),
-        args=[step_runner, checkpoint_manager],
+        args=[step_runner, checkpoint_manager, "daily_pipeline"],
         id="daily_pipeline",
         replace_existing=True,
         misfire_grace_time=86400,
         coalesce=True,
     )
     logger.info(f"Daily pipeline scheduled: mode={mode}, time={schedule_time} IST")
+
+
+def schedule_morning_catchup(
+    scheduler: BackgroundScheduler,
+    step_runner: StepRunner,
+    checkpoint_manager: CheckpointManager,
+    schedule_time: str = "07:30",
+) -> None:
+    """
+    Register a second recurring trigger for the same catch-up-then-today
+    logic as schedule_daily_pipeline, fired earlier in the day (2026-07,
+    SPEC-SCHED-014 follow-up).
+
+    Why a second trigger of the exact same function rather than a new one:
+    _execute_daily_job's real value on any given firing is almost always
+    the gap-backfill it runs first (run_startup_sequence walks every
+    trading day since the last recorded success and re-attempts each one)
+    — "today" itself will still 404 at 07:30 IST since NSE typically
+    doesn't publish a trading day's bhavcopy until after that day's own
+    market close. This exists so a step that failed on an earlier date
+    (e.g. download_fno/download_macro/download_corporate_actions/
+    download_large_deals hitting a transient network error) gets retried
+    hours sooner than waiting for the 18:00 IST run, rather than sitting
+    visibly "never run" on the Ops page until evening. NSE-sourced only,
+    same as the main job — no FYERS dependency (contrast with the removed
+    backfill_catchup job).
+
+    Parameters
+    ----------
+    scheduler : BackgroundScheduler
+    step_runner : StepRunner
+        Same picklability constraint as schedule_daily_pipeline.
+    checkpoint_manager : CheckpointManager
+    schedule_time : str
+        "HH:MM", Asia/Kolkata, mon-fri (same trading-day cadence as the
+        main job).
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    None
+    """
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+
+    scheduler.add_job(
+        _execute_daily_job,
+        CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri", timezone="Asia/Kolkata"),
+        args=[step_runner, checkpoint_manager, "morning_catchup"],
+        id="morning_catchup",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"Morning catch-up scheduled: time={schedule_time} IST")
 
 
 def _determine_groww_live_snapshot_month():
@@ -848,3 +955,312 @@ def schedule_mf_holdings_ingestion(
         coalesce=True,
     )
     logger.info(f"MF holdings ingestion scheduled: days={days}, time={schedule_time} IST")
+
+
+# ---------------------------------------------------------------------------
+# Model training job (SPEC-SCHED-007) — weekday, after daily pipeline
+# ---------------------------------------------------------------------------
+
+def _execute_model_training_job() -> None:
+    """
+    Check whether any model is overdue for retraining (SPEC-SCHED-007) and,
+    if so, trigger training. This job fires on weekday evenings (~20:00 IST),
+    after the 18:00 daily pipeline has finished writing signals, so the
+    training data it consumes is today-complete.
+
+    Model training can take 2–8 hours (TFT/BiLSTM on CPU) — well within the
+    6 PM–5 PM next-day 23-hour window (SPEC-SYS-002 update, 2026-07-02).
+
+    Which models to retrain is checked against datastore/models/registry.json
+    (SPEC-MODEL-005): a model is overdue if
+    `days_since_last_train > training_interval_days × RETRAIN_OVERDUE_MULTIPLIER`.
+    If no model is overdue, the job completes immediately (fast no-op).
+
+    Top-level function (not a closure/lambda) — APScheduler SQLAlchemyJobStore
+    picklability requirement, same as _execute_daily_job.
+
+    Spec References
+    ----------------
+    SPEC-SCHED-007, SPEC-MODEL-005, SPEC-MODEL-008.
+
+    Raises
+    ------
+    None — wrapped in try/except (SPEC-SCHED-013).
+    """
+    import json
+    from pathlib import Path
+
+    from config.settings import MODELS_DIR, RETRAIN_OVERDUE_MULTIPLIER
+
+    try:
+        registry_path = Path(MODELS_DIR) / "registry.json"
+        if not registry_path.exists():
+            logger.info("model_training: registry.json not found — no trained models yet, skipping")
+            _record_heartbeat("model_training", "skipped", "registry.json not found")
+            return
+
+        with registry_path.open() as f:
+            registry = json.load(f)
+
+        today = now_ist().date()
+        overdue_models = []
+        for model_name, meta in registry.items():
+            last_train_str = meta.get("last_trained_date")
+            interval_days = meta.get("training_interval_days", 30)
+            if not last_train_str:
+                overdue_models.append((model_name, "never trained"))
+                continue
+            from datetime import date as date_cls
+            last_train = date_cls.fromisoformat(last_train_str)
+            days_since = (today - last_train).days
+            threshold = interval_days * RETRAIN_OVERDUE_MULTIPLIER
+            if days_since > threshold:
+                overdue_models.append((model_name, f"{days_since}d since last train, threshold {threshold:.0f}d"))
+
+        if not overdue_models:
+            logger.info("model_training: no models overdue — skipping")
+            _record_heartbeat("model_training", "skipped", "no models overdue")
+            return
+
+        logger.info(f"model_training: {len(overdue_models)} model(s) overdue: {overdue_models}")
+        for model_name, reason in overdue_models:
+            logger.info(f"  Queuing retrain for '{model_name}' ({reason})")
+            # Phase 3 retrain protocol (SPEC-MODEL-008): snapshot → train →
+            # shadow-test → compare → promote.  The actual training scripts
+            # (scripts/train_*.py) are invoked as subprocess calls here so
+            # they run in their own process and don't hold DuckDB write locks
+            # for the life of the scheduler process.
+            _trigger_model_retrain(model_name)
+
+        _record_heartbeat("model_training", "success")
+
+    except Exception as exc:
+        logger.error(f"model_training job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat("model_training", "failed", str(exc))
+
+
+def _trigger_model_retrain(model_name: str) -> None:
+    """
+    Invoke the appropriate training script for model_name as a subprocess.
+
+    Subprocess isolation (not a direct function call) ensures the training
+    job doesn't hold DuckDB write locks, does not share memory with the
+    scheduler process, and doesn't destabilize APScheduler if it crashes.
+
+    Spec References
+    ----------------
+    SPEC-MODEL-008, SPEC-SCHED-007.
+    """
+    import subprocess
+    import sys
+
+    script_map = {
+        "signal_5d": "scripts/run_phase1_backtest.py",
+        "signal_21d": "scripts/run_phase1_backtest.py",
+        "signal_63d": "scripts/run_phase2_backtest.py",
+        "tft": "scripts/train_tft.py",
+        "bilstm": "scripts/train_bilstm.py",
+        "multibagger": "systems/ml_signal_engine/models/multibagger/multibagger_model.py",
+    }
+    script = script_map.get(model_name)
+    if script is None:
+        logger.warning(f"_trigger_model_retrain: no training script known for '{model_name}' — skipping")
+        return
+
+    try:
+        result = subprocess.run(
+            [sys.executable, script],
+            capture_output=False,
+            timeout=3600 * 8,  # 8-hour hard cap per model (within 23-hour window)
+        )
+        if result.returncode != 0:
+            logger.error(f"_trigger_model_retrain: '{model_name}' script exited with code {result.returncode}")
+        else:
+            logger.info(f"_trigger_model_retrain: '{model_name}' retrain completed successfully")
+    except subprocess.TimeoutExpired:
+        logger.error(f"_trigger_model_retrain: '{model_name}' exceeded 8-hour timeout")
+    except Exception as exc:
+        logger.error(f"_trigger_model_retrain: '{model_name}' failed to start: {exc}")
+
+
+def schedule_model_training(
+    scheduler: BackgroundScheduler,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register the weekday model-training check job (SPEC-SCHED-007).
+
+    Fires at MODEL_TRAINING_SCHEDULE_TIME (default 20:00 IST, mon-fri) —
+    after the 18:00 daily pipeline is expected to have completed. Checks
+    registry.json for overdue models and triggers retraining if needed.
+    Training runs as subprocesses within the 23-hour window.
+
+    Spec References
+    ----------------
+    SPEC-SCHED-007, SPEC-MODEL-008.
+    """
+    if schedule_time is None:
+        from config.settings import MODEL_TRAINING_SCHEDULE_TIME
+        schedule_time = MODEL_TRAINING_SCHEDULE_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    scheduler.add_job(
+        _execute_model_training_job,
+        CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri", timezone="Asia/Kolkata"),
+        id="model_training",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"Model training check scheduled: {schedule_time} IST (mon-fri)")
+
+
+# ---------------------------------------------------------------------------
+# Weekend jobs — feature backfill + fundamentals (SPEC-SCHED-012 extension)
+# ---------------------------------------------------------------------------
+
+def _execute_weekend_feature_backfill_job() -> None:
+    """
+    Saturday morning feature-engineering backfill.
+
+    Runs scripts/feature_backfill_hybrid.py for any trading dates that have
+    OHLCV in the DataStore but no corresponding feature Parquet. This catches
+    dates that had a compute_features failure during the week (their deps
+    are now met after the adjuster has run successfully, but compute_features
+    was skipped due to a transient failure).
+
+    The gap-detector-driven daily pipeline already handles most of this, but
+    a dedicated weekend run ensures the feature store is fully up-to-date
+    before Monday's pipeline.
+
+    Top-level + picklable (APScheduler SQLAlchemyJobStore requirement).
+
+    Spec References
+    ----------------
+    SPEC-SCHED-003, SPEC-SCHED-004 (unlimited backfill, oldest-first).
+    """
+    import subprocess
+    import sys
+
+    try:
+        logger.info("weekend_feature_backfill: starting feature Parquet gap scan")
+        result = subprocess.run(
+            [sys.executable, "scripts/feature_backfill_hybrid.py",
+             "--stage2-chunk-size", "400"],
+            capture_output=False,
+            timeout=3600 * 6,  # 6-hour cap (stage 2 is the slow part)
+        )
+        if result.returncode != 0:
+            logger.error(f"weekend_feature_backfill: script exited with code {result.returncode}")
+            _record_heartbeat("weekend_feature_backfill", "failed", f"exit code {result.returncode}")
+        else:
+            logger.info("weekend_feature_backfill: completed successfully")
+            _record_heartbeat("weekend_feature_backfill", "success")
+    except subprocess.TimeoutExpired:
+        logger.error("weekend_feature_backfill: exceeded 6-hour timeout")
+        _record_heartbeat("weekend_feature_backfill", "failed", "timeout after 6h")
+    except Exception as exc:
+        logger.error(f"weekend_feature_backfill job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat("weekend_feature_backfill", "failed", str(exc))
+
+
+def schedule_weekend_feature_backfill(
+    scheduler: BackgroundScheduler,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register the Saturday feature-backfill job.
+
+    Fires at WEEKEND_FEATURE_BACKFILL_TIME (default 09:00 IST, Saturday).
+
+    Spec References
+    ----------------
+    SPEC-SCHED-003, SPEC-SCHED-004.
+    """
+    if schedule_time is None:
+        from config.settings import WEEKEND_FEATURE_BACKFILL_TIME
+        schedule_time = WEEKEND_FEATURE_BACKFILL_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    scheduler.add_job(
+        _execute_weekend_feature_backfill_job,
+        CronTrigger(hour=hour, minute=minute, day_of_week="sat", timezone="Asia/Kolkata"),
+        id="weekend_feature_backfill",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"Weekend feature backfill scheduled: {schedule_time} IST (saturday)")
+
+
+def _execute_weekend_fundamentals_job() -> None:
+    """
+    Saturday fundamentals catch-up (Screener.in / Trendlyne).
+
+    Runs scripts/backfill_fundamentals_trendlyne.py to refresh the
+    fundamentals store with any new quarterly results published during the
+    week. Fires Saturday at WEEKEND_FUNDAMENTALS_TIME so it doesn't compete
+    with the weekday daily pipeline for DuckDB write access.
+
+    Non-critical: a failure here does NOT block the following week's
+    pipeline. Fundamentals are forward-filled from the most recent available
+    quarter (SPEC-PIPE-003 PIT alignment).
+
+    Top-level + picklable.
+
+    Spec References
+    ----------------
+    SPEC-PIPE-003 (PIT for fundamentals), SPEC-PIPE-007.
+    """
+    import subprocess
+    import sys
+
+    try:
+        logger.info("weekend_fundamentals: starting fundamentals backfill")
+        result = subprocess.run(
+            [sys.executable, "scripts/backfill_fundamentals_trendlyne.py"],
+            capture_output=False,
+            timeout=3600 * 4,  # 4-hour cap
+        )
+        if result.returncode != 0:
+            logger.error(f"weekend_fundamentals: script exited with code {result.returncode}")
+            _record_heartbeat("weekend_fundamentals", "failed", f"exit code {result.returncode}")
+        else:
+            logger.info("weekend_fundamentals: completed successfully")
+            _record_heartbeat("weekend_fundamentals", "success")
+    except subprocess.TimeoutExpired:
+        logger.error("weekend_fundamentals: exceeded 4-hour timeout")
+        _record_heartbeat("weekend_fundamentals", "failed", "timeout after 4h")
+    except Exception as exc:
+        logger.error(f"weekend_fundamentals job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat("weekend_fundamentals", "failed", str(exc))
+
+
+def schedule_weekend_fundamentals(
+    scheduler: BackgroundScheduler,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register the Saturday fundamentals-backfill job.
+
+    Fires at WEEKEND_FUNDAMENTALS_TIME (default 10:30 IST, Saturday) —
+    after weekend_feature_backfill has had 90 minutes to run.
+
+    Spec References
+    ----------------
+    SPEC-PIPE-003.
+    """
+    if schedule_time is None:
+        from config.settings import WEEKEND_FUNDAMENTALS_TIME
+        schedule_time = WEEKEND_FUNDAMENTALS_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    scheduler.add_job(
+        _execute_weekend_fundamentals_job,
+        CronTrigger(hour=hour, minute=minute, day_of_week="sat", timezone="Asia/Kolkata"),
+        id="weekend_fundamentals",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"Weekend fundamentals backfill scheduled: {schedule_time} IST (saturday)")

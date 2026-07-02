@@ -36,7 +36,14 @@ from fastapi import APIRouter, HTTPException, Query
 
 from config.settings import SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
-from datastore.api.schemas import ForensicRow, ForensicSummaryResponse, ForensicWrite, ForensicWriteResult
+from datastore.api.schemas import (
+    ForensicFlaggedResponse,
+    ForensicFlaggedRow,
+    ForensicRow,
+    ForensicSummaryResponse,
+    ForensicWrite,
+    ForensicWriteResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +88,49 @@ async def get_forensic_summary() -> ForensicSummaryResponse:
         green_count=green,
         total_scored=len(labels),
         available=True,
+    )
+
+
+# [AS BUILT, P3.x] /flagged MUST also be registered before /{ticker} (same
+# route-ordering discipline as /summary above).
+@router.get("/flagged", response_model=ForensicFlaggedResponse)
+async def get_forensic_flagged(
+    flag: str = Query("red,amber", description="Comma-separated: red, amber, green"),
+) -> ForensicFlaggedResponse:
+    """All tickers carrying any of the requested flag group(s) on the most recent scored date."""
+    groups = {f.strip().lower() for f in flag.split(",") if f.strip()}
+    labels: set = set()
+    if "red" in groups:
+        labels |= {"red", "black"}
+    if "amber" in groups:
+        labels |= {"orange", "yellow"}
+    if "green" in groups:
+        labels |= {"green"}
+    if not labels:
+        raise HTTPException(status_code=400, detail="flag must include at least one of: red, amber, green")
+
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+        latest = conn.execute("SELECT MAX(date) FROM ml_forensic").fetchone()
+        latest_date = latest[0] if latest else None
+        if latest_date is None:
+            return ForensicFlaggedResponse()
+
+        placeholders = ", ".join("?" for _ in labels)
+        rows = conn.execute(
+            f"""
+            SELECT ticker, date, forensic_composite, forensic_flag_label FROM ml_forensic
+            WHERE date = ? AND forensic_flag_label IN ({placeholders})
+            ORDER BY forensic_composite DESC
+            """,
+            [latest_date, *labels],
+        ).fetchall()
+
+    return ForensicFlaggedResponse(
+        as_of_date=latest_date,
+        rows=[
+            ForensicFlaggedRow(ticker=r[0], date=r[1], forensic_composite=r[2], forensic_flag_label=r[3])
+            for r in rows
+        ],
     )
 
 

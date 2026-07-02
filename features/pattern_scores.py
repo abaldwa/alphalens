@@ -22,11 +22,10 @@ All inputs are OHLCV prices (PITRule.NONE — always same-day knowable).
 """
 
 import logging
-from typing import Dict, List
+from typing import List
 
 import numpy as np
 import pandas as pd
-import scipy.stats
 import talib
 from scipy.signal import argrelextrema
 

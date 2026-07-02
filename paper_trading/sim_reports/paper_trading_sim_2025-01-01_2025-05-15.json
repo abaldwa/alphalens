@@ -1,0 +1,20 @@
+{
+  "simulation_type": "historical_paper_trading",
+  "from_date": "2025-01-01",
+  "to_date": "2025-05-15",
+  "trading_days": 90,
+  "skipped_dates": 0,
+  "hold_days": 5,
+  "n_positions": 10,
+  "initial_capital_inr": 10000000,
+  "final_equity_inr": 8702399.95,
+  "total_pnl_inr": -1297600.12,
+  "total_trades": 430,
+  "win_rate_pct": 47.21,
+  "avg_win_pct": 5.09,
+  "avg_loss_pct": -5.124,
+  "sharpe_ratio": -0.3525,
+  "cagr_pct": -32.24,
+  "model": "signal_5d_current",
+  "meta_model": "meta_labeler_current"
+}

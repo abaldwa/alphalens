@@ -24,10 +24,14 @@ NORMALISED_TABLE_COLUMNS = {
     "ohlcv_adjusted": {
         "date", "ticker", "open", "high", "low", "close", "volume",
         "delivery_qty", "delivery_pct", "adj_factor",
+        # [AS BUILT] vol_adj_factor added for volume-adjusted corporate action tracking
+        "vol_adj_factor",
     },
     "corporate_actions": {
         "ticker", "ex_date", "action_type", "ratio",
         "announcement_date", "record_date",
+        # [AS BUILT] details column for human-readable action description
+        "details",
     },
     "fundamentals": {
         "ticker", "fiscal_year", "quarter", "quarter_end_date", "announcement_date",
@@ -46,6 +50,8 @@ NORMALISED_TABLE_COLUMNS = {
         # (ARPU/NPA/ANDA/etc. — see ingestion/scrapers/tijori.py's _SECTOR_METRICS).
         "sector_specific_metric_1", "sector_specific_metric_2", "sector_specific_metric_3",
         "sector_specific_metric_4", "sector_specific_metric_5", "sector_specific_metric_6",
+        # [AS BUILT] additional derived metrics for Damodaran valuation and deep forensic
+        "debt_to_ebitda", "capex_intensity", "fcf_margin", "total_equity", "ebit", "net_debt",
     },
     "shareholding": {
         "ticker", "quarter_end_date", "filing_date", "promoter_pct",

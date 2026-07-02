@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.Fundamental — Management Quality</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/shell.css">
+</head>
+<body>
+<div class="app-bar" id="app-bar"></div>
+<div class="sub-tabs" id="sub-tabs"></div>
+<div class="page">
+  <div class="sec">
+    <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+      <input type="text" id="ticker-input" placeholder="Ticker (e.g. RELIANCE)">
+      <button id="load-btn">Load</button>
+    </div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Governance &amp; Shareholding</span></div>
+    <div id="gov-content"><div class="empty">Enter a ticker to load governance data</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Related-Party Transactions</span></div>
+    <div id="rpt-content"></div>
+  </div>
+</div>
+<script src="../js/api.js"></script>
+<script src="../js/shell.js"></script>
+<script src="../js/empty_state.js"></script>
+<script src="../js/crosslink.js"></script>
+<script src="js/management.js"></script>
+</body>
+</html>

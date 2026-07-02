@@ -17,7 +17,6 @@ All tests are torch-independent (stacking uses sklearn only).
 """
 
 import os
-import pickle
 import tempfile
 
 import numpy as np

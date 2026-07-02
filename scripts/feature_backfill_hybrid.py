@@ -61,7 +61,7 @@ import sys
 import time
 from datetime import date as date_type
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -171,10 +171,11 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
-        "--stage2-chunk-size", type=int, default=200, metavar="N",
+        "--stage2-chunk-size", type=int, default=400, metavar="N",
         help=(
-            "Number of dates per chunk when using --rebuild-daily (default: 200). "
-            "Each chunk loads ~N/4785 of the staging data — 200 dates ≈ 500 MB RAM."
+            "Number of dates per chunk when using --rebuild-daily (default: 400). "
+            "Each chunk loads ~N/4790 of the staging data — 400 dates ≈ 1 GB RAM "
+            "(safe on the 14.9 GB dev machine; reduce to 200 on <8 GB systems)."
         ),
     )
     return p.parse_args()
@@ -474,8 +475,6 @@ def run_stage1(
     touched by workers, so copy-on-write holds and per-worker peak memory
     stays at ~150–250 MB regardless of universe size.
     """
-    global _G_BENCHMARK_WIDE, _G_ALL_DATES  # used by single-process path only
-
     from features.hybrid_compute import build_benchmark_wide, _empty_staging
 
     benchmark_wide = build_benchmark_wide(benchmark_ohlcv)
@@ -843,7 +842,6 @@ def run_stage2_chunked(
         except Exception as exc:
             logger.warning("Failed to pre-load real_economy_macro parquet: %s", exc)
 
-    total_ok = total_err = total_skip = 0
     t0_total = time.monotonic()
 
     for chunk_idx, chunk_start in enumerate(range(0, len(dates), chunk_size), start=1):

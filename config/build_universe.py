@@ -315,7 +315,7 @@ def build_full_nse_universe_from_db(
         existing_path = output_path or UNIVERSE_CSV_PATH
         if existing_path.exists():
             existing = pd.read_csv(existing_path)
-            n500_meta = existing[existing["is_nifty500"] == True][
+            n500_meta = existing[existing["is_nifty500"]][
                 ["ticker", "company_name", "sector", "isin", "is_nifty500", "tier"]
             ]
         else:
