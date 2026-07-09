@@ -4,7 +4,7 @@ ingestion/scrapers/amfi_holdings.py
 Phase: 2.2 (AMFI MF Holdings + Corporate Action Features)
 Specs: SPEC-PIPE-001, SPEC-PIPE-003 (CRITICAL), SPEC-SOLID-002 (Open/Closed), SPEC-MFHOLD-001
 Owner: Platform / Ingestion
-Consumers: ingestion/scrapers/groww_mf_holdings.py, ingestion/scrapers/sbi_mf_holdings.py,
+Consumers: ingestion/scrapers/groww_mf_holdings.py,
            ingestion/scheduler/pipeline_scheduler.py, features/mf_holdings.py
 
 Source-agnostic registry and orchestration for scheme-wise mutual fund
@@ -14,11 +14,11 @@ YYYY-MM.parquet — one row per (scheme_name, isin, ticker) per month.
 This module owns NO scraping logic of its own (SOLID-S — single
 responsibility: registry + orchestration only). Real sources register
 themselves via `register_amc(name, fetch_fn, parse_fn)`:
-  - `ingestion/scrapers/groww_mf_holdings.py` — the PRIMARY source,
-    covering all 49 AMCs (see SPEC-MFHOLD-001).
-  - `ingestion/scrapers/sbi_mf_holdings.py` — a secondary, higher-
-    precision cross-check (real ISIN + real share quantity) for SBI
-    specifically; auto-registers on import (zero network cost).
+  - `ingestion/scrapers/groww_mf_holdings.py` — the sole source,
+    covering all 49 AMCs (see SPEC-MFHOLD-001). A secondary SBI-specific
+    cross-check source (sbi_mf_holdings.py) existed through P2.2 but was
+    retired 2026-07-04 — Groww alone was judged sufficient, see
+    FutureDevelopment.md.
 `download_monthly_disclosure()` raises a clear RuntimeError if called
 with no AMCs registered, rather than silently returning nothing or
 fabricating data.
@@ -66,8 +66,8 @@ class AMCSource:
     parse_fn: Callable[[bytes], pd.DataFrame]  # raw bytes -> DataFrame[scheme_name, isin, ticker, quantity, value_inr]
 
 
-# Populated by importing a source module (sbi_mf_holdings.py auto-registers;
-# groww_mf_holdings.py requires an explicit register_all_amcs() call — see
+# Populated by importing a source module (groww_mf_holdings.py requires an
+# explicit register_all_amcs() call — see
 # module docstring).
 AMC_REGISTRY: Dict[str, AMCSource] = {}
 
@@ -134,8 +134,8 @@ def download_monthly_disclosure(year: int, month: int, amcs: Optional[List[str]]
     targets = amcs if amcs is not None else list(AMC_REGISTRY.keys())
     if not targets:
         raise RuntimeError(
-            "No AMCs registered in AMC_REGISTRY. Import ingestion.scrapers.sbi_mf_holdings (auto-registers) "
-            "and/or call ingestion.scrapers.groww_mf_holdings.register_all_amcs() first — see this "
+            "No AMCs registered in AMC_REGISTRY. Call "
+            "ingestion.scrapers.groww_mf_holdings.register_all_amcs() first — see this "
             "module's docstring and SPEC-MFHOLD-001."
         )
     missing = [name for name in targets if name not in AMC_REGISTRY]
@@ -243,21 +243,111 @@ def run_monthly_ingestion(year: int, month: int, amcs: Optional[List[str]] = Non
     return save_monthly_parquet(df, year, month)
 
 
+def sync_duckdb_table(
+    conn, year: int, month: int, output_dir: Path = MF_HOLDINGS_DIR, publish_mode: str = "direct"
+) -> int:
+    """
+    Phase C (Big Investor Activity — plan: gentle-wobbling-swing.md): mirror
+    one month's parquet snapshot into the `mf_holdings` DuckDB table, so the
+    API can query month-over-month movers without loading parquet per
+    request. The parquet file remains the raw/audit artifact — this is a
+    read-optimized copy, delete-then-insert per month (same pattern as
+    large_deals per trade_date), always safe to re-run.
+
+    Parameters
+    ----------
+    conn : duckdb.DuckDBPyConnection
+    year : int
+    month : int
+    output_dir : Path, optional
+    publish_mode : str
+        'direct' (default): unchanged legacy DELETE+INSERT for this one
+        month. 'staged' (A25): merge this month's replacement into a full
+        snapshot of mf_holdings (datastore/staging/merge.py::
+        partition_replace_merge — same "delete this month, keep every
+        other month" semantics) and publish atomically via
+        datastore/staging.
+
+    Returns
+    -------
+    int
+        Rows written. 0 if no parquet file exists for this month yet.
+    """
+    path = output_dir / f"{year:04d}-{month:02d}.parquet"
+    if not path.exists():
+        return 0
+
+    df = pd.read_parquet(path)
+    df = df[df["ticker"].notna() & (df["ticker"] != "")]
+    month_date = date(year, month, 1)
+
+    if df.empty:
+        if publish_mode == "direct":
+            conn.execute("DELETE FROM mf_holdings WHERE month = ?", [month_date])
+        else:
+            _sync_staged(conn, month_date, pd.DataFrame(columns=["ticker", "month", "scheme_name"]))
+        return 0
+
+    # A scheme can hold the same ticker across multiple raw disclosure
+    # lines (e.g. separate lots) — mf_holdings' PRIMARY KEY is
+    # (ticker, month, scheme_name), so aggregate to one row per
+    # (ticker, scheme_name) before insert rather than relying on the raw
+    # parquet already being deduplicated.
+    df = df.groupby(["ticker", "scheme_name"], as_index=False).agg(
+        isin=("isin", "first"),
+        quantity=("quantity", "sum"),
+        value_inr=("value_inr", "sum"),
+        availability_date=("availability_date", "first"),
+    )
+
+    if publish_mode == "direct":
+        conn.execute("DELETE FROM mf_holdings WHERE month = ?", [month_date])
+        conn.execute(
+            """
+            INSERT INTO mf_holdings (ticker, month, scheme_name, isin, quantity, value_inr, availability_date)
+            SELECT ticker, ?, scheme_name, isin, quantity, value_inr, availability_date FROM df
+            """,
+            [month_date],
+        )
+    else:
+        df_with_month = df.copy()
+        df_with_month.insert(1, "month", month_date)
+        _sync_staged(conn, month_date, df_with_month)
+
+    logger.info(f"sync_duckdb_table: {len(df)} rows for {year:04d}-{month:02d}")
+    return len(df)
+
+
+def _sync_staged(conn, month_date, new_month_df) -> None:
+    """A25 staged path for sync_duckdb_table: partition-replace-merge this
+    month against the rest of mf_holdings, then publish atomically."""
+    from datastore.staging.gate import stage_dataframe
+    from datastore.staging.merge import partition_replace_merge
+    from datastore.staging.publish import publish_run_lock, publish_table
+
+    existing_df = conn.execute("SELECT * FROM mf_holdings").df()
+    merged_df = partition_replace_merge(existing_df, new_month_df, "month", [month_date])
+
+    with publish_run_lock() as acquired:
+        if not acquired:
+            logger.error("Another publish is in progress — staged mf_holdings sync NOT published.")
+            return
+        stage_dataframe(conn, "mf_holdings", merged_df, validators=[])
+        publish_table(conn, "mf_holdings")
+
+
 def _cli() -> None:
     """
     CLI entry point:
         python3 -m ingestion.scrapers.amfi_holdings YYYY MM [--amcs "A,B"] [--all-groww]
-    Always imports sbi_mf_holdings (auto-registers, zero network cost).
-    `--all-groww` additionally discovers and registers every AMC Groww
-    currently lists (a real network call).
+    `--all-groww` discovers and registers every AMC Groww currently lists
+    (a real network call).
     """
     import argparse
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    import ingestion.scrapers.sbi_mf_holdings  # noqa: F401 (import for its registration side effect)
-
-    parser = argparse.ArgumentParser(description="MF scheme-holdings ingestion (primary source: Groww)")
+    parser = argparse.ArgumentParser(description="MF scheme-holdings ingestion (sole source: Groww)")
     parser.add_argument("year", type=int)
     parser.add_argument("month", type=int)
     parser.add_argument("--amcs", help="Comma-separated AMC names (default: all registered)")

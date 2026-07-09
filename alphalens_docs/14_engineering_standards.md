@@ -32,7 +32,20 @@ Every spec maps to: a phase, a module, at least one test, and a verification met
 | SPEC-PIPE-004 | 1 | T-PIPE-004 | I | 500 stocks features < 15 min |
 | SPEC-PIPE-005 | 0 | T-PIPE-005 | U | Inject nulls/outliers → flagged |
 | SPEC-PIPE-006 | 0 | T-PIPE-006 | I | VIX + USD/INR in valid range |
+| SPEC-PIPE-008 | 3 | T-PIPE-008a,b | I | NSE archive-CSV fallback returns real rows for the trading day it matches; BSE endpoint failure caught non-critical |
+| SPEC-PIPE-009 | 3 | T-TRACE-superseded | S | Superseded by SPEC-BIGINV-002 (this ID kept for history only) |
 | SPEC-MFHOLD-001 | 2 | T-MFHOLD-001a,b,c | U | Groww snapshot-month validation; SBI ISIN-exact parse; registry merge-not-overwrite |
+
+### SPEC-BIGINV: Big Investor Activity
+
+| Spec ID | Phase | Test ID | Type | Verification |
+|---------|:-----:|---------|:----:|-------------|
+| SPEC-BIGINV-001 | 3 | T-BIGINV-001 | I | stock_master sync from universe CSV; NaN company_name rows skipped, not fabricated |
+| SPEC-BIGINV-002 | 3 | T-BIGINV-002a-l (12 tests) | U | tests/unit/test_bulk_deal_attribution.py — wash-trade netting, unmapped clients, cumulative position, full-exit, idempotency |
+| SPEC-BIGINV-003 | 3 | T-BIGINV-003 | I | mf-holdings/movers endpoint returns real direction classification |
+| SPEC-BIGINV-004 | 3 | T-BIGINV-004a-h (8 tests) | U | tests/unit/test_bulk_deal_reconciliation.py — tolerance, correction+anchor, forward propagation, market-cap fallback |
+| SPEC-BIGINV-005 | 3 | T-BIGINV-005 | M | Dashboard tab renders real data; route-ordering verified (literal before {ticker}) |
+| SPEC-BIGINV-006 | 3 | T-TRACE-docs | M | Gaps documented in spec + module docstrings, not silently hidden |
 
 ### SPEC-FEAT: Feature Engineering
 
@@ -137,16 +150,18 @@ Every spec maps to: a phase, a module, at least one test, and a verification met
 | SPEC-TRACE-003 | All | T-TRACE-003 | M | Commits reference SPEC-IDs |
 | SPEC-TRACE-004 | All | T-TRACE-004 | S | Test docstrings reference SPEC-IDs |
 
-### RTM Summary: 82 specs, 82 tests, 100% traceability
+### RTM Summary: 90 specs, 90 tests, 100% traceability
+**[AS BUILT, 2026-07-05]** +8 specs (SPEC-PIPE-008, SPEC-PIPE-009,
+SPEC-BIGINV-001 through 006) added for the Big Investor Activity feature.
 
 | Test Type | Count | Automated? |
 |-----------|:-----:|:----------:|
-| Unit (U) | 42 | Yes |
-| Integration (I) | 18 | Yes |
+| Unit (U) | 44 | Yes |
+| Integration (I) | 21 | Yes |
 | Regression (R) | 2 | Yes |
-| Structural (S) | 8 | Yes (grep/AST scans) |
+| Structural (S) | 9 | Yes (grep/AST scans) |
 | HITL (H) | 5 | No — human judgment |
-| Manual (M) | 5 | No — periodic review |
+| Manual (M) | 7 | No — periodic review |
 
 ---
 

@@ -315,11 +315,22 @@ def build_feature_matrix(
     benchmark_wide = _build_benchmark_wide(benchmark_panel)
 
     if universe_panel.empty:
-        logger.warning(f"No OHLCV data returned for any of {len(tickers)} tickers on {date}")
-        technical = pd.DataFrame(columns=["date", "ticker"] + CORE_TECHNICAL_FEATURES)
-        intraday = pd.DataFrame(columns=["date", "ticker"] + INTRADAY_FEATURES)
-        hmm = pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
-        pnd = pd.DataFrame(columns=["date", "ticker"] + PND_FEATURES)
+        # 2026-07-07 incident: this branch used to degrade to an all-NaN
+        # matrix (still checkpointed 'success') whenever the DataStore API
+        # was unreachable — SPEC-FEAT-001's "stocks with insufficient
+        # history get NaN, not an error" is meant for a handful of tickers
+        # with genuinely no data, not the entire universe returning zero
+        # rows. Zero-of-N is never a legitimate market outcome; it always
+        # means the OHLCV source itself is broken (API down, DB
+        # unreachable), so this must hard-fail rather than silently write
+        # a garbage feature matrix that every downstream model then trains/
+        # scores on. See step_sanity_check's 100%-NaN-column check for the
+        # equivalent guard on the write side of this same failure mode.
+        raise RuntimeError(
+            f"No OHLCV data returned for any of {len(tickers)} tickers on {date} — "
+            "the DataStore API is very likely unreachable. Refusing to write an "
+            "all-NaN feature matrix."
+        )
     else:
         technical = compute_technical_features(universe_panel, benchmark_wide)
         intraday = compute_intraday_features(universe_panel)
@@ -365,8 +376,19 @@ def build_feature_matrix(
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
     )
     mf_holdings = compute_mf_holdings_features_panel(tickers, target_date, tier_map=tier_map)
+    # 2026-07-07 (follow-up): listing_dates was never passed here, so
+    # ipo_lockin_expiry_proximity/ipo_listing_age_months were always NaN
+    # regardless of stock_master coverage — see
+    # scripts/backfill_listing_dates_nse.py for the real NSE-sourced backfill
+    # that populated stock_master.listing_date for the first time (402/1626
+    # tickers, NSE's history only covers IPOs from ~2012 on).
+    try:
+        listing_dates = client.get_listing_dates()
+    except Exception as exc:
+        logger.warning(f"Could not fetch listing_dates for corp-action panel: {exc}")
+        listing_dates = {}
     corp_action = compute_corporate_action_features_panel(
-        client, tickers, target_date,
+        client, tickers, target_date, listing_dates=listing_dates,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
     )
     fno = compute_fno_features_panel(client, tickers, target_date, data_cache=data_cache)
@@ -396,7 +418,10 @@ def build_feature_matrix(
         today_patterns = pd.DataFrame(columns=["ticker"] + PATTERN_FEATURES)
 
     real_economy = compute_real_economy_macro_panel(target_date, tickers)
-    deep_forensic = compute_deep_forensic_features_panel(client, tickers, to_date, data_cache=data_cache)
+    deep_forensic = compute_deep_forensic_features_panel(
+        client, tickers, to_date, data_cache=data_cache,
+        ohlcv_panel=universe_panel if not universe_panel.empty else None,
+    )
 
     matrix = pd.DataFrame({"ticker": tickers})
     matrix = matrix.merge(today_technical, on="ticker", how="left")

@@ -1960,6 +1960,404 @@ The pipeline run for [DATE] failed. The error from pipeline_runs table is:
 
 ---
 
+# PHASE X — Explain-Me Walkthrough (Truthful-Mode Brainstorming Series)
+
+**Purpose:** Unlike every prompt above (which builds/implements), this series is
+for *understanding what already exists* — walking the finished application
+screen-by-screen and system-by-system, capturing the answers as a permanent FAQ,
+and capturing any improvement ideas that surface along the way. Do not write
+code or change behavior during this series; it is read-only/audit-style.
+
+**Output files (created/updated by these prompts, not by you before running them):**
+- `ExplainMe.md` — the FAQ. Every explanation Claude gives ends up here as a final,
+  durable Q&A entry (not a chat transcript — a cleaned-up answer).
+- `FutureDevelopment.md` — a running backlog of improvement ideas noticed during
+  the walkthrough. Not implemented now — just captured.
+
+## Ground Rules — Truthful Mode (embedded in every prompt below)
+
+```
+Operate in truthful mode for this entire session:
+- Only state things you have verified by reading the actual code, config, or
+  running output in this repo. Do not describe intended/spec behavior as if it
+  were implemented behavior — if a spec says X but the code does Y (or nothing),
+  say so explicitly and flag the gap.
+- Cite file:line for every factual claim about how something works.
+- If you don't know or can't verify something from this repo, say "not verifiable
+  from the codebase" instead of guessing or extrapolating from the docs.
+- No sycophancy, no hedging filler ("great question!"), no inflating how complete
+  or robust something is. If a screen is an empty-state stub, say that plainly.
+- Where the docs (alphalens_docs/) and the actual code disagree, the code wins —
+  note the discrepancy so the docs can be corrected later.
+```
+
+## Workflow (repeat for every module below)
+
+1. Run the module's prompt.
+2. Review Claude's answers in-chat; ask follow-ups if something is unclear or
+   you don't believe it — truthful mode means it should hold up to pushback.
+3. Once you're satisfied, tell Claude: **"Finalize this module — write it up."**
+   Claude should then:
+   - Append a new `## <Module Name>` section to `ExplainMe.md` with clean final
+     Q&A entries (question as asked or paraphrased, answer as verified, with
+     file:line citations).
+   - Append any improvement ideas surfaced during discussion to
+     `FutureDevelopment.md` under a `## <Module Name>` heading (one bullet per
+     idea, plain description, no priority/estimate needed yet).
+4. Run `/clear`.
+5. Move to the next module's prompt in a fresh session.
+
+Do this in order — later modules assume the data-layer module has already been
+covered, so cross-references in `ExplainMe.md` stay coherent.
+
+---
+
+## X.0 — Platform Architecture & Data Layer
+
+📋 **PROMPT:**
+```
+Operate in truthful mode for this entire session (see ground rules: verify every
+claim against actual code/config, cite file:line, flag any place where
+alphalens_docs/ describes something that isn't actually implemented, say
+"not verifiable" rather than guess).
+
+Walk me through AlphaLens end to end at the architecture level, as if explaining
+it to someone who has never seen the repo:
+1. What is the central DataStore, what are its 6 sub-stores, and which files
+   actually implement reads/writes to each one today (not just what the docs say
+   should exist)?
+2. What does the daily pipeline (ingestion/scheduler/daily_pipeline.py) actually
+   do step by step right now — which steps are real, which are stubbed/
+   NotImplementedError, which are skipped?
+3. What is config/settings.py responsible for, and what are the load-bearing
+   constants a new reader needs to know (universe filters, thresholds, paths)?
+4. What is the DataStore API (datastore/api/) — list every router that exists
+   today and what each one actually serves, verified from the router files
+   themselves, not from a spec doc.
+5. Where does real market/fundamental data actually come from today (which
+   scrapers are wired into the pipeline vs. which exist but aren't called)?
+
+This is a brainstorming session — answer conversationally, I may push back or
+ask you to double check something. When I say "finalize this module", write the
+final answers as Q&A entries into ExplainMe.md under a "## Platform Architecture
+& Data Layer" heading, and log any improvement ideas that came up into
+FutureDevelopment.md under the same heading. Don't touch either file until I say
+to finalize.
+```
+
+---
+
+## X.1 — AlphaLens.ML (Daily Insights, Signal Deep Dive, Multibagger, Positions, Backtest)
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, flag
+doc-vs-code mismatches, no guessing).
+
+Walk me through the AlphaLens.ML app screen by screen. For each of the 5 screens
+(dashboard/static/ml/index.html, signal.html, multibagger.html, positions.html,
+backtest.html):
+1. What does the screen show a user, concretely — what data, what layout?
+2. Which API endpoint(s) does it call (datastore/api/routers/...), and is that
+   endpoint backed by real computed data today, or partially/fully empty-state?
+3. Which model(s) under systems/ml_signal_engine/ feed the numbers shown, and
+   what is each model's actual current state — trained and running daily, or
+   only implemented in isolation without a live daily run?
+4. For Positions specifically: explain the Pending Actions review/approve flow
+   (paper_trading/pending/, datastore/api/routers/paper_trading.py) — what
+   triggers a pending action, what happens on approve/reject, where results land.
+5. What's genuinely working end-to-end today vs. what looks complete in the UI
+   but is fed by a screen that's real-but-thin (e.g. only one date has live
+   signals — check whether that's still true).
+
+Conversational session — I'll ask follow-ups. When I say "finalize this module",
+append final Q&A to ExplainMe.md under "## AlphaLens.ML" and improvement ideas to
+FutureDevelopment.md under the same heading.
+```
+
+---
+
+## X.2 — AlphaLens.Technical (Chart, Screener, Compare, Alerts, Market Overview)
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, flag doc-vs-
+code mismatches, say "not verifiable" instead of guessing).
+
+Walk me through AlphaLens.Technical screen by screen (dashboard/static/technical/
+chart.html, screener.html, compare.html, alerts.html, overview.html, and the newer
+watchlist.html):
+1. What does each screen do, and which systems/technical_analysis/ module and
+   datastore/api/routers/technical.py endpoint backs it?
+2. The Strategy Screener claims "42 pre-built templates" per the design doc —
+   verify how many templates actually exist in code today and list them.
+3. Alert Manager: walk through the actual alert lifecycle — creation, the
+   cross-process DuckDB lock issue that was fixed recently (see BuildLog.md /
+   recent commits about check_ta_alerts), how alerts get evaluated, and where
+   triggered alerts surface to the user.
+4. Is charting using real OHLCV, and is it corporate-action adjusted per the
+   platform's own rule (alphalens_docs/CLAUDE.md rule #2)? Verify, don't assume.
+5. What's the actual state of the new watchlist screens
+   (dashboard/static/technical/watchlist.html + js/watchlist.js) — fully wired
+   or in-progress?
+
+Conversational — I'll push back if something feels off. When I say "finalize this
+module", append final Q&A to ExplainMe.md under "## AlphaLens.Technical" and ideas
+to FutureDevelopment.md under the same heading.
+```
+
+---
+
+## X.3 — AlphaLens.Fundamental (Dashboard, Peers, Sector, Screener, Thesis, Management)
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, flag doc-vs-
+code mismatches, no guessing).
+
+Walk me through AlphaLens.Fundamental screen by screen (dashboard/static/
+fundamental/dashboard.html, peers.html, sector.html, screener.html, thesis.html,
+management.html), backed by systems/fundamental_analysis/*.
+
+1. alphalens_docs/CLAUDE.md's screen table says Sector and Management each have
+   "one empty-stated sub-panel" — verify this claim against the actual HTML/JS
+   and current API responses. Is it still true, and which specific sub-panel(s)?
+2. Financial Dashboard: which ratios/traffic-light thresholds are real
+   calculations vs. placeholders? Where does quarterly fundamentals data
+   actually come from (Screener.in scrape, Trendlyne, Tijori, Kaggle backfill)
+   and is point-in-time alignment (announcement_date, not quarter_end_date)
+   actually enforced in the code path this screen uses?
+3. Thesis Builder: does the PDF export actually work today, or is it a stub?
+4. Peer Comparison: how are peers selected (sector-based, manual, hardcoded)?
+5. Confirm me that each and every feature is generate correctly.
+
+Conversational — ask me to clarify or push back as needed. When I say "finalize
+this module", append final Q&A to ExplainMe.md under "## AlphaLens.Fundamental"
+and ideas to FutureDevelopment.md under the same heading.
+```
+
+---
+
+## X.4 — AlphaLens.Valuation (DCF, Relative, Batch, Accuracy)
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, no guessing).
+
+alphalens_docs/CLAUDE.md's screen table marks all 4 Valuation screens as "Empty
+(no backend)" as of the last doc update, but the git status shows dashboard/static/
+valuation/*.html and a new dashboard/static/valuation/js/ directory have changed
+recently, and systems/damodaran_valuation/ (dcf/models.py, dcf/wacc.py,
+lifecycle/classifier.py, valuation_engine.py) has recent edits too. Your job is
+to determine the CURRENT truth, not repeat the stale doc claim:
+
+1. For each of dcf.html, relative.html, batch.html, accuracy.html: does it call
+   a real datastore/api/routers/valuation.py endpoint today, and does that
+   endpoint return real computed DCF/relative-value output, or still an
+   empty-state placeholder? Check each one individually — don't assume they've
+   all moved together.
+2. Walk through systems/damodaran_valuation/ — what's implemented (DCF engine,
+   WACC calc, lifecycle classifier, scenarios) and what a full run actually
+   produces today when pointed at a real ticker.
+3. If some screens are now real and others aren't, tell me exactly which is
+   which, and what's the smallest gap left to close for the remaining ones.
+4. Correct the record: is alphalens_docs/CLAUDE.md's status table now out of
+   date? Say so explicitly if it is.
+5. Confirm me that each and every feature is generate correctly.
+
+Conversational — I'll ask follow-ups. When I say "finalize this module", append
+final Q&A to ExplainMe.md under "## AlphaLens.Valuation" and ideas to
+FutureDevelopment.md under the same heading, and separately flag to me (in
+chat, not in the files) that alphalens_docs/CLAUDE.md's screen-status table
+should be corrected if you found it stale.
+```
+
+---
+
+## X.5 — AlphaLens.Forensic (Dashboard, Red Flags, Benford, Cash Flow, Peer Heatmap, Investigation, Universe Scan)
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, no guessing).
+
+Walk me through AlphaLens.Forensic screen by screen (dashboard/static/forensic/
+dashboard.html, redflag.html, benford.html, cashflow.html, heatmap.html,
+report.html, universe.html):
+
+1. What forensic score(s) actually get computed, where (features/forensic_classical.py,
+   systems/ml_signal_engine/models/forensic/ if present), and which formulas are
+   real classical formulas (e.g. Beneish M-Score, Altman Z) vs. custom scores?
+2. Benford's Law screen: verify the digit-distribution/chi-square/MAD computation
+   is real math over real financial-statement figures, not a static/demo chart.
+3. Investigation Report (report.html): is the "guided report builder → PDF"
+   actually functional, or a UI shell?
+4. Universe Scan: does this run across the full configured universe, or a
+   hardcoded small sample? Check config/universe.py wiring.
+5. Cross-check alphalens_docs/CLAUDE.md's claim that this app is "Real" (not
+   partial/empty like Valuation) — does that hold up screen by screen?
+
+Conversational — push back is welcome. When I say "finalize this module", append
+final Q&A to ExplainMe.md under "## AlphaLens.Forensic" and ideas to
+FutureDevelopment.md under the same heading.
+```
+
+---
+
+## X.6 — Paper Trading & Execution Tracking
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, no guessing).
+
+Walk me through the paper trading subsystem:
+1. paper_trading/pending/, paper_trading/executions/, paper_trading/
+   sim_reports/, paper_trading/portfolio_state.json — what does each actually
+   contain, and what writes/reads each one (scripts/run_daily_paper_trading.py,
+   scripts/paper_trading_tracker.py, backtest/portfolio_state.py, datastore/api/
+   routers/paper_trading.py)?
+2. Walk the full lifecycle of one signal: model emits a signal → pending action
+   created → user approves/rejects via ML-D Position Monitor → execution
+   recorded → portfolio_state updated. Verify each hop against the actual code,
+   don't narrate the "intended" flow from docs.
+3. Per memory/BuildLog: paper trading has had 0 real trading days tracked as of
+   the last status review. Check the current state — how many days of real
+   executions exist now (paper_trading/executions/*.csv), and is that number
+   still effectively zero or has it started accumulating?
+4. What guardrails exist against duplicate/erroneous pending actions (recent
+   commits mention an Ops Monitor DuckDB lock race fix — is that the same
+   subsystem or a different one)?
+
+Conversational. When I say "finalize this module", append final Q&A to
+ExplainMe.md under "## Paper Trading & Execution" and ideas to
+FutureDevelopment.md under the same heading.
+```
+
+---
+
+## X.7 — Backtesting Engine
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, no guessing).
+
+Walk me through backtest/ (engine.py, portfolio.py, costs.py, metrics.py,
+integrity_checker.py) and its dashboard surface (ML-E Backtest Dashboard,
+dashboard/static/ml/backtest.html):
+
+1. Confirm walk-forward validation is actually implemented (no random
+   train/test split anywhere in this path) — show me the code that enforces it.
+2. What transaction cost model is used (costs.py) — is it India-specific
+   (STT, brokerage, slippage) and are the numbers real or placeholder defaults?
+3. What does integrity_checker.py actually check, and does the Backtest
+   Dashboard surface those checks (C-INTEGRITY-CHECKLIST) with real pass/fail
+   state or hardcoded green checks?
+4. Are benchmark comparisons (C-BENCHMARK-TABLE) computed against a real index
+   series, and which one?
+
+Conversational. When I say "finalize this module", append final Q&A to
+ExplainMe.md under "## Backtesting Engine" and ideas to FutureDevelopment.md
+under the same heading.
+```
+
+---
+
+## X.8 — Ingestion, Scheduler & Ops Monitor
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, no guessing).
+
+Walk me through the ingestion/scheduling/ops layer:
+1. ingestion/scrapers/ — list every scraper file and, for each, whether it's
+   actually invoked by ingestion/scheduler/daily_pipeline.py today or dormant/
+   standalone (include the new etf_list.py and config/etf_exclusions.py — are
+   these wired in yet or still untracked additions?).
+2. ingestion/scheduler/daily_pipeline.py + checkpoint.py — walk the real
+   checkpoint/resume behavior, verified against the code, not the docs'
+   idealized 15-step flow.
+3. dashboard/static/ops/index.html (Ops Monitor) — what does it actually poll
+   and display, and what was the cross-process DuckDB lock race bug (recent
+   commit "Fix check_ta_alerts cross-process DuckDB lock race") — root cause
+   and fix, in plain terms.
+4. What's the current state of NSE 2026 holiday coverage (config/nse_holidays.py)
+   — was NSE_HOLIDAYS_2026_PENDING ever resolved?
+
+Conversational. When I say "finalize this module", append final Q&A to
+ExplainMe.md under "## Ingestion, Scheduler & Ops" and ideas to
+FutureDevelopment.md under the same heading.
+```
+
+---
+
+## X.9 — Test Suite & Quality Gates
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, no guessing).
+
+Walk me through tests/ and the quality-gate story:
+1. tests/unit, tests/integration, tests/regression, tests/hitl — what does each
+   directory actually cover today (rough count of test files/cases, not just
+   directory names), and which of these actually pass right now if run?
+2. tests/quality/ — the no-stub/synthetic-data enforcement mentioned in memory.
+   Show me the actual check and confirm it's still active/passing.
+3. Is there a real CI setup (GitHub Actions or similar) running these, or is
+   test execution entirely manual today?
+4. Coverage: what does actual coverage look like for the highest-risk paths
+   (PIT joins, walk-forward backtest, P&D pre-filter) vs. thin/untested paths?
+
+Conversational. When I say "finalize this module", append final Q&A to
+ExplainMe.md under "## Test Suite & Quality Gates" and ideas to
+FutureDevelopment.md under the same heading.
+```
+
+---
+
+## X.10 — Cross-Cutting Wrap-Up
+
+📋 **PROMPT:**
+```
+Operate in truthful mode (verified claims only, file:line citations, no guessing).
+
+This is the closing session. Read the full current ExplainMe.md and
+FutureDevelopment.md (built up over the previous modules) plus the current
+alphalens_docs/CLAUDE.md screen-status table, and:
+
+1. Give me a single honest one-paragraph-per-app status summary: ML, Technical,
+   Fundamental, Valuation, Forensic — real vs. partial vs. empty, as verified
+   across all prior modules (not the doc's claims).
+2. List every place where alphalens_docs/CLAUDE.md or other alphalens_docs/*.md
+   files are now stale relative to what the walkthrough found, so they can be
+   fixed later.
+3. Pull the single highest-leverage item out of FutureDevelopment.md — the one
+   gap that, if closed, would most improve the honesty of the "what's real vs.
+   stubbed" story across the app.
+
+When I say "finalize", append this as a final "## Cross-Cutting Summary
+(<date>)" section at the top of ExplainMe.md (after the title, before the
+Platform Architecture & Data Layer section) and do not add anything further to
+FutureDevelopment.md beyond what's already there unless something genuinely new
+surfaced.
+```
+
+---
+
+### Notes on running the Explain-Me series
+
+- Run X.0 → X.10 in order. X.10 depends on the prior modules having populated
+  `ExplainMe.md` / `FutureDevelopment.md`.
+- `/clear` between every module — that's the point of finalizing before moving
+  on; each module prompt is self-contained and doesn't depend on in-chat memory
+  from the previous one, only on the files it wrote.
+- If a module prompt turns up something big enough to want fixed immediately
+  (not just logged), stop, fix it in a separate normal session, then come back
+  and re-run that module's prompt fresh once the fix lands — don't let a
+  mid-walkthrough fix contaminate the truthful-mode explanation session.
+- This series is read-only/audit-style and should never itself contain
+  code-change instructions, unlike every prompt in the phases above.
+
+---
+
 *End of AlphaLens Claude Code Prompt Guide*
-*Generated: June 2026 | Covers: 5 phases, 16 models, 4 consumer systems*
-*Reference: alphalens_docs/CLAUDE.md (master context) | alphalens_docs/specs/08_specifications.md (all spec IDs)*s
+*Generated: June 2026 | Covers: 5 phases, 16 models, 4 consumer systems, plus the Explain-Me walkthrough series (added 2026-07-04)*
+*Reference: alphalens_docs/CLAUDE.md (master context) | alphalens_docs/specs/08_specifications.md (all spec IDs)*

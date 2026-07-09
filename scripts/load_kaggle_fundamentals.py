@@ -41,6 +41,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from features.fundamental_quality_gate import validate_and_annotate  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s — %(message)s",
@@ -209,7 +211,11 @@ def _build_fundamentals_rows(ticker: str, qpl: pd.DataFrame,
         depr    = _num(qpl.loc["Depreciation", col]) if "Depreciation" in qpl.index else None
         interest = _num(qpl.loc["Interest", col])   if "Interest"   in qpl.index else None
 
-        net_margin = (pat / revenue * 100) if (pat and revenue and revenue != 0) else None
+        # Fraction, not percent — matches ingestion/scrapers/screener.py's convention
+        # and the fundamentals.operating_margin/net_margin column contract (fmtPct
+        # multiplies by 100 at display time; storing percent here double-counts it).
+        net_margin = (pat / revenue) if (pat and revenue and revenue != 0) else None
+        opm = (opm / 100) if opm is not None else None
         # FCF ≈ operating cash flow − capex (yearly, nearest)
         op_cf = _nearest_yearly(op_cashflow_by_year, qend)
         capex = _nearest_yearly(capex_by_year, qend)
@@ -296,8 +302,9 @@ _INSERT_FUNDAMENTALS = """
         revenue, ebitda, pat, eps, operating_margin, ebitda_margin, net_margin,
         roe, roce, debt_to_equity, interest_coverage, fcf,
         gross_profit, capex, total_debt, cash_and_equivalents,
-        shares_outstanding, book_value_per_share, depreciation
-    ) VALUES (?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?,?,?)
+        shares_outstanding, book_value_per_share, depreciation,
+        quality_flag, quality_flag_reason
+    ) VALUES (?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?,?,?, ?,?)
     ON CONFLICT (ticker, fiscal_year, quarter) DO NOTHING
 """
 
@@ -313,6 +320,9 @@ _INSERT_SHAREHOLDING = """
 def _write_batch(conn, fund_rows: list, sh_rows: list) -> Tuple[int, int]:
     f_written = s_written = 0
     for r in fund_rows:
+        # backlog #12/AF-5: flag (never silently write) out-of-range ratios
+        # before this row reaches the DB — see features/fundamental_quality_gate.py.
+        r = validate_and_annotate(r)
         try:
             conn.execute(_INSERT_FUNDAMENTALS, [
                 r["ticker"], r["fiscal_year"], r["quarter"],
@@ -323,6 +333,7 @@ def _write_batch(conn, fund_rows: list, sh_rows: list) -> Tuple[int, int]:
                 r["fcf"], r["gross_profit"], r["capex"], r["total_debt"],
                 r["cash_and_equivalents"], r["shares_outstanding"],
                 r["book_value_per_share"], r.get("depreciation"),
+                r.get("quality_flag"), r.get("quality_flag_reason"),
             ])
             f_written += 1
         except Exception as exc:

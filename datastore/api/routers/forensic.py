@@ -23,9 +23,11 @@ of model-output table). GET returns the most recent row at-or-before
 specific-date lookup the way signals.py's /ml/{ticker}/{date} is (no date
 path param in the build prompt's literal endpoint signature).
 
-[AS BUILT, SPEC-SCHED-013] no persist=False here: this API server is the
-sole writer of signals.duckdb (same reasoning as signals.py's module
-docstring).
+[AS BUILT, AF-1] All call sites below now pass persist=False explicitly
+(plus an explicit read_only=) — see signals.py's module docstring for why
+the earlier "sole writer, no persist=False needed" reasoning didn't
+actually hold (BuildLog.md "Fix check_ta_alerts cross-process DuckDB lock
+race", commit 8147579).
 """
 
 import logging
@@ -66,7 +68,7 @@ async def get_forensic_summary() -> ForensicSummaryResponse:
     red_count = red + black labels (critical); amber_count = orange + yellow (elevated).
     Returns available=False when ml_forensic has never been written.
     """
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         latest = conn.execute("SELECT MAX(date) FROM ml_forensic").fetchone()
         latest_date = latest[0] if latest else None
         if latest_date is None:
@@ -109,7 +111,7 @@ async def get_forensic_flagged(
     if not labels:
         raise HTTPException(status_code=400, detail="flag must include at least one of: red, amber, green")
 
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         latest = conn.execute("SELECT MAX(date) FROM ml_forensic").fetchone()
         latest_date = latest[0] if latest else None
         if latest_date is None:
@@ -144,7 +146,7 @@ async def get_forensic_score(
         raise HTTPException(status_code=400, detail="Ticker cannot be empty")
     pit_reference = as_of or datetime.utcnow()
 
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         row = conn.execute(
             f"""
             SELECT {_SELECT_COLS} FROM ml_forensic
@@ -165,7 +167,7 @@ async def write_forensic_score(record: ForensicWrite) -> ForensicWriteResult:
     update_cols = [c for c in _COLUMNS if c not in ("date", "ticker")]
     update_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
 
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(
             f"""
             INSERT INTO ml_forensic ({_SELECT_COLS}) VALUES ({placeholders})

@@ -13,16 +13,29 @@
 <div class="sub-tabs" id="sub-tabs"></div>
 <div class="page">
   <div class="sec">
-    <div class="sec-head"><span class="sec-title">Valuation Dashboard</span></div>
-    <div id="content"></div>
+    <div class="sec-head"><span class="sec-title">Valuation Dashboard</span><span class="sec-sub">Damodaran-style FCFF/Excess-Return DCF for a single stock</span></div>
+    <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+      <input type="text" id="ticker-input" list="ticker-list" placeholder="Ticker (e.g. TCS)">
+      <button id="load-btn">Load</button>
+    </div>
+  </div>
+  <div class="sec">
+    <div id="dcf-summary"><div class="empty">Enter a ticker and click Load</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Scenarios (Monte Carlo)</span></div>
+    <div id="dcf-scenarios"></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">WACC × Terminal Growth Sensitivity</span></div>
+    <div id="dcf-sensitivity"></div>
   </div>
 </div>
 <script src="../js/api.js"></script>
 <script src="../js/shell.js"></script>
 <script src="../js/empty_state.js"></script>
-<script>
-  renderAppShell("valuation", "dcf");
-  renderEmptyState("content", { icon: "💰", detail: BACKEND_STATUS.valuation });
-</script>
+<script src="../js/ticker_picker.js"></script>
+<script src="../js/crosslink.js"></script>
+<script src="js/dcf.js"></script>
 </body>
 </html>

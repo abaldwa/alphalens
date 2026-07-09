@@ -28,3 +28,6 @@ fyersApi.log
 # Top-level runtime pipeline logs (generated at runtime, not source)
 logs/
 *.lock
+
+# A25 rollback snapshots (generated, multi-GB, not source)
+datastore/snapshots/

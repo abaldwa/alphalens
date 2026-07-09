@@ -23,7 +23,7 @@
 <script src="js/shell.js"></script>
 <script>
   apiGet("/health")
-    .then((h) => { document.getElementById("app-meta").textContent = `${h.status} · v${h.version} · ${h.stock_count} stocks`; })
+    .then((h) => { document.getElementById("app-meta").textContent = `${h.status} · v${h.version} · ${fmtInt(h.stock_count)} stocks`; })
     .catch(() => { document.getElementById("app-meta").textContent = "API unreachable"; });
 
   const APP_STATUS = {
@@ -33,6 +33,7 @@
     technical: { label: "Partially live", color: "var(--amber)", desc: "Charting, compare, market overview, and the strategy screener (42 templates) are live (real indicators/patterns/breadth). Alerts still need real new logic." },
     valuation: { label: "Not yet built", color: "var(--tx3)", desc: "Damodaran DCF, relative valuation, batch ranking, accuracy tracking — backend not built yet." },
     ops: { label: "Live", color: "var(--green)", desc: "Scheduled-job heartbeats, today's pipeline step checklist, recent runs, and force-start for a step that hasn't run yet." },
+    big_investors: { label: "Live", color: "var(--green)", desc: "Bulk/block deals (family-attributed, wash-trade-netted), MF holdings movers/entries-exits, and quarterly reconciliation against Trendlyne's named-holder stakes (5 investors covered) — all cap-band annotated." },
   };
 
   const tiles = document.getElementById("app-tiles");

@@ -20,40 +20,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from datastore.api.db import get_duckdb_connection, get_sqlite_connection, init_duckdb, init_sqlite
 from datastore.api.main import app
-
-
-# ===== Database Fixtures =====
-@pytest.fixture
-def test_duckdb():
-    """
-    In-memory DuckDB instance for testing.
-
-    No side effects — uses :memory: path. Each test gets a fresh database.
-
-    Returns:
-        DuckDB connection object
-    """
-    init_duckdb(Path(":memory:"))
-    with get_duckdb_connection(Path(":memory:")) as conn:
-        yield conn
-
-
-@pytest.fixture
-def test_sqlite():
-    """
-    In-memory SQLite instance for testing.
-
-    No side effects — uses :memory: path. Each test gets a fresh database.
-
-    Returns:
-        SQLite connection object
-    """
-    init_sqlite(Path(":memory:"))
-    with get_sqlite_connection(Path(":memory:")) as conn:
-        yield conn
-
 
 # ===== API Fixtures =====
 @pytest.fixture

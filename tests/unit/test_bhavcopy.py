@@ -86,6 +86,31 @@ def test_delivery_pct_validation_catches_out_of_range_values(monkeypatch):
         bhavcopy.download_bhavcopy("2026-01-15")
 
 
+def test_stale_bhavcopy_date_raises_value_error(monkeypatch):
+    """RCA 2026-07-05: a bhavcopy fetch returning a different DATE1 than the
+    requested date (NSE serving a stale/cached file for an undeclared
+    holiday) must raise, not silently upsert duplicate data under the
+    requested date."""
+    raw = _make_raw_bhavcopy()
+    raw["DATE1"] = "14-Aug-2024"  # requested date will be 2024-08-15
+    monkeypatch.setattr(bhavcopy, "_fetch_bhavcopy_csv", lambda trade_date: raw)
+    monkeypatch.setattr(bhavcopy, "_save_raw", lambda trade_date, raw_df: None)
+
+    with pytest.raises(ValueError, match="stale"):
+        bhavcopy.download_bhavcopy("2024-08-15")
+
+
+def test_matching_bhavcopy_date_passes_validation(monkeypatch):
+    """A DATE1 matching the requested date must not raise."""
+    raw = _make_raw_bhavcopy()
+    raw["DATE1"] = "15-Jan-2026"
+    monkeypatch.setattr(bhavcopy, "_fetch_bhavcopy_csv", lambda trade_date: raw)
+    monkeypatch.setattr(bhavcopy, "_save_raw", lambda trade_date, raw_df: None)
+
+    df = bhavcopy.download_bhavcopy("2026-01-15")
+    assert len(df) == MIN_STOCKS_FOR_INFERENCE
+
+
 def test_connection_error_after_three_retries(monkeypatch):
     """SPEC-PIPE-001: a session that always fails must raise ConnectionError after exactly MAX_RETRIES attempts."""
     import requests

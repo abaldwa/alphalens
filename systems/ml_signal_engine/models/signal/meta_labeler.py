@@ -239,7 +239,23 @@ class MetaLabeler(IClassificationModel):
         self._lgbm = payload["lgbm"]
         self._feature_names = payload["feature_names"]
         self._imputer = payload["imputer"]
-        self._threshold = payload["threshold"]
+        threshold = payload.get("threshold")
+        if threshold is None:
+            # config.settings.META_THRESHOLD fallback (item #7, user decision
+            # 2026-07-04): a corrupted/incomplete artifact must still produce
+            # a usable Act/Don't-Act cutoff rather than silently reverting to
+            # the hardcoded 0.5 __init__ default this class explicitly warns
+            # against (SPEC-MODEL-004: "threshold optimization, never 0.5
+            # default").
+            from config.settings import META_THRESHOLD
+
+            logger.warning(
+                "MetaLabeler.load(%s): saved payload has no tuned 'threshold' "
+                "— falling back to config.settings.META_THRESHOLD=%s",
+                path, META_THRESHOLD,
+            )
+            threshold = META_THRESHOLD
+        self._threshold = threshold
         self.random_state = payload["random_state"]
         self._trained_at = payload["trained_at"]
         self._training_samples = payload["training_samples"]

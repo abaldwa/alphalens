@@ -15,11 +15,23 @@ multibagger/) and the ml_multibagger table (existed in schema since
 P0.2, fed datastore/api/routers/watchlist.py's stub, but had no writer
 until this script — see watchlist.py's P2.6 module docstring).
 
-Same "train once at scoring time" pattern score_forensic.py uses for
-M-10: trains a fresh MultibaggerModel on real OHLCV via
-multibagger_model.load_multibagger_training_data_from_db() (see that
-module's docstring and BuildLog.md "Real data sourcing — Multibagger") —
-no separate persisted model artifact exists yet.
+[backlog #27, 2026-07-04] Previously: "train once at scoring time" pattern
+score_forensic.py uses for M-10 — trained a fresh MultibaggerModel on
+every invocation. That was tolerable when training was one row per
+ticker; now that load_multibagger_training_data_from_db() builds many
+labeled rows per ticker (real per-snapshot-date labels — see
+multibagger_model.py's module docstring), training is materially
+slower, so this script now follows the SAME cached-artifact pattern
+signal_5d/pnd_detector already use (train_all_phase1.py's
+`_save_model` -> `MODELS_DIR/{name}/{name}_current.pkl`,
+`daily_inference.py`'s `_load_model` -> `model.load(path)`): if
+`MODELS_DIR/multibagger/multibagger_current.pkl` exists, it's loaded
+instead of retraining; only falls back to an inline fresh train (and
+logs a warning) if no cached artifact exists yet. A periodic retrain
+(e.g. weekly, matching this model's own weekly-watchlist cadence) is
+expected to write that cached artifact via
+`MultibaggerModel.save()` — this script does not itself decide when to
+retrain.
 
 Institutional/governance enrichment (mf_snapshot, governance_snapshot —
 compute_multibagger_features' optional params) is intentionally omitted
@@ -125,9 +137,7 @@ def score_universe(
     """
     client = client or DataStoreClient()
     if model is None:
-        X_train, y_train, duration, event, groups, _pnd = load_multibagger_training_data_from_db()
-        model = MultibaggerModel()
-        model.train_full(X_train, y_train, duration, event, groups=groups)
+        model = _load_cached_model_or_train_fresh()
 
     as_of = pd.Timestamp(now_ist().date())
     run_date = as_of.date()
@@ -178,6 +188,40 @@ def score_universe(
     return results
 
 
+_MULTIBAGGER_MODEL_NAME = "multibagger"
+
+
+def _load_cached_model_or_train_fresh() -> MultibaggerModel:
+    """
+    Same cached-artifact pattern signal_5d/pnd_detector use (see module
+    docstring's backlog #27 note): load MODELS_DIR/multibagger/
+    multibagger_current.pkl if a periodic retrain has produced one,
+    otherwise fall back to training inline (slower, but still correct —
+    e.g. first run before any retrain job has ever executed).
+    """
+    from config.settings import MODELS_DIR
+
+    cached_path = MODELS_DIR / _MULTIBAGGER_MODEL_NAME / f"{_MULTIBAGGER_MODEL_NAME}_current.pkl"
+    if cached_path.exists():
+        try:
+            model = MultibaggerModel()
+            model.load(str(cached_path))
+            logger.info(f"Loaded cached MultibaggerModel from {cached_path}")
+            return model
+        except Exception as exc:
+            logger.warning(f"Failed to load cached MultibaggerModel at {cached_path} ({exc}) — training fresh")
+
+    logger.warning(
+        f"No cached MultibaggerModel at {cached_path} — training fresh at scoring time "
+        "(slower now that training uses many rows per ticker; run a periodic retrain job "
+        "that calls MultibaggerModel.save() to avoid this)."
+    )
+    X_train, y_train, duration, event, groups, _pnd = load_multibagger_training_data_from_db()
+    model = MultibaggerModel()
+    model.train_full(X_train, y_train, duration, event, groups=groups)
+    return model
+
+
 def _none_if_nan(value) -> Optional[float]:
     return None if pd.isna(value) else float(value)
 
@@ -190,6 +234,21 @@ def main() -> None:
     parser.add_argument("--tickers", help="Comma-separated ticker list (default: full universe)")
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of tickers scored")
     parser.add_argument("--no-write", action="store_true", help="Score only, skip the API writes")
+    parser.add_argument(
+        "--batch-size", type=int, default=300,
+        help=(
+            "[backlog #26, 2026-07-04] score_universe()'s _fetch_ohlcv_panel materializes "
+            "the FULL requested ticker list's OHLCV history as one in-memory DataFrame — "
+            "against the real ~2,300-ticker universe this exhausted host memory (verified "
+            "live: killed by an external memory monitor at ~7.7GB RSS with available memory "
+            "below 2GB). The weekly scheduled job (pipeline_scheduler.py's "
+            "schedule_multibagger_scoring) invokes this exact full-universe, no-args CLI path "
+            "as a subprocess, so this was a real production risk, not just a manual-run "
+            "concern. Batching bounds peak memory to one chunk's panel at a time; the trained "
+            "model is loaded/trained ONCE (outside the loop) and reused across all chunks so "
+            "batching doesn't multiply training cost."
+        ),
+    )
     args = parser.parse_args()
 
     if args.tickers:
@@ -201,8 +260,15 @@ def main() -> None:
     if args.limit:
         tickers = tickers[: args.limit]
 
-    print(f"Scoring {len(tickers)} tickers (write={not args.no_write})...", flush=True)
-    results = score_universe(tickers, write=not args.no_write)
+    model = _load_cached_model_or_train_fresh()
+
+    print(f"Scoring {len(tickers)} tickers in batches of {args.batch_size} (write={not args.no_write})...", flush=True)
+    results: Dict[str, bool] = {}
+    for start in range(0, len(tickers), args.batch_size):
+        batch = tickers[start:start + args.batch_size]
+        print(f"  batch {start // args.batch_size + 1}: {len(batch)} tickers ({start}-{start + len(batch)}/{len(tickers)})", flush=True)
+        results.update(score_universe(batch, model=model, write=not args.no_write))
+
     n_ok = sum(1 for ok in results.values() if ok)
     print(f"Done: {n_ok}/{len(tickers)} succeeded.", flush=True)
     failed = [t for t, ok in results.items() if not ok]

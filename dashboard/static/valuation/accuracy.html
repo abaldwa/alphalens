@@ -22,7 +22,10 @@
 <script src="../js/empty_state.js"></script>
 <script>
   renderAppShell("valuation", "accuracy");
-  renderEmptyState("content", { icon: "🎯", detail: BACKEND_STATUS.valuation });
+  renderEmptyState("content", {
+    icon: "🎯",
+    detail: "Valuation Accuracy needs a backtest comparing past DCF intrinsic values (valuation_signals table) to what actually happened to the price afterward. Batch/DCF/Relative Valuation are now live and start writing valuation_signals on every run, but there isn't yet enough history accumulated, nor a backtest step that reads it back and scores accuracy. Not yet built.",
+  });
 </script>
 </body>
 </html>

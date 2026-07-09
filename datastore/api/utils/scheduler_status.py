@@ -47,6 +47,9 @@ HEARTBEAT_STALE_AFTER = {
     # a permanent false-positive stale flag.
     "weekend_feature_backfill": timedelta(days=8),
     "weekend_fundamentals": timedelta(days=8),
+    # A21 (Pipeline Health Checker): weekly, Sunday. 8 days absorbs a
+    # single missed Sunday, same margin as the Saturday jobs above.
+    "job_health_check": timedelta(days=8),
 }
 
 
@@ -76,7 +79,7 @@ def get_next_run_times() -> Dict[str, Optional[datetime]]:
     from config.settings import (
         AMFI_SCHEDULE_TIME,
         DAILY_PIPELINE_SCHEDULE_TIME,
-        MF_HOLDINGS_SCHEDULE_DAYS,
+        MF_HOLDINGS_SCHEDULE_DAY_OF_WEEK,
         MODEL_TRAINING_SCHEDULE_TIME,
         MORNING_CATCHUP_SCHEDULE_TIME,
         WEEKEND_FEATURE_BACKFILL_TIME,
@@ -99,7 +102,7 @@ def get_next_run_times() -> Dict[str, Optional[datetime]]:
             hour=morning_hour, minute=morning_minute, day_of_week="mon-fri", timezone="Asia/Kolkata"
         ),
         "mf_holdings_ingestion": CronTrigger(
-            day=MF_HOLDINGS_SCHEDULE_DAYS, hour=mf_hour, minute=mf_minute, timezone="Asia/Kolkata"
+            day_of_week=MF_HOLDINGS_SCHEDULE_DAY_OF_WEEK, hour=mf_hour, minute=mf_minute, timezone="Asia/Kolkata"
         ),
         "model_training": CronTrigger(
             hour=train_hour, minute=train_minute, day_of_week="mon-fri", timezone="Asia/Kolkata"
@@ -156,7 +159,16 @@ def get_scheduler_heartbeats() -> List[SchedulerJobHeartbeat]:
         row = rows_by_job.get(job_id)
         next_run_time = next_run_times.get(job_id)
         if row is None:
-            results.append(SchedulerJobHeartbeat(job_id=job_id, is_stale=True, next_run_time=next_run_time))
+            # No heartbeat row yet means this job has simply never fired —
+            # e.g. it was registered after its most recent scheduled slot
+            # already passed. That's not evidence of a stall. Only flag
+            # stale if we can't even confirm it's due to run soon (no
+            # computable next_run_time, or next_run_time already overdue,
+            # e.g. the scheduler process itself is down).
+            pending_first_run = next_run_time is not None and next_run_time > now
+            results.append(
+                SchedulerJobHeartbeat(job_id=job_id, is_stale=not pending_first_run, next_run_time=next_run_time)
+            )
             continue
         last_attempt_at, last_status, last_error, last_success_at = row
         is_stale = True

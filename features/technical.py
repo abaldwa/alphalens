@@ -438,6 +438,27 @@ def _category_7_relative_strength(df: pd.DataFrame, benchmark: Optional[pd.DataF
         return out
 
     bm = benchmark[["date"] + [f"{n}_close" for n in names]].drop_duplicates("date").sort_values("date").copy()
+
+    # Reindex onto the full set of dates actually traded by `df` and forward-fill
+    # (limit=5 trading days) before computing returns. The benchmark ETFs
+    # (NIFTYBEES/NIF100BEES/MONIFTY500) occasionally have no row on a date when
+    # the general equity universe does trade (~13 such gaps in the last 500
+    # trading days, e.g. 2026-03-31, 2026-04-03) — without this, that single
+    # missing benchmark date turns into a NaN in nifty50_daily_ret/_bm_ret, and
+    # because beta_63d/alpha_21d use a strict rolling(63, min_periods=63)
+    # window, one NaN poisons up to 63 consecutive days of output. This is what
+    # made beta_63d/alpha_21d ~94% null in the most recent months despite
+    # NIFTYBEES having near-complete history (RCA 2026-07-05). A short ffill
+    # limit avoids masking genuine multi-year benchmark-not-yet-listed gaps
+    # (e.g. NIF100BEES pre-2015, MONIFTY500 pre-2023-10), which stay NaN.
+    calendar_dates = df["date"].drop_duplicates().sort_values()
+    bm = (
+        bm.set_index("date")
+        .reindex(calendar_dates)
+        .ffill(limit=5)
+        .rename_axis("date")
+        .reset_index()
+    )
     for n in names:
         bm[f"{n}_ret_21d"] = bm[f"{n}_close"] / bm[f"{n}_close"].shift(21) - 1
     bm["nifty50_daily_ret"] = bm["nifty50_close"].pct_change()
@@ -446,7 +467,18 @@ def _category_7_relative_strength(df: pd.DataFrame, benchmark: Optional[pd.DataF
     merged = df.merge(bm[merge_cols], on="date", how="left")
     merged.index = df.index
 
-    stock_ret_21d = df.groupby("ticker", sort=False)["close"].pct_change(21)
+    # Illiquid stocks can have no-trade gap days scattered through their
+    # history; a plain pct_change(21)/rolling(63) breaks on any single gap
+    # (see RCA 2026-07-06: ~61 tickers stayed permanently null despite having
+    # hundreds of valid trading days). We tolerate gaps by reaching back at
+    # most 7 extra calendar rows — ffill(limit=7) for the 21d return, and a
+    # widened 70-row window (63+7) with min_periods=63 for beta, so pandas'
+    # pairwise-NaN-aware rolling cov/var can skip up to 7 gap days within the
+    # window. Genuinely short histories (new listings, delisted stocks) still
+    # correctly stay NaN — there's no bounded reach-back that can manufacture
+    # 63 valid days out of fewer than 63 that exist.
+    close_filled = df.groupby("ticker", sort=False)["close"].ffill(limit=7)
+    stock_ret_21d = close_filled.groupby(df["ticker"], sort=False).pct_change(21)
     for n in names:
         out[f"rs_vs_{n}_21d"] = stock_ret_21d - merged[f"{n}_ret_21d"]
 
@@ -455,8 +487,8 @@ def _category_7_relative_strength(df: pd.DataFrame, benchmark: Optional[pd.DataF
     work["_bm_ret"] = merged["nifty50_daily_ret"]
 
     def _beta(g: pd.DataFrame) -> pd.Series:
-        cov = g["_stock_ret"].rolling(63, min_periods=63).cov(g["_bm_ret"])
-        var = g["_bm_ret"].rolling(63, min_periods=63).var()
+        cov = g["_stock_ret"].rolling(70, min_periods=63).cov(g["_bm_ret"])
+        var = g["_bm_ret"].rolling(70, min_periods=63).var()
         return _safe_div(cov, var)
 
     beta_63d = _apply_per_ticker(work, _beta)

@@ -141,8 +141,15 @@ def _merge_ohlcv_features(
         fdf = fdf.drop(columns=["ticker"], errors="ignore")
         spine = spine.merge(fdf, on="date", how="left")
 
-    # Carry raw OHLCV columns for Stage 2 cross-ticker computations.
-    ohlcv_pass = ohlcv[["date"] + _OHLCV_PASS].copy()
+    # Carry raw OHLCV columns for Stage 2 cross-ticker computations. Exclude
+    # any column already present in spine (e.g. "delivery_pct" is also a
+    # CORE_TECHNICAL_FEATURES passthrough column from compute_technical_features)
+    # — merging a duplicate name here silently suffixes both to _x/_y, and the
+    # "fill gaps" step below then recreates a fresh all-NaN column under the
+    # original name since it no longer exists post-merge (bug found 2026-07-05:
+    # delivery_pct was 100% null in every persisted feature file for this reason).
+    pass_cols = [c for c in _OHLCV_PASS if c not in spine.columns]
+    ohlcv_pass = ohlcv[["date"] + pass_cols].copy()
     spine = spine.merge(ohlcv_pass, on="date", how="left")
 
     # Fill any feature column gaps introduced by partial merges.

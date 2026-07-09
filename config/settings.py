@@ -101,6 +101,12 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 DATASTORE_DIR = PROJECT_ROOT / "datastore"
 RAW_DIR = DATASTORE_DIR / "raw"
 NORMALISED_DIR = DATASTORE_DIR / "normalised"
+# 2026-07-08: local cache of raw NSE Integrated Filing HTML, keyed by NSE's
+# own seq_id — scripts/backfill_fundamentals_nse_xbrl.py downloads a filing
+# at most once ever (reported figures don't change once filed, per explicit
+# operator instruction), re-reading from this cache on any re-run instead of
+# re-fetching from NSE.
+NSE_XBRL_RAW_CACHE_DIR = RAW_DIR / "nse_xbrl_filings"
 FEATURES_DIR = DATASTORE_DIR / "features"
 SIGNALS_DIR = DATASTORE_DIR / "signals"
 MODELS_DIR = DATASTORE_DIR / "models"
@@ -111,6 +117,15 @@ LOGS_DIR = DATASTORE_DIR / "logs"
 DUCKDB_PATH = NORMALISED_DIR / "alphalens.duckdb"
 PIPELINE_LOG_DB_PATH = NORMALISED_DIR / "pipeline_log.db"
 SCHEDULER_DB_PATH = NORMALISED_DIR / "scheduler.db"
+# 2026-07-05: cross-process advisory lock (fcntl.flock) so run_steps_for_date
+# can never execute concurrently from two OS processes (the scheduler's own
+# daily_pipeline + morning_catchup jobs both call it for "today", and the
+# Ops API's force_run_step is a separate process again) — see
+# pipeline_scheduler.py's pipeline_run_lock(). Root cause of pipeline_runs
+# rows recorded 'failed' on 2026-07-02/03 despite every step's own
+# checkpoint showing 'success': two concurrent invocations racing on the
+# same date's pipeline_checkpoints rows.
+PIPELINE_RUN_LOCK_PATH = NORMALISED_DIR / ".pipeline_run.lock"
 MF_HOLDINGS_DIR = NORMALISED_DIR / "mf_holdings"
 
 # Store 3: Features
@@ -164,6 +179,14 @@ DAILY_PIPELINE_SCHEDULE_TIME = "18:00"  # HH:MM, Asia/Kolkata, mon-fri
 MORNING_CATCHUP_SCHEDULE_TIME = "07:30"  # HH:MM, Asia/Kolkata, mon-fri
 DEFAULT_RETRY_DELAY_SECONDS = 60
 RETRAIN_OVERDUE_MULTIPLIER = 1.5  # days_since_retrain > interval * this => overdue
+# 2026-07-07: retrain cadence for all registry-tracked models (hmm_market,
+# pnd_detector, signal_5d/21d/63d, meta_labeler, conformal_signal5d,
+# multibagger). 28 days (4 weeks) lines up with the weekly Saturday
+# training-check job below — most Saturdays are a fast no-op, and an
+# actual multi-hour retrain fires roughly once a month. Short enough to
+# track regime drift, long enough that a single volatile week of data
+# doesn't get chased into every model.
+DEFAULT_TRAINING_INTERVAL_DAYS = 28
 
 # ---------------------------------------------------------------------------
 # 23-hour pipeline window (user-confirmed, 2026-07-02)
@@ -174,12 +197,51 @@ RETRAIN_OVERDUE_MULTIPLIER = 1.5  # days_since_retrain > interval * this => over
 # ---------------------------------------------------------------------------
 PIPELINE_WINDOW_START = "18:00"  # Updated: 6PM IST (was 3:30 PM)
 PIPELINE_WINDOW_HOURS = 23       # Updated: 23-hour window (was 15 h)
-# Model training fires after the daily pipeline completes (~20:00 IST on a
-# normal trading day; 21:00 to be safe). Checks RETRAIN_OVERDUE_MULTIPLIER.
-MODEL_TRAINING_SCHEDULE_TIME = "20:00"  # HH:MM, Asia/Kolkata, mon-fri
+# Model training (2026-07-07: moved off weekdays onto the weekend — a real
+# production-grade retrain with real Optuna trials runs 3-4+ hours per
+# model and was contending with the 18:00 daily pipeline / DuckDB's
+# single-writer lock on trading days; see BuildLog.md 2026-07-07). Fires
+# Saturday after WEEKEND_FEATURE_BACKFILL_TIME/WEEKEND_FUNDAMENTALS_TIME
+# below have finished, markets closed, full CPU/DB available all weekend.
+# Checks RETRAIN_OVERDUE_MULTIPLIER x DEFAULT_TRAINING_INTERVAL_DAYS.
+MODEL_TRAINING_SCHEDULE_TIME = "12:00"     # HH:MM, Asia/Kolkata, saturday
+MODEL_TRAINING_DAY_OF_WEEK = "sat"
 # Weekend jobs fire Saturday morning — markets are closed, full CPU available.
 WEEKEND_FEATURE_BACKFILL_TIME = "09:00"   # HH:MM, Asia/Kolkata, saturday
 WEEKEND_FUNDAMENTALS_TIME = "10:30"       # HH:MM, Asia/Kolkata, saturday
+# FutureDevelopment.md #14: multibagger/forensic scoring is operator-CLI
+# only today (score_multibagger.py/score_forensic.py), never scheduled.
+# BuildLog.md documents a "weekly cadence" design intent for the
+# multibagger watchlist (2026-06's M-08 build notes: "known historical
+# multibaggers score > 0.30; weekly cadence"/"weekly refresh") — both
+# scoring scripts are cheap ("trains fresh at scoring time", seconds to
+# low-minutes per BuildLog.md), so Sunday morning (markets closed, no
+# daily-pipeline contention) is used for both.
+MULTIBAGGER_SCORING_SCHEDULE_TIME = "09:30"  # HH:MM, Asia/Kolkata, sunday
+FORENSIC_SCORING_SCHEDULE_TIME = "10:00"     # HH:MM, Asia/Kolkata, sunday
+# 2026-07-08: NSE Integrated Filing — IndAS is a real, regulator-authoritative
+# fundamentals source (ingestion/scrapers/nse_xbrl_financials.py) that only
+# publishes new filings quarterly per company, but different companies file on
+# different real-world days throughout each quarter — a weekly scan (not
+# quarterly) is what actually catches newly-published filings promptly.
+# [REVISED 2026-07-08] Originally scheduled Sunday 10:30 (after
+# forensic_scoring) — wrong per explicit operator instruction: this must run
+# AHEAD OF forensic scoring, valuation modeling, and every model that reads
+# `fundamentals`, not after. A full-universe scan takes ~2-3h (real
+# measurement, ~2,700 tickers), so a same-morning 30-minute gap before
+# multibagger/forensic (09:30/10:00 Sunday) can't possibly finish in time —
+# this codebase has no job-dependency/wait-for-completion scheduler
+# primitive (see schedule_model_training's docstring: everything here is
+# fixed-time cron with a generous gap, not a DAG), so the only real fix is
+# starting early enough that it's done well before EVERY downstream
+# consumer across the whole weekend batch: WEEKEND_FEATURE_BACKFILL_TIME/
+# WEEKEND_FUNDAMENTALS_TIME (09:00/10:30 Saturday — WEEKEND_FUNDAMENTALS_TIME
+# is Screener/Trendlyne, the FALLBACK source, so it should also run after
+# this), MODEL_TRAINING_SCHEDULE_TIME (12:00 Saturday), and Sunday's
+# MULTIBAGGER_SCORING_SCHEDULE_TIME/FORENSIC_SCORING_SCHEDULE_TIME. Moved to
+# 05:00 Saturday — a single early run covers the entire weekend, rather than
+# duplicating it into two slots.
+NSE_XBRL_FUNDAMENTALS_SCHEDULE_TIME = "05:00"  # HH:MM, Asia/Kolkata, saturday
 
 # ---------------------------------------------------------------------------
 # Observability — SPEC-OBS-001 through SPEC-OBS-005
@@ -297,14 +359,15 @@ Z_SCORE_CLIP = 5.0  # SPEC-FEAT-002: sector-relative z-scores clipped to [-5, +5
 # ---------------------------------------------------------------------------
 MF_HOLDINGS_AVAILABILITY_DELAY_DAYS = 5  # available from ~5th of the following month
 AMFI_FETCH_RATE_LIMIT_SLEEP_SECONDS = 1.0
-# [AS BUILT, P2.2 continued] Twice a month, not once: Groww (the primary
-# source as of the pivot to Groww) exposes only its current live
-# snapshot, no historical archive, and AMC disclosure timing varies
-# enough that a single monthly check risks landing on a stale/transitional
-# snapshot. Cron day-of-month field syntax (comma-separated), passed
-# straight to APScheduler's CronTrigger(day=...).
-MF_HOLDINGS_SCHEDULE_DAYS = "5,20"
-AMFI_SCHEDULE_TIME = "08:00"  # HH:MM, Asia/Kolkata
+# [AS BUILT, Big Investor Activity Phase C, 2026-07-05] Weekly, not
+# twice-monthly: user decision — refresh every Saturday, independent of
+# whether Groww's underlying AMC disclosure actually changed that week
+# (re-ingesting an unchanged month is a safe no-op per
+# save_monthly_parquet's merge-not-overwrite behavior). Cron
+# day-of-week field syntax, passed straight to APScheduler's
+# CronTrigger(day_of_week=...).
+MF_HOLDINGS_SCHEDULE_DAY_OF_WEEK = "sat"
+AMFI_SCHEDULE_TIME = "13:00"  # HH:MM, Asia/Kolkata
 AMFI_RAW_DIR = RAW_DIR / "amfi_holdings"  # SPEC-PIPE-001: raw per-AMC disclosure files
 # groww.in: primary MF-holdings source (P2.2 continued) — one scheme-detail
 # HTTP request per scheme across ~49 AMCs x ~80-100 schemes each is several
@@ -336,6 +399,20 @@ LARGE_DEALS_RATE_LIMIT_SLEEP_SECONDS = 1.0
 IPO_LOCKIN_DAYS = 180  # typical SEBI-mandated minimum promoter/anchor lock-in
 POST_EARNINGS_DRIFT_WINDOW_DAYS = 5  # PEAD measurement window after announcement_date
 CORP_ACTION_ANTICIPATION_WINDOW_DAYS = 5  # run-up window before the nearest ex_date
+# NSE's corporate-actions bulk endpoint does not expose a true announcement
+# date (caBroadcastDate is present in the raw JSON schema but has been
+# confirmed live, across every sample checked 2006-2026, to always be null
+# — NSE simply does not populate it on this feed). record_date IS reliably
+# populated (SEBI LODR Reg 42(2) requires listed companies to give the
+# exchange written notice at least CORP_ACTION_NOTICE_DAYS working days
+# before fixing a record date), so announcement_date is derived here as
+# record_date - CORP_ACTION_NOTICE_DAYS: a documented, regulation-based
+# conservative lower bound on when the action became public knowledge, not
+# the fabricated true date. This can only make features/
+# corporate_action_features.py's PIT gate MORE conservative (later/equal
+# to the true announcement date), never introduce lookahead bias.
+CORP_ACTION_NOTICE_DAYS = 7
+
 # features/corporate_action_features.py's dividend_yield_vs_fd_rate: no
 # trailing-dividend or live FD-rate data source exists yet in this
 # codebase (corporate_actions has no DIVIDEND rows ingested; no bank
@@ -393,8 +470,39 @@ IV_SOLVER_MAX_VOL = 5.0
 # OOM-killed this machine twice on 2026-06-26 against the 501-ticker
 # universe (confirmed via journalctl); the following day's run against the
 # full ~2,644-ticker universe used 3 workers with no OOM.
-HMM_FEATURE_WORKERS = 3
-FEATURE_CACHE_PRELOAD_WORKERS = 16
+# Env-overridable so scripts/monitor_scheduler_resources.py can dial these
+# down at runtime under memory pressure without editing this file.
+HMM_FEATURE_WORKERS = int(os.environ.get("HMM_FEATURE_WORKERS", "3"))
+FEATURE_CACHE_PRELOAD_WORKERS = int(os.environ.get("FEATURE_CACHE_PRELOAD_WORKERS", "16"))
+
+# ---------------------------------------------------------------------------
+# Off-machine backup — rclone to Backblaze B2 (2026-07-04 architecture
+# review; switched from an initial Google Drive design after the OAuth
+# setup proved impractical to automate headlessly — see
+# scripts/backup_to_b2.py's module docstring)
+# ---------------------------------------------------------------------------
+# False by default so a fresh checkout never fails a scheduled backup run
+# before B2 credentials exist. Flip to true in .env once BACKBLAZE_KEY_ID/
+# BACKBLAZE_APPLICATION_KEY/BACKBLAZE_BUCKET are set and verified.
+BACKUP_ENABLED = os.environ.get("BACKUP_ENABLED", "false").lower() == "true"
+# SPEC-SEC-001: credentials from environment only, never hardcoded — same
+# convention as every other credential block in this file. Created once on
+# backblaze.com (App Keys page); no OAuth, no interactive rclone config.
+BACKBLAZE_KEY_ID = os.environ.get("BACKBLAZE_KEY_ID")
+BACKBLAZE_APPLICATION_KEY = os.environ.get("BACKBLAZE_APPLICATION_KEY")
+BACKBLAZE_BUCKET = os.environ.get("BACKBLAZE_BUCKET")
+# Destination folder path within the bucket.
+BACKUP_REMOTE_PATH = os.environ.get("BACKUP_REMOTE_PATH", "AlphaLens_Backup")
+# Daily, off-hours — after the 20:00 model-training check has had time to
+# finish on a normal day, comfortably inside the 23-hour pipeline window.
+BACKUP_SCHEDULE_TIME = "22:30"  # HH:MM, Asia/Kolkata, every day
+
+# A21 (Pipeline Health Checker): weekly job-completeness audit. Fires
+# after Saturday's weekend batch and Sunday's multibagger/forensic
+# scoring jobs have had a chance to record their own job_run_log rows for
+# the week, so this audit isn't racing the very jobs it's checking.
+JOB_HEALTH_CHECK_DAY_OF_WEEK = "sun"
+JOB_HEALTH_CHECK_SCHEDULE_TIME = "11:00"  # HH:MM, Asia/Kolkata, sunday
 
 # ---------------------------------------------------------------------------
 # DataStore API — SPEC-DS-002
@@ -407,3 +515,46 @@ DATASTORE_API_PORT = int(os.environ.get("DATASTORE_API_PORT", "8000"))
 # ".../api/v1/api/v1/ohlcv/..." for every DataStoreClient call (caught
 # while wiring features/matrix_builder.py, P1.1 — see BuildLog.md).
 DATASTORE_API_BASE_URL = f"http://{DATASTORE_API_HOST}:{DATASTORE_API_PORT}"
+
+# ---------------------------------------------------------------------------
+# Big Investor Activity — bulk/block deals + MF holdings (Phase A)
+# ---------------------------------------------------------------------------
+# Fixed Rs. crore market-cap bands, independent of stock_master.current_tier
+# (which is rank-based). Placeholders — tune to taste.
+BIG_INVESTOR_CAP_LARGE_CR = 20000   # > this = Large
+BIG_INVESTOR_CAP_MID_CR = 5000      # 5000-20000 = Mid
+BIG_INVESTOR_CAP_SMALL_CR = 1000    # 1000-5000 = Small
+# < 1000 = Micro
+
+# Phase B: same-day BUY vs SELL by the same client/ticker/deal_type within
+# this fraction of quantity is treated as a wash trade (nets to the
+# residual, not double-counted as both a real buy and a real sell).
+INTRADAY_NETTING_QTY_TOLERANCE_PCT = 0.02
+
+# Seed file for the investor_family table — reviewed/edited manually,
+# never auto-loaded. See scripts/load_investor_family_seed.py.
+BIG_INVESTOR_FAMILY_SEED_PATH = "datastore/seed/investor_family_seed.yaml"
+
+# ---------------------------------------------------------------------------
+# A25: Write-audit-publish — staging schema + atomic publish + rollback
+# snapshots (2026-07-09). Pilot scope: fno_data, ohlcv_adjusted — the two
+# tables that change daily and drive the real incremental snapshot cost
+# (see FeatureBacklog.md A25). Staging itself lives inside the DuckDB
+# `staging` schema (alphalens.duckdb), not a separate directory — STAGING_DIR
+# is reserved for any on-disk staging artifacts a future source may need.
+# ---------------------------------------------------------------------------
+STAGING_DIR = DATASTORE_DIR / "staging"
+SNAPSHOT_DIR = DATASTORE_DIR / "snapshots"
+# N=7 daily rollback snapshots, per A25's storage-budget design (15GB cap,
+# incremental/hardlinked — not full DB copies). Env-overridable so the
+# budget can be tightened (first lever per the design doc) without a code
+# change if measured deltas run over budget.
+SNAPSHOT_RETENTION_N = int(os.environ.get("SNAPSHOT_RETENTION_N", "7"))
+if SNAPSHOT_RETENTION_N <= 0:
+    raise ValueError(f"SNAPSHOT_RETENTION_N must be positive, got {SNAPSHOT_RETENTION_N}")
+# Cross-process advisory lock guarding the staging→publish sequence — same
+# fcntl.flock pattern as PIPELINE_RUN_LOCK_PATH above, and for the same
+# reason (commit 8147579: two processes independently opening a writable
+# DuckDB connection to the same file is unsafe). Separate lock file since
+# publish can run outside the daily pipeline (e.g. a manual backfill).
+PUBLISH_RUN_LOCK_PATH = NORMALISED_DIR / ".publish_run.lock"

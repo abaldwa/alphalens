@@ -163,12 +163,19 @@ def main() -> None:
                         help="Include tickers outside the current ~2492-ticker active universe")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and parse but do not write to DB")
+    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="direct",
+                        help="'direct' (default): unchanged legacy per-window INSERT ON CONFLICT "
+                             "DO NOTHING. 'staged' (A25): accumulate every window's rows across "
+                             "the whole run and publish atomically once at the end.")
     args = parser.parse_args()
 
     from config.settings import DUCKDB_PATH
     from config.universe import get_tickers
     from datastore.api.db import get_duckdb_connection
-    from ingestion.scrapers.corporate_actions import upsert_corporate_actions
+    from ingestion.scrapers.corporate_actions import (
+        upsert_corporate_actions,
+        upsert_corporate_actions_staged,
+    )
 
     from_dt = date.fromisoformat(args.from_date)
     to_dt = date.fromisoformat(args.to_date) if args.to_date else date.today()
@@ -183,6 +190,7 @@ def main() -> None:
 
     session = _nse_session()
     total_upserted = 0
+    staged_batches: List[pd.DataFrame] = []
 
     for i, (w_start, w_end) in enumerate(windows, start=1):
         records = _fetch_window(session, w_start, w_end)
@@ -197,9 +205,12 @@ def main() -> None:
                 df["action_type"].value_counts().to_dict(),
             )
             if not args.dry_run:
-                with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
-                    n = upsert_corporate_actions(conn, df)
-                total_upserted += n
+                if args.publish_mode == "staged":
+                    staged_batches.append(df)
+                else:
+                    with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+                        n = upsert_corporate_actions(conn, df)
+                    total_upserted += n
 
         time.sleep(SLEEP_BETWEEN_CALLS)
         # Refresh session every 20 windows to avoid cookie expiry
@@ -209,6 +220,10 @@ def main() -> None:
                 logger.info("NSE session refreshed")
             except Exception as exc:
                 logger.warning("Session refresh failed: %s", exc)
+
+    if not args.dry_run and args.publish_mode == "staged" and staged_batches:
+        with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+            total_upserted = upsert_corporate_actions_staged(conn, pd.concat(staged_batches, ignore_index=True))
 
     if args.dry_run:
         logger.info("DRY RUN — no writes. Would have processed %d windows.", len(windows))

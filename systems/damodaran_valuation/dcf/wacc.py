@@ -27,20 +27,32 @@ from typing import Dict
 # Damodaran 2025 — Sector unlevered betas (India emerging market context)
 # See scripts/download_damodaran_datasets.py for annual refresh procedure.
 # ---------------------------------------------------------------------------
+# Keys must match config/nifty500_universe.csv's real `sector` taxonomy
+# exactly (NSE's official sector classification) — an earlier version used
+# ad-hoc labels ("Banking", "IT Services", "Auto", ...) that never matched
+# any real sector string, so every stock silently fell through to "Default"
+# regardless of sector. See BuildLog.md 2026-07-04 for the fix.
 SECTOR_UNLEVERED_BETAS: Dict[str, float] = {
-    "Banking": 0.35,
-    "NBFC": 0.55,
-    "Insurance": 0.60,
-    "IT Services": 0.85,
-    "Pharma": 0.75,
-    "FMCG": 0.55,
-    "Auto": 0.90,
-    "Metals": 1.10,
+    "Financial Services": 0.45,
+    "Information Technology": 0.85,
+    "Healthcare": 0.75,
+    "Fast Moving Consumer Goods": 0.55,
+    "Automobile and Auto Components": 0.90,
+    "Metals & Mining": 1.10,
     "Chemicals": 0.85,
-    "Real Estate": 0.95,
+    "Realty": 0.95,
     "Power": 0.70,
-    "Infrastructure": 0.85,
-    "Telecom": 0.75,
+    "Construction": 0.85,
+    "Construction Materials": 0.85,
+    "Telecommunication": 0.75,
+    "Capital Goods": 0.90,
+    "Consumer Durables": 0.80,
+    "Consumer Services": 0.85,
+    "Media Entertainment & Publication": 0.85,
+    "Oil Gas & Consumable Fuels": 0.80,
+    "Services": 0.85,
+    "Textiles": 0.85,
+    "Diversified": 0.90,
     "Default": 0.90,
 }
 

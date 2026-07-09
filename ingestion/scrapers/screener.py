@@ -66,6 +66,31 @@ None/NULL by this scraper. P2.6's Tijori Finance Pro integration
 is the natural source for these — not fabricated here. The downstream
 feature functions already treat them as NaN-tolerant.
 
+[AS BUILT, deep-forensic 20-field gap fix, 2026-07-07] Two rows of that
+same 10-row aggregate table WERE always present but never captured:
+"Total Assets" and "CWIP" (Capital Work in Progress) — verified live
+against TCS's real consolidated page. These are now parsed into
+`total_assets`/`cwip` (see datastore/schema/create_normalised.py). The
+remaining balance-sheet-quality fields this scraper still cannot supply —
+goodwill, intangibles, contingent liabilities, subsidiary_count,
+loans_to_related_parties — were specifically grepped for on the same live
+page and genuinely do not appear anywhere in the free-tier HTML (no
+labeled row, no embedded schedule data). Screener does expose a
+"Related Party Transactions" modal (`/results/rpt/{id}/consolidated/`)
+but even with a real authenticated login it (a) is labeled "Experimental
+new feature" with disclosed extraction errors by Screener itself, (b) has
+no fixed row schema — party names and transaction-type rows vary per
+company — and (c) frequently leaves the most recent 1-2 fiscal years
+blank pending annual report publication. Automated aggregation into a
+single `related_party_transactions` figure was judged too unreliable to
+ship without risking silently-wrong numbers; left undone rather than
+built fragile. See features/deep_forensic.py's module docstring for the
+full list of governance fields (audit qualification, auditor change, CFO
+tenure, board independence, director resignations, whistleblower policy)
+that have no realistic free structured source at all (annual-report/
+XBRL-only data, not present on Screener, Tijori, or NSE's scrapeable
+corporate-actions endpoints).
+
 PIT Assumptions
 ----------------
 SPEC-PIPE-003 (CRITICAL): announcement_date is never directly visible in
@@ -134,7 +159,19 @@ _QUARTERS_FIELDS = {
 # [AS BUILT] Some pages (verified against real cached pages, e.g. banks/
 # NBFCs) label this row "Borrowing" (no trailing "s", no "+" expander)
 # instead of "Borrowings+" — both map to the same field.
-_BALANCE_SHEET_FIELDS = {"Borrowings": "total_debt", "Borrowing": "total_debt"}
+_BALANCE_SHEET_FIELDS = {
+    "Borrowings": "total_debt",
+    "Borrowing": "total_debt",
+    # [AS BUILT, deep-forensic 20-field gap fix] Total Assets and CWIP are
+    # real distinct rows in the free-tier #balance-sheet table (verified
+    # live against TCS's real consolidated page 2026-07-07 — see
+    # datastore/schema/create_normalised.py's total_assets/cwip column
+    # comment for the exact verified values). Feeds features/deep_forensic.py's
+    # cwip_ratio and asset_inflation_flag, which were previously always NaN
+    # because these columns didn't exist in the schema at all.
+    "Total Assets": "total_assets",
+    "CWIP": "cwip",
+}
 # #balance-sheet row label -> internal field name, for the FULL multi-year
 # history parse (_parse_balance_sheet_history) used to derive total_equity
 # per fiscal year — see that function's docstring.
@@ -313,10 +350,11 @@ class ScreenerScraper:
         shareholding_row = _build_shareholding_row(ticker, shareholding)
         return {"fundamentals": fundamentals_row, "shareholding": shareholding_row}
 
-    def export_equity_history(self, ticker: str, html: Optional[str] = None) -> Dict[int, float]:
+    def export_equity_history(self, ticker: str, html: Optional[str] = None) -> Dict[int, Dict[str, float]]:
         """
-        fiscal_year -> total_equity (INR Cr) for every year Screener's
-        #balance-sheet table shows for this ticker.
+        fiscal_year -> {"total_equity": float, "retained_earnings": float}
+        (both INR Cr) for every year Screener's #balance-sheet table shows
+        for this ticker.
 
         Parameters
         ----------
@@ -462,27 +500,35 @@ def _parse_section_table(
     return result
 
 
-def _parse_balance_sheet_history(soup: BeautifulSoup) -> Dict[int, float]:
+def _parse_balance_sheet_history(soup: BeautifulSoup) -> Dict[int, Dict[str, float]]:
     """
     Parse EVERY column of the #balance-sheet table (Screener renders one
     column per fiscal year, e.g. 'Mar 2015'..'Mar 2026' on one page) into
-    fiscal_year -> total_equity (Equity Capital + Reserves, INR Cr).
+    fiscal_year -> {"total_equity": Equity Capital + Reserves, "retained_earnings":
+    Reserves alone}, both in INR Cr.
 
     Unlike `_parse_section_table` (used for the live current-quarter export,
     which only reads the rightmost/most-recent column), this reads every
     column so a single page fetch yields up to ~11 years of equity history
     — Screener's balance sheet is annual-only, there is no quarterly
-    breakdown, so each fiscal year gets exactly one value, to be patched
-    onto every quarter row of that FY (same pattern as Trendlyne's
+    breakdown, so each fiscal year gets exactly one value pair, to be
+    patched onto every quarter row of that FY (same pattern as Trendlyne's
     ROE_A/DEBT_CE_A annual fields).
+
+    [AS BUILT, deep-forensic altman_z fix 2026-07-07] "Reserves" is kept as
+    its own value (not just summed into total_equity) because it is the
+    standard accounting analog of Altman Z's "retained earnings" term
+    (accumulated profits not distributed as paid-up equity capital) — a
+    real, separately-labeled row on the same page, not a fabricated split.
 
     Returns
     -------
     dict
-        fiscal_year (int, e.g. 2023 for the 'Mar 2023' column) -> total
-        equity in INR Cr. Empty dict if the section/table isn't found, or
-        a given year is skipped if either Equity Capital or Reserves is
-        missing/unparseable for that column (no partial-equity guessing).
+        fiscal_year (int, e.g. 2023 for the 'Mar 2023' column) ->
+        {"total_equity": float, "retained_earnings": float}, both INR Cr.
+        Empty dict if the section/table isn't found, or a given year is
+        skipped if either Equity Capital or Reserves is missing/unparseable
+        for that column (no partial-equity guessing).
     """
     section = soup.find(id="balance-sheet")
     if section is None:
@@ -515,7 +561,7 @@ def _parse_balance_sheet_history(soup: BeautifulSoup) -> Dict[int, float]:
     equity_capital = per_field.get("equity_capital", [])
     reserves = per_field.get("reserves", [])
 
-    result: Dict[int, float] = {}
+    result: Dict[int, Dict[str, float]] = {}
     for i, fy in enumerate(fiscal_years):
         if fy is None:
             continue
@@ -523,7 +569,7 @@ def _parse_balance_sheet_history(soup: BeautifulSoup) -> Dict[int, float]:
         rs = reserves[i] if i < len(reserves) else None
         if ec is None or rs is None:
             continue
-        result[fy] = ec + rs
+        result[fy] = {"total_equity": ec + rs, "retained_earnings": rs}
     return result
 
 
@@ -633,6 +679,8 @@ def _build_fundamentals_row(
         "total_debt": balance_sheet.get("total_debt"),
         "cash_and_equivalents": None,
         "depreciation": depreciation,
+        "total_assets": balance_sheet.get("total_assets"),
+        "cwip": balance_sheet.get("cwip"),
     }
 
 
@@ -653,9 +701,43 @@ def _build_shareholding_row(ticker: str, shareholding: Dict[str, float]) -> Opti
         # "Pledged %" row when pledge is 0% / not disclosed (verified live —
         # see module docstring); left None here rather than fabricated as
         # 0, since "not shown" and "confirmed zero" are not the same claim.
+        # [AS BUILT, deep-forensic cluster A follow-up 2026-07-07] NSE does
+        # publish a public "Corporate Filings > Pledged Data" page
+        # (nseindia.com/companies-listing/corporate-filings-pledged-data,
+        # SEBI SAST Reg 31(4) disclosure) but it is a client-rendered SPA
+        # with no discoverable public JSON API: live-tested against
+        # nseindia.com/api/CorpInfo (the endpoint backing NSE's adjacent
+        # SAST Reg 29(2) acquisition/sale disclosures, confirmed working —
+        # returns real 2020 sale-disclosure rows for VERTOZ under
+        # corpType=sast) with every plausible corpType guess for pledge
+        # itself (pledge, encumbrance, reg31, sast_regulation_31,
+        # pledgedata, corp_pledge, ...) against VERTOZ, a company with a
+        # real, currently-disclosed 51.82% promoter-holding encumbrance as
+        # of 2026-03-31 (per FY26 scanx.trade disclosure coverage) — every
+        # guess returned HTTP 200 with an empty `{"data":[],"msg":"no data
+        # found"}` body, indicating the API silently no-ops on an
+        # unrecognized corpType rather than 404ing, i.e. none of these
+        # guesses is the real backing endpoint. The page itself ships no
+        # inline API path in its server-rendered HTML (fully client-side
+        # data fetch via a hashed JS bundle not resolvable without
+        # executing it in a real browser). Trendlyne.py (this repo's other
+        # authenticated source) has no pledge/encumbrance field anywhere in
+        # its scraped pages either. Genuinely blocked on the free tier
+        # without a headless-browser NSE session — not fabricated.
         "promoter_pledge": None,
         "fii_pct": shareholding.get("fii_pct"),
         "dii_pct": shareholding.get("dii_pct"),
+        # [AS BUILT, deep-forensic cluster A2 follow-up 2026-07-07]
+        # Verified live against all 3,309 cached real Screener raw HTML
+        # pages in datastore/raw/screener/: zero have a distinct "Mutual
+        # Funds" row inside the #shareholding table (a text search for
+        # "Mutual Fund" inside that div matched 0/3309 — the only false
+        # positives found by an earlier looser whole-page search were
+        # incidental mentions in business-description prose, e.g. CDSL's
+        # "units of mutual funds"). Screener's free-tier shareholding
+        # breakup is only {Promoters, FIIs, DIIs, Public}; MF is not
+        # broken out from DIIs/Public on this tier. Confirms the existing
+        # conclusion below rather than changing it.
         "mf_pct": None,  # not a distinct row in #shareholding (Public aggregates non-institutional + MF)
         "retail_pct": shareholding.get("retail_pct"),
     }

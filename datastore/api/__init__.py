@@ -12,7 +12,7 @@ Enforces PIT correctness, rate limiting, and authentication.
 """
 
 from . import db, pit, schemas
-from .db import close_all_connections, get_duckdb_connection, get_sqlite_connection, init_duckdb, init_sqlite
+from .db import close_all_connections, get_duckdb_connection, get_sqlite_connection
 from .pit import compute_staleness_flags, enforce_pit_fundamentals, enforce_pit_mf_holdings, enforce_pit_shareholding
 from .schemas import (
     CorporateActionResponse,
@@ -42,8 +42,6 @@ __all__ = [
     "pit",
     "schemas",
     # DB functions
-    "init_duckdb",
-    "init_sqlite",
     "get_duckdb_connection",
     "get_sqlite_connection",
     "close_all_connections",

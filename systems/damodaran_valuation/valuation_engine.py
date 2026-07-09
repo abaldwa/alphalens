@@ -185,6 +185,19 @@ def _get_sector(ticker: str) -> str:
     return ""
 
 
+def _load_market_cap_cr(ticker: str) -> Optional[float]:
+    """Look up market_cap_cr (already in INR crore) from the universe CSV."""
+    try:
+        univ = load_universe_raw()
+        row = univ[univ["ticker"] == ticker]
+        if not row.empty:
+            mc = row.iloc[0].get("market_cap_cr")
+            return float(mc) if mc is not None and np.isfinite(float(mc)) and float(mc) > 0 else None
+    except Exception:
+        pass
+    return None
+
+
 def _compute_revenue_cagr(df: pd.DataFrame, years: int = 3) -> float:
     """
     Compute revenue CAGR from quarterly fundamentals sorted newest-first.
@@ -227,7 +240,10 @@ def _altman_z(row: pd.Series) -> Optional[float]:
         if total_assets <= 0:
             return None
         wc = float(row.get("current_assets") or 0) - float(row.get("current_liabilities") or 0)
-        bv = float(row.get("book_value_per_share") or 0) * float(row.get("shares_outstanding") or 1)
+        # shares_outstanding is an absolute count; book_value_per_share is
+        # real ₹/share, and total_assets/current_assets are ₹ crore — divide
+        # by 1e7 so `bv` (book value of equity) is in the same crore units.
+        bv = float(row.get("book_value_per_share") or 0) * (float(row.get("shares_outstanding") or 0) / 1e7)
         ebit_margin = float(row.get("operating_margin") or 0)
         revenue = float(row.get("revenue") or 1)
         ebit = ebit_margin * revenue
@@ -366,7 +382,6 @@ class ValuationEngine:
         int_cov = _safe_float(latest.get("interest_coverage"), default=5.0)
         total_debt = _safe_float(latest.get("total_debt"), default=0.0)
         cash = _safe_float(latest.get("cash_and_equivalents"), default=0.0)
-        shares = _safe_float(latest.get("shares_outstanding"), default=1.0)
         revenue = _safe_float(latest.get("revenue"), default=1.0)
         ebit_margin = _safe_float(latest.get("operating_margin"), default=0.10)
         ebit = revenue * ebit_margin
@@ -376,11 +391,34 @@ class ValuationEngine:
         nwc_chg = revenue * 0.03
         roe = _safe_float(latest.get("roe"), default=0.12)
         bvps = _safe_float(latest.get("book_value_per_share"), default=0.0)
-        book_value = bvps * shares
 
-        # Approximate market cap from OHLCV for weights
         current_price = _load_current_price(ticker, aod)
-        market_cap = (current_price or 0.0) * shares / 100.0  # per-share → crore
+
+        # `fundamentals.shares_outstanding` is stored as an *absolute* share
+        # count (e.g. ~13.5bn for RELIANCE), but every DCF model in
+        # dcf/models.py expects shares in *crore* units (see their
+        # docstrings — "Diluted shares outstanding (crore)"; they do
+        # `equity_value_cr / shares_cr * 100`). Passing the raw absolute
+        # count straight through (as this code used to) made every
+        # intrinsic-value output wrong by a ~1e7 factor. It's also NULL for
+        # ~96% of fundamentals rows, so a bare default=1.0 fallback would
+        # silently fabricate a wildly wrong share count for most tickers —
+        # instead derive the real share count from two other real numbers
+        # (market_cap_cr from the universe CSV, current_price from OHLCV)
+        # when the fundamentals table doesn't have it directly.
+        market_cap_cr = _load_market_cap_cr(ticker)
+        shares_abs = _safe_float(latest.get("shares_outstanding"), default=0.0) or None
+        if shares_abs is None and market_cap_cr and current_price:
+            shares_abs = (market_cap_cr * 1e7) / current_price
+        shares_cr = (shares_abs / 1e7) if shares_abs else None
+
+        book_value = bvps * (shares_cr or 0.0)
+
+        # market_cap_cr from the universe CSV is already real, correctly-scaled
+        # data (used elsewhere across the app) — prefer it over recomputing
+        # from price × shares, which only serves as a fallback when the
+        # ticker isn't in the universe CSV.
+        market_cap = market_cap_cr or ((current_price or 0.0) * (shares_abs or 0.0) / 1e7)
 
         spread = WACCCalculator.synthetic_rating_spread(int_cov)
         cost_of_debt = india_10y + spread
@@ -404,7 +442,14 @@ class ValuationEngine:
         dcf_result: Optional[DCFResult] = None
         model_name = "none"
 
-        if stage == LifecycleStage.DISTRESSED:
+        if shares_cr is None:
+            # No real share count available (neither fundamentals.shares_outstanding
+            # nor a universe.csv market cap to derive it from) — a per-share
+            # intrinsic value can't be computed honestly, so skip DCF rather
+            # than fabricate a shares_outstanding=1.0 fallback (SPEC-QUALITY-003).
+            model_name = "none (no shares/market-cap data)"
+
+        elif stage == LifecycleStage.DISTRESSED:
             # No DCF for distressed — Altman Z and relative valuation only
             dcf_result = None
             model_name = "none (distressed)"
@@ -415,7 +460,7 @@ class ValuationEngine:
                     book_value=book_value,
                     roe=roe,
                     cost_of_equity=wacc_result.cost_of_equity,
-                    shares_outstanding=shares,
+                    shares_outstanding=shares_cr,
                     total_debt=total_debt,
                     cash=cash,
                 )
@@ -429,7 +474,7 @@ class ValuationEngine:
                 revenue=revenue,
                 terminal_growth_rate=0.06,
                 high_growth_years=7,
-                shares_outstanding=shares,
+                shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
                 target_margin=max(ebit_margin, 0.10),
@@ -445,7 +490,7 @@ class ValuationEngine:
                 revenue=revenue,
                 terminal_growth_rate=0.05,
                 high_growth_years=5,
-                shares_outstanding=shares,
+                shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
             )
@@ -461,7 +506,7 @@ class ValuationEngine:
                 revenue=revenue,
                 terminal_growth_rate=0.04,
                 high_growth_years=5,
-                shares_outstanding=shares,
+                shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
             )
@@ -477,7 +522,7 @@ class ValuationEngine:
                 revenue=revenue,
                 terminal_growth_rate=0.02,
                 high_growth_years=3,
-                shares_outstanding=shares,
+                shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
             )
@@ -504,7 +549,7 @@ class ValuationEngine:
                     terminal_growth_rate=_safe_float(
                         dcf_result.assumptions.get("terminal_growth_rate"), 0.05),
                     high_growth_years=int(dcf_result.assumptions.get("high_growth_years", 5)),
-                    shares_outstanding=shares,
+                    shares_outstanding=shares_cr,
                     total_debt=total_debt,
                     cash=cash,
                 )

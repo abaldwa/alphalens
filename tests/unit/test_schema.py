@@ -52,6 +52,27 @@ NORMALISED_TABLE_COLUMNS = {
         "sector_specific_metric_4", "sector_specific_metric_5", "sector_specific_metric_6",
         # [AS BUILT] additional derived metrics for Damodaran valuation and deep forensic
         "debt_to_ebitda", "capex_intensity", "fcf_margin", "total_equity", "ebit", "net_debt",
+        # [AS BUILT, deep-forensic altman_z fix 2026-07-07] Reserves alone
+        # (retained-earnings analog), kept separate from total_equity —
+        # see create_normalised.py's column comment.
+        "retained_earnings",
+        # [AS BUILT, backlog #12/AF-5] fundamentals range/sanity gate — see
+        # features/fundamental_quality_gate.py.
+        "quality_flag", "quality_flag_reason",
+        # [AS BUILT, deep-forensic 20-field gap fix] real Screener.in
+        # free-tier #balance-sheet rows, previously never captured — see
+        # datastore/schema/create_normalised.py's column comment.
+        "total_assets", "cwip",
+        # [AS BUILT, 2026-07-07, NSE XBRL pipeline] real, standardized fields
+        # from NSE's SEBI-mandated Integrated Filing — IndAS regulatory
+        # disclosure — see create_normalised.py's column comment.
+        "goodwill", "inventories", "trade_receivables_current", "trade_payables_current",
+        "total_liabilities", "audit_qualified_flag",
+        "property_plant_equipment", "intangible_assets", "non_current_investments",
+        "non_current_trade_receivables", "deferred_tax_assets", "current_investments",
+        "current_tax_assets", "borrowings_current", "borrowings_noncurrent",
+        "deferred_tax_liabilities", "provisions_current", "provisions_noncurrent",
+        "equity_share_capital", "other_equity", "non_controlling_interest", "non_current_liabilities",
     },
     "shareholding": {
         "ticker", "quarter_end_date", "filing_date", "promoter_pct",

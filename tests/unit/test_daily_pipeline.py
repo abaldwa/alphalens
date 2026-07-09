@@ -148,8 +148,125 @@ class TestStepDownloadFno:
             assert count == 1
 
 
+class TestStepDownloadIndexOhlcv:
+    def test_scraper_failure_is_caught_and_non_fatal(self, monkeypatch):
+        """Non-critical (sector-rotation report + backtest benchmark only,
+        neither on the critical path) — a scraper-side failure must never
+        raise."""
+        from ingestion.scrapers import nse_indices
+
+        def _raise(date_str):
+            raise ConnectionError("indices-close CSV unavailable")
+
+        monkeypatch.setattr(nse_indices, "download_index_ohlcv", _raise)
+
+        daily_pipeline.step_download_index_ohlcv(date(2026, 1, 5))  # must not raise
+
+    def test_db_write_failure_is_caught_and_non_fatal(self, monkeypatch):
+        """A31: the DB write (missing-table Catalog Error, cross-process
+        DuckDB lock conflict — both observed live during a 2026-07 backfill)
+        previously escaped the try/except that only wrapped the scraper
+        fetch, failing the whole step despite it being documented as
+        always-non-critical. Must be caught same as a scraper failure."""
+        from ingestion.scrapers import nse_indices
+
+        df = pd.DataFrame(
+            {
+                "index_name": ["Nifty 50"],
+                "open": [100.0], "high": [101.0], "low": [99.0],
+                "close": [100.5], "volume": [1000],
+            }
+        )
+        monkeypatch.setattr(nse_indices, "download_index_ohlcv", lambda date_str: df)
+
+        def _raise_lock_conflict(path, persist=True):
+            raise RuntimeError('IO Error: Could not set lock on file "alphalens.duckdb"')
+
+        monkeypatch.setattr(daily_pipeline, "get_duckdb_connection", _raise_lock_conflict)
+
+        daily_pipeline.step_download_index_ohlcv(date(2026, 1, 5))  # must not raise
+
+    def test_success_is_persisted_to_index_ohlcv(self, monkeypatch):
+        create_normalised.create_schema(in_memory=True)
+        from ingestion.scrapers import nse_indices
+
+        df = pd.DataFrame(
+            {
+                "index_name": ["Nifty 50", "Nifty Bank"],
+                "open": [100.0, 200.0], "high": [101.0, 201.0], "low": [99.0, 199.0],
+                "close": [100.5, 200.5], "volume": [1000, 2000],
+            }
+        )
+        monkeypatch.setattr(nse_indices, "download_index_ohlcv", lambda date_str: df)
+
+        with get_duckdb_connection(None) as conn:
+            monkeypatch.setattr(
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
+            )
+            daily_pipeline.step_download_index_ohlcv(date(2026, 1, 5))
+
+            rows = conn.execute(
+                "SELECT index_name, close FROM index_ohlcv ORDER BY index_name"
+            ).fetchall()
+            assert rows == [("Nifty 50", 100.5), ("Nifty Bank", 200.5)]
+
+    def test_rerun_for_same_date_upserts_not_duplicates(self, monkeypatch):
+        create_normalised.create_schema(in_memory=True)
+        from ingestion.scrapers import nse_indices
+
+        df = pd.DataFrame(
+            {
+                "index_name": ["Nifty 50"],
+                "open": [100.0], "high": [101.0], "low": [99.0],
+                "close": [100.5], "volume": [1000],
+            }
+        )
+        monkeypatch.setattr(nse_indices, "download_index_ohlcv", lambda date_str: df)
+
+        with get_duckdb_connection(None) as conn:
+            monkeypatch.setattr(
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
+            )
+            daily_pipeline.step_download_index_ohlcv(date(2026, 1, 5))
+            daily_pipeline.step_download_index_ohlcv(date(2026, 1, 5))
+
+            count = conn.execute(
+                "SELECT COUNT(*) FROM index_ohlcv WHERE date = '2026-01-05'"
+            ).fetchone()[0]
+            assert count == 1
+
+
 class TestStepDownloadMacro:
-    def test_writes_all_three_indicators(self, monkeypatch):
+    """2026-07 (backlog #1/#2/#3, Sub-task C): step_download_macro is now a
+    no-op placeholder — VIX/FII-DII/USD-INR/global indices moved to
+    step_download_macro_morning (07:30 IST), see TestStepDownloadMacroMorning."""
+
+    def test_is_a_noop_and_never_raises(self):
+        create_normalised.create_schema(in_memory=True)
+        daily_pipeline.step_download_macro(date(2026, 1, 5))  # must not raise
+
+
+def _patch_global_indices(monkeypatch, macro, value_map=None):
+    """Stub out the six new global-index fetches (5 indices + DXY) so unit tests never hit
+    the network — each is independently caught in step_download_macro_morning
+    the same way VIX/FII-DII/USD-INR are (SPEC-PIPE-006)."""
+    value_map = value_map or {
+        "download_nasdaq": ("nasdaq_composite", 18000.0),
+        "download_dow": ("dow_jones", 42000.0),
+        "download_sp500": ("sp500", 6000.0),
+        "download_nikkei": ("nikkei_225", 39000.0),
+        "download_hangseng": ("hang_seng", 19000.0),
+        "download_dxy": ("dxy", 101.5),
+    }
+    for fn_name, (key, value) in value_map.items():
+        monkeypatch.setattr(macro, fn_name, lambda d, db_path=None, k=key, v=value: {k: v})
+
+
+class TestStepDownloadMacroMorning:
+    """07:30 IST morning-catchup macro capture (2026-07, backlog #1/#2/#3,
+    Sub-tasks B/C) — the successor to the old step_download_macro."""
+
+    def test_writes_all_nine_indicators(self, monkeypatch):
         create_normalised.create_schema(in_memory=True)
         from ingestion.scrapers import macro
 
@@ -164,19 +281,43 @@ class TestStepDownloadMacro:
             },
         )
         monkeypatch.setattr(macro, "download_fx", lambda d, db_path=None: {"usd_inr": 83.2})
+        _patch_global_indices(monkeypatch, macro)
+        monkeypatch.setattr(
+            macro, "download_bond_yields", lambda d, db_path=None: {"yield_10yr": 7.02, "yield_3m": 5.39}
+        )
+        from ingestion.scrapers import macro_real_economy
+        monkeypatch.setattr(macro_real_economy, "upsert_macro_real_economy_parquet", lambda d: 0)
+        import pandas as pd
+        from ingestion.scrapers import nse_corporate_announcements
+        monkeypatch.setattr(
+            nse_corporate_announcements, "download_corporate_announcements", lambda f, t: pd.DataFrame()
+        )
 
         with get_duckdb_connection(None) as conn:
             monkeypatch.setattr(
                 daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
             )
-            daily_pipeline.step_download_macro(date(2026, 1, 5))
+            daily_pipeline.step_download_macro_morning(date(2026, 1, 5))
 
             rows = dict(
                 conn.execute(
                     "SELECT indicator, value FROM macro_indicators WHERE date = '2026-01-05'"
                 ).fetchall()
             )
-            assert rows == {"INDIA_VIX": 14.5, "FII_NET_CR": -120.5, "DII_NET_CR": 340.2, "USD_INR": 83.2}
+            assert rows == {
+                "INDIA_VIX": 14.5,
+                "FII_NET_CR": -120.5,
+                "DII_NET_CR": 340.2,
+                "USD_INR": 83.2,
+                "NASDAQ_COMPOSITE": 18000.0,
+                "DOW_JONES": 42000.0,
+                "SP500": 6000.0,
+                "NIKKEI_225": 39000.0,
+                "HANG_SENG": 19000.0,
+                "DXY": 101.5,
+                "YIELD_10YR": 7.02,
+                "YIELD_3M": 5.39,
+            }
 
     def test_one_indicator_failing_does_not_block_the_others(self, monkeypatch):
         """SPEC-PIPE-006: each macro source fails independently — VIX
@@ -194,12 +335,23 @@ class TestStepDownloadMacro:
             lambda d, db_path=None: {"fii_net_cr": 10.0, "dii_net_cr": 20.0, "is_stale": False},
         )
         monkeypatch.setattr(macro, "download_fx", lambda d, db_path=None: {"usd_inr": 83.0})
+        _patch_global_indices(monkeypatch, macro)
+        monkeypatch.setattr(
+            macro, "download_bond_yields", lambda d, db_path=None: {"yield_10yr": 7.0, "yield_3m": 5.3}
+        )
+        from ingestion.scrapers import macro_real_economy
+        monkeypatch.setattr(macro_real_economy, "upsert_macro_real_economy_parquet", lambda d: 0)
+        import pandas as pd
+        from ingestion.scrapers import nse_corporate_announcements
+        monkeypatch.setattr(
+            nse_corporate_announcements, "download_corporate_announcements", lambda f, t: pd.DataFrame()
+        )
 
         with get_duckdb_connection(None) as conn:
             monkeypatch.setattr(
                 daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
             )
-            daily_pipeline.step_download_macro(date(2026, 1, 5))  # must not raise
+            daily_pipeline.step_download_macro_morning(date(2026, 1, 5))  # must not raise
 
             rows = dict(
                 conn.execute(
@@ -220,8 +372,25 @@ class TestStepDownloadMacro:
         monkeypatch.setattr(macro, "download_vix", _raise)
         monkeypatch.setattr(macro, "download_fiidii", _raise)
         monkeypatch.setattr(macro, "download_fx", _raise)
+        monkeypatch.setattr(macro, "download_nasdaq", _raise)
+        monkeypatch.setattr(macro, "download_dow", _raise)
+        monkeypatch.setattr(macro, "download_sp500", _raise)
+        monkeypatch.setattr(macro, "download_nikkei", _raise)
+        monkeypatch.setattr(macro, "download_hangseng", _raise)
+        monkeypatch.setattr(macro, "download_dxy", _raise)
+        monkeypatch.setattr(macro, "download_bond_yields", _raise)
+        from ingestion.scrapers import macro_real_economy
+        monkeypatch.setattr(macro_real_economy, "upsert_macro_real_economy_parquet", _raise)
+        from ingestion.scrapers import nse_corporate_announcements
 
-        daily_pipeline.step_download_macro(date(2026, 1, 5))  # must not raise
+        def _raise_announcements(from_date, to_date):
+            raise ConnectionError("unavailable")
+
+        monkeypatch.setattr(
+            nse_corporate_announcements, "download_corporate_announcements", _raise_announcements
+        )
+
+        daily_pipeline.step_download_macro_morning(date(2026, 1, 5))  # must not raise
 
 
 class TestStepAdjustPrices:
@@ -425,3 +594,88 @@ class TestRunDailyPipelineOnceRecordsPipelineRuns:
                 "SELECT status FROM pipeline_runs WHERE date = '2026-01-05'"
             ).fetchone()
         assert row == ("success",)
+
+
+class TestSanityKnownSparseColumns:
+    """A26: capex_to_assets/noncash_assets_ratio are computed by
+    features/deep_forensic.py but confirmed genuinely unsourceable
+    (FeatureBacklog.md FO8 -- the underlying NSE XBRL disclosure renders
+    as freeform "Textual Information", not a structured numeric field) --
+    they must be exempted from step_sanity_check's all-NaN floor like the
+    other already-exempted columns, or every run fails permanently."""
+
+    def test_confirmed_unsourceable_columns_are_exempted(self):
+        assert "capex_to_assets" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "noncash_assets_ratio" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+
+
+class TestStepSanityCheck:
+    """[AS BUILT, A26] step_sanity_check's Check 3 (no all-NaN feature
+    columns) must not fire on _SANITY_KNOWN_SPARSE_COLUMNS, and must still
+    fire on a genuinely-broken column that isn't in that exemption list."""
+
+    def _seed_signals(self, db_path, run_date, n_rows, regime="bullish"):
+        from datastore.api.db import close_all_connections
+        from datastore.schema.create_signals import create_signal_tables_schema
+
+        create_signal_tables_schema(db_path=db_path)
+        close_all_connections()  # release the cached persist=True schema connection
+        date_str = run_date.isoformat()
+        with get_duckdb_connection(db_path, persist=False) as conn:
+            for i in range(n_rows):
+                conn.execute(
+                    "INSERT INTO ml_signals (date, ticker, model_name, model_version, buy_prob) "
+                    "VALUES (?, ?, 'signal_5d', 'v1', 0.5)",
+                    [date_str, f"T{i}"],
+                )
+            conn.execute(
+                "INSERT INTO ml_signals (date, ticker, model_name, model_version, hmm_regime) "
+                "VALUES (?, 'MARKET', 'hmm_market', 'v1', ?)",
+                [date_str, regime],
+            )
+
+    def _patch_settings(self, monkeypatch, tmp_path, db_path, min_stocks=10):
+        import config.settings as settings
+
+        features_dir = tmp_path / "features_daily"
+        features_dir.mkdir()
+        monkeypatch.setattr(settings, "SIGNALS_DUCKDB_PATH", db_path)
+        monkeypatch.setattr(settings, "FEATURES_DAILY_DIR", features_dir)
+        monkeypatch.setattr(settings, "MIN_STOCKS_FOR_INFERENCE", min_stocks)
+        return features_dir
+
+    def test_passes_when_only_exempted_columns_are_all_nan(self, monkeypatch, tmp_path):
+        run_date = date(2026, 1, 5)
+        db_path = tmp_path / "signals.duckdb"
+        self._seed_signals(db_path, run_date, n_rows=10)
+        features_dir = self._patch_settings(monkeypatch, tmp_path, db_path, min_stocks=10)
+
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA", "BBB"],
+                "capex_to_assets": [float("nan"), float("nan")],
+                "noncash_assets_ratio": [float("nan"), float("nan")],
+                "some_real_feature": [1.0, 2.0],
+            }
+        )
+        df.to_parquet(features_dir / f"{run_date.isoformat()}.parquet")
+
+        daily_pipeline.step_sanity_check(run_date)  # must not raise
+
+    def test_raises_when_a_non_exempted_column_is_all_nan(self, monkeypatch, tmp_path):
+        run_date = date(2026, 1, 5)
+        db_path = tmp_path / "signals.duckdb"
+        self._seed_signals(db_path, run_date, n_rows=10)
+        features_dir = self._patch_settings(monkeypatch, tmp_path, db_path, min_stocks=10)
+
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA", "BBB"],
+                "some_broken_feature": [float("nan"), float("nan")],
+                "some_real_feature": [1.0, 2.0],
+            }
+        )
+        df.to_parquet(features_dir / f"{run_date.isoformat()}.parquet")
+
+        with pytest.raises(RuntimeError, match="all-NaN"):
+            daily_pipeline.step_sanity_check(run_date)

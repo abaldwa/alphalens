@@ -68,6 +68,7 @@ sourcing — Multibagger".
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import joblib
@@ -435,8 +436,33 @@ class MultibaggerModel(ISurvivalModel):
         self._fit_ranker_and_calibrator(X_imputed, y_valid, groups=groups)
 
         surv_y = Surv.from_arrays(event=event_valid.to_numpy(), time=duration_valid.to_numpy())
+        # [backlog #26/#27, 2026-07-04] Two independent memory fixes, both
+        # confirmed live against the real ~57k-row training set the #27
+        # labeling fix now produces (vs. ~1,138 rows pre-fix):
+        #
+        # 1. n_jobs=-1 previously spun up one worker process per CPU core
+        #    (14 on the machine this was found on), each holding its own
+        #    copy of the training matrix. Capped rather than removed —
+        #    still parallel, just bounded.
+        #
+        # 2. min_samples_leaf=5 (fine for ~1,138 rows) lets trees grow to
+        #    ~57448/5 ≈ 11,000+ leaves each on the new row count, and with
+        #    the #27 fix giving real event-time granularity (vs. the old
+        #    bug's ~36-41mo clustering) there are now far more distinct
+        #    survival-curve leaf values to store per tree. Verified live:
+        #    even after fix #1, RSF.fit() alone (before the scoring loop
+        #    even starts) still grew to ~7GB RSS and was killed by an
+        #    external memory monitor protecting the host. Scaling
+        #    min_samples_leaf with the actual training-row count (instead
+        #    of a fixed small constant tuned for the old, much smaller
+        #    dataset) bounds tree size/leaf count regardless of how many
+        #    labeled snapshots load_multibagger_training_data_from_db()
+        #    produces in the future.
+        rsf_n_jobs = min(4, os.cpu_count() or 1)
+        rsf_min_samples_leaf = max(5, len(X_imputed) // 1000)
         self._rsf = RandomSurvivalForest(
-            n_estimators=self.n_estimators, random_state=self.random_state, min_samples_leaf=5, n_jobs=-1
+            n_estimators=self.n_estimators, random_state=self.random_state,
+            min_samples_leaf=rsf_min_samples_leaf, n_jobs=rsf_n_jobs,
         )
         self._rsf.fit(X_imputed, surv_y)
         self._event_time_bounds = (float(self._rsf.unique_times_.min()), float(self._rsf.unique_times_.max()))
@@ -580,20 +606,80 @@ def generate_weekly_watchlist(
     return eligible.sort_values("mb_probability", ascending=False).head(top_n)
 
 
+def _score_pnd_panel(ohlcv: pd.DataFrame) -> pd.Series:
+    """
+    Real per-(ticker, date) P&D likelihood scores over a full historical
+    OHLCV panel, for use as `build_binary_labels`'s `pnd_scores` argument
+    (see backlog #27 — previously this was all-NaN, meaning no positive
+    label was ever actually P&D-excluded during training).
+
+    Reuses the already-built, already-trained artifacts rather than
+    inventing a new scoring path: `features/pnd_features.py`'s
+    `compute_pnd_features()` already returns one row per (ticker, date)
+    (mirrors `compute_multibagger_features`'s shape), and
+    `PnDDetector.predict_full()` already accepts an arbitrary-length
+    feature matrix and returns a `pnd_score` per row — the same
+    `MODELS_DIR/pnd_detector/pnd_detector_current.pkl` cached artifact
+    `daily_inference.py`'s `_step_pnd_filter` loads is reused here instead
+    of retraining a second PnDDetector.
+
+    Returns an all-NaN Series (same index as `ohlcv`, one entry per
+    (ticker, date) row) if the cached PnDDetector artifact doesn't exist
+    yet — documented via a warning, not silently defaulted to "0 risk".
+    """
+    from config.settings import MODELS_DIR
+    from features.pnd_features import PND_FEATURES, compute_pnd_features
+    from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector
+
+    pnd_model_path = MODELS_DIR / "pnd_detector" / "pnd_detector_current.pkl"
+    if not pnd_model_path.exists():
+        logger.warning(
+            "_score_pnd_panel: no cached PnDDetector at %s — pnd_scores will be all-NaN "
+            "(no P&D exclusion applied to multibagger training labels). Run "
+            "train_all_phase1.py to produce this artifact.",
+            pnd_model_path,
+        )
+        return pd.Series(np.full(len(ohlcv), np.nan), index=ohlcv.index)
+
+    try:
+        pnd_features = compute_pnd_features(ohlcv)
+        pnd_model = PnDDetector()
+        pnd_model.load(str(pnd_model_path))
+        scored = pnd_model.predict_full(pnd_features[PND_FEATURES])
+        pnd_lookup = pnd_features[["date", "ticker"]].assign(pnd_score=scored["pnd_score"].to_numpy())
+        merged = ohlcv[["date", "ticker"]].merge(pnd_lookup, on=["date", "ticker"], how="left")
+        return pd.Series(merged["pnd_score"].to_numpy(), index=ohlcv.index)
+    except Exception as exc:
+        logger.warning("_score_pnd_panel: PnDDetector scoring failed (%s) — pnd_scores will be all-NaN", exc)
+        return pd.Series(np.full(len(ohlcv), np.nan), index=ohlcv.index)
+
+
 def load_multibagger_training_data_from_db(
     db_path=None,
     lookback_days: int = 1260,
     label_window_days: int = 756,
     min_return_multiplier: float = 2.0,
+    snapshot_stride_days: int = 5,
+    tickers: list = None,
 ) -> tuple:
     """
     Build real (X, y, duration_months, event, groups, pnd_scores) from DB.
 
-    Label construction: a ticker is a positive (y=1) if its close price
-    `label_window_days` ago is available AND its current price is at least
-    `min_return_multiplier`× that past price (i.e. it has already delivered
-    a confirmed multibag over the look-back window). This is the same binary
-    "2x within 3 years" label the model is designed to predict.
+    [backlog #27, 2026-07-04] Rewired to use the already-correct, forward-
+    looking `build_binary_labels()` over the FULL historical (ticker,
+    date) panel instead of one row per ticker with a backward-looking
+    `_duration_months()` that only ever measured the fixed observation
+    window length (36.5-41.3 months for every row, verified against real
+    data — see FutureDevelopment.md #27). This produces many labeled rows
+    per ticker (one per labeled snapshot date) with genuine time-to-event
+    `duration_months` for the Random Survival Forest to learn from.
+
+    `snapshot_stride_days` subsamples snapshot dates (every Nth trading
+    day per ticker, default 5 = ~weekly) rather than every single trading
+    day — a documented row-count/training-time tradeoff: multibagger
+    features and labels change slowly day-to-day (long-horizon signal),
+    so daily-granularity snapshots would multiply row count ~5x for
+    negligible extra event-time resolution.
 
     Parameters
     ----------
@@ -602,10 +688,28 @@ def load_multibagger_training_data_from_db(
     lookback_days : int
         Total OHLCV history to load (calendar days). Default 1260 (~5 years).
     label_window_days : int
-        Trading days to look back when computing achieved returns. Default
-        756 (~3 years of trading days). Must be <= lookback_days.
+        Trading days of forward runway required (used only to filter out
+        censored (event=0) snapshots too close to the end of history to be
+        meaningful — SPEC-MODEL-001's ">= 756 trading days" applies to the
+        forward window here, not a trailing one as in the old
+        implementation). Positive (event=1) rows are always kept regardless
+        of how much forward runway they had. Default 756 (~3 years).
     min_return_multiplier : float
-        Return threshold for a "positive" label. Default 2.0 (2x / 100%).
+        Return threshold for a "positive" label. Default 2.0 (2x / 100%). NOTE:
+        `build_binary_labels()` (which now does the actual labeling) hardcodes
+        the 2x/100% threshold per the build prompt's literal "2x within 3
+        years" spec — this parameter is accepted for signature compatibility
+        but has no effect unless build_binary_labels is later parameterized.
+    snapshot_stride_days : int
+        Keep every Nth trading day per ticker as a labeled snapshot. Default 5.
+    tickers : list[str], optional
+        Restrict training to this ticker subset instead of the full universe.
+        The full-universe (ticker, date) panel (~2,300 tickers x lookback_days)
+        is expensive to hold in memory at once (OHLCV load + rolling feature
+        computation + PnD panel scoring all materialize simultaneously) —
+        tests should pass a small real-ticker sample here rather than
+        training against the whole universe (see tests/unit/test_multibagger.py).
+        Production scoring/training callers should leave this as None.
 
     Returns
     -------
@@ -635,16 +739,29 @@ def load_multibagger_training_data_from_db(
         )
 
     with get_duckdb_connection(db_path, read_only=True, persist=False) as conn:
-        ohlcv = conn.execute(
-            """
-            SELECT date, ticker, open, high, low, close, volume,
-                   COALESCE(delivery_pct, 0.0) AS delivery_pct
-            FROM ohlcv_adjusted
-            WHERE date >= CURRENT_DATE - INTERVAL (?) DAY
-            ORDER BY ticker, date
-            """,
-            [lookback_days],
-        ).df()
+        if tickers:
+            ohlcv = conn.execute(
+                """
+                SELECT date, ticker, open, high, low, close, volume,
+                       COALESCE(delivery_pct, 0.0) AS delivery_pct
+                FROM ohlcv_adjusted
+                WHERE date >= CURRENT_DATE - INTERVAL (?) DAY
+                  AND ticker = ANY(?)
+                ORDER BY ticker, date
+                """,
+                [lookback_days, list(tickers)],
+            ).df()
+        else:
+            ohlcv = conn.execute(
+                """
+                SELECT date, ticker, open, high, low, close, volume,
+                       COALESCE(delivery_pct, 0.0) AS delivery_pct
+                FROM ohlcv_adjusted
+                WHERE date >= CURRENT_DATE - INTERVAL (?) DAY
+                ORDER BY ticker, date
+                """,
+                [lookback_days],
+            ).df()
 
     if ohlcv.empty:
         raise RuntimeError(
@@ -653,35 +770,9 @@ def load_multibagger_training_data_from_db(
         )
 
     ohlcv["date"] = pd.to_datetime(ohlcv["date"])
+    ohlcv = ohlcv.sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    # --- Compute achieved-return label per ticker ---
-    # For each ticker: compare its most recent close to its close
-    # label_window_days trading rows ago. If that ratio >= min_return_multiplier => positive.
-    sorted_ohlcv = ohlcv.sort_values(["ticker", "date"])
-    # groupby().last() returns ticker-keyed index; nth(-1) returns integer row positions
-    last_close = sorted_ohlcv.groupby("ticker")["close"].last()
-    row_counts = sorted_ohlcv.groupby("ticker")["date"].count()
-
-    # Only label tickers with sufficient history for the label window
-    eligible_tickers = row_counts[row_counts >= label_window_days].index
-    first_in_window = (
-        sorted_ohlcv[sorted_ohlcv["ticker"].isin(eligible_tickers)]
-        .groupby("ticker")
-        .apply(lambda g: g.iloc[-(label_window_days):]["close"].iloc[0])
-    )
-    achieved_return = last_close.reindex(first_in_window.index) / first_in_window
-    is_positive_ticker = achieved_return >= min_return_multiplier
-
-    # Duration: months from the start of the label window to "event" (if any)
-    def _duration_months(ticker):
-        g = sorted_ohlcv[sorted_ohlcv["ticker"] == ticker]
-        if len(g) < label_window_days:
-            return float(LABEL_WINDOW_YEARS * 12)
-        start = g.iloc[-(label_window_days):]["date"].iloc[0]
-        end = g["date"].iloc[-1]
-        return max((end - start).days / 30.44, 0.5)
-
-    # --- Compute multibagger features (latest snapshot per ticker) ---
+    # --- Compute multibagger features for the FULL (ticker, date) panel ---
     from config.universe import load_universe_raw
 
     try:
@@ -696,29 +787,74 @@ def load_multibagger_training_data_from_db(
             "compute_multibagger_features returned no rows from real OHLCV data. "
             "See BuildLog.md 'Real data sourcing — Multibagger'."
         )
+    features_df["date"] = pd.to_datetime(features_df["date"])
 
-    latest = features_df.sort_values("date").groupby("ticker", sort=False).tail(1).reset_index(drop=True)
+    # --- Real P&D scores over the same panel (see _score_pnd_panel docstring) ---
+    pnd_score_series = _score_pnd_panel(ohlcv)
 
-    # Align labels to the latest-snapshot tickers
-    y_series = latest["ticker"].map(is_positive_ticker).fillna(False).astype(int)
-    duration_list = [_duration_months(t) for t in latest["ticker"]]
-    duration_months = pd.Series(duration_list)
-    event = y_series.copy()
-    # pnd_scores: real P&D scores require a trained PnDDetector, loaded and scored by
-    # the caller (e.g. inference/train_all_phase1.py) and passed through to
-    # build_binary_labels separately. NaN here (not 0.0) is deliberate — a real "no
-    # P&D risk" score of 0 and "not yet computed" must not be conflated.
-    pnd_scores = pd.Series(np.full(len(latest), np.nan))
+    # --- Forward-looking, real time-to-event labels, on the FULL daily panel ---
+    # (build_binary_labels' window_days math assumes trading-day-granularity input —
+    # subsampling BEFORE labeling would silently stretch the window by
+    # snapshot_stride_days-fold; label on the full panel, subsample the RESULT.)
+    prices = ohlcv[["date", "ticker", "close"]].copy()
+    labels = build_binary_labels(
+        prices, pnd_scores=pnd_score_series, window_years=LABEL_WINDOW_YEARS,
+    )
+    if labels.empty:
+        raise RuntimeError(
+            "build_binary_labels returned no rows from real OHLCV data. "
+            "See BuildLog.md 'Real data sourcing — Multibagger'."
+        )
 
-    X = latest[MULTIBAGGER_FEATURES]
-    groups = [len(latest)]  # single snapshot = one ranking group
+    # SPEC-MODEL-001: right-censored (event=0) snapshots need a full forward
+    # window to be meaningful; positives are informative regardless of how
+    # much forward runway they had (the 2x crossing already happened).
+    forward_days_available = prices.groupby("ticker")["date"].transform(lambda s: np.arange(len(s))[::-1])
+    labels = labels.merge(
+        prices.assign(_fwd_days=forward_days_available)[["date", "ticker", "_fwd_days"]],
+        on=["date", "ticker"], how="left",
+    )
+    labels = labels[(labels["event"] == 1) | (labels["_fwd_days"] >= label_window_days)].drop(columns=["_fwd_days"])
+    if labels.empty:
+        raise RuntimeError(
+            f"No labeled snapshots with >= {label_window_days} trading days of forward runway "
+            "(or a confirmed 2x event). Use a longer lookback_days. There is no synthetic-data "
+            "fallback. See BuildLog.md 'Real data sourcing — Multibagger'."
+        )
 
-    n_pos = y_series.sum()
-    n_neg = (y_series == 0).sum()
+    # --- Subsample snapshot dates AFTER labeling (every Nth trading day per ticker) ---
+    row_idx_within_ticker = labels.groupby("ticker").cumcount()
+    labels = labels.loc[(row_idx_within_ticker % snapshot_stride_days) == 0].reset_index(drop=True)
+
+    # --- Join per-snapshot-date features onto the labeled rows ---
+    merged = labels.merge(features_df, on=["date", "ticker"], how="inner")
+    if merged.empty:
+        raise RuntimeError(
+            "No overlap between labeled (ticker, date) snapshots and computed multibagger "
+            "features. See BuildLog.md 'Real data sourcing — Multibagger'."
+        )
+    merged = merged.sort_values(["ticker", "date"]).reset_index(drop=True)
+
+    X = merged[MULTIBAGGER_FEATURES]
+    y_series = merged["label"].astype(int)
+    duration_months = merged["duration_months"].astype(float)
+    event = merged["event"].astype(int)
+    # groups: one lambdarank group per as-of snapshot date (rows sharing a date compete).
+    groups = merged.groupby("date", sort=True).size().tolist()
+    # Re-attach the real pnd_score used for P&D exclusion inside build_binary_labels
+    # (that function drops the column internally after applying the exclusion) so the
+    # caller still gets a real, aligned pnd_scores Series rather than an all-NaN one.
+    pnd_lookup = prices.assign(pnd_score=pnd_score_series.to_numpy())[["date", "ticker", "pnd_score"]]
+    pnd_scores = merged[["date", "ticker"]].merge(pnd_lookup, on=["date", "ticker"], how="left")["pnd_score"]
+
+    n_pos = int(y_series.sum())
+    n_neg = int((y_series == 0).sum())
     logger.info(
-        "Multibagger real training data: %d tickers (%d positive / %d negative) from ohlcv_adjusted "
-        "(label_window=%d days, threshold=%.1fx)",
-        len(X), n_pos, n_neg, label_window_days, min_return_multiplier,
+        "Multibagger real training data: %d labeled (ticker, date) snapshots across %d tickers "
+        "(%d positive / %d negative) from ohlcv_adjusted (label_window=%d days, threshold=%.1fx, "
+        "snapshot_stride=%d days, median duration_months=%.1f)",
+        len(X), merged["ticker"].nunique(), n_pos, n_neg, label_window_days, min_return_multiplier,
+        snapshot_stride_days, float(duration_months.median()),
     )
 
     if n_pos == 0:

@@ -49,6 +49,13 @@ function fmtNum(x, digits = 2) {
   return Number(x).toFixed(digits);
 }
 
+// #22 — Indian-grouped integer display for raw counts (Volume, row counts,
+// quantities, etc.) that shouldn't get fmtMoney()'s "₹" prefix.
+function fmtInt(x) {
+  if (x === null || x === undefined || Number.isNaN(x)) return "—";
+  return Number(x).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
 function fmtMoney(x) {
   if (x === null || x === undefined || Number.isNaN(x)) return "—";
   return "₹" + Number(x).toLocaleString("en-IN", { maximumFractionDigits: 0 });
@@ -57,6 +64,25 @@ function fmtMoney(x) {
 function pnlClass(x) {
   if (x === null || x === undefined || Number.isNaN(x)) return "";
   return x >= 0 ? "pos" : "neg";
+}
+
+// mb_tier ("10x"/"5x"/"3x"/"2x"/"none") is a deterministic bucketing of
+// mb_probability (systems/ml_signal_engine/models/multibagger/multibagger_model.py:96-101),
+// not a separately-modeled multiplier prediction — "10x" does NOT mean
+// "predicted to return 10x", only "mb_probability >= 0.80". Renders the
+// actual probability band instead of the misleading multiplier label.
+const MB_TIER_BANDS = {
+  "10x": "≥ 80%",
+  "5x": "60–79%",
+  "3x": "45–59%",
+  "2x": "30–44%",
+  none: "< 30%",
+};
+
+function mbTierLabel(tier) {
+  if (!tier) return "—";
+  const band = MB_TIER_BANDS[tier];
+  return band ? `${band} (${tier} band)` : tier;
 }
 
 function badgeClass(sev) {
@@ -88,4 +114,34 @@ function showError(containerId, err) {
 function showLoading(containerId) {
   const c = document.getElementById(containerId);
   if (c) c.innerHTML = `<div class="loading">Loading…</div>`;
+}
+
+// Generic client-side column sort: click a sortable header to sort by it,
+// click again to reverse. Rows are assumed small enough (<=few hundred) that
+// no server-side sort param is needed — just re-render from the same data.
+// (Originally ops/js/index.js-only; promoted here in #21 so Signal Deep
+// Dive's full-universe table and #23's Exit Urgency page can reuse it.)
+function sortRows(rows, key, dir) {
+  const factor = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = a[key];
+    const vb = b[key];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1; // nulls last regardless of direction
+    if (vb == null) return -1;
+    if (va < vb) return -1 * factor;
+    if (va > vb) return 1 * factor;
+    return 0;
+  });
+}
+
+function sortableHeader(label, key, sortState, onSort) {
+  const isActive = sortState.key === key;
+  const arrow = isActive ? (sortState.dir === "asc" ? " ▲" : " ▼") : "";
+  const th = el("th", { style: "cursor:pointer;user-select:none" }, [label + arrow]);
+  th.addEventListener("click", () => {
+    const nextDir = isActive && sortState.dir === "asc" ? "desc" : "asc";
+    onSort(key, nextDir);
+  });
+  return th;
 }

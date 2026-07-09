@@ -23,21 +23,33 @@ guards its own step loop (never skip ahead of an unmet prerequisite).
 
 import asyncio
 import logging
+import re
+import subprocess
 from datetime import date as date_type
 from datetime import timedelta
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from config.settings import PIPELINE_LOG_DB_PATH
+from config.settings import DUCKDB_PATH, PIPELINE_LOG_DB_PATH
 from config.timezone import now_ist
-from datastore.api.db import get_sqlite_connection
+from datastore.api.db import get_duckdb_connection, get_sqlite_connection
 from datastore.api.schemas import (
     OpsFailedStepInfo,
     OpsForceStepResponse,
     OpsForceStepResult,
+    OpsFreshnessResponse,
+    OpsFreshnessRow,
+    OpsIntegrityFinding,
+    OpsIntegrityFindingActionResponse,
+    OpsIntegrityFindingsResponse,
+    OpsMissedJobFinding,
+    OpsMissedJobFindingActionResponse,
+    OpsMissedJobFindingsResponse,
     OpsRunRow,
     OpsRunsResponse,
+    OpsSchedulerResourceStatus,
     OpsStepRow,
     OpsStepsResponse,
     SchedulerJobHeartbeat,
@@ -45,8 +57,8 @@ from datastore.api.schemas import (
 from datastore.api.utils.scheduler_status import get_scheduler_heartbeats
 from config.nse_holidays import ALL_NSE_HOLIDAYS
 from ingestion.scheduler.checkpoint import STEPS, CheckpointManager
-from ingestion.scheduler.daily_pipeline import step_runner
 from ingestion.scheduler.gap_detector import is_trading_day
+from ingestion.scheduler.pipeline_scheduler import pipeline_run_lock
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +77,97 @@ async def get_trading_calendar_holidays() -> dict:
 
 @router.get("/heartbeats", response_model=list[SchedulerJobHeartbeat])
 async def get_ops_heartbeats() -> list:
-    """The 3 recurring APScheduler jobs (daily_pipeline, backfill_catchup,
-    mf_holdings_ingestion) — same data /health already surfaces, factored
-    into datastore/api/utils/scheduler_status.py so neither endpoint
-    duplicates the staleness thresholds."""
+    """Every recurring APScheduler job tracked in datastore/api/utils/
+    scheduler_status.py's HEARTBEAT_STALE_AFTER — currently daily_pipeline,
+    morning_catchup, mf_holdings_ingestion, model_training, and the two
+    Saturday-only jobs (weekend_feature_backfill, weekend_fundamentals;
+    #5 backlog item). Same data /health already surfaces, factored into
+    scheduler_status.py so neither endpoint duplicates the staleness
+    thresholds or next-run-time computation."""
     return get_scheduler_heartbeats()
+
+
+# #4: DataStore API Console (freshness rollup) — table -> (db_path, date_col).
+# ohlcv_adjusted/fundamentals/macro_indicators live in the normalised store
+# (DUCKDB_PATH); ml_signals/ta_signals live in the signals store
+# (SIGNALS_DUCKDB_PATH, a separate DuckDB file — see checkpoint.py's/
+# signals.py's module docstrings for why these are split). mf_holdings is
+# NOT a DuckDB table at all (ingestion/scrapers/amfi_holdings.py writes
+# monthly Parquet files to config.settings.MF_HOLDINGS_DIR), so it's
+# handled separately below rather than forced into this table-driven loop.
+_FRESHNESS_DUCKDB_SOURCES = [
+    ("ohlcv_adjusted", "DUCKDB_PATH", "date"),
+    ("fundamentals", "DUCKDB_PATH", "announcement_date"),
+    ("macro_indicators", "DUCKDB_PATH", "date"),
+    ("ml_signals", "SIGNALS_DUCKDB_PATH", "date"),
+    ("ta_signals", "SIGNALS_DUCKDB_PATH", "date"),
+]
+
+
+@router.get("/freshness", response_model=OpsFreshnessResponse)
+async def get_ops_freshness() -> OpsFreshnessResponse:
+    """
+    #4: per-data-source freshness rollup — last-write timestamp + row count
+    for each of the DataStore's main tables/stores, so a stale source (e.g.
+    fundamentals not refreshed in weeks) is visible in one place instead of
+    requiring a manual DuckDB query.
+
+    None of these tables carry their own write-timestamp column, so
+    last_write_at is the underlying DuckDB file's mtime (a reasonable proxy:
+    each file is only ever touched by this pipeline's own writers). For
+    mf_holdings (monthly Parquet files, not a DuckDB table — see
+    ingestion/scrapers/amfi_holdings.py) this is the most recent file's mtime,
+    and row_count/latest_data_date come from reading just that one file
+    (not summing every historical month).
+    """
+    import os
+    from datetime import datetime
+
+    import config.settings as _settings
+
+    rows: List[OpsFreshnessRow] = []
+
+    for source, db_path_attr, date_col in _FRESHNESS_DUCKDB_SOURCES:
+        db_path = getattr(_settings, db_path_attr)
+        try:
+            with get_duckdb_connection(db_path, persist=False, read_only=True) as conn:
+                row_count, latest_date = conn.execute(
+                    f"SELECT COUNT(*), MAX({date_col}) FROM {source}"
+                ).fetchone()
+            last_write_at = (
+                datetime.fromtimestamp(os.path.getmtime(db_path)) if db_path.exists() else None
+            )
+            rows.append(OpsFreshnessRow(
+                source=source, row_count=row_count,
+                latest_data_date=str(latest_date) if latest_date is not None else None,
+                last_write_at=last_write_at,
+            ))
+        except Exception as exc:
+            logger.warning(f"ops.freshness: could not read '{source}' from {db_path}: {exc}")
+            rows.append(OpsFreshnessRow(source=source, error=str(exc)))
+
+    # mf_holdings: monthly Parquet files under MF_HOLDINGS_DIR, most recent by filename.
+    try:
+        mf_dir = _settings.MF_HOLDINGS_DIR
+        mf_files = sorted(mf_dir.glob("*.parquet")) if mf_dir.exists() else []
+        if not mf_files:
+            rows.append(OpsFreshnessRow(source="mf_holdings", row_count=0, error="no Parquet files found"))
+        else:
+            import pandas as pd
+
+            latest_file = mf_files[-1]
+            latest_df = pd.read_parquet(latest_file)
+            rows.append(OpsFreshnessRow(
+                source="mf_holdings",
+                row_count=len(latest_df),
+                latest_data_date=latest_file.stem,  # "YYYY-MM"
+                last_write_at=datetime.fromtimestamp(os.path.getmtime(latest_file)),
+            ))
+    except Exception as exc:
+        logger.warning(f"ops.freshness: could not read mf_holdings: {exc}")
+        rows.append(OpsFreshnessRow(source="mf_holdings", error=str(exc)))
+
+    return OpsFreshnessResponse(sources=rows)
 
 
 @router.get("/runs", response_model=OpsRunsResponse)
@@ -107,10 +205,34 @@ async def get_ops_runs(limit: int = Query(10, ge=1, le=100)) -> OpsRunsResponse:
                 failed_steps = [
                     OpsFailedStepInfo(step_name=fs[0], error_message=fs[1]) for fs in cursor.fetchall()
                 ]
+
+            is_backfill = False
+            if date:
+                cursor.execute(
+                    "SELECT 1 FROM pipeline_checkpoints WHERE date = ? AND is_backfill = 1 LIMIT 1",
+                    (date,),
+                )
+                is_backfill = cursor.fetchone() is not None
+
+            # AF-2 (#9): surfaced distinctly from the run's own `status` —
+            # a run can be status='success' (every attempted step finished
+            # without raising) while sanity_check itself failed and this
+            # run never got past it, since sanity_check is hard-depended-on
+            # by paper_trade (see checkpoint.py's STEPS).
+            sanity_check_passed = None
+            if date:
+                cursor.execute(
+                    "SELECT status FROM pipeline_checkpoints WHERE date = ? AND step_name = 'sanity_check'",
+                    (date,),
+                )
+                sanity_row = cursor.fetchone()
+                if sanity_row is not None:
+                    sanity_check_passed = sanity_row[0] == "success"
+
             runs.append(OpsRunRow(
                 run_id=run_id, date=date, status=status, stocks_processed=stocks_processed,
                 started_at=started_at, completed_at=completed_at, error_message=error_message,
-                failed_steps=failed_steps,
+                is_backfill=is_backfill, failed_steps=failed_steps, sanity_check_passed=sanity_check_passed,
             ))
     return OpsRunsResponse(runs=runs)
 
@@ -129,7 +251,7 @@ async def get_ops_steps(date: Optional[str] = Query(None, description="YYYY-MM-D
     with get_sqlite_connection(PIPELINE_LOG_DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT step_name, status, started_at, completed_at, error_message "
+            "SELECT step_name, status, started_at, completed_at, error_message, is_backfill "
             "FROM pipeline_checkpoints WHERE date = ?",
             (resolved_date,),
         )
@@ -147,10 +269,11 @@ async def get_ops_steps(date: Optional[str] = Query(None, description="YYYY-MM-D
                 last_success_date=last_success_str, next_scheduled_run=next_scheduled_run,
             ))
         else:
-            _, status, started_at, completed_at, error_message = checkpoint_row
+            _, status, started_at, completed_at, error_message, is_backfill = checkpoint_row
             rows.append(OpsStepRow(
                 step_name=name, step_index=index, is_backfillable=step["is_backfillable"],
                 status=status, started_at=started_at, completed_at=completed_at, error_message=error_message,
+                is_backfill=bool(is_backfill),
                 last_success_date=last_success_str, next_scheduled_run=next_scheduled_run,
             ))
     return OpsStepsResponse(date=resolved_date, steps=rows)
@@ -175,7 +298,8 @@ async def force_run_step(
             "YYYY-MM-DD to force exactly that one date. Omit to auto-backfill: "
             "every NSE trading day between this step's last success and today "
             "(inclusive) that hasn't succeeded yet. Ignored (always just today) "
-            "for non-backfillable steps (run_models/write_signals/paper_trade)."
+            "for the non-backfillable paper_trade step (2026-07-08: run_models/write_signals/"
+            "sanity_check are now backfillable — only paper_trade stays today-only)."
         ),
     ),
     cascade: bool = Query(
@@ -185,7 +309,7 @@ async def force_run_step(
             "in STEPS order for that same date (e.g. download_bhavcopy -> "
             "download_fno -> ... -> compute_features) instead of stopping "
             "after just this one. Stops at the first failure, and never "
-            "crosses into a non-backfillable step (run_models onward) for a "
+            "crosses into the non-backfillable paper_trade step for a "
             "date before today."
         ),
     ),
@@ -201,9 +325,11 @@ async def force_run_step(
     thing the button could ever do. Instead it walks every NSE trading day
     (config/nse_holidays.py via ingestion/scheduler/gap_detector.is_trading_day)
     since this step's last recorded success up to and including today, and
-    force-runs each missing one in order. Non-backfillable steps (run_models,
-    write_signals, paper_trade — SPEC-SCHED-006 reserves these for today only)
-    never get this treatment: their implicit date is always just today.
+    force-runs each missing one in order. The one non-backfillable step
+    (paper_trade — SPEC-SCHED-006 reserves it for today only, so a gap
+    day's signals are never auto-traded retroactively; run_models/
+    write_signals/sanity_check are backfillable as of 2026-07-08) never
+    gets this treatment: its implicit date is always just today.
 
     cascade=True (default) means a successful download/feature step doesn't
     leave the rest of that date's pipeline (adjust_prices, compute_features,
@@ -266,62 +392,54 @@ async def force_run_step(
     checkpoint_manager = CheckpointManager()
     results: list[OpsForceStepResult] = []
 
-    for run_date in run_dates:
-        resolved_date = run_date.isoformat()
-
-        with get_sqlite_connection(PIPELINE_LOG_DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT step_name FROM pipeline_checkpoints WHERE date = ? AND status = 'success'",
-                (resolved_date,),
-            )
-            succeeded = {r[0] for r in cursor.fetchall()}
-
-        unmet = [name for name in step_names[:step_index] if name not in succeeded]
-        if unmet:
-            if len(run_dates) > 1:
-                logger.warning(
-                    f"ops.force_run_step: skipping {resolved_date} for '{step_name}' "
-                    f"— prerequisite step(s) not yet successful: {unmet}"
-                )
-                continue
+    # 2026-07-05: this endpoint runs in the API's own OS process, entirely
+    # separate from the alphalens-scheduler.service process — without this
+    # lock a force-run here can race the scheduler's own daily_pipeline/
+    # morning_catchup jobs on the same date's pipeline_checkpoints rows
+    # (see pipeline_scheduler.pipeline_run_lock's docstring for the
+    # 2026-07-02/03 incident this was root-caused from).
+    with pipeline_run_lock() as acquired:
+        if not acquired:
             raise HTTPException(
                 status_code=409,
-                detail=f"Cannot force-run '{step_name}' — prerequisite step(s) not yet successful for {resolved_date}: {unmet}",
+                detail="Cannot force-run — the scheduler is currently mid-run for some date "
+                "(cross-process lock held). Try again once its current run completes.",
             )
+        return await _force_run_step_locked(
+            step_name, run_dates, step_names, step_index, today, cascade,
+            checkpoint_manager, results,
+        )
 
-        current_index = step_index
-        while current_index < len(STEPS):
-            current_meta = STEPS[current_index]
-            current_name = current_meta["name"]
 
-            if run_date < today and not current_meta["is_backfillable"]:
-                break  # never run inference/signal/paper-trade steps on a gap day
+async def _force_run_step_locked(
+    step_name: str,
+    run_dates: list,
+    step_names: list,
+    step_index: int,
+    today: date_type,
+    cascade: bool,
+    checkpoint_manager: CheckpointManager,
+    results: list,
+) -> OpsForceStepResponse:
+    # 2026-07-09 (A21): the actual STEPS-walking/dependency-respecting
+    # logic now lives in ingestion/scheduler/force_run.py::force_run_date_sync
+    # so A21's "force_run_daily_pipeline" catch-up action can reuse it
+    # instead of reimplementing this endpoint's own loop. Run in a thread
+    # so a slow step doesn't block the event loop for other API requests.
+    from ingestion.scheduler.force_run import force_run_date_sync
 
-            checkpoint_manager.save_checkpoint(run_date, current_name, status="running")
-            try:
-                await asyncio.to_thread(step_runner, run_date, current_name)
-            except Exception as exc:
-                checkpoint_manager.save_checkpoint(run_date, current_name, status="failed", error_message=str(exc))
-                logger.error(f"ops.force_run_step: '{current_name}' failed for {resolved_date}: {exc}")
-                results.append(OpsForceStepResult(step_name=current_name, date=resolved_date, status="failed", error_message=str(exc)))
-                break  # don't cascade past a failure
+    try:
+        force_run_results = await asyncio.to_thread(
+            force_run_date_sync, step_name, run_dates, today, cascade, checkpoint_manager
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
-            checkpoint_manager.save_checkpoint(run_date, current_name, status="success")
-            results.append(OpsForceStepResult(step_name=current_name, date=resolved_date, status="success"))
-            succeeded.add(current_name)
-
-            if not cascade:
-                break
-            current_index += 1
-
-    if not results:
-        # every candidate date was skipped for unmet prerequisites
-        last_date = run_dates[-1].isoformat()
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot force-run '{step_name}' — no candidate date had its prerequisite steps successful "
-            f"(checked {run_dates[0].isoformat()} to {last_date})",
+    for r in force_run_results:
+        if r.status == "failed":
+            logger.error(f"ops.force_run_step: '{r.step_name}' failed for {r.date}: {r.error_message}")
+        results.append(
+            OpsForceStepResult(step_name=r.step_name, date=r.date, status=r.status, error_message=r.error_message)
         )
 
     # Backward-compat summary fields describe the originally requested step's
@@ -335,3 +453,254 @@ async def force_run_step(
         error_message=last.error_message,
         results=results,
     )
+
+
+# 2026-07-05: daily_pipeline.py now runs as the alphalens-scheduler.service
+# systemd --user unit (decoupled from VS Code/Claude Code — a Claude session
+# ending or running out of tokens no longer stops the scheduler) plus a
+# 30-min alphalens-scheduler-monitor.timer that logs mem/load to
+# datastore/logs/scheduler_resource_monitor.log and throttles
+# HMM_FEATURE_WORKERS/FEATURE_CACHE_PRELOAD_WORKERS under memory pressure —
+# see scripts/monitor_scheduler_resources.py's module docstring. This
+# endpoint surfaces both so the Ops page can show "is the always-on
+# scheduler actually up" separately from "did today's pipeline run", and so
+# a throttled/deferred state (which changes step timing, not correctness)
+# is visible rather than silent.
+_RESOURCE_MONITOR_LOG_PATH = Path("/home/amit/projects/AlphaLens/datastore/logs/scheduler_resource_monitor.log")
+_SCHEDULER_SERVICE_NAME = "alphalens-scheduler.service"
+_DEFAULT_HMM_WORKERS = 3
+_DEFAULT_PRELOAD_WORKERS = 16
+
+_MONITOR_LOG_LINE_RE = re.compile(
+    r"^(?P<ts>\S+ \S+) .*mem_available=(?P<mem>[\d.]+)% .*load1=(?P<load1>[\d.]+) .*"
+    r"hmm_workers=(?P<hmm>\d+) preload_workers=(?P<preload>\d+)"
+)
+_MONITOR_DEFERRED_RE = re.compile(r"step '(?P<step>[^']+)' is in progress")
+
+
+@router.get("/scheduler-resources", response_model=OpsSchedulerResourceStatus)
+async def get_ops_scheduler_resources() -> OpsSchedulerResourceStatus:
+    """Systemd service status + latest resource-monitor reading (see module docstring above)."""
+    service_active: Optional[bool] = None
+    service_state: Optional[str] = None
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", _SCHEDULER_SERVICE_NAME, "--property=ActiveState"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        service_state = result.stdout.strip().removeprefix("ActiveState=") or None
+        service_active = service_state == "active"
+    except Exception as exc:
+        logger.warning(f"ops.scheduler_resources: could not query systemctl: {exc}")
+
+    mem_pct = load1 = None
+    hmm_workers = preload_workers = None
+    last_monitor_run_at = None
+    last_deferred_step = None
+    error = None
+
+    if _RESOURCE_MONITOR_LOG_PATH.exists():
+        try:
+            lines = _RESOURCE_MONITOR_LOG_PATH.read_text().splitlines()
+            for line in reversed(lines[-200:]):
+                m = _MONITOR_LOG_LINE_RE.match(line)
+                if m:
+                    last_monitor_run_at = m.group("ts")
+                    mem_pct = float(m.group("mem"))
+                    load1 = float(m.group("load1"))
+                    hmm_workers = int(m.group("hmm"))
+                    preload_workers = int(m.group("preload"))
+                    break
+            for line in reversed(lines[-50:]):
+                dm = _MONITOR_DEFERRED_RE.search(line)
+                if dm:
+                    last_deferred_step = dm.group("step")
+                    break
+        except Exception as exc:
+            logger.warning(f"ops.scheduler_resources: could not read monitor log: {exc}")
+            error = str(exc)
+    else:
+        error = "monitor log not found — has the timer fired yet?"
+
+    throttled = (
+        hmm_workers is not None and preload_workers is not None
+        and (hmm_workers < _DEFAULT_HMM_WORKERS or preload_workers < _DEFAULT_PRELOAD_WORKERS)
+    )
+
+    return OpsSchedulerResourceStatus(
+        service_active=service_active,
+        service_state=service_state,
+        mem_available_pct=mem_pct,
+        load1=load1,
+        hmm_feature_workers=hmm_workers,
+        feature_cache_preload_workers=preload_workers,
+        throttled=throttled,
+        last_monitor_run_at=last_monitor_run_at,
+        last_deferred_step=last_deferred_step,
+        error=error,
+    )
+
+
+@router.get("/integrity-findings", response_model=OpsIntegrityFindingsResponse)
+async def get_integrity_findings(
+    status: Optional[str] = Query(None, description="Filter by status: pending|approved|rejected|applied"),
+    check_name: Optional[str] = Query(None, description="Filter by check: corporate_actions|null_sweep|holiday_leakage|spot_check"),
+) -> OpsIntegrityFindingsResponse:
+    """A20: list data_integrity_findings rows, most recent first."""
+    from datastore.integrity.findings import list_findings
+
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        df = list_findings(conn, status=status, check_name=check_name)
+
+    findings = [
+        OpsIntegrityFinding(
+            id=int(row.id),
+            check_name=row.check_name,
+            ticker=row.ticker,
+            finding_date=str(row.finding_date),
+            severity=row.severity,
+            description=row.description,
+            evidence_json=row.evidence_json,
+            proposed_fix_sql=row.proposed_fix_sql,
+            status=row.status,
+            reviewed_by=row.reviewed_by,
+            reviewed_at=str(row.reviewed_at) if row.reviewed_at is not None else None,
+            created_at=str(row.created_at) if row.created_at is not None else None,
+        )
+        for row in df.itertuples()
+    ]
+    return OpsIntegrityFindingsResponse(findings=findings)
+
+
+@router.post("/integrity-findings/{finding_id}/approve", response_model=OpsIntegrityFindingActionResponse)
+async def approve_integrity_finding(
+    finding_id: int,
+    reviewed_by: str = Query("operator", description="Who approved this finding"),
+) -> OpsIntegrityFindingActionResponse:
+    """
+    A20: approve a pending finding. If it carries a proposed_fix_sql, that
+    fix is executed against production data now — this is the ONLY code
+    path that writes production data on A20's behalf (never automatic),
+    per this project's "flag, don't silently write" discipline.
+    """
+    from datastore.integrity.findings import approve_finding
+
+    with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
+        try:
+            approve_finding(conn, finding_id, reviewed_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        row = conn.execute(
+            "SELECT status FROM data_integrity_findings WHERE id = ?", [finding_id]
+        ).fetchone()
+    return OpsIntegrityFindingActionResponse(id=finding_id, status=row[0], reviewed_by=reviewed_by)
+
+
+@router.post("/integrity-findings/{finding_id}/reject", response_model=OpsIntegrityFindingActionResponse)
+async def reject_integrity_finding(
+    finding_id: int,
+    reviewed_by: str = Query("operator", description="Who rejected this finding"),
+) -> OpsIntegrityFindingActionResponse:
+    """A20: reject a pending finding. No production data is touched."""
+    from datastore.integrity.findings import reject_finding
+
+    with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
+        try:
+            reject_finding(conn, finding_id, reviewed_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return OpsIntegrityFindingActionResponse(id=finding_id, status="rejected", reviewed_by=reviewed_by)
+
+
+@router.get("/missed-jobs", response_model=OpsMissedJobFindingsResponse)
+async def get_missed_job_findings(
+    status: Optional[str] = Query(None, description="Filter by status: pending|approved|rejected|applied"),
+    job_id: Optional[str] = Query(None, description="Filter by job_id, e.g. weekend_feature_backfill"),
+) -> OpsMissedJobFindingsResponse:
+    """A21: list missed_job_findings rows, most recent first."""
+    from datastore.health.findings import list_findings
+
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        df = list_findings(conn, status=status, job_id=job_id)
+
+    findings = [
+        OpsMissedJobFinding(
+            id=int(row.id),
+            job_id=row.job_id,
+            missed_date=str(row.missed_date),
+            severity=row.severity,
+            description=row.description,
+            proposed_catchup_action=row.proposed_catchup_action,
+            proposed_catchup_params_json=row.proposed_catchup_params_json,
+            status=row.status,
+            reviewed_by=row.reviewed_by,
+            reviewed_at=str(row.reviewed_at) if row.reviewed_at is not None else None,
+            created_at=str(row.created_at) if row.created_at is not None else None,
+        )
+        for row in df.itertuples()
+    ]
+    return OpsMissedJobFindingsResponse(findings=findings)
+
+
+@router.post("/missed-jobs/{finding_id}/approve", response_model=OpsMissedJobFindingActionResponse)
+async def approve_missed_job_finding(
+    finding_id: int,
+    reviewed_by: str = Query("operator", description="Who approved this finding"),
+) -> OpsMissedJobFindingActionResponse:
+    """
+    A21: approve a pending missed-job finding. If it carries a
+    proposed_catchup_action, that catch-up (force-run the daily pipeline
+    for the missed date(s), re-run a weekend script, or re-run
+    mf_holdings ingestion) is triggered now — this is the ONLY code path
+    that runs a catch-up job on A21's behalf (never automatic), per this
+    project's "flag, don't silently write" discipline.
+
+    Two-phase, deliberately NOT one `with get_duckdb_connection(...)`
+    block spanning the whole approval: a catch-up can run for hours (e.g.
+    re-running scripts/feature_backfill_hybrid.py), and holding a single
+    DuckDB write connection open that whole time would lock the entire
+    database for every other reader/writer (the scheduler, the rest of
+    this API) until it finished. Instead: read+validate (short-lived
+    connection) -> run the catch-up with NO DuckDB connection held ->
+    write the final status (short-lived connection).
+    """
+    from datastore.health.catchup import run_catchup
+    from datastore.health.findings import begin_approve, complete_approve
+
+    def _begin():
+        with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
+            return begin_approve(conn, finding_id)
+
+    try:
+        job_id, missed_date, action, params = await asyncio.to_thread(_begin)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if action:
+        await asyncio.to_thread(run_catchup, action, job_id, missed_date, params)
+        new_status = "applied"
+    else:
+        new_status = "approved"
+
+    def _complete():
+        with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
+            complete_approve(conn, finding_id, new_status, reviewed_by)
+
+    await asyncio.to_thread(_complete)
+    return OpsMissedJobFindingActionResponse(id=finding_id, status=new_status, reviewed_by=reviewed_by)
+
+
+@router.post("/missed-jobs/{finding_id}/reject", response_model=OpsMissedJobFindingActionResponse)
+async def reject_missed_job_finding(
+    finding_id: int,
+    reviewed_by: str = Query("operator", description="Who rejected this finding"),
+) -> OpsMissedJobFindingActionResponse:
+    """A21: reject a pending missed-job finding. No catch-up run is triggered."""
+    from datastore.health.findings import reject_finding
+
+    with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
+        try:
+            reject_finding(conn, finding_id, reviewed_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return OpsMissedJobFindingActionResponse(id=finding_id, status="rejected", reviewed_by=reviewed_by)

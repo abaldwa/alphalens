@@ -13,6 +13,10 @@
 <div class="sub-tabs" id="sub-tabs"></div>
 <div class="page">
   <div class="sec">
+    <div class="sec-head"><span class="sec-title">Scheduler Service &amp; Resources</span></div>
+    <div id="scheduler-resources-card"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
     <div class="sec-head"><span class="sec-title">Recurring Jobs</span></div>
     <div id="heartbeats-table"><div class="loading">Loading…</div></div>
   </div>
@@ -23,6 +27,18 @@
   <div class="sec">
     <div class="sec-head"><span class="sec-title">Recent Runs</span></div>
     <div id="runs-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Data Source Freshness</span></div>
+    <div id="freshness-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Data Integrity Findings</span><span class="sec-sub">A20 — pending review</span></div>
+    <div id="integrity-findings-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Missed Jobs</span><span class="sec-sub">A21 — weekly completeness audit, pending review</span></div>
+    <div id="missed-jobs-table"><div class="loading">Loading…</div></div>
   </div>
 </div>
 <script src="../js/api.js"></script>

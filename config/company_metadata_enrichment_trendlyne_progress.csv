@@ -1,0 +1,138 @@
+ticker,company_name,sector,trendlyne_sector_raw,trendlyne_url
+CUPID,Cupid Ltd.,Fast Moving Consumer Goods,FMCG,https://trendlyne.com/equity/3405/CUPID/cupid-ltd/
+MTARTECH,MTAR Technologies Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/436155/MTARTECH/mtar-technologies-ltd/
+HATSUN,Hatsun Agro Products Ltd.,Fast Moving Consumer Goods,FMCG,https://trendlyne.com/equity/524/HATSUN/hatsun-agro-products-ltd/
+SANSERA,Sansera Engineering Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/658068/SANSERA/sansera-engineering-ltd/
+CMPDI,Central Mine Planning & Design Institute Ltd.,Services,Commercial Services & Supplies,https://trendlyne.com/equity/3457158/CMPDI/central-mine-planning-design-institute-ltd/
+BASF,BASF India Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/166/BASF/basf-india-ltd/
+SHADOWFAX,Shadowfax Technologies Ltd.,,Transportation,https://trendlyne.com/equity/3396102/SHADOWFAX/shadowfax-technologies-ltd/
+VINATIORGA,Vinati Organics Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/1485/VINATIORGA/vinati-organics-ltd/
+ALIVUS,Alivus Life Sciences Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/606572/ALIVUS/alivus-life-sciences-ltd/
+SHAILY,Shaily Engineering Plastics Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/2105/SHAILY/shaily-engineering-plastics-ltd/
+KIRLPNU,Kirloskar Pneumatic Company Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/2214/KIRLPNU/kirloskar-pneumatic-company-ltd/
+SOUTHBANK,South Indian Bank Ltd.,Financial Services,Banking and Finance,https://trendlyne.com/equity/1270/SOUTHBANK/south-indian-bank-ltd/
+CORONA,Corona Remedies Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/3351950/CORONA/corona-remedies-ltd/
+DIACABS,Diamond Power Infrastructure Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/331/DIACABS/diamond-power-infrastructure-ltd/
+WAAREERTL,Waaree Renewable Technologies Ltd.,Utilities,Utilities,https://trendlyne.com/equity/3931/WAAREERTL/waaree-renewable-technologies-ltd/
+KTKBANK,Karnataka Bank Ltd.,Financial Services,Banking and Finance,https://trendlyne.com/equity/775/KTKBANK/karnataka-bank-ltd/
+STAR,Strides Pharma Science Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/1291/STAR/strides-pharma-science-ltd/
+WEWORK,WeWork India Management Ltd.,Consumer Services,Diversified Consumer Services,https://trendlyne.com/equity/3279321/WEWORK/wework-india-management-ltd/
+MANYAVAR,Vedant Fashions Ltd.,Consumer Services,Retailing,https://trendlyne.com/equity/816269/MANYAVAR/vedant-fashions-ltd/
+MANORAMA,Manorama Industries Ltd.,Fast Moving Consumer Goods,"Food, Beverages & Tobacco",https://trendlyne.com/equity/110310/MANORAMA/manorama-industries-ltd/
+UTLSOLAR,Fujiyama Power Systems Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/3324429/UTLSOLAR/fujiyama-power-systems-ltd/
+ALKYLAMINE,Alkyl Amines Chemicals Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/58/ALKYLAMINE/alkyl-amines-chemicals-ltd/
+EUREKAFORB,Eureka Forbes Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/850674/EUREKAFORB/eureka-forbes-ltd/
+ESABINDIA,Esab India Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/386/ESABINDIA/esab-india-ltd/
+V2RETAIL,V2 Retail Ltd.,Consumer Services,Retailing,https://trendlyne.com/equity/1461/V2RETAIL/v2-retail-ltd/
+JAYNECOIND,Jayaswal Neco Industries Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/663/JAYNECOIND/jayaswal-neco-industries-ltd/
+SKFINDIA,SKF India Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/1251/SKFINDIA/skf-india-ltd/
+CERA,Cera Sanitaryware Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/254/CERA/cera-sanitaryware-ltd/
+MIDHANI,Mishra Dhatu Nigam Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/80900/MIDHANI/mishra-dhatu-nigam-ltd/
+SANOFI,Sanofi India Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/1182/SANOFI/sanofi-india-ltd/
+SPARC,Sun Pharma Advanced Research Company Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/1271/SPARC/sun-pharma-advanced-research-company-ltd/
+KIRLFER,Kirloskar Ferrous Industries Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/2056/KIRLFER/kirloskar-ferrous-industries-ltd/
+PRECWIRE,Precision Wires India Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/1067/PRECWIRE/precision-wires-india-ltd/
+JSLL,Jeena Sikho Lifecare Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/856675/JSLL/jeena-sikho-lifecare-ltd/
+CAMPUS,Campus Activewear Ltd.,Consumer Services,Retailing,https://trendlyne.com/equity/877863/CAMPUS/campus-activewear-ltd/
+JYOTHYLAB,Jyothy Labs Ltd.,Fast Moving Consumer Goods,FMCG,https://trendlyne.com/equity/706/JYOTHYLAB/jyothy-labs-ltd/
+KENNAMET,Kennametal India Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/2255/KENNAMET/kennametal-india-ltd/
+KOVAI,Kovai Medical Center and Hospital Ltd.,Healthcare,Healthcare,https://trendlyne.com/equity/762/KOVAI/kovai-medical-center-and-hospital-ltd/
+JAIBALAJI,Jai Balaji Industries Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/656/JAIBALAJI/jai-balaji-industries-ltd/
+SKIPPER,Skipper Ltd.,Construction Materials,Cement and Construction,https://trendlyne.com/equity/1728/SKIPPER/skipper-ltd/
+MOIL,MOIL Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/872/MOIL/moil-ltd/
+STYLAMIND,Stylam Industries Ltd.,Forest Materials,Forest Materials,https://trendlyne.com/equity/3226/STYLAMIND/stylam-industries-ltd/
+STYL,Seshaasai Technologies Ltd.,Information Technology,Software & Services,https://trendlyne.com/equity/3265793/STYL/seshaasai-technologies-ltd/
+GULFOILLUB,Gulf Oil Lubricants India Ltd.,Oil Gas & Consumable Fuels,Oil & Gas,https://trendlyne.com/equity/518/GULFOILLUB/gulf-oil-lubricants-india-ltd/
+INDIGOPNTS,Indigo Paints Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/402502/INDIGOPNTS/indigo-paints-ltd/
+EPIGRAL,Epigral Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/634820/EPIGRAL/epigral-ltd/
+DHANUKA,Dhanuka Agritech Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/327/DHANUKA/dhanuka-agritech-ltd/
+JUSTDIAL,Just Dial Ltd.,Information Technology,Software & Services,https://trendlyne.com/equity/704/JUSTDIAL/just-dial-ltd/
+AGI,AGI Greenpac Ltd.,Services,Commercial Services & Supplies,https://trendlyne.com/equity/574/AGI/agi-greenpac-ltd/
+VSTIND,VST Industries Ltd.,Fast Moving Consumer Goods,"Food, Beverages & Tobacco",https://trendlyne.com/equity/1502/VSTIND/vst-industries-ltd/
+GUFICBIO,Gufic BioSciences Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/509/GUFICBIO/gufic-biosciences-ltd/
+WEBELSOLAR,Websol Energy Systems Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/1511/WEBELSOLAR/websol-energy-systems-ltd/
+RALLIS,Rallis India Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/1101/RALLIS/rallis-india-ltd/
+IOLCP,IOL Chemicals and Pharmaceuticals Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/640/IOLCP/iol-chemicals-and-pharmaceuticals-ltd/
+POCL,Pondy Oxides & Chemicals Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/1055/POCL/pondy-oxides-chemicals-ltd/
+ARTEMISMED,Artemis Medicare Services Ltd.,Healthcare,Healthcare,https://trendlyne.com/equity/182406/ARTEMISMED/artemis-medicare-services-ltd/
+VSTTILLERS,VST Tillers Tractors Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/1503/VSTTILLERS/vst-tillers-tractors-ltd/
+KSL,Kalyani Steels Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/773/KSL/kalyani-steels-ltd/
+JTEKTINDIA,JTEKT India Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/1266/JTEKTINDIA/jtekt-india-ltd/
+RPGLIFE,RPG Life Sciences Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/1148/RPGLIFE/rpg-life-sciences-ltd/
+JKIL,J Kumar Infraprojects Ltd.,Construction Materials,Cement and Construction,https://trendlyne.com/equity/684/JKIL/j-kumar-infraprojects-ltd/
+LUXIND,Lux Industries Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/1796/LUXIND/lux-industries-ltd/
+SSWL,Steel Strips Wheels Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/1290/SSWL/steel-strips-wheels-ltd/
+TFCILTD,Tourism Finance Corporation of India Ltd.,Financial Services,Banking and Finance,https://trendlyne.com/equity/1381/TFCILTD/tourism-finance-corporation-of-india-ltd/
+ARSSBL,Anand Rathi Share & Stock Brokers Ltd.,Financial Services,Banking and Finance,https://trendlyne.com/equity/3270737/ARSSBL/anand-rathi-share-stock-brokers-ltd/
+SOTL,Savita Oil Technologies Ltd.,Oil Gas & Consumable Fuels,Oil & Gas,https://trendlyne.com/equity/1268/SOTL/savita-oil-technologies-ltd/
+SAMBHV,Sambhv Steel Tubes Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/3148899/SAMBHV/sambhv-steel-tubes-ltd/
+CARRARO,Carraro India Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/2867597/CARRARO/carraro-india-ltd/
+ZAGGLE,Zaggle Prepaid Ocean Services Ltd.,Information Technology,Software & Services,https://trendlyne.com/equity/1690561/ZAGGLE/zaggle-prepaid-ocean-services-ltd/
+GKENERGY,GK Energy Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/3262882/GKENERGY/gk-energy-ltd/
+STYLEBAAZA,Baazar Style Retail Ltd.,Consumer Services,Retailing,https://trendlyne.com/equity/2586584/STYLEBAAZA/baazar-style-retail-ltd/
+TCPLPACK,TCPL Packaging Ltd.,Services,Commercial Services & Supplies,https://trendlyne.com/equity/2936/TCPLPACK/tcpl-packaging-ltd/
+SANGAMIND,Sangam (India) Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/1178/SANGAMIND/sangam-india-ltd/
+KLBRENG-B,Kilburn Engineering Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/2881/KLBRENG-B/kilburn-engineering-ltd/
+DIAMONDYD,Prataap Snacks Ltd.,Fast Moving Consumer Goods,FMCG,https://trendlyne.com/equity/60394/DIAMONDYD/prataap-snacks-ltd/
+APCOTEXIND,Apcotex Industries Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/89/APCOTEXIND/apcotex-industries-ltd/
+MUFIN,Mufin Green Finance Ltd.,Financial Services,Banking and Finance,https://trendlyne.com/equity/166312/MUFIN/mufin-green-finance-ltd/
+DALMIASUG,Dalmia Bharat Sugar and Industries Ltd.,Fast Moving Consumer Goods,"Food, Beverages & Tobacco",https://trendlyne.com/equity/306/DALMIASUG/dalmia-bharat-sugar-and-industries-ltd/
+VSSL,Vardhman Special Steels Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/1501/VSSL/vardhman-special-steels-ltd/
+VIMTALABS,Vimta Labs Ltd.,Healthcare,Healthcare,https://trendlyne.com/equity/1484/VIMTALABS/vimta-labs-ltd/
+STOVEKRAFT,Stove Kraft Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/409322/STOVEKRAFT/stove-kraft-ltd/
+PRAKASH,Prakash Industries Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/1062/PRAKASH/prakash-industries-ltd/
+GIPCL,Gujarat Industries Power Company Ltd.,Utilities,Utilities,https://trendlyne.com/equity/458/GIPCL/gujarat-industries-power-company-ltd/
+MOLDTKPAC,Mold-Tek Packaging Ltd.,Services,Commercial Services & Supplies,https://trendlyne.com/equity/1577/MOLDTKPAC/mold-tek-packaging-ltd/
+GREENPANEL,Greenpanel Industries Ltd.,Forest Materials,Forest Materials,https://trendlyne.com/equity/170350/GREENPANEL/greenpanel-industries-ltd/
+FILATEX,Filatex India Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/414/FILATEX/filatex-india-ltd/
+SIRCA,Sirca Paints India Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/97137/SIRCA/sirca-paints-india-ltd/
+BFUTILITIE,BF Utilities Ltd.,Utilities,Utilities,https://trendlyne.com/equity/180/BFUTILITIE/bf-utilities-ltd/
+SERVOTECH,Servotech Renewable Power System Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/87778/SERVOTECH/servotech-renewable-power-system-ltd/
+BHARATRAS,Bharat Rasayan Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/186/BHARATRAS/bharat-rasayan-ltd/
+MMFL,M M Forgings Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/868/MMFL/m-m-forgings-ltd/
+GMBREW,G M Breweries Ltd.,Fast Moving Consumer Goods,"Food, Beverages & Tobacco",https://trendlyne.com/equity/470/GMBREW/g-m-breweries-ltd/
+SANSTAR,Sanstar Ltd.,Fast Moving Consumer Goods,"Food, Beverages & Tobacco",https://trendlyne.com/equity/2444060/SANSTAR/sanstar-ltd/
+ADOR,Ador Welding Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/31/ADOR/ador-welding-ltd/
+SPANDANA,Spandana Sphoorty Financial Ltd.,Financial Services,Banking and Finance,https://trendlyne.com/equity/155461/SPANDANA/spandana-sphoorty-financial-ltd/
+DPABHUSHAN,D P Abhushan Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/87820/DPABHUSHAN/d-p-abhushan-ltd/
+GOCOLORS,Go Fashion (India) Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/728986/GOCOLORS/go-fashion-india-ltd/
+MARSONS,Marsons Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/2773/MARSONS/marsons-ltd/
+EIHAHOTELS,EIH Associated Hotels Ltd.,Consumer Services,Hotels Restaurants & Tourism,https://trendlyne.com/equity/362/EIHAHOTELS/eih-associated-hotels-ltd/
+VIKRAN,Vikran Engineering Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/3226637/VIKRAN/vikran-engineering-ltd/
+NGLFINE,NGL Fine - Chem Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/3082/NGLFINE/ngl-fine-chem-ltd/
+SAKAR,Sakar Healthcare Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/87850/SAKAR/sakar-healthcare-ltd/
+JAYBARMARU,Jay Bharat Maruti Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/662/JAYBARMARU/jay-bharat-maruti-ltd/
+KRISHNADEF,Krishna Defence and Allied Industries Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/854171/KRISHNADEF/krishna-defence-and-allied-industries-ltd/
+GTLINFRA,GTL Infrastructure Ltd.,,Telecommunications Equipment,https://trendlyne.com/equity/505/GTLINFRA/gtl-infrastructure-ltd/
+UEL,Ujaas Energy Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/1442/UEL/ujaas-energy-ltd/
+WINDLAS,Windlas Biotech Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/616415/WINDLAS/windlas-biotech-ltd/
+FRONTSP,Frontier Springs Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/2889/FRONTSP/frontier-springs-ltd/
+KRSNAA,Krsnaa Diagnostics Ltd.,Healthcare,Healthcare,https://trendlyne.com/equity/620545/KRSNAA/krsnaa-diagnostics-ltd/
+DSSL,Dynacons Systems & Solutions Ltd.,Information Technology,Software & Services,https://trendlyne.com/equity/348/DSSL/dynacons-systems-solutions-ltd/
+ASALCBR,Associated Alcohols & Breweries Ltd.,Fast Moving Consumer Goods,"Food, Beverages & Tobacco",https://trendlyne.com/equity/2325/ASALCBR/associated-alcohols-breweries-ltd/
+KALAMANDIR,Sai Silks (Kalamandir) Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/1698176/KALAMANDIR/sai-silks-kalamandir-ltd/
+GARUDA,Garuda Construction and Engineering Ltd.,Construction Materials,Cement and Construction,https://trendlyne.com/equity/2696416/GARUDA/garuda-construction-and-engineering-ltd/
+SIGNPOST,Signpost India Ltd.,Media Entertainment & Publication,Media,https://trendlyne.com/equity/2045214/SIGNPOST/signpost-india-ltd/
+NAVKARCORP,Navkar Corporation Ltd.,,Transportation,https://trendlyne.com/equity/1775/NAVKARCORP/navkar-corporation-ltd/
+RACLGEAR,Racl Geartech Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/2830/RACLGEAR/racl-geartech-ltd/
+STEELXIND,Steel Exchange India Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/3943/STEELXIND/steel-exchange-india-ltd/
+ALGOQUANT,Algoquant Fintech Ltd.,Financial Services,Banking and Finance,https://trendlyne.com/equity/2244/ALGOQUANT/algoquant-fintech-ltd/
+ALLTIME,All Time Plastics Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/3209812/ALLTIME/all-time-plastics-ltd/
+AMRUTANJAN,Amrutanjan Health Care Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/74/AMRUTANJAN/amrutanjan-health-care-ltd/
+DOLLAR,Dollar Industries Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/71280/DOLLAR/dollar-industries-ltd/
+HUHTAMAKI,Huhtamaki India Ltd.,Services,Commercial Services & Supplies,https://trendlyne.com/equity/1002/HUHTAMAKI/huhtamaki-india-ltd/
+ARFIN,Arfin India Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/4197/ARFIN/arfin-india-ltd/
+IGARASHI,Igarashi Motors India Ltd.,Automobile and Auto Components,Automobiles & Auto Components,https://trendlyne.com/equity/595/IGARASHI/igarashi-motors-india-ltd/
+PASHUPATI,Pashupati Cotspin Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/87818/PASHUPATI/pashupati-cotspin-ltd/
+DCW,DCW Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/314/DCW/dcw-ltd/
+WEL,Wonder Electricals Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/152656/WEL/wonder-electricals-ltd/
+VIDHIING,Vidhi Specialty Food Ingredients Ltd.,Chemicals,Chemicals & Petrochemicals,https://trendlyne.com/equity/1986/VIDHIING/vidhi-specialty-food-ingredients-ltd/
+BHARATWIRE,Bharat Wire Ropes Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/1979/BHARATWIRE/bharat-wire-ropes-ltd/
+IMPAL,India Motor Parts & Accessories Ltd.,Services,Commercial Services & Supplies,https://trendlyne.com/equity/603/IMPAL/india-motor-parts-accessories-ltd/
+AYMSYNTEX,AYM Syntex Ltd.,Textiles,Textiles Apparels & Accessories,https://trendlyne.com/equity/1774/AYMSYNTEX/aym-syntex-ltd/
+SYNCOMF,Syncom Formulation (India) Ltd.,Healthcare,Pharmaceuticals & Biotechnology,https://trendlyne.com/equity/3028/SYNCOMF/syncom-formulation-india-ltd/
+MACPOWER,Macpower CNC Machines Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/87782/MACPOWER/macpower-cnc-machines-ltd/
+RATNAVEER,Ratnaveer Precision Engineering Ltd.,Metals & Mining,Metals & Mining,https://trendlyne.com/equity/1646888/RATNAVEER/ratnaveer-precision-engineering-ltd/
+ASIANHOTNR,Asian Hotels (North) Ltd.,Consumer Services,Hotels Restaurants & Tourism,https://trendlyne.com/equity/116/ASIANHOTNR/asian-hotels-north-ltd/
+ICEMAKE,ICE Make Refrigeration Ltd.,Capital Goods,General Industrials,https://trendlyne.com/equity/87724/ICEMAKE/ice-make-refrigeration-ltd/
+SOLEX,Solex Energy Ltd.,Consumer Durables,Consumer Durables,https://trendlyne.com/equity/87785/SOLEX/solex-energy-ltd/

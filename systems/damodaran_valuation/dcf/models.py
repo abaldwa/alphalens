@@ -136,7 +136,7 @@ def _ev_to_result(
     ev = pv_phase1 + terminal_value_pv
     equity_value = ev - inputs.total_debt + inputs.cash
     shares = max(inputs.shares_outstanding, 1e-9)
-    intrinsic = equity_value / shares * 100.0  # crore → per share (INR)
+    intrinsic = equity_value / shares  # both in INR crore units — cancels to INR/share
 
     tv_pct = terminal_value_pv / ev if ev > 0 else 0.0
 
@@ -416,7 +416,7 @@ class ExcessReturnModel:
 
         equity_value = book_value + pv_excess + tv_pv
         shares = max(shares_outstanding, 1e-9)
-        intrinsic = equity_value / shares * 100.0  # crore → per share (INR)
+        intrinsic = equity_value / shares  # both in INR crore units — cancels to INR/share
 
         tv_pct = tv_pv / equity_value if equity_value > 0 else 0.0
 

@@ -92,5 +92,10 @@ async def get_governance(
         df["filing_date"] = pd.to_datetime(df["filing_date"])
         df = enforce_pit_shareholding(df, as_of=pit_reference, filing_date_col="filing_date")
 
+    # NaN (from DuckDB NULLs in float columns) fails Optional[float]'s
+    # ge/le constraints — see shareholding.py's get_shareholding for the
+    # same fix and full explanation.
+    if not df.empty:
+        df = df.astype(object).where(df.notna(), None)
     data = [GovernanceRow(**row) for row in df.to_dict(orient="records")]
     return GovernanceResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))

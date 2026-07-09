@@ -26,14 +26,29 @@ from ingestion.scrapers.trendlyne import (
     _current_quarter_end,
     _normalize_company_name,
     _parse_holdings_table,
+    _verify_page_matches_investor,
+    discover_superstar_investors,
 )
 
+# [AS BUILT, 2026-07-05] Real Trendlyne markup (confirmed via a live
+# authenticated fetch that day): table class is "superstar-shareholding",
+# not a bare <table>; header <th> tags are UNCLOSED (the real page nests
+# every header after the first inside it — see _flatten_header_cells);
+# column headers are quarter-dependent ("Jun 2026  Holding %", "Jun 2026
+# Change %"), not the fixed "Holding %"/"Change"/"Company" this module
+# originally (wrongly) assumed. This fixture reproduces that real
+# structure at a minimal scale, not the old wrong assumption.
 _SAMPLE_HTML = """
 <html><body>
-<table>
-<tr><th>Company</th><th>Holding %</th><th>Change</th></tr>
-<tr><td>HDFC Bank Ltd</td><td>2.5</td><td>+0.3</td></tr>
-<tr><td>Tata Motors Limited</td><td>1.8</td><td>-0.2</td></tr>
+<table class="superstar-shareholding">
+<thead><tr>
+<th>Stock</th>
+<th>Holding Value<th>Qty Held</th><th>Jun 2026 Change %</th><th>Jun 2026  Holding %</th>
+</tr></thead>
+<tbody>
+<tr><td>HDFC Bank Ltd</td><td>1,200 Cr</td><td>1,000,000</td><td>+0.3</td><td>2.5</td></tr>
+<tr><td>Tata Motors Limited</td><td>800 Cr</td><td>500,000</td><td>-0.2</td><td>1.8</td></tr>
+</tbody>
 </table>
 </body></html>
 """
@@ -54,16 +69,55 @@ class TestNormalizeCompanyName:
     def test_none_returns_empty_string(self):
         assert _normalize_company_name(None) == ""
 
+    def test_nan_float_returns_empty_string_not_crash(self):
+        """Regression: a real run crashed with TypeError on stock_master's
+        ~691 still-unresolved blank company_name rows (NaN, not None) —
+        `bool(float("nan"))` is True so the old `if not name` guard let it
+        through to re.sub, which requires a str. See FutureDevelopment.md #31."""
+        assert _normalize_company_name(float("nan")) == ""
+
 
 class TestParseHoldingsTable:
-    def test_parses_company_stake_and_change(self):
+    def test_parses_company_quantity_stake_and_change(self):
+        """Real markup (see _SAMPLE_HTML's comment): unclosed <th> tags,
+        quarter-dependent header text, table selected by
+        class="superstar-shareholding" rather than "the first table"."""
         rows = _parse_holdings_table(_SAMPLE_HTML)
         assert len(rows) == 2
-        assert rows[0] == {"company_name": "HDFC Bank Ltd", "stake_pct": 2.5, "qoq_change_pct": 0.3}
-        assert rows[1] == {"company_name": "Tata Motors Limited", "stake_pct": 1.8, "qoq_change_pct": -0.2}
+        assert rows[0] == {
+            "company_name": "HDFC Bank Ltd", "quantity": 1000000.0,
+            "qoq_change_pct": 0.3, "stake_pct": 2.5,
+        }
+        assert rows[1] == {
+            "company_name": "Tata Motors Limited", "quantity": 500000.0,
+            "qoq_change_pct": -0.2, "stake_pct": 1.8,
+        }
 
     def test_no_table_returns_empty_list(self):
         assert _parse_holdings_table("<html><body></body></html>") == []
+
+    def test_wrong_table_class_returns_empty_list(self):
+        """A page with only unrelated tables (e.g. the 34 other tables a
+        real Trendlyne page has) must not be mistaken for the holdings table."""
+        html = '<html><body><table class="some-other-table"><tr><td>x</td></tr></table></body></html>'
+        assert _parse_holdings_table(html) == []
+
+    def test_filing_awaited_and_dash_cells_become_none(self):
+        html = """
+        <html><body>
+        <table class="superstar-shareholding">
+        <thead><tr>
+        <th>Stock</th>
+        <th>Qty Held<th>Jun 2026 Change %</th><th>Jun 2026  Holding %</th>
+        </tr></thead>
+        <tbody>
+        <tr><td>20 Microns</td><td>-</td><td>Filing Awaited</td><td>-</td></tr>
+        </tbody>
+        </table>
+        </body></html>
+        """
+        rows = _parse_holdings_table(html)
+        assert rows == [{"company_name": "20 Microns", "quantity": None, "qoq_change_pct": None, "stake_pct": None}]
 
 
 class TestCurrentQuarterEnd:
@@ -99,7 +153,7 @@ class TestExportSuperstarHoldings:
         def fake_fetch(investor_name):
             if investor_name == "Dolly Khanna":
                 return [{"company_name": "HDFC Bank Ltd", "stake_pct": 2.5, "qoq_change_pct": 0.3}]
-            if investor_name == "Vijay Kedia":
+            if investor_name == "Vijay Kishanlal Kedia":
                 return [{"company_name": "HDFC Bank Ltd", "stake_pct": 1.0, "qoq_change_pct": 0.1}]
             return []
 
@@ -131,7 +185,7 @@ class TestExportSuperstarHoldings:
         def fake_fetch(investor_name):
             if investor_name == "Dolly Khanna":
                 raise ConnectionError("boom")
-            if investor_name == "Vijay Kedia":
+            if investor_name == "Vijay Kishanlal Kedia":
                 return [{"company_name": "HDFC Bank Ltd", "stake_pct": 1.0, "qoq_change_pct": 0.1}]
             return []
 
@@ -190,9 +244,80 @@ class TestBatchExport:
         assert results == {"GOODCO": True, "BADCO": False}
 
 
-def test_superstar_investors_has_exactly_the_5_named_investors():
+class TestVerifyPageMatchesInvestor:
+    """Phase D safety net for _UNVERIFIED_SLUG_INVESTORS' guessed slugs."""
+
+    def test_matches_when_title_mentions_investor(self):
+        html = "<html><head><title>Vijay Kedia Portfolio - Trendlyne</title></head><body></body></html>"
+        assert _verify_page_matches_investor(html, "Vijay Kishanlal Kedia") is True
+
+    def test_matches_ignoring_middle_name(self):
+        html = "<html><head><title>Anil Goel Superstar Portfolio</title></head></html>"
+        assert _verify_page_matches_investor(html, "Anil Kumar Goel and Associates") is True
+
+    def test_rejects_wrong_investor_page(self):
+        html = "<html><head><title>Dolly Khanna Portfolio - Trendlyne</title></head></html>"
+        assert _verify_page_matches_investor(html, "Vijay Kishanlal Kedia") is False
+
+    def test_rejects_empty_page(self):
+        assert _verify_page_matches_investor("<html><body></body></html>", "Vijay Kishanlal Kedia") is False
+
+
+class TestDiscoverSuperstarInvestors:
+    """Phase D: real scrape of the public index page, replacing an earlier
+    guessed-slug approach that was wrong once checked against real data."""
+
+    _INDEX_HTML = """
+    <html><body>
+    <a href="/portfolio/superstar-shareholders/53757/latest/dolly-khanna-portfolio/">Dolly Khanna</a>
+    <a href="/portfolio/superstar-shareholders/53805/latest/vijay-kishanlal-kedia-portfolio/">Vijay Kishanlal Kedia</a>
+    <a href="/portfolio/superstar-shareholders/53743/latest/anil-kumar-goel-and-associates-portfolio/">Anil Kumar Goel and Associates</a>
+    </body></html>
+    """
+
+    def test_parses_investor_name_and_path_from_real_link_pattern(self, monkeypatch):
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=200, text=self._INDEX_HTML)
+
+        result = discover_superstar_investors(session=mock_session)
+
+        assert result == {
+            "Dolly Khanna": "/portfolio/superstar-shareholders/53757/latest/dolly-khanna-portfolio/",
+            "Vijay Kishanlal Kedia": "/portfolio/superstar-shareholders/53805/latest/vijay-kishanlal-kedia-portfolio/",
+            "Anil Kumar Goel and Associates": "/portfolio/superstar-shareholders/53743/latest/anil-kumar-goel-and-associates-portfolio/",
+        }
+
+    def test_raises_connection_error_on_non_200(self):
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=503, text="")
+        with pytest.raises(ConnectionError, match="503"):
+            discover_superstar_investors(session=mock_session)
+
+    def test_never_produces_title_cased_and(self):
+        """Regression: a live diff against discover_superstar_investors()'s
+        real output (2026-07-05) found 10 SUPERSTAR_INVESTORS keys with
+        "And" where the live-discovered casing is "and" (e.g. "Anil Kumar
+        Goel And Associates" vs the real "...and Associates") — a
+        hand-transcription mistake that would have silently produced
+        duplicate/mismatched entries the next time someone merged a fresh
+        discover_superstar_investors() call into this dict. Guards against
+        it recurring for any future manually-added entry."""
+        for name in SUPERSTAR_INVESTORS:
+            assert " And " not in name, f"{name!r} should use lowercase 'and' (see discover_superstar_investors)"
+
+
+def test_superstar_investors_includes_the_5_originally_confirmed_investors():
     """Build prompt deliverable: Dolly Khanna, Vijay Kedia, Ashish Kacholia,
-    Sunil Singhania, Porinju Veliyath."""
-    assert set(SUPERSTAR_INVESTORS) == {
-        "Dolly Khanna", "Vijay Kedia", "Ashish Kacholia", "Sunil Singhania", "Porinju Veliyath",
+    Sunil Singhania, Porinju Veliyath — these 5 must always remain present.
+    Paths are the real ones scraped from Trendlyne's public index page
+    2026-07-05 (Phase D expanded SUPERSTAR_INVESTORS from these 5 to all
+    62 listed investors, using real scraped paths throughout — see
+    discover_superstar_investors())."""
+    confirmed_names = {
+        "Dolly Khanna", "Vijay Kishanlal Kedia", "Ashish Kacholia",
+        "Sunil Singhania", "Porinju V Veliyath",
     }
+    for name in confirmed_names:
+        assert name in SUPERSTAR_INVESTORS
+        assert SUPERSTAR_INVESTORS[name].startswith("/portfolio/superstar-shareholders/")
+    assert len(SUPERSTAR_INVESTORS) > len(confirmed_names)

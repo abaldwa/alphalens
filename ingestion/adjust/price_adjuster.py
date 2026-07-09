@@ -57,6 +57,7 @@ DELIVERY_PCT / TURNOVER:
 """
 
 import logging
+import re
 from typing import List, Tuple
 
 import numpy as np
@@ -118,8 +119,28 @@ def _dividend_price_factor(conn, ticker: str, ex_date: str, dividend: float) -> 
     return factor
 
 
+NON_EQUITY_BONUS_PATTERN = re.compile(
+    r"debenture|preference|ncrps|ncd\b|warrant", re.IGNORECASE
+)
+
+
+def _is_non_equity_bonus(details: str) -> bool:
+    """
+    True if a BONUS action's details describe an instrument other than
+    equity shares (e.g. "Scheme Of Arrangement - Bonus Ncrps 4:1", "Bonus
+    Preference Shares 21:1", "Scheme Of Arrangement - Bonus Debentures 6:1").
+
+    These do not dilute the equity share count and must NOT receive the
+    standard BONUS price/volume adjustment — doing so silently corrupts
+    the equity price history (see TVSMOTOR/DRREDDY/ZEEL/NTPC/BRITANNIA
+    incidents where a debenture/preference-share/NCRPS "bonus" was
+    misapplied as if it were an equity split).
+    """
+    return bool(NON_EQUITY_BONUS_PATTERN.search(details or ""))
+
+
 def _action_factors(
-    conn, ticker: str, action_type: str, ratio: float, ex_date: str
+    conn, ticker: str, action_type: str, ratio: float, ex_date: str, details: str = ""
 ) -> Tuple[float, float]:
     """
     Return (price_factor, vol_factor) for a single corporate action.
@@ -132,6 +153,12 @@ def _action_factors(
         return 1.0 / ratio, float(ratio)
 
     if action_type == "BONUS":
+        if _is_non_equity_bonus(details):
+            logger.info(
+                f"{ticker}: BONUS at {ex_date} is a non-equity instrument "
+                f"({details!r}) — no price/volume adjustment"
+            )
+            return 1.0, 1.0
         if ratio <= 0:
             logger.warning(f"{ticker}: BONUS ratio={ratio} invalid at {ex_date}")
             return 1.0, 1.0
@@ -143,6 +170,18 @@ def _action_factors(
             return 1.0, 1.0
         return _dividend_price_factor(conn, ticker, ex_date, ratio), 1.0
 
+    # RIGHTS falls through to here (no disclosed-ratio formula implemented):
+    # a rights issue's price impact depends on the subscription price and
+    # take-up rate, not just the entitlement ratio, so it can't be derived
+    # the way SPLIT/BONUS can from `ratio` alone. As of 2026-07-05, the 21
+    # tickers with a RIGHTS-caused price discontinuity were corrected as a
+    # one-off data patch: scripts/validate_corporate_actions_fyers.py
+    # computes ratio_pre/ratio_post (our adj_close ÷ Fyers close, before vs
+    # after ex_date); ratio_post/ratio_pre is the empirical correction
+    # factor, applied by rescaling open/high/low/close and adj_factor for
+    # all rows before ex_date. That patch lives only in the DB, not in this
+    # function — a newly ingested RIGHTS action will still get no
+    # adjustment here until the same validate-then-patch process is re-run.
     logger.debug(f"{ticker}: {action_type} — no price/volume adjustment")
     return 1.0, 1.0
 
@@ -165,7 +204,7 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
     Spec References: SPEC-PIPE-002, SPEC-SCHED-010
     """
     actions_df = conn.execute(
-        "SELECT ex_date, action_type, ratio FROM corporate_actions "
+        "SELECT ex_date, action_type, ratio, details FROM corporate_actions "
         "WHERE ticker = ? ORDER BY ex_date",
         [ticker],
     ).df()
@@ -192,7 +231,9 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
     # Per-action factors -------------------------------------------------------
     p_factors, v_factors = [], []
     for row in actions_df.itertuples():
-        pf, vf = _action_factors(conn, ticker, row.action_type, row.ratio, str(row.ex_date))
+        pf, vf = _action_factors(
+            conn, ticker, row.action_type, row.ratio, str(row.ex_date), row.details
+        )
         p_factors.append(pf)
         v_factors.append(vf)
 

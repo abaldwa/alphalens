@@ -36,7 +36,7 @@ async def get_alerts_today() -> AlertsResponse:
     today = now_ist().date()
     alerts = []
 
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         pnd_rows = conn.execute(
             "SELECT ticker, pnd_score, pnd_phase, pnd_block FROM ml_signals "
             "WHERE date = ? AND model_name = 'pnd_detector' AND pnd_score IS NOT NULL AND pnd_score > 40",

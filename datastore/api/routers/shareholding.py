@@ -79,6 +79,14 @@ async def get_shareholding(
         df["filing_date"] = pd.to_datetime(df["filing_date"])
         df = enforce_pit_shareholding(df, as_of=pit_reference, filing_date_col="filing_date")
 
+    # NaN (from DuckDB NULLs in float columns, e.g. missing fii_pct/dii_pct
+    # for a quarter) fails Optional[float]'s ge/le constraints in
+    # ShareholdingRow — NaN is neither <=100 nor >=0, and Pydantic v2
+    # rejects float('nan') outright. Cast to object first so pandas doesn't
+    # coerce None back to NaN in float64 columns (same fix as
+    # fundamentals.py's get_fundamentals/get_fundamentals_history).
+    if not df.empty:
+        df = df.astype(object).where(df.notna(), None)
     data = [ShareholdingRow(**row) for row in df.to_dict(orient="records")]
     return ShareholdingResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))
 
@@ -114,7 +122,7 @@ async def write_shareholding(record: ShareholdingWrite) -> ShareholdingWriteResu
     # writer; a real value still always overwrites.
     update_clause = ", ".join(f"{c} = COALESCE(excluded.{c}, shareholding.{c})" for c in update_cols)
 
-    with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(
             f"""
             INSERT INTO shareholding ({_SELECT_COLS}) VALUES ({placeholders})

@@ -28,10 +28,21 @@ from typing import Optional
 import pandas as pd
 import requests
 
+from config.etf_exclusions import ETF_TICKERS as _FALLBACK_ETF_TICKERS
 from config.settings import MIN_STOCKS_FOR_INFERENCE, RAW_DIR
+from features.technical import BENCHMARK_TICKERS
 from ingestion.quality.validator import ANOMALY_PCT_CHANGE_THRESHOLD, validate_bhavcopy  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+# NIFTYBEES/NIF100BEES/MONIFTY500 are genuine NSE ETFs and would otherwise be
+# excluded by _resolve_etf_exclusions below — but features/technical.py's
+# BENCHMARK_TICKERS relies on their OHLCV being present in ohlcv_adjusted as
+# the only available Nifty-index-level price series (no raw NSE index is
+# ingested). They must never be dropped here even though they're correctly
+# excluded from config/nifty500_universe.csv (they aren't tradeable/investable,
+# they're used purely as an external benchmark series).
+_BENCHMARK_EXEMPT_TICKERS = frozenset(BENCHMARK_TICKERS.values())
 
 NSE_HOMEPAGE_URL = "https://www.nseindia.com"
 # "sec_bhavdata_full" is NSE's current combined OHLCV + delivery report —
@@ -139,6 +150,39 @@ def _save_raw(trade_date: datetime, raw: pd.DataFrame) -> None:
     raw.to_csv(raw_dir / f"{trade_date.date().isoformat()}.csv", index=False)
 
 
+def _resolve_etf_exclusions(date: str) -> set:
+    """
+    Get today's ETF ticker set to exclude from the bhavcopy, freshest first.
+
+    Tries, in order: (1) a live download of NSE's current ETF-segment list,
+    (2) the most recently cached raw ETF-list response, (3) the hardcoded
+    bootstrap set in config/etf_exclusions.py. Never raises — an ETF-list
+    outage must not block bhavcopy ingestion (SPEC-PIPE-006 "mark
+    unavailable, non-critical" pattern), it just risks one day of stale
+    exclusions.
+
+    _BENCHMARK_EXEMPT_TICKERS is always subtracted from whichever source
+    wins — those 3 ETFs are genuinely NSE ETFs (so any live/cached NSE list
+    would legitimately include them) but their OHLCV is a load-bearing
+    input elsewhere (features/technical.py's BENCHMARK_TICKERS), so they
+    must never be dropped from ohlcv_adjusted regardless of source.
+    """
+    from ingestion.scrapers import etf_list
+
+    try:
+        return etf_list.download_etf_list(date) - _BENCHMARK_EXEMPT_TICKERS
+    except ConnectionError as exc:
+        logger.warning(f"ETF list download failed for {date}, falling back: {exc}")
+
+    cached = etf_list.load_last_cached_etf_list()
+    if cached:
+        logger.info(f"Using last cached ETF list for {date} ({len(cached)} tickers)")
+        return cached - _BENCHMARK_EXEMPT_TICKERS
+
+    logger.warning(f"No cached ETF list available for {date}; using bootstrap fallback list")
+    return set(_FALLBACK_ETF_TICKERS) - _BENCHMARK_EXEMPT_TICKERS
+
+
 def download_bhavcopy(date: str) -> pd.DataFrame:
     """
     Download and parse the NSE equity bhavcopy for one trading date.
@@ -153,7 +197,9 @@ def download_bhavcopy(date: str) -> pd.DataFrame:
     pd.DataFrame
         Columns: ticker, open, high, low, close, volume, traded_qty,
         delivery_qty, series. EQ series only — BE/BL/SM/ST and all other
-        series are filtered out.
+        series are filtered out. ETFs are also filtered out — they trade
+        under EQ but are not equities — using a fresh daily download of
+        NSE's ETF-segment list (see _resolve_etf_exclusions).
 
     Spec References
     ----------------
@@ -184,6 +230,24 @@ def download_bhavcopy(date: str) -> pd.DataFrame:
         if raw[col].dtype == object:
             raw[col] = raw[col].str.strip()
 
+    # RCA 2026-07-05: NSE's archive returns HTTP 200 with the last available
+    # bhavcopy file (not a 404) when queried for a date it has no data for
+    # (observed on real holidays missing from config/nse_holidays.py at the
+    # time). This silently duplicated the prior trading day's OHLCV+delivery
+    # data under the holiday's date across ~2,100 tickers. The raw CSV
+    # carries its own trade-date column (DATE1, e.g. "15-Jan-2025") — verify
+    # it matches the requested date instead of trusting the response blindly.
+    if "DATE1" in raw.columns:
+        returned_dates = pd.to_datetime(raw["DATE1"].astype(str).str.strip(), format="%d-%b-%Y", errors="coerce")
+        mismatched = returned_dates.dropna().dt.date.astype(str)
+        mismatched = mismatched[mismatched != date]
+        if not mismatched.empty:
+            raise ValueError(
+                f"Bhavcopy fetch for {date} returned data stamped {mismatched.iloc[0]} "
+                f"(NSE archive likely served a stale/cached file — the requested date "
+                f"may be an undeclared holiday; check config/nse_holidays.py)"
+            )
+
     traded_qty = pd.to_numeric(raw["TTL_TRD_QNTY"], errors="coerce")
     delivery_qty = pd.to_numeric(raw["DELIV_QTY"], errors="coerce")
 
@@ -201,7 +265,9 @@ def download_bhavcopy(date: str) -> pd.DataFrame:
         }
     )
 
-    df = df[df["series"].isin(EQ_SERIES)].reset_index(drop=True)
+    df = df[df["series"].isin(EQ_SERIES)]
+    etf_tickers = _resolve_etf_exclusions(date)
+    df = df[~df["ticker"].isin(etf_tickers)].reset_index(drop=True)
 
     duplicated = df["ticker"].duplicated()
     if duplicated.any():

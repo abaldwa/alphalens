@@ -25,6 +25,13 @@ function loadHeader(ticker) {
       links.appendChild(el("span", { class: "badge " + badgeClass(forensicRow.forensic_flag_label === "green" ? "green" : (["red", "black"].includes(forensicRow.forensic_flag_label) ? "red" : "amber")) }, [
         `Forensic: ${forensicRow.forensic_flag_label || "—"} (${fmtNum(forensicRow.forensic_composite, 0)})`,
       ]));
+      // FutureDevelopment.md #14: forensic now scores weekly (Sunday,
+      // schedule_forensic_scoring) — same "as of {date}" staleness pattern
+      // as hub.js's regime strip/top_buys carry-forward note, since this
+      // badge can legitimately be several days stale between weekly runs.
+      if (forensicRow.date) {
+        links.appendChild(el("span", { style: "font-size:12px;color:var(--tx3)" }, [`as of ${String(forensicRow.date).slice(0, 10)}`]));
+      }
     }
     if (mbRow && mbRow.mb_probability !== null && mbRow.mb_probability !== undefined) {
       links.appendChild(el("span", { class: "badge b-purple" }, [`Multibagger: ${fmtPct(mbRow.mb_probability)}`]));
@@ -48,11 +55,26 @@ function loadPrice(ticker) {
           el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Close"]), el("div", { class: "stat-value" }, [fmtMoney(row.close)])])]),
           el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["High"]), el("div", { class: "stat-value" }, [fmtMoney(row.high)])])]),
           el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Low"]), el("div", { class: "stat-value" }, [fmtMoney(row.low)])])]),
-          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Volume"]), el("div", { class: "stat-value" }, [String(row.volume)])])]),
+          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Volume"]), el("div", { class: "stat-value" }, [Number(row.volume).toLocaleString("en-IN")])])]),
         ])
       );
     })
     .catch((e) => showError("price-card", e));
+}
+
+const MODEL_LEGEND = {
+  signal_5d: "signal_5d — 5-day-forward buy/hold/sell classifier + 3 quantile regressors (q10/q50/q90 forward-return band). The only model the paper-trading bot actually trades.",
+  meta_labeler: "meta_labeler — secondary filter on top of signal_5d: estimates the probability signal_5d's call is worth acting on (meta_label_prob), to suppress low-conviction buy calls.",
+  pnd_detector: "pnd_detector — pump-and-dump risk score (0-100) from volume/price anomaly features; pnd_block=true removes a ticker from all buy lists regardless of signal_5d's score.",
+};
+
+function renderModelLegend(rows) {
+  const names = [...new Set(rows.map((r) => r.model_name))];
+  const known = names.filter((n) => MODEL_LEGEND[n]);
+  if (!known.length) return null;
+  const box = el("div", { class: "card", style: "margin-bottom:10px;font-size:12px;color:var(--tx2)" }, []);
+  known.forEach((n) => box.appendChild(el("div", { style: "margin-bottom:4px" }, [MODEL_LEGEND[n]])));
+  return box;
 }
 
 function loadSignals() {
@@ -91,6 +113,8 @@ function loadSignals() {
         ]))),
       ]);
       c.innerHTML = "";
+      const legend = renderModelLegend(rows);
+      if (legend) c.appendChild(legend);
       const signalDate = rows[0].date ? rows[0].date.slice(0, 10) : null;
       if (signalDate && signalDate !== date) {
         c.appendChild(el("div", { class: "empty", style: "margin-bottom:8px" }, [
@@ -165,6 +189,161 @@ function loadRegimeHistory() {
     .catch(() => drawRegimeChart([]));
 }
 
-document.getElementById("load-btn").addEventListener("click", loadSignals);
+// ===== #21 — sortable full-universe table (latest date), double-click to drill in =====
+const universeSortState = { key: "buy_prob", dir: "desc" };
+let universeRows = [];
+
+function forensicBadgeClass(flag) {
+  if (flag === "green") return "b-green";
+  if (flag === "red" || flag === "black") return "b-red";
+  if (flag === "amber") return "b-amber";
+  return "b-gray";
+}
+
+function renderUniverseTable() {
+  const c = document.getElementById("universe-table");
+  if (!universeRows.length) {
+    c.innerHTML = `<div class="empty">No scored universe found for the latest date</div>`;
+    return;
+  }
+  const sorted = sortRows(universeRows, universeSortState.key, universeSortState.dir);
+  const onSort = (key, dir) => {
+    universeSortState.key = key;
+    universeSortState.dir = dir;
+    renderUniverseTable();
+  };
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      sortableHeader("Ticker", "ticker", universeSortState, onSort),
+      sortableHeader("Buy Prob", "buy_prob", universeSortState, onSort),
+      sortableHeader("Q50 Return", "q50_return", universeSortState, onSort),
+      sortableHeader("Meta Label Prob", "meta_label_prob", universeSortState, onSort),
+      sortableHeader("P&D Score", "pnd_score", universeSortState, onSort),
+      el("th", {}, ["Forensic"]),
+      sortableHeader("MB Probability", "mb_probability", universeSortState, onSort),
+    ])]),
+    el("tbody", {}, sorted.map((r) => {
+      const row = el("tr", { style: "cursor:pointer" }, [
+        el("td", { style: "font-weight:600" }, [r.ticker]),
+        el("td", { class: "mono" }, [fmtPct(r.buy_prob)]),
+        el("td", { class: "mono " + pnlClass(r.q50_return) }, [fmtPct(r.q50_return)]),
+        el("td", { class: "mono" }, [fmtPct(r.meta_label_prob)]),
+        el("td", { class: "mono" }, [fmtNum(r.pnd_score, 0)]),
+        el("td", {}, [el("span", { class: "badge " + forensicBadgeClass(r.forensic_flag) }, [r.forensic_flag || "—"])]),
+        el("td", { class: "mono" }, [fmtPct(r.mb_probability)]),
+      ]);
+      row.addEventListener("dblclick", () => {
+        document.getElementById("ticker-input").value = r.ticker;
+        document.getElementById("date-input").value = (r.date || "").slice(0, 10) || todayStr();
+        loadSignals();
+        window.scrollTo({ top: document.getElementById("signal-header").offsetTop - 60, behavior: "smooth" });
+      });
+      return row;
+    })),
+  ]);
+  c.innerHTML = "";
+  c.appendChild(el("div", { class: "card" }, [table]));
+}
+
+function loadUniverse() {
+  showLoading("universe-table");
+  apiGet(`/api/v1/signals/ml/universe/${todayStr()}`, { carry_forward: true })
+    .then((rows) => {
+      universeRows = rows;
+      renderUniverseTable();
+    })
+    .catch((e) => showError("universe-table", e));
+}
+
+// ===== #17 — 5-day recommendation history + Sell rationale =====
+const EXIT_TYPE_TEXT = {
+  thesis_broken: "Thesis broken — stop-loss hit; the original entry thesis no longer holds.",
+  momentum_exhaustion: "Momentum exhaustion — the move has stalled well before target or stop.",
+  risk_management: "Risk management — position sized/trimmed to control portfolio risk.",
+  target_achieved: "Target achieved — the position hit its profit target.",
+  opportunity_cost: "Opportunity cost — max hold period reached without target or stop; capital reallocated.",
+  pnd_exit: "Pump-and-dump exit — a P&D risk pattern was detected after entry; exiting defensively.",
+};
+
+function renderSellRationale(container, latestRow) {
+  if (!latestRow || latestRow.exit_urgency === null || latestRow.exit_urgency === undefined) {
+    container.appendChild(el("div", { class: "empty" }, ["No exit signal on the latest call — nothing to act on"]));
+    return;
+  }
+  const urgent = latestRow.exit_urgency >= 50;
+  const exitType = latestRow.exit_type;
+  const box = el("div", { class: "card", style: `border-left:4px solid ${urgent ? "var(--red)" : "var(--amber)"}` }, [
+    el("div", { style: "font-weight:700;margin-bottom:6px" }, [
+      urgent ? "Sell Recommendation" : "Watch — Not Yet a Sell",
+      el("span", { class: "badge " + (urgent ? "b-red" : "b-amber"), style: "margin-left:8px" }, [`urgency ${fmtNum(latestRow.exit_urgency, 0)}`]),
+    ]),
+    el("div", { style: "font-size:13px;color:var(--tx2)" }, [
+      exitType ? (EXIT_TYPE_TEXT[exitType] || exitType) : "No exit_type recorded on the latest call.",
+    ]),
+  ]);
+  container.appendChild(box);
+}
+
+function loadHistory() {
+  const ticker = document.getElementById("ticker-input").value.trim().toUpperCase();
+  if (!ticker) return;
+  showLoading("history-table");
+  Promise.all([
+    apiGet(`/api/v1/signals/ml/history/${ticker}`, { model_name: "signal_5d", n: 10 }),
+    apiGet(`/api/v1/ohlcv/${ticker}/latest`).catch(() => null),
+  ]).then(([rows, latestOhlcv]) => {
+    const c = document.getElementById("history-table");
+    if (!rows.length) {
+      c.innerHTML = `<div class="empty">No signal_5d history for ${ticker}</div>`;
+      return;
+    }
+    const cmp = latestOhlcv ? latestOhlcv.close : null;
+    c.innerHTML = "";
+
+    apiGet(`/api/v1/ohlcv/${ticker}`, {
+      from_date: rows[rows.length - 1].date.slice(0, 10),
+      to_date: rows[0].date.slice(0, 10),
+    })
+      .catch(() => ({ data: [] }))
+      .then((ohlcvResp) => {
+        const closeByDate = {};
+        (ohlcvResp.data || []).forEach((r) => {
+          closeByDate[String(r.date).slice(0, 10)] = r.close;
+        });
+
+        const table = el("table", {}, [
+          el("thead", {}, [el("tr", {}, [
+            el("th", {}, ["Recommended Date"]), el("th", {}, ["Recommended Price"]),
+            el("th", {}, ["Expected Return (q50)"]), el("th", {}, ["CMP"]), el("th", {}, ["Current Return"]),
+            el("th", {}, ["Direction"]),
+          ])]),
+          el("tbody", {}, rows.map((r) => {
+            const recDate = r.date.slice(0, 10);
+            const recPrice = closeByDate[recDate] ?? null;
+            const currentReturn = (recPrice && cmp) ? (cmp / recPrice - 1) : null;
+            return el("tr", {}, [
+              el("td", { class: "mono" }, [recDate]),
+              el("td", { class: "mono" }, [recPrice != null ? fmtMoney(recPrice) : "—"]),
+              el("td", { class: "mono " + pnlClass(r.q50_return) }, [fmtPct(r.q50_return)]),
+              el("td", { class: "mono" }, [cmp != null ? fmtMoney(cmp) : "—"]),
+              el("td", { class: "mono " + pnlClass(currentReturn) }, [currentReturn != null ? fmtPct(currentReturn) : "—"]),
+              el("td", {}, [el("span", { class: "badge " + (r.signal_direction === "sell" ? "b-red" : r.signal_direction === "buy" ? "b-green" : "b-blue") }, [r.signal_direction || "—"])]),
+            ]);
+          })),
+        ]);
+        c.appendChild(el("div", { class: "card" }, [table]));
+        renderSellRationale(c, rows[0]);
+      });
+  }).catch((e) => showError("history-table", e));
+}
+
+document.getElementById("load-btn").addEventListener("click", () => {
+  loadSignals();
+  loadHistory();
+});
 loadRegimeHistory();
-if (params.get("ticker")) loadSignals();
+loadUniverse();
+if (params.get("ticker")) {
+  loadSignals();
+  loadHistory();
+}

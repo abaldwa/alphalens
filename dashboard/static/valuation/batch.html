@@ -13,16 +13,25 @@
 <div class="sub-tabs" id="sub-tabs"></div>
 <div class="page">
   <div class="sec">
-    <div class="sec-head"><span class="sec-title">Batch Valuation</span></div>
-    <div id="content"></div>
+    <div class="sec-head"><span class="sec-title">Batch Valuation</span><span class="sec-sub">Damodaran-style DCF intrinsic value vs current market price, ranked by margin of safety</span></div>
+    <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+      <label for="scope-select" style="font-size:13px;color:var(--tx2)">Scope:</label>
+      <select id="scope-select">
+        <option value="1">Nifty 50 (~50 stocks, fast)</option>
+        <option value="2" selected>Nifty 100 (~100 stocks, fast)</option>
+        <option value="4">Nifty 500 (~500 stocks, a few minutes)</option>
+        <option value="all">Full Universe (~2000+ stocks, can take 10-15 minutes)</option>
+      </select>
+      <button id="run-btn">Run Batch Valuation</button>
+      <span id="run-status" style="font-size:12px;color:var(--tx2)"></span>
+    </div>
+    <div id="content"><div class="empty">Pick a scope and click "Run Batch Valuation" — a full DCF run for many stocks takes real time, so it is not run automatically on page load.</div></div>
   </div>
 </div>
 <script src="../js/api.js"></script>
 <script src="../js/shell.js"></script>
 <script src="../js/empty_state.js"></script>
-<script>
-  renderAppShell("valuation", "batch");
-  renderEmptyState("content", { icon: "📦", detail: BACKEND_STATUS.valuation });
-</script>
+<script src="../js/crosslink.js"></script>
+<script src="js/batch.js"></script>
 </body>
 </html>

@@ -37,14 +37,13 @@ class LifecycleStage(str, Enum):
     FINANCIAL_SERVICES = "financial_services"
 
 
+# Must match config/nifty500_universe.csv's real `sector` taxonomy exactly
+# (NSE's official classification only has "Financial Services" — there is
+# no separate "Banking"/"NBFC"/"Insurance" sector string in the data). The
+# previous set never matched any real sector, so no stock ever took the
+# FINANCIAL_SERVICES lifecycle path. See BuildLog.md 2026-07-04.
 _FINANCIAL_SERVICES_SECTORS: Set[str] = {
-    "Banking",
-    "NBFC",
-    "Insurance",
-    "AMC",
-    "Asset Management",
-    "Brokerage",
-    "Microfinance",
+    "Financial Services",
 }
 
 

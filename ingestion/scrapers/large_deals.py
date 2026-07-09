@@ -23,11 +23,41 @@ NSE endpoints used (JSON API, requires session cookies):
         https://www.nseindia.com/api/historical/bulk-deals?from=DD-MM-YYYY&to=DD-MM-YYYY
         https://www.nseindia.com/api/historical/block-deals?from=DD-MM-YYYY&to=DD-MM-YYYY
 
+[AS BUILT, 2026-07-05] REAL INCIDENT: all three NSE JSON endpoints above
+started returning anti-bot challenge pages (503/404 branded "Nse India"
+block pages, not genuine "no data" responses) — confirmed live, while
+bhavcopy's plain-HTML NSE endpoint kept working fine with the same
+cookie-priming session, so this is specific to these endpoints, not an
+NSE-wide outage or a session-setup bug. Verified fix: NSE's static
+archive CSVs are NOT behind this challenge and require no cookie priming
+at all:
+    Bulk deals:  https://archives.nseindia.com/content/equities/bulk.csv
+    Block deals: https://archives.nseindia.com/content/equities/block.csv
+These only ever carry the most recent trading day's deals (single-day
+snapshot, refreshed daily) — no historical date range — so
+_fetch_nse_archive_csv only returns data when the CSV's own Date column
+matches target_date; otherwise it's treated as unavailable rather than
+silently mislabeling stale data. Tried as a third tier after the
+historical and snapshot JSON endpoints both fail, so this backfills
+automatically again if NSE ever restores the JSON endpoints.
+
 BSE endpoint used (open JSON API, no session cookies needed):
     Bulk deals:
         https://api.bseindia.com/BseIndiaAPI/api/BulkDeals/w?strdate=DDMMYYYY&enddate=DDMMYYYY
     Block deals:
         https://api.bseindia.com/BseIndiaAPI/api/BlockDeals/w?strdate=DDMMYYYY&enddate=DDMMYYYY
+
+[AS BUILT, 2026-07-05] REAL INCIDENT: this BSE endpoint now redirects
+every request (302 to https://api.bseindia.com/error_Bse.html) regardless
+of headers/cookies/params — confirmed NOT an anti-bot block: other
+api.bseindia.com JSON endpoints (e.g. LitsOfScripCSVDownload/w) succeed
+with an identical session/header setup at the same time. Two actively
+maintained third-party BSE API wrapper libraries (BennyThadikaran/
+BseIndiaApi, RuchiTanmay/bseindia) have also both dropped bulk/block-deals
+support entirely — real evidence BSE retired this endpoint rather than
+us being blocked. No working BSE alternative found yet; BSE bulk/block
+deals are unavailable until BSE republishes this data somewhere. NSE
+alone (via the archive CSV fallback) still provides real daily coverage.
 
 NSE response structure (snapshot endpoint, as of 2026):
     {
@@ -90,6 +120,8 @@ NSE_BULK_DEALS_SNAPSHOT = "https://www.nseindia.com/api/snapshot-capital-market-
 NSE_BLOCK_DEALS_SNAPSHOT = "https://www.nseindia.com/api/snapshot-capital-market-block-deals"
 NSE_BULK_DEALS_HISTORY = "https://www.nseindia.com/api/historical/bulk-deals"
 NSE_BLOCK_DEALS_HISTORY = "https://www.nseindia.com/api/historical/block-deals"
+NSE_BULK_DEALS_ARCHIVE = "https://archives.nseindia.com/content/equities/bulk.csv"
+NSE_BLOCK_DEALS_ARCHIVE = "https://archives.nseindia.com/content/equities/block.csv"
 
 BSE_BULK_DEALS_URL = "https://api.bseindia.com/BseIndiaAPI/api/BulkDeals/w"
 BSE_BLOCK_DEALS_URL = "https://api.bseindia.com/BseIndiaAPI/api/BlockDeals/w"
@@ -261,10 +293,63 @@ def _fetch_nse_deals(target_date: str, deal_type: str) -> List[dict]:
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_SECONDS)
 
+    # --- Fall back to the static archive CSV (see module docstring's
+    # 2026-07-05 incident note) — no cookie priming, no anti-bot challenge,
+    # but only ever carries the most recent trading day's data.
+    logger.warning(
+        f"NSE {deal_type} snapshot endpoint failed for {target_date} "
+        f"({last_exc}) — trying archive CSV"
+    )
+    try:
+        return _fetch_nse_archive_csv(target_date, deal_type)
+    except Exception as exc:
+        last_exc = exc
+
     raise ConnectionError(
         f"NSE {deal_type} deals unavailable for {target_date} "
-        f"after {MAX_RETRIES * 2} total attempts: {last_exc}"
+        f"after historical + snapshot + archive CSV attempts: {last_exc}"
     )
+
+
+def _fetch_nse_archive_csv(target_date: str, deal_type: str) -> List[dict]:
+    """
+    Fetch bulk/block deals from NSE's static archive CSV.
+
+    Only ever carries the most recent trading day's deals (single-day
+    snapshot, refreshed daily by NSE) — no date range support. Returns rows
+    only when the CSV's own Date column matches target_date; otherwise
+    raises rather than silently mislabeling stale data as target_date's.
+    """
+    import io
+
+    url = NSE_BULK_DEALS_ARCHIVE if deal_type == DEAL_TYPE_BULK else NSE_BLOCK_DEALS_ARCHIVE
+    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+    resp.raise_for_status()
+
+    df = pd.read_csv(io.StringIO(resp.text))
+    if df.empty or "Date" not in df.columns:
+        return []
+
+    target_nse_date = datetime.strptime(target_date, "%Y-%m-%d").strftime("%d-%b-%Y").upper()
+    df = df[df["Date"].astype(str).str.strip().str.upper() == target_nse_date]
+    if df.empty:
+        raise ConnectionError(
+            f"NSE {deal_type} archive CSV only has data for a different date "
+            f"than {target_date} (expected {target_nse_date})"
+        )
+
+    return [
+        {
+            "no": row.get("Symbol"),
+            "dt": row.get("Date"),
+            "pd": row.get("Client Name"),
+            "bs": row.get("Buy/Sell"),
+            "qt": row.get("Quantity Traded"),
+            "vl": row.get("Trade Price / Wght. Avg. Price"),
+            "remarks": row.get("Remarks"),
+        }
+        for row in df.to_dict(orient="records")
+    ]
 
 
 def _parse_nse_records(records: List[dict], target_date: str, deal_type: str) -> pd.DataFrame:

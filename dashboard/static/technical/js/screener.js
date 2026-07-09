@@ -32,7 +32,7 @@ function renderResultsTable(data) {
   ]);
   c.innerHTML = "";
   c.appendChild(el("div", { style: "margin-bottom:8px; color:var(--muted, #888)" }, [
-    `${data.count} match(es) on ${data.date || "latest date"}`,
+    `${fmtInt(data.count)} match(es) on ${data.date || "latest date"}`,
   ]));
   c.appendChild(el("div", { class: "card" }, [table]));
 }

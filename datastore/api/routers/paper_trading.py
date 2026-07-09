@@ -33,6 +33,7 @@ import csv
 import json
 import logging
 from datetime import date as date_type
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -47,16 +48,28 @@ from datastore.api.schemas import (
     BackdatedBuyResponse,
     EquityCurvePoint,
     EquityCurveResponse,
+    ExitUrgencyResponse,
+    ExitUrgencyRow,
     GateStatusResponse,
+    HorizonWatchlistResponse,
     PaperTradingPosition,
     PaperTradingStateResponse,
     PaperTradingTrade,
     PaperTradingTradesResponse,
     PendingActionRow,
     PendingActionsResponse,
+    PositionSellResponse,
 )
 from datastore.api.utils.file_lock import locked_file
 from scripts.paper_trading_tracker import PaperTradingTracker
+from systems.ml_signal_engine.models.exit.rule_based_exit_policy import (
+    MAX_HOLD_DAYS,
+    TARGET_PCT,
+    exit_criterion_text,
+)
+
+BENCHMARK_TICKER = "NIFTYBEES"  # features/technical.py BENCHMARK_TICKERS['nifty50']
+SIGNAL_MODEL_NAME = "signal_5d"  # matches scripts/run_daily_paper_trading.py's SIGNAL_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +81,73 @@ PENDING_DIR = Path("paper_trading/pending")
 GATE_THRESHOLD = 90
 
 
+async def _enrich_positions(raw_positions: list, position_meta: dict) -> list:
+    """Attach display-only fields to each raw position dict (mutates and
+    returns the list): company_name, live current_price/unrealised_pnl_pct
+    (previously always left null — nothing populated them), buy_prob_entry/
+    buy_prob_current (signal_5d, recalculated daily by the pipeline's normal
+    run — this just reads today's already-written row), target_price/
+    target_date/exit_criterion (from position_meta, captured at buy time),
+    and stock_gain_pct/nifty_gain_pct (NIFTYBEES over the same entry->now
+    window, SPEC-PT-003 benchmark comparison)."""
+    real = [p for p in raw_positions if p["ticker"] != "_HEARTBEAT_"]
+    if not real:
+        return raw_positions
+
+    from datastore.api.routers.ohlcv import get_ohlcv, get_ohlcv_latest
+    from datastore.api.routers.signals import get_ml_signals
+
+    universe = load_universe_raw()
+    name_map = dict(zip(universe["ticker"], universe["company_name"].fillna("")))
+    today = now_ist().date()
+
+    earliest_entry = min(date_type.fromisoformat(p["entry_date"]) for p in real)
+    nifty_by_date = {}
+    try:
+        nifty_resp = await get_ohlcv(BENCHMARK_TICKER, from_date=earliest_entry, to_date=today)
+        for row in nifty_resp.data:
+            nifty_by_date[str(row.date.date())] = row.close
+    except HTTPException:
+        pass
+    nifty_dates_sorted = sorted(nifty_by_date)
+
+    def _nifty_close_on_or_after(d: str):
+        for nd in nifty_dates_sorted:
+            if nd >= d:
+                return nifty_by_date[nd]
+        return None
+
+    nifty_latest = nifty_by_date[nifty_dates_sorted[-1]] if nifty_dates_sorted else None
+
+    for p in real:
+        p["company_name"] = name_map.get(p["ticker"]) or None
+        meta = position_meta.get(p["ticker"], {})
+        p["buy_prob_entry"] = meta.get("buy_prob_entry")
+        p["target_price"] = meta.get("target_price")
+        p["target_date"] = meta.get("target_date")
+        p["exit_criterion"] = meta.get("exit_criterion") or exit_criterion_text(p["entry_price"])
+
+        latest = await get_ohlcv_latest(p["ticker"])
+        current_price = latest.close if latest is not None else None
+        p["current_price"] = current_price
+        if current_price is not None and p["entry_price"]:
+            p["unrealised_pnl_pct"] = current_price / p["entry_price"] - 1
+            p["stock_gain_pct"] = p["unrealised_pnl_pct"]
+
+        nifty_entry = _nifty_close_on_or_after(p["entry_date"])
+        if nifty_entry and nifty_latest:
+            p["nifty_gain_pct"] = nifty_latest / nifty_entry - 1
+
+        try:
+            signal_rows = await get_ml_signals(p["ticker"], today, carry_forward=True)
+            match_row = next((r for r in signal_rows if r.model_name == SIGNAL_MODEL_NAME), None)
+            p["buy_prob_current"] = match_row.buy_prob if match_row else None
+        except HTTPException:
+            p["buy_prob_current"] = None
+
+    return raw_positions
+
+
 @router.get("/state", response_model=PaperTradingStateResponse)
 async def get_paper_trading_state() -> PaperTradingStateResponse:
     """Current portfolio snapshot — available=False if the bot has never run."""
@@ -75,7 +155,8 @@ async def get_paper_trading_state() -> PaperTradingStateResponse:
         return PaperTradingStateResponse()
 
     state = json.loads(PORTFOLIO_STATE_PATH.read_text())
-    positions = [PaperTradingPosition(**p) for p in state.get("positions", [])]
+    raw_positions = await _enrich_positions(state.get("positions", []), state.get("position_meta", {}))
+    positions = [PaperTradingPosition(**p) for p in raw_positions]
     positions_value = sum(p.quantity * p.entry_price for p in positions)
     return PaperTradingStateResponse(
         as_of_date=state.get("as_of_date"),
@@ -84,6 +165,91 @@ async def get_paper_trading_state() -> PaperTradingStateResponse:
         initial_capital=state.get("initial_capital", 0.0),
         positions=positions,
         available=True,
+    )
+
+
+@router.get("/exit_urgency", response_model=ExitUrgencyResponse)
+async def get_exit_urgency() -> ExitUrgencyResponse:
+    """
+    #23 — all open positions ranked by exit_urgency, exit_type shown as the
+    stated reason. Reads today's (or carried-forward) signal_5d row per
+    held ticker — same source Signal Deep Dive's per-ticker table already
+    exposes as columns, just aggregated across the whole book and sorted
+    highest-urgency-first so nothing requires a separate alert banner to
+    notice.
+    """
+    if not PORTFOLIO_STATE_PATH.exists():
+        return ExitUrgencyResponse()
+
+    from datastore.api.routers.signals import get_ml_signals
+
+    state = json.loads(PORTFOLIO_STATE_PATH.read_text())
+    raw_positions = await _enrich_positions(state.get("positions", []), state.get("position_meta", {}))
+    real = [p for p in raw_positions if p["ticker"] != "_HEARTBEAT_"]
+    today = now_ist().date()
+
+    rows = []
+    for p in real:
+        exit_urgency = None
+        exit_type = None
+        try:
+            signal_rows = await get_ml_signals(p["ticker"], today, carry_forward=True)
+            match = next((r for r in signal_rows if r.model_name == SIGNAL_MODEL_NAME), None)
+            if match is not None:
+                exit_urgency = match.exit_urgency
+                exit_type = match.exit_type
+        except HTTPException:
+            pass
+        rows.append(
+            ExitUrgencyRow(
+                ticker=p["ticker"],
+                company_name=p.get("company_name"),
+                entry_date=p["entry_date"],
+                entry_price=p["entry_price"],
+                current_price=p.get("current_price"),
+                unrealised_pnl_pct=p.get("unrealised_pnl_pct"),
+                exit_urgency=exit_urgency,
+                exit_type=exit_type,
+            )
+        )
+
+    rows.sort(key=lambda r: r.exit_urgency if r.exit_urgency is not None else -1.0, reverse=True)
+    return ExitUrgencyResponse(rows=rows, as_of_date=state.get("as_of_date"))
+
+
+@router.post("/positions/{ticker}/sell", response_model=PositionSellResponse)
+async def sell_position(ticker: str) -> PositionSellResponse:
+    """Manually close an open position at the current live price — the
+    Positions table's Sell button. Same mechanics/lock/logging as the
+    accept-pending 'sell' path, just user-triggered rather than proposed
+    by the bot."""
+    from datastore.api.routers.ohlcv import get_ohlcv_latest
+
+    latest = await get_ohlcv_latest(ticker)
+    if latest is None:
+        raise HTTPException(status_code=422, detail=f"No current price available for {ticker}")
+    price = latest.close
+    today = now_ist().date()
+
+    with locked_file(PORTFOLIO_STATE_PATH):
+        portfolio = load_portfolio_state(PORTFOLIO_STATE_PATH)
+        if portfolio is None:
+            raise HTTPException(status_code=409, detail="No portfolio state exists yet — the bot hasn't run")
+        if ticker not in portfolio.positions:
+            raise HTTPException(status_code=404, detail=f"{ticker} is not an open position")
+
+        trade = portfolio.sell(ticker, price, today, reason="manual_sell")
+        tracker = PaperTradingTracker(logs_dir=str(EXECUTIONS_DIR))
+        tracker.log_trade(
+            date=str(trade.entry_date), ticker=ticker, signal_type="BUY",
+            entry_price=trade.entry_price, quantity=trade.quantity, entry_time="manual",
+            exit_price=trade.exit_price, exit_time="manual", exit_date=str(trade.exit_date),
+            exit_type=trade.exit_reason, pnl=trade.pnl_inr, pnl_pct=trade.pnl_pct,
+        )
+        save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(today))
+
+    return PositionSellResponse(
+        ticker=ticker, executed=True, exit_price=trade.exit_price, pnl=trade.pnl_inr, pnl_pct=trade.pnl_pct,
     )
 
 
@@ -148,10 +314,22 @@ async def get_paper_trading_gate_status() -> GateStatusResponse:
 
 
 def _latest_pending_path() -> Optional[Path]:
-    """Most recent paper_trading/pending/{date}.json, or None if none exist."""
+    """Most recent paper_trading/pending/{date}.json, or None if none exist.
+    Excludes {date}_watchlist.json (scripts/run_daily_paper_trading.py's
+    read-only horizon watchlist) — "*_watchlist.json" would otherwise sort
+    after "{date}.json" for the same date and get mistaken for the
+    tradeable pending-actions file."""
     if not PENDING_DIR.exists():
         return None
-    files = sorted(PENDING_DIR.glob("*.json"))
+    files = sorted(p for p in PENDING_DIR.glob("*.json") if not p.stem.endswith("_watchlist"))
+    return files[-1] if files else None
+
+
+def _latest_watchlist_path() -> Optional[Path]:
+    """Most recent paper_trading/pending/{date}_watchlist.json, or None."""
+    if not PENDING_DIR.exists():
+        return None
+    files = sorted(PENDING_DIR.glob("*_watchlist.json"))
     return files[-1] if files else None
 
 
@@ -162,6 +340,19 @@ def _load_pending(path: Path) -> list:
 def _save_pending(path: Path, rows: list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows, indent=2))
+
+
+@router.get("/watchlist", response_model=HorizonWatchlistResponse)
+async def get_horizon_watchlist() -> HorizonWatchlistResponse:
+    """Today's top buy-signal tickers for signal_21d/signal_63d — models the
+    bot never trades (its own exit policy caps every hold at 21 days) but
+    scores daily regardless. Read-only observability, not part of the
+    accept/reject pending-actions flow."""
+    path = _latest_watchlist_path()
+    if path is None:
+        return HorizonWatchlistResponse()
+    payload = json.loads(path.read_text())
+    return HorizonWatchlistResponse(date=payload.get("date"), models=payload.get("models", {}))
 
 
 @router.get("/pending", response_model=PendingActionsResponse)
@@ -225,6 +416,7 @@ async def accept_pending_action(action_id: str) -> ActionDecisionResponse:
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action_type: {match['action_type']}")
 
+        position_meta = {}
         if executed:
             tracker = PaperTradingTracker(logs_dir=str(EXECUTIONS_DIR))
             if match["action_type"] == "buy":
@@ -232,7 +424,20 @@ async def accept_pending_action(action_id: str) -> ActionDecisionResponse:
                 tracker.log_trade(
                     date=str(today), ticker=match["ticker"], signal_type="BUY",
                     entry_price=pos.entry_price, quantity=pos.quantity, entry_time="manual",
+                    model_name=match.get("model_name"), buy_prob=match.get("buy_prob"),
+                    meta_label_prob=match.get("meta_label_prob"),
+                    q10_return=match.get("q10_return"), q50_return=match.get("q50_return"),
+                    q90_return=match.get("q90_return"),
                 )
+                # Live re-quoted entry_price may differ from the pending row's
+                # propose-time price, so recompute target/exit_criterion off
+                # the real entry_price rather than trusting the stale ones.
+                position_meta[match["ticker"]] = {
+                    "buy_prob_entry": match.get("buy_prob"),
+                    "target_price": round(pos.entry_price * (1 + TARGET_PCT), 2),
+                    "target_date": str(today + timedelta(days=MAX_HOLD_DAYS)),
+                    "exit_criterion": exit_criterion_text(pos.entry_price),
+                }
             elif executed and match["ticker"] not in portfolio.positions:
                 # sell, or a reduce that exactly zeroed the position — log the
                 # closed trade, same rule apply_daily_exits() uses.
@@ -243,7 +448,7 @@ async def accept_pending_action(action_id: str) -> ActionDecisionResponse:
                     exit_price=closed.exit_price, exit_time="manual", exit_date=str(closed.exit_date),
                     exit_type=closed.exit_reason, pnl=closed.pnl_inr, pnl_pct=closed.pnl_pct,
                 )
-            save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(today))
+            save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(today), position_meta=position_meta)
 
         match["status"] = "accepted" if executed else "rejected"
         _save_pending(path, rows)
@@ -322,7 +527,24 @@ async def backdated_buy(request: BackdatedBuyRequest) -> BackdatedBuyResponse:
             date=request.date, ticker=request.ticker, signal_type="BUY",
             entry_price=position.entry_price, quantity=position.quantity, entry_time="backdated",
         )
-        save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(now_ist().date()))
+
+        from datastore.api.routers.signals import get_ml_signals
+
+        buy_prob = None
+        try:
+            signal_rows = await get_ml_signals(request.ticker, entry_date, carry_forward=True)
+            match_row = next((r for r in signal_rows if r.model_name == SIGNAL_MODEL_NAME), None)
+            buy_prob = match_row.buy_prob if match_row else None
+        except HTTPException:
+            pass  # no signal history for this ticker/date — target/duration still get recorded, buy_prob doesn't
+
+        position_meta = {request.ticker: {
+            "buy_prob_entry": buy_prob,
+            "target_price": round(position.entry_price * (1 + TARGET_PCT), 2),
+            "target_date": str(entry_date + timedelta(days=MAX_HOLD_DAYS)),
+            "exit_criterion": exit_criterion_text(position.entry_price),
+        }}
+        save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(now_ist().date()), position_meta=position_meta)
 
     return BackdatedBuyResponse(
         ticker=request.ticker, date=request.date, entry_price=position.entry_price,

@@ -210,6 +210,25 @@ class DataStoreClient:
         """
         return self._get("/api/v1/ohlcv/_meta/tickers", params={"min_rows": min_rows})
 
+    def get_listing_dates(self) -> Dict[str, datetime]:
+        """
+        {ticker: listing_date} for every ticker with a real stock_master.listing_date,
+        one bulk HTTP call (GET /stock-master/listing-dates — system.router has
+        no /api/v1 prefix, same as /health) — see datastore/api/routers/system.py's
+        get_listing_dates for the source.
+
+        Returns
+        -------
+        dict
+            ticker -> datetime (parsed from the API's ISO date strings).
+
+        Raises
+        ------
+        httpx.HTTPStatusError, httpx.RequestError
+        """
+        raw = self._get("/stock-master/listing-dates")
+        return {ticker: datetime.fromisoformat(date_str) for ticker, date_str in raw.items()}
+
     def get_fundamentals_pit(
         self,
         ticker: str,

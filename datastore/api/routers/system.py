@@ -106,3 +106,22 @@ async def health_check() -> SystemHealthResponse:
         drift=_drift_status(),
         scheduler=get_scheduler_heartbeats(),
     )
+
+
+@router.get("/stock-master/listing-dates")
+async def get_listing_dates() -> dict:
+    """
+    {ticker: "YYYY-MM-DD"} for every ticker with a real stock_master.listing_date
+    (2026-07-07: backfilled via scripts/backfill_listing_dates_nse.py from NSE's
+    real public-past-issues API — 402/1626 tickers, only IPOs NSE's history
+    covers). Bulk endpoint (one call, not one per ticker) consumed by
+    features/matrix_builder.py to populate ipo_lockin_expiry_proximity/
+    ipo_listing_age_months (features/corporate_action_features.py) —
+    SPEC-SOLID-005: OHLCV/DB-backed data reached only through this API, never
+    a direct DuckDB connection from the features layer.
+    """
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        rows = conn.execute(
+            "SELECT ticker, listing_date FROM stock_master WHERE listing_date IS NOT NULL"
+        ).fetchall()
+    return {ticker: listing_date.isoformat() for ticker, listing_date in rows}

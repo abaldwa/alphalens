@@ -41,6 +41,12 @@ class Position:
     entry_price: float
     quantity: int
     peak_price: float = field(default=None)
+    # ATR/entry_price at entry time (e.g. atr_14_pct/100 from
+    # features/technical.py), captured once at buy() and never recomputed —
+    # feeds RuleBasedExitPolicy's ATR-scaled target/stop (FutureDevelopment.md
+    # #28). None for positions opened before this field existed, or when the
+    # caller doesn't have an ATR figure (flat-percentage fallback applies).
+    entry_atr_pct: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.peak_price is None:
@@ -163,12 +169,21 @@ class PortfolioSimulator:
         return True
 
     def buy(
-        self, ticker: str, sector: str, price: float, date, prices: Dict[str, float], atr: Optional[float] = None
+        self, ticker: str, sector: str, price: float, date, prices: Dict[str, float], atr: Optional[float] = None,
+        entry_atr_pct: Optional[float] = None,
     ) -> Optional[Position]:
         """
         Open a new position if SPEC-BT-002's gates (can_buy) pass.
         Entry-side transaction cost is charged immediately (deducted from
         cash); the matching exit-side cost is charged at sell()/reduce_position().
+
+        Parameters
+        ----------
+        entry_atr_pct : float, optional
+            ATR/entry_price at entry time, stored on the Position for
+            RuleBasedExitPolicy's ATR-scaled target/stop (see
+            Position.entry_atr_pct). Independent of `atr` (INR, used only
+            for atr-mode position sizing above).
 
         Returns
         -------
@@ -182,7 +197,10 @@ class PortfolioSimulator:
         qty = self.position_size(price, equity, atr)
         turnover = price * qty
         self.cash -= turnover
-        position = Position(ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty)
+        position = Position(
+            ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty,
+            entry_atr_pct=entry_atr_pct,
+        )
         self.positions[ticker] = position
         return position
 

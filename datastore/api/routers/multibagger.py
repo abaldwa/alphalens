@@ -49,7 +49,7 @@ async def get_multibagger_score(
         raise HTTPException(status_code=400, detail="Ticker cannot be empty")
     pit_reference = as_of or datetime.utcnow()
 
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         row = conn.execute(
             f"""
             SELECT {_SELECT_COLS} FROM ml_multibagger
@@ -70,7 +70,7 @@ async def write_multibagger_score(record: MultibaggerWrite) -> MultibaggerWriteR
     update_cols = [c for c in _COLUMNS if c not in ("date", "ticker")]
     update_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
 
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(
             f"""
             INSERT INTO ml_multibagger ({_SELECT_COLS}) VALUES ({placeholders})

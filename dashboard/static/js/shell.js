@@ -7,10 +7,14 @@ const APPS = [
     id: "ml", name: "AlphaLens.ML", color: "var(--teal)", base: "/ui/ml/",
     screens: [
       { id: "hub", label: "Daily Insights", href: "index.html" },
+      { id: "watchlist", label: "Daily WatchList", href: "watchlist.html" },
       { id: "signal", label: "Signal Deep Dive", href: "signal.html" },
       { id: "multibagger", label: "Multibagger", href: "multibagger.html" },
-      { id: "positions", label: "Positions", href: "positions.html" },
+      { id: "positions", label: "Paper Trading", href: "positions.html" },
+      { id: "exit_urgency", label: "Exit Urgency", href: "exit_urgency.html" },
+      { id: "holdings", label: "My Holdings", href: "holdings.html" },
       { id: "backtest", label: "Backtest", href: "backtest.html" },
+      { id: "tools", label: "Tools", href: "tools.html" },
     ],
   },
   {
@@ -20,6 +24,7 @@ const APPS = [
       { id: "chart", label: "Chart", href: "chart.html" },
       { id: "compare", label: "Compare", href: "compare.html" },
       { id: "alerts", label: "Alert Manager", href: "alerts.html" },
+      { id: "watchlist", label: "Daily WatchList", href: "watchlist.html" },
       { id: "overview", label: "Market Overview", href: "overview.html" },
     ],
   },
@@ -64,6 +69,17 @@ const APPS = [
       { id: "index", label: "Job Autoruns", href: "index.html" },
     ],
   },
+  {
+    // Phase A/B/C (plan: gentle-wobbling-swing.md) — bulk/block deals
+    // (family-attributed + netted) and MF holdings movers/entries-exits.
+    // Phase D (quarterly reconciliation) not yet built.
+    id: "big_investors", name: "AlphaLens.BigInvestors", color: "var(--amber)", base: "/ui/big_investors/",
+    screens: [
+      { id: "index", label: "Bulk/Block Deals", href: "index.html" },
+      { id: "mf_holdings", label: "MF Holdings", href: "mf_holdings.html" },
+      { id: "announcements", label: "Corporate Announcements", href: "announcements.html" },
+    ],
+  },
 ];
 
 function renderAppShell(appId, screenId) {
@@ -92,7 +108,7 @@ function renderAppShell(appId, screenId) {
     bar.appendChild(meta);
     apiGet("/health")
       .then((h) => {
-        meta.textContent = `${h.status} · v${h.version} · ${h.stock_count} stocks`;
+        meta.textContent = `${h.status} · v${h.version} · ${fmtInt(h.stock_count)} stocks`;
       })
       .catch(() => {
         meta.textContent = "API unreachable";

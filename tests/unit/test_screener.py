@@ -60,6 +60,8 @@ _SAMPLE_HTML = """
 <section id="balance-sheet">
 <table><tbody>
 <tr><td class="text">Borrowings</td><td>120000</td><td>125000</td></tr>
+<tr><td class="text">CWIP</td><td>3000</td><td>3200</td></tr>
+<tr><td class="text">Total Assets</td><td>900000</td><td>950000</td></tr>
 </tbody></table>
 </section>
 <section id="shareholding">
@@ -149,6 +151,24 @@ class TestBuildFundamentalsRow:
         row = _build_fundamentals_row("RELIANCE", quarters, {}, {})
         assert row["ebitda"] == 32000.0 + 5200.0
 
+    def test_total_assets_and_cwip_parsed_from_real_balance_sheet_rows(self):
+        """
+        Regression test for the deep-forensic 20-field gap fix: Total Assets
+        and CWIP are real labeled rows in Screener's free-tier #balance-sheet
+        table (verified live against TCS's real page) that were previously
+        never captured even though the schema was later extended for them.
+        """
+        soup = BeautifulSoup(_SAMPLE_HTML, "html.parser")
+        from ingestion.scrapers.screener import _BALANCE_SHEET_FIELDS, _HEADER_FIELDS, _QUARTERS_FIELDS
+
+        header = _parse_section_table(soup, None, _HEADER_FIELDS, header_stats=True)
+        quarters = _parse_section_table(soup, "quarters", _QUARTERS_FIELDS)
+        balance_sheet = _parse_section_table(soup, "balance-sheet", _BALANCE_SHEET_FIELDS)
+        row = _build_fundamentals_row("RELIANCE", quarters, balance_sheet, header)
+
+        assert row["total_assets"] == 950000.0  # rightmost column
+        assert row["cwip"] == 3200.0
+
 
 class TestBuildShareholdingRow:
     def test_pit_default_filing_date_is_after_quarter_end(self):
@@ -190,7 +210,11 @@ class TestParseBalanceSheetHistory:
     def test_extracts_equity_per_fiscal_year_across_all_columns(self):
         soup = BeautifulSoup(_SAMPLE_HTML_WITH_HISTORY, "html.parser")
         history = _parse_balance_sheet_history(soup)
-        assert history == {2023: 8992.0, 2024: 10637.0, 2025: 12412.0}
+        assert history == {
+            2023: {"total_equity": 8992.0, "retained_earnings": 8916.0},
+            2024: {"total_equity": 10637.0, "retained_earnings": 10561.0},
+            2025: {"total_equity": 12412.0, "retained_earnings": 12327.0},
+        }
 
     def test_missing_section_returns_empty_dict(self):
         soup = BeautifulSoup("<html><body></body></html>", "html.parser")
@@ -206,7 +230,7 @@ class TestParseBalanceSheetHistory:
         """
         soup = BeautifulSoup(html, "html.parser")
         history = _parse_balance_sheet_history(soup)
-        assert history == {2023: 8992.0}  # 2024 dropped, not fabricated as 76
+        assert history == {2023: {"total_equity": 8992.0, "retained_earnings": 8916.0}}  # 2024 dropped, not fabricated
 
     def test_borrowing_singular_label_matches_total_debt_field(self):
         soup = BeautifulSoup(_SAMPLE_HTML_WITH_HISTORY, "html.parser")
@@ -220,7 +244,11 @@ class TestExportEquityHistory:
     def test_offline_with_pre_fetched_html_makes_no_network_call(self):
         scraper = ScreenerScraper(username="u", password="p", client=MagicMock())
         history = scraper.export_equity_history("IIFL", html=_SAMPLE_HTML_WITH_HISTORY)
-        assert history == {2023: 8992.0, 2024: 10637.0, 2025: 12412.0}
+        assert history == {
+            2023: {"total_equity": 8992.0, "retained_earnings": 8916.0},
+            2024: {"total_equity": 10637.0, "retained_earnings": 10561.0},
+            2025: {"total_equity": 12412.0, "retained_earnings": 12327.0},
+        }
 
 
 class TestIndianFiscalYearQuarter:

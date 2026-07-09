@@ -3,7 +3,6 @@
 // is real data closely tied to position monitoring, and has no dedicated
 // screen ID of its own in the 27-screen prototype spec)
 renderAppShell("ml", "positions");
-CalendarPicker.attach("backdate-input");
 
 function decisionBadge(actionType) {
   if (actionType === "buy") return "b-green";
@@ -21,14 +20,20 @@ function loadPendingActions() {
       }
       const table = el("table", {}, [
         el("thead", {}, [el("tr", {}, [
-          el("th", {}, ["Action"]), el("th", {}, ["Stock"]), el("th", {}, ["Price"]),
+          el("th", {}, ["Action"]), el("th", {}, ["Stock"]), el("th", {}, ["Name"]), el("th", {}, ["Price"]),
+          el("th", {}, ["Target"]), el("th", {}, ["Target %"]), el("th", {}, ["Duration"]),
           el("th", {}, ["Reason"]), el("th", {}, ["Decision"]),
         ])]),
         el("tbody", {}, r.actions.map((a) => {
+          const targetPct = (a.target_price != null && a.price) ? (a.target_price / a.price - 1) * 100 : null;
           const row = el("tr", { "data-action-id": a.action_id }, [
             el("td", {}, [el("span", { class: "badge " + decisionBadge(a.action_type) }, [a.action_type.toUpperCase()])]),
             el("td", { style: "font-weight:600" }, [a.ticker]),
+            el("td", { style: "font-size:12px;color:var(--tx2)" }, [a.company_name || "—"]),
             el("td", { class: "mono" }, [a.price !== null && a.price !== undefined ? fmtMoney(a.price) : "—"]),
+            el("td", { class: "mono" }, [a.target_price !== null && a.target_price !== undefined ? fmtMoney(a.target_price) : "—"]),
+            el("td", { class: "mono", style: "color:var(--green)" }, [targetPct !== null ? `+${targetPct.toFixed(1)}%` : "—"]),
+            el("td", { class: "mono" }, [a.duration_days !== null && a.duration_days !== undefined ? `${a.duration_days}d` : "—"]),
             el("td", { style: "font-size:12px;color:var(--tx2)" }, [a.reason || "—"]),
             el("td", {}, []),
           ]);
@@ -60,56 +65,6 @@ function decide(actionId, decision, row) {
     })
     .catch((e) => {
       row.style.opacity = "1";
-      row.lastChild.innerHTML = "";
-      row.lastChild.appendChild(el("span", { class: "badge b-red" }, [`Failed: ${e.message}`]));
-    });
-}
-
-function loadBackdateRecommendations() {
-  const date = document.getElementById("backdate-input").value;
-  if (!date) return;
-  showLoading("backdate-table");
-  apiGet(`/api/v1/signals/ml/top_buys/${date}`, { n: 10 })
-    .then((rows) => {
-      const c = document.getElementById("backdate-table");
-      if (!rows.length) {
-        c.innerHTML = `<div class="empty">No signals were written for ${date} — the pipeline may not have run that day</div>`;
-        return;
-      }
-      const table = el("table", {}, [
-        el("thead", {}, [el("tr", {}, [
-          el("th", {}, ["Stock"]), el("th", {}, ["Direction"]), el("th", {}, ["Buy Prob"]), el("th", {}, ["Action"]),
-        ])]),
-        el("tbody", {}, rows.map((r) => {
-          const row = el("tr", {}, [
-            el("td", { style: "font-weight:600" }, [r.ticker]),
-            el("td", {}, [el("span", { class: "badge " + (r.signal_direction === "sell" ? "b-red" : "b-green") }, [(r.signal_direction || "—").toUpperCase()])]),
-            el("td", { class: "mono" }, [fmtPct(r.buy_prob)]),
-            el("td", {}, []),
-          ]);
-          const actionCell = row.lastChild;
-          const btn = el("button", {}, ["Buy"]);
-          btn.addEventListener("click", () => backdatedBuy(r.ticker, date, row));
-          actionCell.appendChild(btn);
-          return row;
-        })),
-      ]);
-      c.innerHTML = "";
-      c.appendChild(el("div", { class: "card" }, [table]));
-    })
-    .catch((e) => showError("backdate-table", e));
-}
-
-function backdatedBuy(ticker, date, row) {
-  row.lastChild.style.opacity = "0.5";
-  apiPost("/api/v1/paper_trading/backdated_buy", { ticker, date })
-    .then((r) => {
-      row.lastChild.innerHTML = "";
-      const label = r.executed ? `Bought ${r.quantity} @ ${fmtMoney(r.entry_price)}` : (r.detail || "Not executed");
-      row.lastChild.appendChild(el("span", { class: "badge " + (r.executed ? "b-green" : "b-gray") }, [label]));
-      if (r.executed) loadState();
-    })
-    .catch((e) => {
       row.lastChild.innerHTML = "";
       row.lastChild.appendChild(el("span", { class: "badge b-red" }, [`Failed: ${e.message}`]));
     });
@@ -167,18 +122,38 @@ function loadState() {
       }
       const table = el("table", {}, [
         el("thead", {}, [el("tr", {}, [
-          el("th", {}, ["Ticker"]), el("th", {}, ["Sector"]), el("th", {}, ["Entry Date"]),
+          el("th", {}, ["Ticker"]), el("th", {}, ["Name"]), el("th", {}, ["Sector"]), el("th", {}, ["Entry Date"]),
           el("th", {}, ["Entry Price"]), el("th", {}, ["Qty"]), el("th", {}, ["Current"]), el("th", {}, ["Unrealised P&L"]),
+          el("th", {}, ["Buy Prob (Entry)"]), el("th", {}, ["Buy Prob (Now)"]),
+          el("th", {}, ["Target Price"]), el("th", {}, ["Target Date"]),
+          el("th", {}, ["Stock Gain"]), el("th", {}, ["Nifty Gain"]),
+          el("th", {}, ["Exit Criterion"]), el("th", {}, ["Action"]),
         ])]),
-        el("tbody", {}, real.map((p) => el("tr", {}, [
-          el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${p.ticker}` }, [p.ticker])]),
-          el("td", {}, [p.sector || "—"]),
-          el("td", { class: "mono" }, [p.entry_date]),
-          el("td", { class: "mono" }, [fmtMoney(p.entry_price)]),
-          el("td", { class: "mono" }, [String(p.quantity)]),
-          el("td", { class: "mono" }, [p.current_price ? fmtMoney(p.current_price) : "—"]),
-          el("td", { class: "mono " + pnlClass(p.unrealised_pnl_pct) }, [fmtPct(p.unrealised_pnl_pct)]),
-        ]))),
+        el("tbody", {}, real.map((p) => {
+          const row = el("tr", {}, [
+            el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${p.ticker}` }, [p.ticker])]),
+            el("td", { style: "font-size:12px;color:var(--tx2)" }, [p.company_name || "—"]),
+            el("td", {}, [p.sector || "—"]),
+            el("td", { class: "mono" }, [p.entry_date]),
+            el("td", { class: "mono" }, [fmtMoney(p.entry_price)]),
+            el("td", { class: "mono" }, [fmtInt(p.quantity)]),
+            el("td", { class: "mono" }, [p.current_price ? fmtMoney(p.current_price) : "—"]),
+            el("td", { class: "mono " + pnlClass(p.unrealised_pnl_pct) }, [fmtPct(p.unrealised_pnl_pct)]),
+            el("td", { class: "mono" }, [p.buy_prob_entry != null ? fmtPct(p.buy_prob_entry) : "—"]),
+            el("td", { class: "mono" }, [p.buy_prob_current != null ? fmtPct(p.buy_prob_current) : "—"]),
+            el("td", { class: "mono" }, [p.target_price != null ? fmtMoney(p.target_price) : "—"]),
+            el("td", { class: "mono" }, [p.target_date || "—"]),
+            el("td", { class: "mono " + pnlClass(p.stock_gain_pct) }, [p.stock_gain_pct != null ? fmtPct(p.stock_gain_pct) : "—"]),
+            el("td", { class: "mono " + pnlClass(p.nifty_gain_pct) }, [p.nifty_gain_pct != null ? fmtPct(p.nifty_gain_pct) : "—"]),
+            el("td", { style: "font-size:11px;color:var(--tx2)" }, [p.exit_criterion || "—"]),
+            el("td", {}, []),
+          ]);
+          const actionCell = row.lastChild;
+          const sellBtn = el("button", { style: "background:var(--red)" }, ["Sell"]);
+          sellBtn.addEventListener("click", () => sellPosition(p.ticker, row, sellBtn));
+          actionCell.appendChild(sellBtn);
+          return row;
+        })),
       ]);
       pc.innerHTML = "";
       pc.appendChild(el("div", { class: "card" }, [table]));
@@ -186,6 +161,21 @@ function loadState() {
     .catch((e) => {
       showError("portfolio-state", e);
       showError("positions", e);
+    });
+}
+
+function sellPosition(ticker, row, btn) {
+  if (!confirm(`Sell ${ticker} at the current market price?`)) return;
+  btn.disabled = true;
+  row.style.opacity = "0.5";
+  apiPost(`/api/v1/paper_trading/positions/${ticker}/sell`)
+    .then(() => {
+      loadState();
+    })
+    .catch((e) => {
+      row.style.opacity = "1";
+      btn.disabled = false;
+      alert(`Sell failed: ${e.message}`);
     });
 }
 
@@ -248,8 +238,6 @@ function loadTrades() {
     })
     .catch((e) => showError("trades", e));
 }
-
-document.getElementById("load-backdate-btn").addEventListener("click", loadBackdateRecommendations);
 
 loadGateStatus();
 loadPendingActions();

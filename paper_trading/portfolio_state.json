@@ -1,14 +1,206 @@
 {
-  "as_of_date": "2026-07-02",
-  "cash": 10000000,
+  "as_of_date": "2026-07-08",
+  "cash": 877806.3511441669,
   "initial_capital": 10000000,
   "sizing_mode": "equal_weight",
   "n_target_positions": 10,
-  "positions": [],
+  "positions": [
+    {
+      "ticker": "PASHUPATI",
+      "sector": "UNKNOWN",
+      "entry_date": "2026-07-02",
+      "entry_price": 87.72,
+      "quantity": 11390,
+      "peak_price": 88.17,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "GODREJCP",
+      "sector": "Fast Moving Consumer Goods",
+      "entry_date": "2026-07-02",
+      "entry_price": 1077.2,
+      "quantity": 927,
+      "peak_price": 1077.2,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "TARMAT",
+      "sector": "UNKNOWN",
+      "entry_date": "2026-07-02",
+      "entry_price": 49.18,
+      "quantity": 20317,
+      "peak_price": 49.18,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "CANHLIFE",
+      "sector": "Financial Services",
+      "entry_date": "2026-07-02",
+      "entry_price": 141.82,
+      "quantity": 7045,
+      "peak_price": 142.24,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "DEEPINDS",
+      "sector": "UNKNOWN",
+      "entry_date": "2026-07-02",
+      "entry_price": 453.8,
+      "quantity": 2201,
+      "peak_price": 463.05,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "BSE",
+      "sector": "Financial Services",
+      "entry_date": "2026-07-03",
+      "entry_price": 3816.6,
+      "quantity": 261,
+      "peak_price": 3816.6,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "WAAREEENER",
+      "sector": "Capital Goods",
+      "entry_date": "2026-07-03",
+      "entry_price": 2859.2,
+      "quantity": 349,
+      "peak_price": 2859.2,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "TECHM",
+      "sector": "Information Technology",
+      "entry_date": "2026-07-03",
+      "entry_price": 1410.1,
+      "quantity": 708,
+      "peak_price": 1428.8,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "MPHASIS",
+      "sector": "Information Technology",
+      "entry_date": "2026-07-04",
+      "entry_price": 2296.6,
+      "quantity": 435,
+      "peak_price": 2296.6,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "ENRIN",
+      "sector": "Capital Goods",
+      "entry_date": "2026-07-04",
+      "entry_price": 3281.5,
+      "quantity": 2,
+      "peak_price": 3358.7,
+      "entry_atr_pct": null
+    },
+    {
+      "ticker": "NURECA",
+      "sector": "UNKNOWN",
+      "entry_date": "2026-07-04",
+      "entry_price": 228.96,
+      "quantity": 8,
+      "peak_price": 228.96,
+      "entry_atr_pct": null
+    }
+  ],
   "equity_curve": [
     {
       "date": "2026-07-02",
       "equity": 10000000
+    },
+    {
+      "date": "2026-07-02",
+      "equity": 10000000
+    },
+    {
+      "date": "2026-07-02",
+      "equity": 10000000
+    },
+    {
+      "date": "2026-07-02",
+      "equity": 9991957.366838234
+    },
+    {
+      "date": "2026-07-02",
+      "equity": 9991957.366838234
+    },
+    {
+      "date": "2026-07-03",
+      "equity": 9970261.786838233
+    },
+    {
+      "date": "2026-07-08",
+      "equity": 9800920.936838234
     }
-  ]
+  ],
+  "position_meta": {
+    "PASHUPATI": {
+      "buy_prob_entry": null,
+      "target_price": 100.88,
+      "target_date": "2026-07-23",
+      "exit_criterion": "Target +15% (\u20b9100.88) | Stop -7.5% (\u20b981.14) | Max hold 21d"
+    },
+    "GODREJCP": {
+      "buy_prob_entry": 0.8639,
+      "target_price": 1238.78,
+      "target_date": "2026-07-23",
+      "exit_criterion": "Target +15% (\u20b91,238.78) | Stop -7.5% (\u20b9996.41) | Max hold 21d"
+    },
+    "TARMAT": {
+      "buy_prob_entry": 0.8129,
+      "target_price": 56.56,
+      "target_date": "2026-07-23",
+      "exit_criterion": "Target +15% (\u20b956.56) | Stop -7.5% (\u20b945.49) | Max hold 21d"
+    },
+    "CANHLIFE": {
+      "buy_prob_entry": 0.7896,
+      "target_price": 163.09,
+      "target_date": "2026-07-23",
+      "exit_criterion": "Target +15% (\u20b9163.09) | Stop -7.5% (\u20b9131.18) | Max hold 21d"
+    },
+    "DEEPINDS": {
+      "buy_prob_entry": 0.7227,
+      "target_price": 521.87,
+      "target_date": "2026-07-23",
+      "exit_criterion": "Target +15% (\u20b9521.87) | Stop -7.5% (\u20b9419.77) | Max hold 21d"
+    },
+    "BSE": {
+      "buy_prob_entry": 0.8864,
+      "target_price": 4389.09,
+      "target_date": "2026-07-24",
+      "exit_criterion": "Target +15% (\u20b94,389.09) | Stop -7.5% (\u20b93,530.36) | Max hold 21d"
+    },
+    "WAAREEENER": {
+      "buy_prob_entry": 0.885,
+      "target_price": 3288.08,
+      "target_date": "2026-07-24",
+      "exit_criterion": "Target +15% (\u20b93,288.08) | Stop -7.5% (\u20b92,644.76) | Max hold 21d"
+    },
+    "TECHM": {
+      "buy_prob_entry": 0.8747,
+      "target_price": 1621.61,
+      "target_date": "2026-07-24",
+      "exit_criterion": "Target +15% (\u20b91,621.61) | Stop -7.5% (\u20b91,304.34) | Max hold 21d"
+    },
+    "MPHASIS": {
+      "buy_prob_entry": 0.8632,
+      "target_price": 2641.09,
+      "target_date": "2026-07-25",
+      "exit_criterion": "Target +15% (\u20b92,641.09) | Stop -7.5% (\u20b92,124.36) | Max hold 21d"
+    },
+    "ENRIN": {
+      "buy_prob_entry": 0.8588,
+      "target_price": 3773.72,
+      "target_date": "2026-07-25",
+      "exit_criterion": "Target +15% (\u20b93,773.72) | Stop -7.5% (\u20b93,035.39) | Max hold 21d"
+    },
+    "NURECA": {
+      "buy_prob_entry": 0.8586,
+      "target_price": 263.3,
+      "target_date": "2026-07-25",
+      "exit_criterion": "Target +15% (\u20b9263.30) | Stop -7.5% (\u20b9211.79) | Max hold 21d"
+    }
+  }
 }

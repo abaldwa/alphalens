@@ -229,6 +229,7 @@ def run_simulation(
                 "momentum_3m": 0.0 if pd.isna(mom) else mom,
                 "pnd_score": pnd_scores.get(t, 0.0),
                 "hmm_regime": np.nan,
+                "atr_pct": pos.entry_atr_pct if pos.entry_atr_pct is not None else np.nan,
             })
         exit_ctx = pd.DataFrame(rows).set_index("ticker")[EXIT_CONTEXT_COLUMNS]
         apply_daily_exits(portfolio, exit_policy, exit_ctx, prices_today, d, tracker, entry_context)
@@ -260,6 +261,8 @@ def run_simulation(
             "meta_act": meta_out["meta_label_act"], "meta_prob": meta_out["meta_label_prob"],
         }, index=X.index)
         buys = scored[(scored["direction"] == 1) & (scored["meta_act"])]
+        if "atr_14_pct" in candidates.columns:
+            buys = buys.assign(atr_14_pct=candidates.loc[buys.index, "atr_14_pct"])
         apply_daily_entries(portfolio, buys, sector_map, prices_today, d, tracker, entry_context, n_positions)
 
     for i, d in enumerate(trading_dates):

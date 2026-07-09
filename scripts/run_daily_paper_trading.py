@@ -72,7 +72,12 @@ from systems.ml_signal_engine.inference.paper_trading_step import (
     propose_daily_exits,
 )
 from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel
-from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy
+from systems.ml_signal_engine.models.exit.rule_based_exit_policy import (
+    MAX_HOLD_DAYS,
+    TARGET_PCT,
+    RuleBasedExitPolicy,
+    exit_criterion_text,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
 log = logging.getLogger(__name__)
@@ -91,6 +96,15 @@ INITIAL_CAPITAL = 10_000_000  # 1 crore INR
 MOMENTUM_LOOKBACK_DAYS = 95  # calendar days, comfortably covers 63 trading days
 CANDIDATE_BUFFER = 50  # top_buys fetch size before meta/direction filtering down to n_positions
 HEARTBEAT_TICKER = "_HEARTBEAT_"
+
+# Longer-horizon signal models the bot never trades (its own exit policy caps
+# every position at MAX_HOLD_DAYS=21) but which are trained and scored daily
+# regardless — surfaced as a read-only watchlist alongside the tradeable
+# pending queue, purely so live conviction on these horizons is visible on
+# the dashboard. Not gated by meta_labeler/pnd (that gate is specific to
+# signal_5d's trade decision) and never accept/reject-able.
+WATCHLIST_MODELS = ["signal_21d", "signal_63d"]
+WATCHLIST_N = 10
 
 
 def _load_exit_policy(exit_policy: str):
@@ -155,6 +169,11 @@ def _fetch_momentum(client: httpx.Client, api_base_url: str, run_date: date_type
     return momentum
 
 
+CANDIDATE_COLUMNS = [
+    "buy_prob", "model_name", "meta_label_prob", "q10_return", "q50_return", "q90_return",
+]
+
+
 def _fetch_buy_candidates(
     client: httpx.Client, api_base_url: str, run_date: date_type, n_positions: int
 ) -> pd.DataFrame:
@@ -162,7 +181,15 @@ def _fetch_buy_candidates(
     and meta-labeler-approved (meta_label == 'act') — mirrors
     run_paper_trading_sim.py's `scored[(direction == 1) & meta_act]` gate,
     sourced from already-written ml_signals rows instead of recomputing the
-    models. Excludes P&D-blocked tickers (already enforced by /top_buys)."""
+    models. Excludes P&D-blocked tickers (already enforced by /top_buys).
+
+    Carries signal_5d's quantile forecast (q10/q50/q90_return) and the
+    meta_labeler's own act-probability (meta_prob) through onto each
+    candidate — logged at entry time (see log_trade() call in
+    run_daily_paper_trading) so that a live 'did meta_labeler's real-time
+    'act' call actually pay off' comparison is possible later, not just a
+    backtest-fold estimate (systems/ml_signal_engine/models/signal/
+    meta_labeler.py is currently validated only against historical folds)."""
     resp = client.get(
         f"{api_base_url}/api/v1/signals/ml/top_buys/{run_date}",
         params={"n": CANDIDATE_BUFFER, "model_name": SIGNAL_MODEL_NAME},
@@ -181,11 +208,49 @@ def _fetch_buy_candidates(
         meta_row = meta_rows.get(META_MODEL_NAME)
         if meta_row is None or meta_row.get("meta_label") != "act":
             continue
-        approved.append({"ticker": row["ticker"], "buy_prob": row["buy_prob"]})
+        approved.append({
+            "ticker": row["ticker"],
+            "buy_prob": row["buy_prob"],
+            "model_name": SIGNAL_MODEL_NAME,
+            "meta_label_prob": meta_row.get("meta_prob"),
+            "q10_return": row.get("q10_return"),
+            "q50_return": row.get("q50_return"),
+            "q90_return": row.get("q90_return"),
+        })
 
     if not approved:
-        return pd.DataFrame(columns=["buy_prob"])
+        return pd.DataFrame(columns=CANDIDATE_COLUMNS)
     return pd.DataFrame(approved).set_index("ticker").head(max(n_positions * 3, n_positions))
+
+
+def _fetch_horizon_watchlist(
+    client: httpx.Client, api_base_url: str, run_date: date_type
+) -> Dict[str, List[Dict]]:
+    """Top-N buy-signal tickers today for each of WATCHLIST_MODELS
+    (signal_21d, signal_63d) — read-only observability, never traded or
+    accept/reject-able. Written to paper_trading/pending/{date}_watchlist.json
+    alongside (but structurally separate from) the tradeable pending queue."""
+    watchlist: Dict[str, List[Dict]] = {}
+    for model_name in WATCHLIST_MODELS:
+        resp = client.get(
+            f"{api_base_url}/api/v1/signals/ml/top_buys/{run_date}",
+            params={"n": WATCHLIST_N, "model_name": model_name},
+        )
+        if resp.status_code != 200:
+            watchlist[model_name] = []
+            continue
+        rows = [r for r in resp.json() if r.get("signal_direction") == "buy"]
+        watchlist[model_name] = [
+            {
+                "ticker": r["ticker"],
+                "buy_prob": r.get("buy_prob"),
+                "q10_return": r.get("q10_return"),
+                "q50_return": r.get("q50_return"),
+                "q90_return": r.get("q90_return"),
+            }
+            for r in rows
+        ]
+    return watchlist
 
 
 def _build_held_context(
@@ -215,6 +280,7 @@ def _build_held_context(
                 "momentum_3m": momentum.get(t, 0.0),
                 "pnd_score": pnd_scores.get(t, 0.0),
                 "hmm_regime": float("nan"),
+                "atr_pct": pos.entry_atr_pct if pos.entry_atr_pct is not None else float("nan"),
             }
         )
     return pd.DataFrame(rows).set_index("ticker")[EXIT_CONTEXT_COLUMNS]
@@ -224,11 +290,14 @@ def _discard_stale_pending(run_date: date_type) -> None:
     """SPEC-PT-003: a pending-proposal file from a prior date is built off
     stale signals — discard (don't execute) it at the start of today's run
     rather than letting it silently accumulate or get accepted against
-    today's prices under yesterday's reasoning."""
+    today's prices under yesterday's reasoning. Today's own watchlist file
+    (run_date}_watchlist.json, WATCHLIST_MODELS) is regenerated wholesale
+    later in this same run, so it's also a keep, not a discard."""
     if not PENDING_DIR.exists():
         return
+    today_stems = {str(run_date), f"{run_date}_watchlist"}
     for path in PENDING_DIR.glob("*.json"):
-        if path.stem != str(run_date):
+        if path.stem not in today_stems:
             log.info("Discarding stale pending-actions file %s (superseded by today's run)", path)
             path.unlink()
 
@@ -255,7 +324,8 @@ def run_daily_paper_trading(
             )
 
         universe = load_universe_raw()
-        sector_map = dict(zip(universe["ticker"], universe["sector"]))
+        sector_map = dict(zip(universe["ticker"], universe["sector"].fillna("UNKNOWN")))
+        name_map = dict(zip(universe["ticker"], universe["company_name"].fillna("")))
 
         tracker = PaperTradingTracker(logs_dir=str(EXECUTIONS_DIR))
         entry_context: Dict[str, Dict] = {}
@@ -277,14 +347,24 @@ def run_daily_paper_trading(
             momentum = _fetch_momentum(client, api_base_url, run_date, held)
             held_context = _build_held_context(portfolio, run_date, prices, pnd_scores, momentum)
             candidates = _fetch_buy_candidates(client, api_base_url, run_date, n_positions)
+            # ml_signals rows can predate the ETF exclusion filter (bhavcopy/universe
+            # changes don't retroactively clean already-written signal rows) — drop
+            # anything not in today's ETF-free universe before proposing entries.
+            candidates = candidates[candidates.index.isin(sector_map)]
+            watchlist = _fetch_horizon_watchlist(client, api_base_url, run_date)
+            for model_name in watchlist:
+                watchlist[model_name] = [
+                    row for row in watchlist[model_name] if row["ticker"] in sector_map
+                ]
 
             if require_approval:
                 # Compute candidates but don't execute — SPEC-PT-003 review/approve
                 # flow. A human accepts/rejects each via the API; this run only
                 # records the equity mark-to-market above and proposes actions.
-                pending_actions = propose_daily_exits(portfolio, exit_policy, held_context)
+                pending_actions = propose_daily_exits(portfolio, exit_policy, held_context, name_map=name_map)
                 pending_actions += propose_daily_entries(
                     candidates, sector_map, prices, n_positions, list(portfolio.positions.keys()),
+                    name_map=name_map,
                 )
             else:
                 apply_daily_exits(portfolio, exit_policy, held_context, prices, run_date, tracker, entry_context)
@@ -294,8 +374,17 @@ def run_daily_paper_trading(
                 )
                 newly_bought = set(portfolio.positions.keys()) - before
 
+        position_meta = {}
         for t in newly_bought:
             pos = portfolio.positions[t]
+
+            def _cand(col: str):
+                if t not in candidates.index or col not in candidates.columns:
+                    return None
+                value = candidates.loc[t, col]
+                return None if pd.isna(value) else value
+
+            buy_prob = float(_cand("buy_prob")) if _cand("buy_prob") is not None else None
             tracker.log_trade(
                 date=str(run_date),
                 ticker=t,
@@ -303,7 +392,20 @@ def run_daily_paper_trading(
                 entry_price=pos.entry_price,
                 quantity=pos.quantity,
                 entry_time=entry_context.get(t, {}).get("entry_time", "09:15:00"),
+                model_name=_cand("model_name"),
+                buy_prob=buy_prob,
+                meta_label_prob=_cand("meta_label_prob"),
+                q10_return=_cand("q10_return"),
+                q50_return=_cand("q50_return"),
+                q90_return=_cand("q90_return"),
             )
+            target_date = run_date.toordinal() + MAX_HOLD_DAYS
+            position_meta[t] = {
+                "buy_prob_entry": buy_prob,
+                "target_price": round(pos.entry_price * (1 + TARGET_PCT), 2),
+                "target_date": str(date_type.fromordinal(target_date)),
+                "exit_criterion": exit_criterion_text(pos.entry_price),
+            }
 
         if pending_actions:
             PENDING_DIR.mkdir(parents=True, exist_ok=True)
@@ -314,6 +416,16 @@ def run_daily_paper_trading(
             (PENDING_DIR / f"{run_date}.json").write_text(json.dumps(rows, indent=2))
             log.info("Wrote %d pending action(s) for %s — awaiting accept/reject via the API", len(rows), run_date)
 
+        if any(watchlist.values()):
+            PENDING_DIR.mkdir(parents=True, exist_ok=True)
+            (PENDING_DIR / f"{run_date}_watchlist.json").write_text(
+                json.dumps({"date": str(run_date), "models": watchlist}, indent=2)
+            )
+            log.info(
+                "Wrote horizon watchlist for %s: %s",
+                run_date, {m: len(rows) for m, rows in watchlist.items()},
+            )
+
         day_log = EXECUTIONS_DIR / f"{run_date}.csv"
         if not day_log.exists():
             log.info("No entries/exits today — logging heartbeat row so Gate 7 still counts %s", run_date)
@@ -322,7 +434,7 @@ def run_daily_paper_trading(
                 entry_price=0.0, quantity=0, entry_time="00:00:00",
             )
 
-        save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(run_date))
+        save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(run_date), position_meta=position_meta)
 
     equity = portfolio.total_equity(prices) if prices else portfolio.cash
     log.info(

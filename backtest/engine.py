@@ -50,11 +50,15 @@ logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 252
 # Position-context columns ExitSignalModel.predict_full() expects, matching
-# exit_signal.load_exit_training_data_from_db()'s schema exactly so a model
-# trained on that real historical archive can score real backtest positions.
+# exit_signal.load_exit_training_data_from_db()'s schema so a model trained
+# on that real historical archive can score real backtest positions, plus
+# atr_pct (ATR/entry_price at entry — FutureDevelopment.md #28) which is
+# additive: ExitSignalModel.predict_full() subsets to its own trained
+# feature_names so an extra column is harmless, while RuleBasedExitPolicy
+# uses it directly to ATR-scale target/stop instead of flat percentages.
 EXIT_CONTEXT_COLUMNS = [
     "entry_price", "days_held", "unrealised_pnl_pct", "days_to_next_earnings",
-    "drawdown_from_peak", "momentum_3m", "pnd_score", "hmm_regime",
+    "drawdown_from_peak", "momentum_3m", "pnd_score", "hmm_regime", "atr_pct",
 ]
 # No real earnings calendar ingested yet (Phase 1 gap, see BuildLog.md
 # "Real data sourcing — earnings calendar") and no per-row HMM regime
@@ -357,6 +361,7 @@ class BacktestEngine:
                     "momentum_3m": 0.0 if pd.isna(momentum) else momentum,
                     "pnd_score": pnd_scores.get(t, 0.0),
                     "hmm_regime": np.nan,
+                    "atr_pct": pos.entry_atr_pct if pos.entry_atr_pct is not None else np.nan,
                 }
             )
         exit_ctx = pd.DataFrame(rows).set_index("ticker")[EXIT_CONTEXT_COLUMNS]
@@ -393,7 +398,15 @@ class BacktestEngine:
             price = prices_today.get(ticker)
             if price is None or price <= 0:
                 continue
-            portfolio.buy(ticker, self.sector_map.get(ticker, "UNKNOWN"), price, d, prices_today)
+            # atr_14_pct (CORE_TECHNICAL_FEATURES, features/technical.py) is
+            # ATR(14)/close * 100 — divide back to a plain fraction of price
+            # for RuleBasedExitPolicy's ATR-scaled target/stop (atr_pct).
+            atr_14_pct = feat_block.loc[ticker, "atr_14_pct"] if "atr_14_pct" in feat_block.columns else np.nan
+            entry_atr_pct = float(atr_14_pct) / 100.0 if pd.notna(atr_14_pct) else None
+            portfolio.buy(
+                ticker, self.sector_map.get(ticker, "UNKNOWN"), price, d, prices_today,
+                entry_atr_pct=entry_atr_pct,
+            )
 
     def _run_integrity_check(self, train_fold: pd.DataFrame, test_fold: pd.DataFrame) -> Dict[str, Any]:
         checker = BacktestIntegrityChecker(

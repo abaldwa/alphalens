@@ -50,6 +50,8 @@ from datastore.api.schemas import (
     TAUserAlertCreate,
     TAUserAlertResponse,
     TAUserAlertRow,
+    TAWatchlistResponse,
+    TAWatchlistRow,
 )
 from datastore.api.utils.feature_store import read_feature_row, resolve_date
 from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
@@ -252,7 +254,7 @@ async def get_alerts_today(
     """
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
             # Check if table exists
             tables = [r[0] for r in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
@@ -343,7 +345,7 @@ async def get_alerts_for_ticker(
     ticker_upper = ticker.upper()
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
             tables = [r[0] for r in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
             ).fetchall()]
@@ -392,6 +394,118 @@ async def get_alerts_for_ticker(
         for _, row in df.iterrows()
     ]
     return TAAlertResponse(as_of_date=target_date, rows=rows, count=len(rows))
+
+
+@router.get("/watchlist/daily", response_model=TAWatchlistResponse)
+async def get_ta_daily_watchlist(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest ta_signals date"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum tickers"),
+) -> TAWatchlistResponse:
+    """Daily TA WatchList: best-scoring template match per ticker (ta_signals,
+    SPEC-TA-006), with a plain-English rationale and the next resistance
+    levels above the current price (rolling 20d/50d/252d swing highs plus
+    classic floor-pivot R1/R2, computed from real OHLCV — SPEC-TA-004)."""
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
+            ).fetchall()]
+            if not tables:
+                return TAWatchlistResponse(count=0)
+
+            if date:
+                target_date = date
+            else:
+                row = conn.execute("SELECT MAX(date) FROM ta_signals").fetchone()
+                if row is None or row[0] is None:
+                    return TAWatchlistResponse(count=0)
+                target_date = str(row[0])
+
+            df = conn.execute(
+                """
+                SELECT date, ticker, template_name, category, score,
+                       matched_conditions, total_conditions, key_values
+                FROM ta_signals
+                WHERE date = ?
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY score DESC) = 1
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                [target_date, limit],
+            ).fetchdf()
+    except Exception as exc:
+        logger.warning("watchlist/daily TA query failed: %s", exc)
+        return TAWatchlistResponse(count=0)
+
+    if df.empty:
+        return TAWatchlistResponse(date=target_date, count=0)
+
+    universe = load_universe_raw()
+    name_map = dict(zip(universe["ticker"], universe["company_name"].fillna("")))
+    sector_map = dict(zip(universe["ticker"], universe["sector"].fillna("")))
+
+    tickers = df["ticker"].tolist()
+    placeholders = ",".join("?" * len(tickers))
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as pconn:
+        hist = pconn.execute(
+            f"""
+            SELECT ticker, date, high, low, close
+            FROM ohlcv_adjusted
+            WHERE ticker IN ({placeholders}) AND date <= ?
+            ORDER BY ticker, date
+            """,
+            tickers + [target_date],
+        ).fetchdf()
+
+    rows: List[TAWatchlistRow] = []
+    for _, r in df.iterrows():
+        ticker = str(r["ticker"])
+        tmpl = TEMPLATE_MAP.get(str(r["template_name"]))
+        matched, total = int(r["matched_conditions"]), int(r["total_conditions"])
+        rationale = (
+            f"{tmpl.description} — {matched}/{total} conditions matched"
+            if tmpl is not None else f"{matched}/{total} conditions matched"
+        )
+
+        g = hist[hist["ticker"] == ticker]
+        current_price = float(g["close"].iloc[-1]) if not g.empty else None
+        resistance_levels: List[float] = []
+        support_levels: List[float] = []
+        if not g.empty and current_price is not None:
+            for window in (20, 50, 252):
+                sub = g.tail(window)
+                hi, lo = float(sub["high"].max()), float(sub["low"].min())
+                if hi > current_price:
+                    resistance_levels.append(round(hi, 2))
+                if lo < current_price:
+                    support_levels.append(round(lo, 2))
+            last = g.iloc[-1]
+            pivot = (float(last["high"]) + float(last["low"]) + float(last["close"])) / 3
+            r1 = 2 * pivot - float(last["low"])
+            r2 = pivot + (float(last["high"]) - float(last["low"]))
+            for lvl in (r1, r2):
+                if lvl > current_price:
+                    resistance_levels.append(round(lvl, 2))
+            resistance_levels = sorted(set(resistance_levels))[:3]
+            support_levels = sorted(set(support_levels), reverse=True)[:3]
+
+        rows.append(TAWatchlistRow(
+            ticker=ticker,
+            company_name=name_map.get(ticker) or None,
+            sector=sector_map.get(ticker) or None,
+            current_price=round(current_price, 2) if current_price is not None else None,
+            template_name=str(r["template_name"]),
+            category=str(r["category"]),
+            score=float(r["score"]),
+            rationale=rationale,
+            matched_conditions=matched,
+            total_conditions=total,
+            resistance_levels=resistance_levels,
+            support_levels=support_levels,
+        ))
+
+    return TAWatchlistResponse(date=target_date, rows=rows, count=len(rows))
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +658,7 @@ async def write_ta_signals(body: TASignalWriteRequest) -> Dict[str, int]:
     ]
 
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(_CREATE_TA_SIGNALS_SQL)
         conn.executemany(_INSERT_SQL, rows)
     return {"written": len(rows)}

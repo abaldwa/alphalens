@@ -26,14 +26,15 @@ already-loaded DataFrames — daily_inference.py itself never reads a
 database file or Parquet path directly, keeping it a pure orchestration
 layer over already-fetched data, independently testable without any I/O.
 
-[AS BUILT] Conformal (P1.5's ConformalPredictor) is not wired into this
-orchestration for the same reason backtest/engine.py (P1.6) left it out:
-it calibrates return-magnitude regression intervals and there is no
-return-regression estimator in this classification-based entry pipeline
-for it to wrap yet. Documented as a known Phase 1 gap, not a silent
-omission — see BuildLog.md "P1.7".
+[AS BUILT, 2026-07-04] FutureDevelopment.md #14: conformal_signal5d,
+signal_21d/signal_63d and #16's shap_top5_json are now wired into
+_step_signals_and_meta (see _load_conformal/_compute_shap_top5) — this
+docstring previously said conformal was intentionally left out; that is
+no longer true as of this change (see BuildLog.md "P1.7" for the
+original Phase 1 gap this superseded).
 """
 
+import json
 import logging
 import time
 from datetime import date as date_type
@@ -42,7 +43,9 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 import joblib
+import numpy as np
 import pandas as pd
+import shap
 
 from config.settings import DATASTORE_API_BASE_URL, EXIT_URGENT_THRESHOLD, MODELS_DIR, PSI_SEVERE_THRESHOLD
 from config.timezone import now_ist
@@ -51,11 +54,14 @@ from features.technical import CORE_TECHNICAL_FEATURES
 from ingestion.quality.drift_monitor import PSIMonitor
 from ingestion.quality.structured_logger import log_pipeline_step
 from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel
+from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy
 from systems.ml_signal_engine.models.hmm.regime_detector import compute_hmm_observables
 from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector
 from systems.ml_signal_engine.models.signal.base_signal_model import CLASS_NAMES
 from systems.ml_signal_engine.models.signal.meta_labeler import MetaLabeler
 from systems.ml_signal_engine.models.signal.signal_5d import Signal5DModel
+from systems.ml_signal_engine.models.signal.signal_21d import Signal21DModel
+from systems.ml_signal_engine.models.signal.signal_63d import Signal63DModel
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +77,16 @@ HMM_MODEL_DIR_NAME = "hmm"
 HMM_MARKET_TICKER = "MARKET"
 PND_MODEL_NAME = "pnd_detector"
 SIGNAL_MODEL_NAME = "signal_5d"
+SIGNAL_21D_MODEL_NAME = "signal_21d"
+SIGNAL_63D_MODEL_NAME = "signal_63d"
 META_MODEL_NAME = "meta_labeler"
 EXIT_MODEL_NAME = "exit_signal"
+CONFORMAL_MODEL_DIR_NAME = "conformal"
+CONFORMAL_SIGNAL5D_NAME = "conformal_signal5d"
+# FutureDevelopment.md #16: top-5 |SHAP value| features to keep per row —
+# shap_top5_json exists in the ml_signals schema/API contract (SPEC-DS-004)
+# but nothing computed it until this file wired shap.TreeExplainer in.
+SHAP_TOP_N = 5
 
 REGIME_RANK_NAMES = {0.0: "bearish", 1.0: "sideways", 2.0: "volatile", 3.0: "bullish"}
 
@@ -96,6 +110,24 @@ def _load_model(model_cls, name: str, models_dir: Path):
     return model
 
 
+def _load_exit_model(models_dir: Path):
+    """Load the trained ExitSignalModel, falling back to RuleBasedExitPolicy
+    if no trained model exists yet (A39, FeatureBacklog.md). Without this,
+    _step_exit raised FileNotFoundError the first time a position was open
+    and no ExitSignalModel had ever been trained, halting the entire daily
+    inference pipeline — mirrors the fallback scripts/run_daily_paper_trading.py
+    already uses via _load_exit_policy()."""
+    path = models_dir / EXIT_MODEL_NAME / f"{EXIT_MODEL_NAME}_current.pkl"
+    if path.exists():
+        model = ExitSignalModel()
+        model.load(str(path))
+        return model
+    logger.warning(
+        "No trained ExitSignalModel found at %s — falling back to RuleBasedExitPolicy", path
+    )
+    return RuleBasedExitPolicy()
+
+
 def _load_hmm(models_dir: Path):
     hmm_dir = models_dir / HMM_MODEL_DIR_NAME
     path = hmm_dir / f"{HMM_MODEL_NAME}_current.pkl"
@@ -109,6 +141,77 @@ def _load_hmm(models_dir: Path):
     if not candidates:
         raise FileNotFoundError(f"no hmm_market model found under {hmm_dir}")
     return joblib.load(candidates[-1])
+
+
+def _load_conformal(models_dir: Path):
+    """
+    Load the trained ConformalPredictor (wraps signal_5d's Q50 regressor,
+    see uncertainty/conformal.py) that calibrates conformal_lower/upper for
+    signal_5d rows.
+
+    Same "no _current.pkl written, fall back to newest versioned file"
+    situation _load_hmm already documents: train_all_phase1.py's conformal
+    branch only ever joblib.dump()s a {name}_v{date}.pkl (see that
+    function's step 6 comment), never a *_current.pkl symlink/copy.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no conformal_signal5d model has ever been trained/saved.
+    """
+    conf_dir = models_dir / CONFORMAL_MODEL_DIR_NAME
+    candidates = sorted(conf_dir.glob(f"{CONFORMAL_SIGNAL5D_NAME}_v*.pkl"))
+    if not candidates:
+        raise FileNotFoundError(f"no {CONFORMAL_SIGNAL5D_NAME} model found under {conf_dir}")
+    return joblib.load(candidates[-1])
+
+
+def _compute_shap_top5(signal_model: Signal5DModel, X: pd.DataFrame, direction: pd.Series) -> Dict[str, str]:
+    """
+    FutureDevelopment.md #16: top-5 |SHAP value| features per ticker for
+    signal_5d's LightGBM classifier, serialized as JSON for the
+    shap_top5_json column.
+
+    Uses the SAME imputed matrix the model itself scores on (X[self.
+    _feature_names] through _impute_transform) so SHAP values line up with
+    what actually drove predict()/predict_signals()'s output — not a
+    separately-imputed (and therefore inconsistent) copy.
+
+    Parameters
+    ----------
+    signal_model : Signal5DModel
+        Already-loaded/trained; must expose `_lgbm` (the base LightGBM
+        classifier), `_feature_names`, and `_impute_transform`.
+    X : pd.DataFrame
+        The eligible feature frame (indexed by ticker), same as passed to
+        predict_signals/predict.
+    direction : pd.Series
+        signal_model.predict(X)'s encoded class per ticker (same index as
+        X) — SHAP values are taken for each ticker's OWN predicted class,
+        not a fixed class, so "top 5 features" means "top 5 features
+        driving the call actually made for that ticker."
+
+    Returns
+    -------
+    dict
+        ticker -> JSON string '[{"feature": ..., "value": ...}, ...]'
+        (length SHAP_TOP_N, sorted by descending |value|).
+    """
+    feature_names = signal_model._feature_names
+    X_imputed = signal_model._impute_transform(X[feature_names])
+    X_imputed_df = pd.DataFrame(X_imputed, columns=feature_names, index=X.index)
+
+    explainer = shap.TreeExplainer(signal_model._lgbm)
+    shap_values = explainer.shap_values(X_imputed_df)  # (n_samples, n_features, n_classes) for multiclass LGBM
+
+    out: Dict[str, str] = {}
+    for i, ticker in enumerate(X.index):
+        class_idx = int(direction.loc[ticker])
+        row_values = shap_values[i, :, class_idx] if shap_values.ndim == 3 else shap_values[i, :]
+        order = np.argsort(-np.abs(row_values))[:SHAP_TOP_N]
+        top5 = [{"feature": feature_names[j], "value": float(row_values[j])} for j in order]
+        out[ticker] = json.dumps(top5)
+    return out
 
 
 def _write_signal(client: httpx.Client, api_base_url: str, payload: Dict[str, Any]) -> None:
@@ -213,6 +316,38 @@ def _step_signals_and_meta(
     signal_model = _load_model(Signal5DModel, SIGNAL_MODEL_NAME, models_dir)
     meta_model = _load_model(MetaLabeler, META_MODEL_NAME, models_dir)
 
+    # FutureDevelopment.md #14: signal_21d/signal_63d are trained and
+    # present in the model registry (datastore/models/registry.json) but,
+    # until this change, were never invoked from the daily per-ticker
+    # loop — only signal_5d was scored. Each is optional at the per-run
+    # level (a missing/corrupt model file for one horizon must not stop
+    # signal_5d/meta from being scored and written), so each load is
+    # wrapped individually.
+    longer_horizon_models: Dict[str, Any] = {}
+    for name, cls in ((SIGNAL_21D_MODEL_NAME, Signal21DModel), (SIGNAL_63D_MODEL_NAME, Signal63DModel)):
+        try:
+            longer_horizon_models[name] = _load_model(cls, name, models_dir)
+        except Exception as exc:
+            logger.warning(f"daily_inference: could not load {name} model, skipping it today ({exc})")
+
+    # FutureDevelopment.md #14: conformal_signal5d is trained/registered
+    # but was never invoked to populate conformal_lower/conformal_upper.
+    # [AS BUILT] train_all_phase1.py's conformal branch calibrated this
+    # model against CORE_TECHNICAL_FEATURES only (70 cols) — the Q50
+    # regressor it wraps was fit on that narrower set (n_features_in_ == 70
+    # on the trained artifact, confirmed by inspection), NOT the full
+    # 150-column feature set signal_5d/meta_labeler use post-2026-06-23
+    # retrain (see this function's own 2026-07-02 bug-fix comment below
+    # for that exact prior mismatch). Passing the full 150-col frame here
+    # would reproduce the same "silent 80-extra-columns" bug against a
+    # sklearn-style estimator that actually validates column count. So
+    # conformal scoring always slices back down to CORE_TECHNICAL_FEATURES.
+    try:
+        conformal = _load_conformal(models_dir)
+    except Exception as exc:
+        conformal = None
+        logger.warning(f"daily_inference: could not load conformal_signal5d model, skipping it today ({exc})")
+
     # [BUG FIX, 2026-07-02] Previously pre-filtered to CORE_TECHNICAL_FEATURES
     # (70 cols, Phase 1 technical-only) before calling predict_signals/
     # predict_full, which internally do X[self._feature_names] against
@@ -233,20 +368,44 @@ def _step_signals_and_meta(
     direction = signal_model.predict(X)  # threshold-based call (SPEC-MODEL-007), not a bare probability argmax
     meta_out = meta_model.predict_full(X)
 
+    # FutureDevelopment.md #16: SHAP top-5 per ticker for signal_5d's
+    # predicted class. One bad ticker's/whole-batch SHAP failure must not
+    # block signal_5d/meta from being written — this is enrichment, not a
+    # required column (shap_top5_json is Optional in the schema).
+    try:
+        shap_top5 = _compute_shap_top5(signal_model, X, direction)
+    except Exception as exc:
+        shap_top5 = {}
+        logger.warning(f"daily_inference: SHAP computation failed, shap_top5_json left null today ({exc})")
+
+    # FutureDevelopment.md #14: conformal_lower/upper for signal_5d, scored
+    # against CORE_TECHNICAL_FEATURES only (see the load-time comment above
+    # for why it can't take the full 150-col X).
+    conformal_intervals = None
+    if conformal is not None:
+        try:
+            conformal_cols = [c for c in CORE_TECHNICAL_FEATURES if c in X.columns]
+            conformal_intervals = conformal.predict_interval(X[conformal_cols])
+        except Exception as exc:
+            logger.warning(f"daily_inference: conformal scoring failed, conformal_lower/upper left null today ({exc})")
+
     for ticker in X.index:
-        _write_signal(
-            client, api_base_url,
-            {
-                "date": run_date.isoformat(), "ticker": ticker, "model_name": SIGNAL_MODEL_NAME, "model_version": "1.0",
-                "signal_direction": CLASS_NAMES[int(direction.loc[ticker])],
-                "buy_prob": float(proba.loc[ticker, "signal_buy_prob"]),
-                "hold_prob": float(proba.loc[ticker, "signal_hold_prob"]),
-                "sell_prob": float(proba.loc[ticker, "signal_sell_prob"]),
-                "q10_return": float(proba.loc[ticker, "signal_q10"]),
-                "q50_return": float(proba.loc[ticker, "signal_q50"]),
-                "q90_return": float(proba.loc[ticker, "signal_q90"]),
-            },
-        )
+        payload = {
+            "date": run_date.isoformat(), "ticker": ticker, "model_name": SIGNAL_MODEL_NAME, "model_version": "1.0",
+            "signal_direction": CLASS_NAMES[int(direction.loc[ticker])],
+            "buy_prob": float(proba.loc[ticker, "signal_buy_prob"]),
+            "hold_prob": float(proba.loc[ticker, "signal_hold_prob"]),
+            "sell_prob": float(proba.loc[ticker, "signal_sell_prob"]),
+            "q10_return": float(proba.loc[ticker, "signal_q10"]),
+            "q50_return": float(proba.loc[ticker, "signal_q50"]),
+            "q90_return": float(proba.loc[ticker, "signal_q90"]),
+        }
+        if conformal_intervals is not None and ticker in conformal_intervals.index:
+            payload["conformal_lower"] = float(conformal_intervals.loc[ticker, "conformal_lower"])
+            payload["conformal_upper"] = float(conformal_intervals.loc[ticker, "conformal_upper"])
+        if ticker in shap_top5:
+            payload["shap_top5_json"] = shap_top5[ticker]
+        _write_signal(client, api_base_url, payload)
         _write_signal(
             client, api_base_url,
             {
@@ -255,6 +414,32 @@ def _step_signals_and_meta(
                 "meta_prob": float(meta_out.loc[ticker, "meta_label_prob"]),
             },
         )
+
+    # FutureDevelopment.md #14: signal_21d/signal_63d scoring — same
+    # BUY/HOLD/SELL + Q10/Q50/Q90 output contract as signal_5d, written as
+    # their own (date, ticker, model_name) rows (SPEC-DS-004), never
+    # blended into the signal_5d row itself.
+    for name, model in longer_horizon_models.items():
+        try:
+            lh_proba = model.predict_signals(X)
+            lh_direction = model.predict(X)
+        except Exception as exc:
+            logger.warning(f"daily_inference: {name} scoring failed for this batch, skipping it today ({exc})")
+            continue
+        for ticker in X.index:
+            _write_signal(
+                client, api_base_url,
+                {
+                    "date": run_date.isoformat(), "ticker": ticker, "model_name": name, "model_version": "1.0",
+                    "signal_direction": CLASS_NAMES[int(lh_direction.loc[ticker])],
+                    "buy_prob": float(lh_proba.loc[ticker, "signal_buy_prob"]),
+                    "hold_prob": float(lh_proba.loc[ticker, "signal_hold_prob"]),
+                    "sell_prob": float(lh_proba.loc[ticker, "signal_sell_prob"]),
+                    "q10_return": float(lh_proba.loc[ticker, "signal_q10"]),
+                    "q50_return": float(lh_proba.loc[ticker, "signal_q50"]),
+                    "q90_return": float(lh_proba.loc[ticker, "signal_q90"]),
+                },
+            )
 
     return proba.join(meta_out)
 
@@ -266,7 +451,7 @@ def _step_exit(
     if position_context.empty:
         return []
 
-    exit_model = _load_model(ExitSignalModel, EXIT_MODEL_NAME, models_dir)
+    exit_model = _load_exit_model(models_dir)
     cols = [c for c in EXIT_CONTEXT_COLUMNS if c in position_context.columns]
     out = exit_model.predict_full(position_context.set_index("ticker")[cols])
 

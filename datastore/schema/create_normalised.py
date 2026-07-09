@@ -169,6 +169,96 @@ _CREATE_FUNDAMENTALS = """
         -- book_value_per_share*shares_outstanding back-derivation when
         -- present. See BuildLog.md "P3.11".
         total_equity DOUBLE,
+        -- [AS BUILT, deep-forensic altman_z fix 2026-07-07] "Reserves"
+        -- (INR Cr) is a real, separately-labeled row in the same
+        -- Screener.in #balance-sheet table total_equity above already
+        -- reads (`_parse_balance_sheet_history`, previously it only kept
+        -- the equity_capital+reserves SUM and discarded the reserves
+        -- component). Reserves & Surplus is the standard accounting
+        -- analog of "retained earnings" (accumulated profits not paid
+        -- out as equity capital) used in the classic Altman Z-Score X2
+        -- term — this is a real, separately-sourced field, not a
+        -- fabricated split of total_equity. Feeds features/deep_forensic.py's
+        -- altman_z, which was previously always NaN (its retained_earnings
+        -- input had no backing column at all).
+        retained_earnings DOUBLE,
+        -- [AS BUILT, deep-forensic 20-field gap fix] Total Assets and CWIP
+        -- (Capital Work in Progress) are REAL labeled rows in Screener.in's
+        -- free-tier #balance-sheet table (verified live against TCS's real
+        -- consolidated page 2026-07-07 — "CWIP" and "Total Assets" both
+        -- render as distinct rows: CWIP 1,564/1,546/2,665 Cr for FY24-26,
+        -- Total Assets 145,472/158,649/181,167 Cr, identical to Total
+        -- Liabilities per the balance-sheet identity). Unlike goodwill,
+        -- intangibles, contingent liabilities, subsidiary_count, and
+        -- related-party loans (grepped for on the same real page — zero
+        -- matches; Screener's free tier genuinely does not expose these as
+        -- distinct line items, only the "Related Party Transactions" modal
+        -- which requires Premium login AND still renders "xxx" placeholder
+        -- cells for most historical years — see features/deep_forensic.py's
+        -- module docstring for the full documented gap), total_assets/cwip
+        -- were previously omitted from this schema even though the raw
+        -- source data was sitting on every already-scraped page. Enables
+        -- real (non-fabricated) cwip_ratio and asset_inflation_flag in
+        -- features/deep_forensic.py; goodwill_ratio, contingent_liability_
+        -- ratio, loans_to_related, subsidiary_count, capex_to_assets,
+        -- intangibles_growth, off_balance_sheet_proxy, noncash_assets_ratio
+        -- remain NaN — no free structured source found for their numerators.
+        total_assets DOUBLE,
+        cwip DOUBLE,
+        -- [AS BUILT, 2026-07-07, NSE XBRL pipeline] The above comment's "no
+        -- free structured source found" is now WRONG for goodwill and
+        -- inventory/receivable/payable days — corrected same day. NSE's own
+        -- SEBI-mandated "Integrated Filing — IndAS" regulatory disclosure
+        -- (api/integrated-filing-results -> real iXBRL HTML per quarter,
+        -- live-verified against RELIANCE's real 2026-03-31 filing) contains
+        -- a complete, standardized "Statement of Asset and Liabilities" with
+        -- goodwill, inventories, trade receivables/payables (current AND
+        -- non-current), total liabilities, and a real audit-qualification
+        -- declaration — none of which Screener's/Trendlyne's free tiers
+        -- expose. See ingestion/scrapers/nse_xbrl_financials.py for the
+        -- parser and scripts/backfill_fundamentals_nse_xbrl.py for the
+        -- backfill. Per explicit operator instruction: NSE XBRL is now the
+        -- PREFERRED/primary source for these fields (more authoritative —
+        -- the regulatory filing itself, not a third-party's rendering of
+        -- it); Screener/Trendlyne remain the fallback where NSE's
+        -- Integrated Filing regime doesn't yet cover a company/quarter
+        -- (the regime only fully phased in from FY2023-24 on).
+        -- contingent_liability_ratio/subsidiary_count/loans_to_related/
+        -- capex_to_assets/intangibles_growth/off_balance_sheet_proxy
+        -- remain genuine gaps: verified live that "Disclosure of notes on
+        -- assets and liabilities" is freeform "Textual Information", not a
+        -- structured numeric field NSE's iXBRL exposes.
+        goodwill DOUBLE,
+        inventories DOUBLE,
+        trade_receivables_current DOUBLE,
+        trade_payables_current DOUBLE,
+        total_liabilities DOUBLE,
+        audit_qualified_flag BOOLEAN,
+        -- 2026-07-07 (same-day follow-up, per explicit operator instruction
+        -- "add additional columns as necessary, do not skip any datapoints,
+        -- it might be required for some calculations"): the rest of the
+        -- real, distinct line items NSE's Statement of Asset and
+        -- Liabilities exposes, beyond the initial 6 above. Same source/
+        -- authority as goodwill/inventories/etc. — see this table's comment
+        -- above them. Not fabricated estimates; every field here is a
+        -- separately-labeled real row live-verified against RELIANCE's
+        -- 2026-03-31 and 2025-09-30 filings.
+        property_plant_equipment DOUBLE,
+        intangible_assets DOUBLE,
+        non_current_investments DOUBLE,
+        non_current_trade_receivables DOUBLE,
+        deferred_tax_assets DOUBLE,
+        current_investments DOUBLE,
+        current_tax_assets DOUBLE,
+        borrowings_current DOUBLE,
+        borrowings_noncurrent DOUBLE,
+        deferred_tax_liabilities DOUBLE,
+        provisions_current DOUBLE,
+        provisions_noncurrent DOUBLE,
+        equity_share_capital DOUBLE,
+        other_equity DOUBLE,
+        non_controlling_interest DOUBLE,
+        non_current_liabilities DOUBLE,
         -- [AS BUILT, P2.6] Tijori Finance Pro sector-specific operational
         -- metrics (ARPU for telecom, NPA for banking, ANDA approvals for
         -- pharma, etc. — see ingestion/scrapers/tijori.py's _SECTOR_METRICS
@@ -183,6 +273,19 @@ _CREATE_FUNDAMENTALS = """
         sector_specific_metric_4 DOUBLE,
         sector_specific_metric_5 DOUBLE,
         sector_specific_metric_6 DOUBLE,
+        -- [AS BUILT, backlog #12/AF-5] Populated by
+        -- features/fundamental_quality_gate.py's validate_and_annotate(),
+        -- called from scripts/backfill_fundamentals_trendlyne.py and
+        -- scripts/load_kaggle_fundamentals.py before every write. Flags
+        -- (never rejects) rows with a ratio field outside its plausible
+        -- range (e.g. a margin stored as 0-100 instead of 0-1) so a units
+        -- bug like the operating_margin/net_margin one (BuildLog.md
+        -- "Fundamental Dashboard OpMargin/NetMargin Wrong") is caught at
+        -- write time instead of by hand months later. quality_flag_reason
+        -- holds a human-readable detail per flagged field; NULL/false
+        -- means the row passed every check (or was revenue-exempt).
+        quality_flag BOOLEAN,
+        quality_flag_reason VARCHAR,
         PRIMARY KEY (ticker, fiscal_year, quarter)
     )
 """
@@ -284,8 +387,248 @@ _CREATE_STOCK_MASTER = """
     )
 """
 
+# Big Investor Activity, Phase B (plan: gentle-wobbling-swing.md) —
+# related-party/investor-family seed mapping. entity_name is the
+# normalized (upper-case, whitespace-collapsed) raw client_name as it
+# appears in large_deals, so the join against large_deals.client_name is a
+# simple exact match rather than fuzzy matching at query time.
+_CREATE_INVESTOR_FAMILY = """
+    CREATE TABLE IF NOT EXISTS investor_family (
+        entity_name VARCHAR NOT NULL PRIMARY KEY,
+        family_id VARCHAR NOT NULL,
+        family_display_name VARCHAR NOT NULL,
+        match_type VARCHAR,
+        source VARCHAR,
+        confidence DOUBLE,
+        added_date DATE NOT NULL,
+        notes VARCHAR
+    )
+"""
+
+# Big Investor Activity, Phase B — derived, rebuildable from large_deals +
+# investor_family. Never a second source of truth: the daily attribution
+# step (and any full rebuild) can always regenerate this from those two
+# tables plus the intraday-netting logic. family_id is either a real
+# investor_family.family_id, or 'unmapped:<normalized_client_name>' for
+# clients with no known family mapping yet.
+_CREATE_BULK_DEAL_POSITIONS = """
+    CREATE TABLE IF NOT EXISTS bulk_deal_positions (
+        family_id VARCHAR NOT NULL,
+        ticker VARCHAR NOT NULL,
+        trade_date DATE NOT NULL,
+        deal_type VARCHAR NOT NULL,
+        net_transaction_type VARCHAR,
+        net_quantity BIGINT,
+        avg_price DOUBLE,
+        exchange VARCHAR,
+        cumulative_position_est BIGINT,
+        is_new_entry BOOLEAN NOT NULL DEFAULT FALSE,
+        is_full_exit BOOLEAN NOT NULL DEFAULT FALSE,
+        source_correction_id BIGINT,
+        PRIMARY KEY (family_id, ticker, trade_date, deal_type)
+    )
+"""
+
+# Big Investor Activity, Phase C (plan: gentle-wobbling-swing.md) — promotes
+# the existing datastore/normalised/mf_holdings/YYYY-MM.parquet snapshots
+# (written by ingestion/scrapers/amfi_holdings.py) into a queryable DuckDB
+# table, so the API can compute month-over-month movers without loading
+# parquet per request. The parquet files remain the raw/audit artifact;
+# this table is synced from them (see amfi_holdings.sync_duckdb_table).
+# month is stored as the first-of-month DATE to match the parquet
+# partition; availability_date is the PIT gate (SPEC-PIPE-003 — same
+# discipline as shareholding.filing_date), never `month` itself.
+_CREATE_MF_HOLDINGS = """
+    CREATE TABLE IF NOT EXISTS mf_holdings (
+        ticker VARCHAR NOT NULL,
+        month DATE NOT NULL,
+        scheme_name VARCHAR NOT NULL,
+        isin VARCHAR,
+        quantity BIGINT,
+        value_inr DOUBLE,
+        availability_date DATE NOT NULL,
+        PRIMARY KEY (ticker, month, scheme_name)
+    )
+"""
+
+# Big Investor Activity, Phase D (plan: gentle-wobbling-swing.md) — named
+# public-shareholder disclosures (>1% holders), sourced from Trendlyne's
+# superstar-investor pages (ingestion/scrapers/trendlyne.py, all ~62
+# investors on Trendlyne's index — extended to also persist per-investor
+# stake_pct here rather than only the aggregated shareholding.superstar_*
+# columns). family_id links to investor_family where the holder_name
+# matches a seeded entity; NULL if unmatched. One row per
+# (ticker, holder_name, quarter_end_date) — a holder can appear across
+# multiple quarters as their stake changes.
+#
+# reported_shares is a REAL absolute share count ("Qty Held" on
+# Trendlyne's page, confirmed via a real authenticated fetch 2026-07-05)
+# — when present, ingestion/scrapers/bulk_deal_reconciliation.py uses this
+# directly instead of deriving shares outstanding from market_cap_cr /
+# close price (its fallback for quarters where Trendlyne shows "-" /
+# "Filing Awaited" for Qty Held).
+_CREATE_PUBLIC_SHAREHOLDERS = """
+    CREATE TABLE IF NOT EXISTS public_shareholders (
+        ticker VARCHAR NOT NULL,
+        holder_name VARCHAR NOT NULL,
+        quarter_end_date DATE NOT NULL,
+        filing_date DATE NOT NULL,
+        family_id VARCHAR,
+        stake_pct DOUBLE,
+        qoq_change_pct DOUBLE,
+        reported_shares BIGINT,
+        source VARCHAR NOT NULL,
+        fetched_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (ticker, holder_name, quarter_end_date)
+    )
+"""
+
+# Big Investor Activity, Phase D — audit trail for reconciling
+# bulk_deal_positions' estimated family position against public_shareholders'
+# reported stake for the same family+ticker+quarter. See
+# ingestion/scrapers/bulk_deal_reconciliation.py.
+_CREATE_BULK_DEAL_RECONCILIATION_LOG = """
+    CREATE TABLE IF NOT EXISTS bulk_deal_reconciliation_log (
+        id BIGINT NOT NULL,
+        family_id VARCHAR NOT NULL,
+        ticker VARCHAR NOT NULL,
+        quarter_end_date DATE NOT NULL,
+        filing_date DATE NOT NULL,
+        estimated_position_pre_correction BIGINT,
+        reported_shares_est BIGINT,
+        correction_applied BOOLEAN NOT NULL DEFAULT FALSE,
+        correction_delta BIGINT,
+        discrepancy_pct DOUBLE,
+        status VARCHAR NOT NULL,
+        reviewed_by VARCHAR,
+        reviewed_at TIMESTAMP,
+        notes VARCHAR,
+        PRIMARY KEY (id)
+    )
+"""
+
+_CREATE_INDEX_OHLCV = """
+    CREATE TABLE IF NOT EXISTS index_ohlcv (
+        date DATE NOT NULL,
+        index_name VARCHAR NOT NULL,
+        open DOUBLE,
+        high DOUBLE,
+        low DOUBLE,
+        close DOUBLE,
+        volume BIGINT,
+        PRIMARY KEY (date, index_name)
+    )
+"""
+
+# [AS BUILT, 2026-07-07] Real NSE Corporate Announcements feed
+# (nseindia.com/api/corporate-announcements — live-verified real JSON,
+# 18,036 rows over a 5-week window, `desc` field is one of ~90 real NSE
+# taxonomy categories). Filtered at ingestion time to "material event"
+# categories only (Buyback/QIP/Board changes/Investigations/Credit
+# Rating/Auditor changes/M&A — see ingestion/scrapers/
+# nse_corporate_announcements.py's _MATERIAL_CATEGORIES for the exact
+# list); routine noise (Board Meeting outcomes, Dividend/Rights/Split/
+# Bonus notices, generic Press Release/Updates) is dropped, not stored —
+# an explicit user decision (recommended-scope option), not a technical
+# constraint on the source, which has all of it.
+_CREATE_CORPORATE_ANNOUNCEMENTS = """
+    CREATE TABLE IF NOT EXISTS corporate_announcements (
+        seq_id VARCHAR NOT NULL,
+        ticker VARCHAR NOT NULL,
+        company_name VARCHAR,
+        category VARCHAR NOT NULL,
+        subject VARCHAR,
+        announcement_text VARCHAR,
+        announced_at TIMESTAMP NOT NULL,
+        exchange_disseminated_at TIMESTAMP,
+        attachment_url VARCHAR,
+        PRIMARY KEY (seq_id)
+    )
+"""
+
+# A20 (Data Integrity Checker): RCA + fix-proposal output for the four
+# integrity checks (datastore/integrity/checks.py). Findings always land
+# as status='pending' — approve_finding()/reject_finding()
+# (datastore/integrity/findings.py) are the only path to 'applied'/
+# 'rejected', matching this project's "flag, don't silently write"
+# discipline (A12, A25's staging.rejected_rows).
+_CREATE_DATA_INTEGRITY_FINDINGS = """
+    CREATE SEQUENCE IF NOT EXISTS data_integrity_findings_id_seq;
+    CREATE TABLE IF NOT EXISTS data_integrity_findings (
+        id BIGINT PRIMARY KEY DEFAULT nextval('data_integrity_findings_id_seq'),
+        check_name VARCHAR NOT NULL,
+        ticker VARCHAR,
+        finding_date DATE NOT NULL,
+        severity VARCHAR NOT NULL,
+        description VARCHAR NOT NULL,
+        evidence_json VARCHAR,
+        proposed_fix_sql VARCHAR,
+        proposed_fix_params_json VARCHAR,
+        status VARCHAR NOT NULL DEFAULT 'pending',
+        reviewed_by VARCHAR,
+        reviewed_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
+# A21 (Pipeline Health Checker): append-only per-invocation history for
+# every recurring scheduled job. scheduler_heartbeats (SQLite,
+# PIPELINE_LOG_DB_PATH) only ever upserts the LATEST attempt per job_id —
+# there is no way to answer "did weekend_feature_backfill actually
+# succeed 7 days ago" from it. This table is written alongside that
+# upsert by ingestion/scheduler/pipeline_scheduler.py::_record_heartbeat
+# (no call-site changes needed) so every job gets real per-invocation
+# history going forward. Never updated/deleted — a log, not a state
+# table. History only starts accumulating once this ships (same "needs
+# real weeks of data" caveat as A23's benchmark history).
+# A23 (benchmark history): duration_seconds/peak_rss_mb added alongside
+# the original A21 columns, written by the same _record_heartbeat call —
+# no new storage system, just wider rows on what's already there. Both
+# nullable: rows written before this shipped, and any call site that
+# can't measure timing for some reason, simply leave them NULL rather
+# than needing a schema migration/backfill. peak_rss_mb is a best-effort
+# approximation (see pipeline_scheduler.py::_job_timing docstring for the
+# ru_maxrss high-water-mark caveat), not an exact per-run figure — still
+# useful for the relative weekday/weekend trend comparison A23 is for.
+_CREATE_JOB_RUN_LOG = """
+    CREATE SEQUENCE IF NOT EXISTS job_run_log_id_seq;
+    CREATE TABLE IF NOT EXISTS job_run_log (
+        id BIGINT PRIMARY KEY DEFAULT nextval('job_run_log_id_seq'),
+        job_id VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        error VARCHAR,
+        duration_seconds DOUBLE,
+        peak_rss_mb DOUBLE,
+        recorded_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
+# A21 (Pipeline Health Checker): missed-job findings, same "flag, don't
+# silently write" shape as A20's data_integrity_findings — see
+# datastore/health/findings.py. proposed_catchup_action/params describe
+# a catch-up ACTION (force-run a pipeline date, re-run a weekend script,
+# re-run mf_holdings ingestion) rather than a SQL fix, since a missed job
+# isn't a bad row to correct, it's work that never happened.
+_CREATE_MISSED_JOB_FINDINGS = """
+    CREATE SEQUENCE IF NOT EXISTS missed_job_findings_id_seq;
+    CREATE TABLE IF NOT EXISTS missed_job_findings (
+        id BIGINT PRIMARY KEY DEFAULT nextval('missed_job_findings_id_seq'),
+        job_id VARCHAR NOT NULL,
+        missed_date DATE NOT NULL,
+        severity VARCHAR NOT NULL,
+        description VARCHAR NOT NULL,
+        proposed_catchup_action VARCHAR,
+        proposed_catchup_params_json VARCHAR,
+        status VARCHAR NOT NULL DEFAULT 'pending',
+        reviewed_by VARCHAR,
+        reviewed_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
 _ALL_TABLES = {
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
+    "index_ohlcv": _CREATE_INDEX_OHLCV,
     "ohlcv_ca_audit": _CREATE_OHLCV_CA_AUDIT,
     "corporate_actions": _CREATE_CORPORATE_ACTIONS,
     "fundamentals": _CREATE_FUNDAMENTALS,
@@ -294,6 +637,15 @@ _ALL_TABLES = {
     "large_deals": _CREATE_LARGE_DEALS,
     "macro_indicators": _CREATE_MACRO_INDICATORS,
     "stock_master": _CREATE_STOCK_MASTER,
+    "investor_family": _CREATE_INVESTOR_FAMILY,
+    "bulk_deal_positions": _CREATE_BULK_DEAL_POSITIONS,
+    "mf_holdings": _CREATE_MF_HOLDINGS,
+    "public_shareholders": _CREATE_PUBLIC_SHAREHOLDERS,
+    "bulk_deal_reconciliation_log": _CREATE_BULK_DEAL_RECONCILIATION_LOG,
+    "corporate_announcements": _CREATE_CORPORATE_ANNOUNCEMENTS,
+    "data_integrity_findings": _CREATE_DATA_INTEGRITY_FINDINGS,
+    "job_run_log": _CREATE_JOB_RUN_LOG,
+    "missed_job_findings": _CREATE_MISSED_JOB_FINDINGS,
 }
 
 # [AS BUILT, P2.1] This project has no formal migration system — `CREATE
@@ -333,16 +685,60 @@ _MIGRATE_ADDED_COLUMNS = {
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fcf_margin DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS capex_intensity DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS total_equity DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS retained_earnings DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_1 DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_2 DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_3 DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_4 DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_5 DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS sector_specific_metric_6 DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS quality_flag BOOLEAN",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS quality_flag_reason VARCHAR",
+        # [AS BUILT, deep-forensic 20-field gap fix] see _CREATE_FUNDAMENTALS
+        # comment above total_assets/cwip for sourcing rationale.
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS total_assets DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS cwip DOUBLE",
+        # [AS BUILT, 2026-07-07, NSE XBRL pipeline] see _CREATE_FUNDAMENTALS
+        # comment above these columns for sourcing rationale.
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS goodwill DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS inventories DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS trade_receivables_current DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS trade_payables_current DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS total_liabilities DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS audit_qualified_flag BOOLEAN",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS property_plant_equipment DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS intangible_assets DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS non_current_investments DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS non_current_trade_receivables DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS deferred_tax_assets DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS current_investments DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS current_tax_assets DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS borrowings_current DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS borrowings_noncurrent DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS deferred_tax_liabilities DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS provisions_current DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS provisions_noncurrent DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS equity_share_capital DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS other_equity DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS non_controlling_interest DOUBLE",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS non_current_liabilities DOUBLE",
     ],
     "shareholding": [
         "ALTER TABLE shareholding ADD COLUMN IF NOT EXISTS superstar_flag BOOLEAN",
         "ALTER TABLE shareholding ADD COLUMN IF NOT EXISTS superstar_change DOUBLE",
+    ],
+    "public_shareholders": [
+        # reported_shares: real "Qty Held" from Trendlyne (added after the
+        # table's initial Phase D creation, once a live authenticated
+        # fetch confirmed Trendlyne reports this directly — see
+        # ingestion/scrapers/trendlyne.py's _parse_holdings_table).
+        "ALTER TABLE public_shareholders ADD COLUMN IF NOT EXISTS reported_shares BIGINT",
+    ],
+    "job_run_log": [
+        # A23: benchmark history columns, added after job_run_log's initial
+        # A21 creation — see _CREATE_JOB_RUN_LOG's comment for rationale.
+        "ALTER TABLE job_run_log ADD COLUMN IF NOT EXISTS duration_seconds DOUBLE",
+        "ALTER TABLE job_run_log ADD COLUMN IF NOT EXISTS peak_rss_mb DOUBLE",
     ],
 }
 
@@ -410,7 +806,14 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
         db_path = DUCKDB_PATH
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_duckdb_connection(db_path) as conn:
+    # persist=False (SPEC-SCHED-013): this can run at startup of either the
+    # long-lived scheduler process or the long-lived API process, both of
+    # which share this same DuckDB file — DuckDB allows only one read-write
+    # connection at a time, so a persistent (cached, held-open) connection
+    # here would deadlock against the other process's own persistent
+    # connection on every restart. Release the write lock immediately after
+    # ensuring tables exist.
+    with get_duckdb_connection(db_path, persist=False) as conn:
         for table_name, ddl in _ALL_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")

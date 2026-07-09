@@ -104,6 +104,20 @@ class TestBuildFeatureMatrix:
         for col in CALENDAR_FEATURES:
             assert zzz_row[col].notna().all()
 
+    def test_all_tickers_missing_raises_instead_of_all_nan_matrix(self, fake_client):
+        """2026-07-07 incident regression: when OHLCV is unavailable for every ticker
+        (e.g. the DataStore API is down), this must hard-fail rather than silently
+        write an all-NaN feature matrix that gets checkpointed 'success' and fed to
+        every downstream model. A handful of individually-missing tickers (covered by
+        test_ticker_with_no_data_gets_all_nan_row_not_dropped) is a distinct, tolerated
+        case — zero-of-N is never legitimate."""
+        fake_client._missing.update({"AAA", "BBB"})
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        with pytest.raises(RuntimeError, match="No OHLCV data returned"):
+            build_feature_matrix(
+                target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False
+            )
+
     def test_macro_columns_present_even_without_macro_indicators(self, fake_client):
         """No macro_indicators seeded for this date -> macro columns NaN, but still present, not dropped."""
         target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")

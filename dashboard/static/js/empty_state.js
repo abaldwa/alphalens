@@ -9,7 +9,7 @@
 const BACKEND_STATUS = {
   technical: "Charting, Compare, Market Overview, Screener (42 templates), and Alert Manager (user-defined ticker/template alerts, checked daily) are all now live and wired to real data — see /api/v1/ta/*.",
   fundamental: "All 6 AlphaLens.Fundamental screens are now wired to real data (sector-relative ratios, governance, quality/growth/management composite scores, peer ranking, screener presets, thesis synthesis) — see /api/v1/fundamentals/*. Remaining gaps (sector-unique metrics like GNPA/ANDA, related-party-transaction detail) are flagged per-panel, not screen-wide.",
-  valuation: "AlphaLens.Valuation has no backend yet — systems/damodaran_valuation/ is an empty stub (no DCF or relative-valuation engine exists). This screen will activate once that system exists.",
+  valuation: "Batch Valuation is now live (real DCF via systems/damodaran_valuation/, see /api/v1/valuation/batch/ranked). This screen (single-stock DCF drill-down / relative valuation / back-test accuracy) is not wired to the frontend yet.",
   forensic: "This panel needs data the forensic API doesn't expose yet.",
 };
 

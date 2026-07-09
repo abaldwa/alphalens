@@ -418,6 +418,9 @@ TOTAL_ROUNDTRIP_COST = 0.005
 | Tijori Finance Pro | Operational metrics, segment data | ₹3,500/yr | P2 |
 | RBI Website | 10yr yield, credit data | Free | P0 |
 | Yahoo Finance | USD/INR, crude, gold, S&P500 | Free | P0 |
+| NSE Archive CSVs | Bulk/block deals (fallback tier — see SPEC-PIPE-008) | Free | P3 |
+| BSE Bulk/Block Deals API | **Retired 2026-07 — no working replacement found, SPEC-PIPE-008** | N/A | P3 |
+| Trendlyne Superstar Investors (public index) | Real HNI investor list + per-quarter named holdings for reconciliation (SPEC-BIGINV-004) | Free (index page); ₹5,900/yr account used for authenticated per-investor detail | P3 |
 
 ---
 
@@ -472,15 +475,19 @@ Before creating any new module, confirm:
 
 ## Screen References
 
-**[AS BUILT, 2026-07-01]** The 27-screen, 5-app prototype design lives in
+**[AS BUILT, 2026-07-01; Valuation row corrected 2026-07-05]** The 27-screen, 5-app prototype design lives in
 `screens/SCREEN_INVENTORY.md` (registry) + `screens/alphalens_{ml,
 technical,fundamental,valuation,forensic}.html` (one interactive mock per
 app — open any of these in a browser to see the target design). The live
 dashboard at `dashboard/static/` has been rebuilt to this structure; see
 `specs/08_specifications.md`'s SPEC-UI-001 through SPEC-UI-010 for the
 as-built screen-to-file mapping and which screens are real-data vs.
-empty-state (Technical and Valuation have no backend yet — see
-SPEC-UI-008/009).
+empty-state. Technical is real (SPEC-UI-008). Valuation is now 3-of-4 real:
+DCF, Relative, and Batch call `datastore/api/routers/valuation.py`, which is
+backed by real computation in `systems/damodaran_valuation/` (verified via a
+live end-to-end run producing real DCF/WACC/lifecycle/Monte-Carlo output,
+2026-07-05). Only the Accuracy screen remains a hardcoded empty-state stub
+with no backend call (SPEC-UI-009).
 
 | App | Screens | Status | Spec |
 |-----|---------|--------|------|
@@ -488,7 +495,8 @@ SPEC-UI-008/009).
 | AlphaLens.Forensic | 7 (Dashboard, Red Flags, Benford, Cash Flow, Peer Heatmap, Investigation, Universe Scan) | Real | SPEC-UI-004 |
 | AlphaLens.Fundamental | 6 (Dashboard, Peers, Sector, Screener, Thesis, Management) | 4 Real, 2 Partial (Sector/Management have one empty-stated sub-panel each) | SPEC-UI-009, SPEC-FA-008 |
 | AlphaLens.Technical | 5 (Chart, Screener, Compare, Alerts, Market Overview) | Real | SPEC-UI-008, SPEC-TA-004, SPEC-TA-006, SPEC-TA-009 |
-| AlphaLens.Valuation | 4 (DCF, Relative, Batch, Accuracy) | Empty (no backend) | SPEC-UI-009 |
+| AlphaLens.Valuation | 4 (DCF, Relative, Batch, Accuracy) | 3 Real (DCF, Relative, Batch), 1 Empty (Accuracy — "Not yet built.") | SPEC-UI-009 |
+| AlphaLens.BigInvestors | 2 (Bulk/Block Deals + families + reconciliation, MF Holdings movers) | Real, NSE-only (BSE bulk/block deals endpoint retired, SPEC-PIPE-008) | SPEC-BIGINV-001 through 006 |
 
 ---
 

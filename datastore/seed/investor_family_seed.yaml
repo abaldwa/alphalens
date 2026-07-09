@@ -1,0 +1,306 @@
+# datastore/seed/investor_family_seed.yaml
+#
+# Related-party / investor-family mapping seed for the Big Investor Activity
+# feature (plan: gentle-wobbling-swing.md, Phase B). NOT auto-loaded — review
+# and edit this file, then run scripts/load_investor_family_seed.py --dry-run
+# before ever loading it into the investor_family DuckDB table.
+#
+# Source: https://trendlyne.com/portfolio/superstar-shareholders/index/ (real
+# Trendlyne "superstar shareholder" entity names, fetched 2026-07-05) plus
+# earlier public-knowledge research for the Jhunjhunwala family's exact
+# aliases as they appear in NSE/BSE bulk-deal client_name fields.
+#
+# CONFIDENCE LEVELS:
+#   confirmed  — well-documented public relationship (marriage, HUF, named
+#                proprietorship of a specific person)
+#   candidate  — same surname/pattern, relationship NOT verified; kept as
+#                SEPARATE families below pending your confirmation (see the
+#                "Candidate groupings needing confirmation" section at the
+#                bottom — do NOT merge these without checking)
+
+families:
+  - family_id: jhunjhunwala
+    family_display_name: "Rakesh & Rekha Jhunjhunwala / RARE Enterprises"
+    confidence: confirmed
+    entities:
+      - "RAKESH JHUNJHUNWALA AND ASSOCIATES"
+      - "REKHA JHUNJHUNWALA"
+      - "RAKESH JHUNJHUNWALA-HUF"
+      - "RARE ENTERPRISES"
+    notes: >
+      Married couple; RARE Enterprises is their joint investment vehicle,
+      now run by Utpal Sheth & Rajiv Agarwal post Rakesh's 2022 death.
+      Exact NSE/BSE client_name spellings need cross-check against real
+      large_deals rows once Phase A data accumulates.
+
+  - family_id: damani
+    family_display_name: "Radhakishan Damani"
+    confidence: confirmed
+    entities:
+      - "RADHAKISHAN DAMANI"
+      - "BRIGHT STAR INVESTMENTS PRIVATE LIMITED"
+    notes: "Bright Star Investments is Radhakishan Damani's known investment vehicle."
+
+  # --- Remaining Trendlyne superstar-shareholder entities, one family each
+  # (no merging assumed unless confirmed above). Single-entity "families"
+  # keep the schema uniform and let future confirmed merges just add
+  # entities to an existing family_id rather than restructuring.
+  - family_id: ajay_upadhyaya
+    family_display_name: "Ajay Upadhyaya"
+    confidence: confirmed
+    entities: ["AJAY UPADHYAYA"]
+  - family_id: bhanshali_akash
+    family_display_name: "Akash Bhanshali"
+    confidence: confirmed
+    entities: ["AKASH BHANSHALI"]
+  - family_id: amit_gupta
+    family_display_name: "Amit Gupta"
+    confidence: confirmed
+    entities: ["AMIT GUPTA"]
+  - family_id: goel_anil_kumar
+    family_display_name: "Anil Kumar Goel and Associates"
+    confidence: confirmed
+    entities: ["ANIL KUMAR GOEL AND ASSOCIATES"]
+  - family_id: sheth_anantrai
+    family_display_name: "Anuj & Hiten Anantrai Sheth"
+    confidence: confirmed
+    entities: ["ANUJ ANANTRAI SHETH AND ASSOCIATES", "HITEN ANANTRAI SHETH"]
+    notes: "Merged per user confirmation 2026-07-05 — shared patronymic 'Anantrai', likely siblings."
+  - family_id: dhawan_ashish
+    family_display_name: "Ashish Dhawan"
+    confidence: confirmed
+    entities: ["ASHISH DHAWAN"]
+  - family_id: kacholia_ashish
+    family_display_name: "Ashish Kacholia"
+    confidence: confirmed
+    entities: ["ASHISH KACHOLIA"]
+  - family_id: jain_ashok_kumar
+    family_display_name: "Ashok Kumar Jain"
+    confidence: confirmed
+    entities: ["ASHOK KUMAR JAIN"]
+  - family_id: kabra_atim
+    family_display_name: "Atim Kabra"
+    confidence: confirmed
+    entities: ["ATIM KABRA"]
+  - family_id: patel_bharat_jayantilal
+    family_display_name: "Bharat Jayantilal Patel and Associates"
+    confidence: confirmed
+    entities: ["BHARAT JAYANTILAL PATEL AND ASSOCIATES"]
+  - family_id: lohia_dheeraj_kumar
+    family_display_name: "Dheeraj Kumar Lohia and Associates"
+    confidence: confirmed
+    entities: ["DHEERAJ KUMAR LOHIA AND ASSOCIATES"]
+  - family_id: lakhi_dilipkumar
+    family_display_name: "Dilipkumar Lakhi"
+    confidence: confirmed
+    entities: ["DILIPKUMAR LAKHI"]
+  - family_id: shah_dipak_kanayalal
+    family_display_name: "Dipak Kanayalal Shah"
+    confidence: confirmed
+    entities: ["DIPAK KANAYALAL SHAH"]
+  - family_id: khanna_dolly
+    family_display_name: "Dolly Khanna"
+    confidence: confirmed
+    entities: ["DOLLY KHANNA"]
+  - family_id: javeri_harsha_hitesh
+    family_display_name: "Harsha Hitesh Javeri"
+    confidence: confirmed
+    entities: ["HARSHA HITESH JAVERI"]
+  - family_id: javeri_hitesh_ramji
+    family_display_name: "Hitesh Ramji Javeri and Associates"
+    confidence: confirmed
+    entities: ["HITESH RAMJI JAVERI AND ASSOCIATES"]
+  - family_id: doshi_hitesh_satishchandra
+    family_display_name: "Hitesh Satishchandra Doshi"
+    confidence: confirmed
+    entities: ["HITESH SATISHCHANDRA DOSHI"]
+  - family_id: keswani_haresh
+    family_display_name: "Keswani Haresh"
+    confidence: confirmed
+    entities: ["KESWANI HARESH"]
+  - family_id: bhanshali_lata
+    family_display_name: "Lata Bhanshali"
+    confidence: confirmed
+    entities: ["LATA BHANSHALI"]
+  - family_id: coelho_lincoln
+    family_display_name: "Lincoln P Coelho"
+    confidence: confirmed
+    entities: ["LINCOLN P COELHO"]
+  - family_id: sheth_madhukar
+    family_display_name: "Madhukar Sheth"
+    confidence: confirmed
+    entities: ["MADHUKAR SHETH"]
+  - family_id: girdharilal_mahendra
+    family_display_name: "Mahendra Girdharilal"
+    confidence: confirmed
+    entities: ["MAHENDRA GIRDHARILAL"]
+  - family_id: patel_minal_bharat
+    family_display_name: "Minal Bharat Patel"
+    confidence: confirmed
+    entities: ["MINAL BHARAT PATEL"]
+  - family_id: agrawal_mukul
+    family_display_name: "Mukul Agrawal"
+    confidence: confirmed
+    entities: ["MUKUL AGRAWAL", "MUKUL MAHAVIR AGRAWAL"]
+  - family_id: shah_nemish
+    family_display_name: "Nemish S Shah"
+    confidence: confirmed
+    entities: ["NEMISH S SHAH"]
+  - family_id: veliyath_porinju
+    family_display_name: "Porinju V Veliyath"
+    confidence: confirmed
+    entities: ["PORINJU V VELIYATH", "EQUITY INTELLIGENCE INDIA PRIVATE LIMITED", "PORINJU VELIYATH"]
+    notes: >
+      "PORINJU VELIYATH" (no middle initial) added as an alias 2026-07-05 —
+      how ingestion/scrapers/trendlyne.py's SUPERSTAR_INVESTORS names this
+      same person; needed so public_shareholders rows match this family_id.
+  - family_id: lohia_raj_kumar
+    family_display_name: "Raj Kumar Lohia"
+    confidence: confirmed
+    entities: ["RAJ KUMAR LOHIA"]
+  - family_id: kirpalani_ricky
+    family_display_name: "Ricky Ishwardas Kirpalani"
+    confidence: confirmed
+    entities: ["RICKY ISHWARDAS KIRPALANI"]
+  - family_id: sangeetha_s
+    family_display_name: "Sangeetha S"
+    confidence: confirmed
+    entities: ["SANGEETHA S"]
+  - family_id: gupta_sanjay
+    family_display_name: "Sanjay Gupta"
+    confidence: confirmed
+    entities: ["SANJAY GUPTA"]
+  - family_id: agarwal_sanjay_kumar
+    family_display_name: "Sanjay Kumar Agarwal"
+    confidence: confirmed
+    entities: ["SANJAY KUMAR AGARWAL"]
+  - family_id: parekh_vinodchandra
+    family_display_name: "Sanjeev & Vinodchandra Mansukhlal Parekh"
+    confidence: confirmed
+    entities: ["SANJEEV VINODCHANDRA PAREKH", "VINODCHANDRA MANSUKHLAL PAREKH AND ASSOCIATES"]
+    notes: "Merged per user confirmation 2026-07-05 — patronymic-to-first-name match ('Vinodchandra'), likely father/son."
+  - family_id: shah_sanjiv_dhireshbhai
+    family_display_name: "Sanjiv Dhireshbhai Shah"
+    confidence: confirmed
+    entities: ["SANJIV DHIRESHBHAI SHAH"]
+  - family_id: khattar_satpal
+    family_display_name: "Satpal Khattar"
+    confidence: confirmed
+    entities: ["SATPAL KHATTAR"]
+  - family_id: seetha_kumari
+    family_display_name: "Seetha Kumari"
+    confidence: confirmed
+    entities: ["SEETHA KUMARI"]
+  - family_id: shah_sharad_kanayalal
+    family_display_name: "Sharad Kanayalal Shah and Associates"
+    confidence: confirmed
+    entities: ["SHARAD KANAYALAL SHAH AND ASSOCIATES"]
+  - family_id: shah_shaunak_jagdish
+    family_display_name: "Shaunak Jagdish Shah"
+    confidence: confirmed
+    entities: ["SHAUNAK JAGDISH SHAH"]
+  - family_id: trivedi_shivani_tejas
+    family_display_name: "Shivani Tejas Trivedi"
+    confidence: confirmed
+    entities: ["SHIVANI TEJAS TRIVEDI"]
+  - family_id: kumar_sunil
+    family_display_name: "Sunil Kumar"
+    confidence: confirmed
+    entities: ["SUNIL KUMAR"]
+  - family_id: agarwal_suresh_kumar
+    family_display_name: "Suresh Kumar Agarwal"
+    confidence: confirmed
+    entities: ["SURESH KUMAR AGARWAL"]
+  - family_id: bhanshali_vallabh
+    family_display_name: "Vallabh Roopchand Bhanshali"
+    confidence: confirmed
+    entities: ["VALLABH ROOPCHAND BHANSHALI"]
+    notes: "ENAM Securities founder — NOT the same person/family as Akash Bhanshali / Lata Bhanshali despite shared surname."
+  - family_id: iyer_vanaja_sundar
+    family_display_name: "Vanaja Sundar Iyer"
+    confidence: confirmed
+    entities: ["VANAJA SUNDAR IYER"]
+  - family_id: kedia_vijay
+    family_display_name: "Vijay Kishanlal Kedia"
+    confidence: confirmed
+    entities: ["VIJAY KISHANLAL KEDIA", "KEDIA SECURITIES PRIVATE LIMITED", "VIJAY KEDIA"]
+    notes: >
+      "VIJAY KEDIA" (no patronymic) added as an alias 2026-07-05 — how
+      ingestion/scrapers/trendlyne.py's SUPERSTAR_INVESTORS names this same
+      person; needed so public_shareholders rows match this family_id.
+  - family_id: damani_ramesh
+    family_display_name: "Ramesh Damani"
+    confidence: confirmed
+    entities: ["RAMESH DAMANI"]
+    notes: "Distinct from Radhakishan Damani — no confirmed family relation, do not merge."
+  - family_id: pabrai_mohnish
+    family_display_name: "Mohnish Pabrai"
+    confidence: confirmed
+    entities: ["MOHNISH PABRAI"]
+  - family_id: singhania_sunil
+    family_display_name: "Sunil Singhania"
+    confidence: confirmed
+    entities: ["SUNIL SINGHANIA", "ABAKKUS GROWTH FUND"]
+    notes: "Abakkus fund entity name needs verification against real deal data."
+  - family_id: gulati_girish
+    family_display_name: "Girish Gulati"
+    confidence: confirmed
+    entities: ["GIRISH GULATI"]
+  - family_id: kela_madhusudan
+    family_display_name: "Madhusudan Kela"
+    confidence: confirmed
+    entities: ["MADHUSUDAN KELA"]
+  - family_id: sharma_shankar
+    family_display_name: "Shankar Sharma"
+    confidence: confirmed
+    entities: ["SHANKAR SHARMA"]
+  - family_id: master_urjita
+    family_display_name: "Urjita Master"
+    confidence: confirmed
+    entities: ["URJITA MASTER"]
+  - family_id: vora_nikhil
+    family_display_name: "Nikhil Vora"
+    confidence: confirmed
+    entities: ["NIKHIL VORA"]
+  - family_id: tripathi_bhavook
+    family_display_name: "Bhavook Tripathi"
+    confidence: confirmed
+    entities: ["BHAVOOK TRIPATHI"]
+  - family_id: parikh_amal
+    family_display_name: "Amal Parikh"
+    confidence: confirmed
+    entities: ["AMAL PARIKH"]
+  - family_id: patel_jayesh
+    family_display_name: "Jayesh Patel"
+    confidence: confirmed
+    entities: ["JAYESH PATEL"]
+  - family_id: premji_associates
+    family_display_name: "Premji and Associates"
+    confidence: confirmed
+    entities: ["PREMJI AND ASSOCIATES"]
+  - family_id: ambani_mukesh
+    family_display_name: "Mukesh Ambani and Family"
+    confidence: confirmed
+    entities: ["MUKESH AMBANI AND FAMILY"]
+  - family_id: parikh_govindlal
+    family_display_name: "Govindlal M Parikh"
+    confidence: confirmed
+    entities: ["GOVINDLAL M PARIKH"]
+
+# --- Resolved 2026-07-05 ---
+# Sheth cluster: Anuj + Hiten Anantrai Sheth merged (confirmed above,
+# shared patronymic "Anantrai"). Madhukar Sheth stays separate (different
+# patronymic). Javeri cluster: Harsha Hitesh Javeri and Hitesh Ramji Javeri
+# and Associates confirmed NOT merged — kept as 2 independent entities
+# above (per user instruction; despite shared "Hitesh", not confirmed).
+# Parekh cluster: Sanjeev Vinodchandra Parekh + Vinodchandra Mansukhlal
+# Parekh and Associates merged into family_id "parekh_vinodchandra"
+# (confirmed above — patronymic-to-first-name match). Bhanshali cluster:
+# Akash Bhanshali + Lata Bhanshali confirmed NOT merged — kept as 2
+# independent entities (weakest signal of all clusters reviewed, no
+# patronymic/filing evidence). Vallabh Roopchand Bhanshali remains
+# separate from both (confirmed unrelated, ENAM founder).
+#
+# No open ambiguous candidates remain as of 2026-07-05.
+#    "Vallabh Roopchand Bhanshali" (ENAM founder) is NOT part of this
+#    cluster — confirmed unrelated, kept separate.

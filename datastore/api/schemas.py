@@ -115,6 +115,48 @@ class FundamentalsWrite(BaseModel):
     sector_specific_metric_4: Optional[float] = None
     sector_specific_metric_5: Optional[float] = None
     sector_specific_metric_6: Optional[float] = None
+    # [AS BUILT, 2026-07-07 deep-forensic gap fix] total_equity/retained_earnings/
+    # total_assets/cwip exist in datastore/schema/create_normalised.py's
+    # `fundamentals` table (added across P3.11 and this session) but were never
+    # added here — FastAPI's response_model silently drops any DB column not
+    # declared on this Pydantic model, so every GET /fundamentals/{ticker} call
+    # returned these as absent even though real, non-null values existed in
+    # DuckDB. This is exactly why cwip_ratio/asset_inflation_flag/altman_z stayed
+    # 100% NaN downstream despite the schema+scraper fix landing correctly.
+    total_equity: Optional[float] = None
+    retained_earnings: Optional[float] = None
+    total_assets: Optional[float] = None
+    cwip: Optional[float] = None
+    # [AS BUILT, 2026-07-07, NSE XBRL pipeline] Real, standardized fields
+    # from NSE's SEBI-mandated "Integrated Filing — IndAS" regulatory
+    # disclosure (api/integrated-filing-results) — the actual regulatory
+    # filing, more authoritative than a third-party site's rendering of it.
+    # See ingestion/scrapers/nse_xbrl_financials.py's module docstring.
+    goodwill: Optional[float] = None
+    inventories: Optional[float] = None
+    trade_receivables_current: Optional[float] = None
+    trade_payables_current: Optional[float] = None
+    total_liabilities: Optional[float] = None
+    audit_qualified_flag: Optional[bool] = None
+    # 2026-07-07 (same-day follow-up): the rest of NSE's real Statement of
+    # Asset and Liabilities line items — see schema's _CREATE_FUNDAMENTALS
+    # comment for sourcing.
+    property_plant_equipment: Optional[float] = None
+    intangible_assets: Optional[float] = None
+    non_current_investments: Optional[float] = None
+    non_current_trade_receivables: Optional[float] = None
+    deferred_tax_assets: Optional[float] = None
+    current_investments: Optional[float] = None
+    current_tax_assets: Optional[float] = None
+    borrowings_current: Optional[float] = None
+    borrowings_noncurrent: Optional[float] = None
+    deferred_tax_liabilities: Optional[float] = None
+    provisions_current: Optional[float] = None
+    provisions_noncurrent: Optional[float] = None
+    equity_share_capital: Optional[float] = None
+    other_equity: Optional[float] = None
+    non_controlling_interest: Optional[float] = None
+    non_current_liabilities: Optional[float] = None
 
 
 class FundamentalsRow(FundamentalsWrite):
@@ -399,6 +441,24 @@ class MLSignalRow(MLSignalWrite):
     """Same shape as MLSignalWrite, returned by GET /api/v1/signals/ml/* endpoints."""
 
 
+class SignalUniverseRow(BaseModel):
+    """One ticker's cross-model snapshot for GET /api/v1/signals/ml/universe/{date}
+    (#21 Signal Deep Dive full-universe redesign) — signal_5d's buy_prob/
+    q50_return joined against meta_labeler/pnd_detector (ml_signals),
+    ml_forensic and ml_multibagger (carried forward to their own most recent
+    date at-or-before the resolved signal date, since those models don't
+    necessarily score daily)."""
+
+    ticker: str
+    date: datetime
+    buy_prob: Optional[float] = None
+    q50_return: Optional[float] = None
+    meta_label_prob: Optional[float] = None
+    pnd_score: Optional[float] = None
+    forensic_flag: Optional[str] = None
+    mb_probability: Optional[float] = None
+
+
 class MLSignalWriteResult(BaseModel):
     """Confirmation response for a single MLSignalWrite upsert."""
 
@@ -568,6 +628,33 @@ class WatchlistResponse(BaseModel):
     notes: str = "Phase 1 stub — multibagger watchlist (M-08) is Phase 2 scope (SPEC-UI-003)."
 
 
+# ===== Daily WatchList (ML, multi-horizon, realistic targets) =====
+class DailyWatchlistRow(BaseModel):
+    """One ticker's buy-signal recommendation for a single horizon, with a
+    realistic (quantile-regression or ATR-derived, never fixed-%) target."""
+
+    ticker: str
+    company_name: Optional[str] = None
+    sector: Optional[str] = None
+    horizon: str  # "5d", "21d", "63d"
+    horizon_days: int
+    current_price: Optional[float] = None
+    buy_prob: Optional[float] = None
+    signal_direction: Optional[str] = None
+    target_price: Optional[float] = None
+    target_low: Optional[float] = None
+    target_high: Optional[float] = None
+    expected_return_pct: Optional[float] = None
+    target_basis: str = "quantile"  # "quantile" (q50_return) or "atr" (fallback when quantiles are null)
+
+
+class DailyWatchlistResponse(BaseModel):
+    date: Optional[str] = None
+    rows: List[DailyWatchlistRow] = Field(default_factory=list)
+    multibagger: List[Dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
 # ===== Alerts (SPEC-ALERT) =====
 class AlertRow(BaseModel):
     """One synthesized alert (P&D, exit, drift) for the alerts feed."""
@@ -628,6 +715,7 @@ class PaperTradingPosition(BaseModel):
     """One open position, as persisted in paper_trading/portfolio_state.json."""
 
     ticker: str
+    company_name: Optional[str] = None
     sector: str
     entry_date: str
     entry_price: float
@@ -635,6 +723,13 @@ class PaperTradingPosition(BaseModel):
     peak_price: float
     current_price: Optional[float] = None
     unrealised_pnl_pct: Optional[float] = None
+    buy_prob_entry: Optional[float] = None  # signal_5d buy_prob on entry_date, captured at buy time
+    buy_prob_current: Optional[float] = None  # signal_5d buy_prob as of the latest date it's been computed
+    target_price: Optional[float] = None  # RuleBasedExitPolicy.TARGET_PCT above entry_price
+    target_date: Optional[str] = None  # entry_date + RuleBasedExitPolicy.MAX_HOLD_DAYS (calendar days)
+    exit_criterion: Optional[str] = None  # human-readable target/stop/max-hold summary
+    stock_gain_pct: Optional[float] = None  # (current_price / entry_price - 1), same as unrealised_pnl_pct pre-cost
+    nifty_gain_pct: Optional[float] = None  # NIFTYBEES gain over the same entry_date -> now window
 
 
 class PaperTradingStateResponse(BaseModel):
@@ -674,6 +769,29 @@ class PaperTradingTradesResponse(BaseModel):
     count: int = 0
 
 
+class ExitUrgencyRow(BaseModel):
+    """One open position ranked by exit_urgency for GET
+    /api/v1/paper_trading/exit_urgency (#23 dedicated Exit Urgency page).
+    exit_urgency/exit_type come from today's (or the most recent
+    carried-forward) signal_5d row for the ticker — same source Signal Deep
+    Dive's per-ticker table already reads, just aggregated across all held
+    positions and sorted."""
+
+    ticker: str
+    company_name: Optional[str] = None
+    entry_date: str
+    entry_price: float
+    current_price: Optional[float] = None
+    unrealised_pnl_pct: Optional[float] = None
+    exit_urgency: Optional[float] = None
+    exit_type: Optional[str] = None
+
+
+class ExitUrgencyResponse(BaseModel):
+    rows: List[ExitUrgencyRow] = Field(default_factory=list)
+    as_of_date: Optional[str] = None
+
+
 class EquityCurvePoint(BaseModel):
     date: str
     equity: float
@@ -700,12 +818,27 @@ class PendingActionRow(BaseModel):
     paper_trading/pending/{date}.json by scripts/run_daily_paper_trading.py
     when PAPER_TRADING_REQUIRE_APPROVAL is set."""
 
+    model_config = ConfigDict(protected_namespaces=())
+
     action_id: str
     date: str
     action_type: str  # 'buy' | 'sell' | 'reduce'
     ticker: str
+    company_name: Optional[str] = None
     sector: Optional[str] = None
     price: Optional[float] = None  # propose-time price, display only — accept re-fetches live price
+    buy_prob: Optional[float] = None  # signal_5d buy_prob this candidate was ranked by (buys only)
+    # Entry-time signal metadata (buys only) — carried through so, if
+    # accepted, it lands on the closed-trade CSV row for a future live
+    # signal/meta-labeler outcome comparison. See
+    # scripts/paper_trading_tracker.py's FIELDNAMES.
+    model_name: Optional[str] = None
+    meta_label_prob: Optional[float] = None
+    q10_return: Optional[float] = None
+    q50_return: Optional[float] = None
+    q90_return: Optional[float] = None
+    target_price: Optional[float] = None  # RuleBasedExitPolicy.TARGET_PCT above propose-time price (buys only)
+    duration_days: Optional[int] = None  # RuleBasedExitPolicy.MAX_HOLD_DAYS mechanical max-hold barrier
     reason: str
     status: str = "pending"  # 'pending' | 'accepted' | 'rejected'
 
@@ -717,12 +850,45 @@ class PendingActionsResponse(BaseModel):
     actions: List[PendingActionRow] = Field(default_factory=list)
 
 
+class WatchlistRow(BaseModel):
+    """One ticker in a longer-horizon signal model's watchlist — read-only,
+    never traded or accept/reject-able (see WATCHLIST_MODELS in
+    scripts/run_daily_paper_trading.py)."""
+
+    ticker: str
+    buy_prob: Optional[float] = None
+    q10_return: Optional[float] = None
+    q50_return: Optional[float] = None
+    q90_return: Optional[float] = None
+
+
+class HorizonWatchlistResponse(BaseModel):
+    """GET /api/v1/paper_trading/watchlist — today's top buy-signal tickers
+    for each longer-horizon model (signal_21d, signal_63d) that the bot
+    itself never trades (21-day max hold), purely for live-conviction
+    observability on the dashboard."""
+
+    date: Optional[str] = None
+    models: dict = Field(default_factory=dict)  # model_name -> List[WatchlistRow]
+
+
 class ActionDecisionResponse(BaseModel):
     """POST /api/v1/paper_trading/pending/{action_id}/{accept,reject}."""
 
     action_id: str
     status: str  # 'accepted' | 'rejected'
     executed: bool = False
+    detail: Optional[str] = None
+
+
+class PositionSellResponse(BaseModel):
+    """POST /api/v1/paper_trading/positions/{ticker}/sell — manual sell button."""
+
+    ticker: str
+    executed: bool = False
+    exit_price: Optional[float] = None
+    pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None
     detail: Optional[str] = None
 
 
@@ -871,6 +1037,31 @@ class TAAlertResponse(BaseModel):
     count: int = 0
 
 
+# ===== TA Daily WatchList (SPEC-TA daily watchlist) =====
+class TAWatchlistRow(BaseModel):
+    """One ticker's TA-driven daily recommendation: which template fired,
+    the plain-English rationale, and the next resistance levels above price."""
+
+    ticker: str
+    company_name: Optional[str] = None
+    sector: Optional[str] = None
+    current_price: Optional[float] = None
+    template_name: str
+    category: str
+    score: float
+    rationale: str
+    matched_conditions: int
+    total_conditions: int
+    resistance_levels: List[float] = Field(default_factory=list)
+    support_levels: List[float] = Field(default_factory=list)
+
+
+class TAWatchlistResponse(BaseModel):
+    date: Optional[str] = None
+    rows: List[TAWatchlistRow] = Field(default_factory=list)
+    count: int = 0
+
+
 class TAUserAlertCreate(BaseModel):
     """Request body for POST /api/v1/ta/user-alerts."""
 
@@ -995,6 +1186,12 @@ class OpsStepRow(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
+    is_backfill: bool = Field(
+        default=False,
+        description="True if this date's row was produced by a backfill/catch-up run rather than "
+        "the same-day live run (A30) — a backfilled row was never eligible for that day's "
+        "paper_trade even if the signal itself is still valid.",
+    )
     last_success_date: Optional[str] = Field(
         default=None,
         description="Most recent date (any date, not just the one this row is scoped to) this "
@@ -1029,11 +1226,27 @@ class OpsRunRow(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
+    is_backfill: bool = Field(
+        default=False,
+        description="True if any pipeline_checkpoints step for this run's date was recorded with "
+        "is_backfill=True (A30) — this run's date data was (at least partly) produced by a "
+        "backfill/catch-up invocation, not the same-day live run.",
+    )
     failed_steps: List[OpsFailedStepInfo] = Field(
         default_factory=list,
         description="Every step with a 'failed' checkpoint for this run's date (pipeline_runs "
         "itself never recorded which step failed or why — error_message above is always None; "
         "this is looked up from pipeline_checkpoints instead).",
+    )
+    sanity_check_passed: Optional[bool] = Field(
+        default=None,
+        description="AF-2 (#9): whether the 'sanity_check' checkpoint step succeeded for this "
+        "run's date (hard floors on ml_signals row count, non-empty top_buys / recognized "
+        "no-buy regime, no all-NaN feature columns). Distinct from the overall pipeline_runs "
+        "`status`: every step can report 'success' status-wise while output is still implausible "
+        "(the actual 2026-06-23..2026-07-02 incident this field exists to surface). True if the "
+        "sanity_check checkpoint succeeded, False if it failed, None if it hasn't run yet for "
+        "this date (e.g. a date predating this feature, or the run failed before reaching it).",
     )
 
 
@@ -1066,6 +1279,120 @@ class OpsForceStepResponse(BaseModel):
     status: str  # 'success' | 'failed'
     error_message: Optional[str] = None
     results: List[OpsForceStepResult] = Field(default_factory=list)
+
+
+class OpsIntegrityFinding(BaseModel):
+    """One row from data_integrity_findings (A20)."""
+
+    id: int
+    check_name: str
+    ticker: Optional[str] = None
+    finding_date: str
+    severity: str  # 'info' | 'warning' | 'critical'
+    description: str
+    evidence_json: Optional[str] = None
+    proposed_fix_sql: Optional[str] = None
+    status: str  # 'pending' | 'approved' | 'rejected' | 'applied'
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class OpsIntegrityFindingsResponse(BaseModel):
+    findings: List[OpsIntegrityFinding] = Field(default_factory=list)
+
+
+class OpsIntegrityFindingActionResponse(BaseModel):
+    id: int
+    status: str
+    reviewed_by: str
+
+
+class OpsMissedJobFinding(BaseModel):
+    """One row from missed_job_findings (A21)."""
+
+    id: int
+    job_id: str
+    missed_date: str
+    severity: str  # 'info' | 'warning' | 'critical'
+    description: str
+    proposed_catchup_action: Optional[str] = None
+    proposed_catchup_params_json: Optional[str] = None
+    status: str  # 'pending' | 'approved' | 'rejected' | 'applied'
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class OpsMissedJobFindingsResponse(BaseModel):
+    findings: List[OpsMissedJobFinding] = Field(default_factory=list)
+
+
+class OpsMissedJobFindingActionResponse(BaseModel):
+    id: int
+    status: str
+    reviewed_by: str
+
+
+# ===== #4: DataStore API Console (freshness rollup) =====
+class OpsFreshnessRow(BaseModel):
+    """One data source's last-write timestamp + row count (GET /api/v1/ops/freshness)."""
+
+    source: str
+    row_count: Optional[int] = None
+    latest_data_date: Optional[str] = Field(
+        default=None,
+        description="MAX(date-like column) across all rows — the most recent trading/filing "
+        "date this source has data for, not when it was written.",
+    )
+    last_write_at: Optional[datetime] = Field(
+        default=None,
+        description="Last-modified timestamp of the underlying file (DuckDB database file for "
+        "tables, most recent monthly Parquet file for mf_holdings) — a proxy for 'when was this "
+        "source last written to', since none of these tables carry their own write-timestamp "
+        "column.",
+    )
+    error: Optional[str] = Field(
+        default=None, description="Set if this source could not be read (e.g. file missing, table not yet created)."
+    )
+
+
+class OpsFreshnessResponse(BaseModel):
+    """GET /api/v1/ops/freshness."""
+
+    sources: List[OpsFreshnessRow] = Field(default_factory=list)
+
+
+class OpsSchedulerResourceStatus(BaseModel):
+    """GET /api/v1/ops/scheduler-resources.
+
+    Surfaces the alphalens-scheduler.service systemd unit (2026-07-05:
+    daily_pipeline.py moved off ad hoc terminal/VS Code processes onto a
+    systemd --user service + a 30-min resource-monitor timer, see
+    scripts/monitor_scheduler_resources.py) so a VS Code crash or a Claude
+    Code session ending is visually distinguishable from the actual
+    pipeline being down.
+    """
+
+    service_active: Optional[bool] = Field(
+        default=None, description="`systemctl --user is-active alphalens-scheduler.service` == 'active'."
+    )
+    service_state: Optional[str] = None
+    mem_available_pct: Optional[float] = None
+    load1: Optional[float] = None
+    hmm_feature_workers: Optional[int] = None
+    feature_cache_preload_workers: Optional[int] = None
+    throttled: bool = Field(
+        default=False, description="True if worker counts are currently below their defaults (3 / 16)."
+    )
+    last_monitor_run_at: Optional[str] = None
+    last_deferred_step: Optional[str] = Field(
+        default=None,
+        description="If the monitor's most recent log line deferred a restart because a step was "
+        "in progress (never interrupts training/inference — see monitor_scheduler_resources.py's "
+        "step_in_progress()), the step name; else None.",
+    )
+    error: Optional[str] = None
 
 
 # ===== Paper Trading Backdated Entries (SPEC-PT-003 addendum) =====

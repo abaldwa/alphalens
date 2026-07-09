@@ -698,7 +698,7 @@ def schedule_overnight_training(
     horizon_days: int = 21,
     n_folds: int = 3,
     quick: bool = False,
-) -> None:
+) -> Dict:
     """
     Overnight TFT training run (SPEC-MODEL-003 walk-forward).
 
@@ -723,6 +723,15 @@ def schedule_overnight_training(
     -----------------
     CPU (Ryzen 5 7535U), 500 stocks, 5yr history, 50 epochs: 4–6 hours.
     Schedule via pipeline_scheduler.py after market close.
+
+    Returns
+    -------
+    dict
+        {"folds_trained": int, "last_model_path": str or None} — used by
+        the caller (train_deep_models.py) to write a registry.json entry
+        (SPEC-MODEL-005); this function itself does not touch the
+        registry, since it has no opinion on the registry key name (the
+        caller may train multiple horizons under one call).
 
     Raises
     ------
@@ -773,6 +782,9 @@ def schedule_overnight_training(
     output_dir = Path(model_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    folds_trained = 0
+    last_model_path: Optional[str] = None
+
     for fold in range(n_folds):
         train_end = min((fold + 1) * fold_size, len(all_files))
         val_end = min(train_end + fold_size, len(all_files))
@@ -815,6 +827,10 @@ def schedule_overnight_training(
         del model
         gc.collect()
         logger.info(f"Fold {fold} model saved to {model_path}.pt")
+        folds_trained += 1
+        last_model_path = f"{model_path}.pt"
+
+    return {"folds_trained": folds_trained, "last_model_path": last_model_path}
 
 
 def _stream_sequences_from_files(

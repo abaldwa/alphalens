@@ -162,6 +162,11 @@ def main() -> None:
                         help=f"Commit every N dates (default: {BATCH_SIZE_DEFAULT})")
     parser.add_argument("--universe-only", action="store_true",
                         help="Filter to Nifty 500 universe only (default: all tickers)")
+    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="direct",
+                        help="'direct' (default): per-date DELETE+INSERT, unchanged legacy path. "
+                             "'staged' (A25): stage the whole batch through datastore/staging/gate.py "
+                             "and publish atomically once at the end via datastore/staging/publish.py — "
+                             "see FeatureBacklog.md A25.")
     args = parser.parse_args()
 
     from config.settings import DUCKDB_PATH, RAW_DIR
@@ -201,6 +206,7 @@ def main() -> None:
         fmt_counts = {"new": 0, "old": 0}
         total_rows = 0
         t_start = time.monotonic()
+        staged_batches = []  # A25 staged mode: accumulated instead of per-date DELETE+INSERT
 
         for i, csv_path in enumerate(pending, start=1):
             trade_date = csv_path.stem
@@ -211,21 +217,24 @@ def main() -> None:
                     continue
 
                 if not args.dry_run:
-                    conn.execute("DELETE FROM fno_data WHERE trade_date = ?", [trade_date])
-                    # Register DataFrame as a virtual table and INSERT in one SQL call —
-                    # orders of magnitude faster than executemany for 40-50k rows.
-                    conn.register("_fno_batch", df)
-                    conn.execute("""
-                        INSERT INTO fno_data
-                            (trade_date, ticker, instrument, expiry, strike, option_type,
-                             oi, oi_change, volume, settle_price, close_price, underlying_price)
-                        SELECT trade_date, ticker, instrument, expiry, strike, option_type,
-                               oi, oi_change, volume, settle_price, close_price, underlying_price
-                        FROM _fno_batch
-                    """)
-                    conn.unregister("_fno_batch")
-                    if i % args.batch_size == 0:
-                        conn.commit()
+                    if args.publish_mode == "staged":
+                        staged_batches.append(df)
+                    else:
+                        conn.execute("DELETE FROM fno_data WHERE trade_date = ?", [trade_date])
+                        # Register DataFrame as a virtual table and INSERT in one SQL call —
+                        # orders of magnitude faster than executemany for 40-50k rows.
+                        conn.register("_fno_batch", df)
+                        conn.execute("""
+                            INSERT INTO fno_data
+                                (trade_date, ticker, instrument, expiry, strike, option_type,
+                                 oi, oi_change, volume, settle_price, close_price, underlying_price)
+                            SELECT trade_date, ticker, instrument, expiry, strike, option_type,
+                                   oi, oi_change, volume, settle_price, close_price, underlying_price
+                            FROM _fno_batch
+                        """)
+                        conn.unregister("_fno_batch")
+                        if i % args.batch_size == 0:
+                            conn.commit()
 
                 ok += 1
                 fmt_counts[fmt] += 1
@@ -243,6 +252,40 @@ def main() -> None:
             except Exception as exc:
                 logger.warning("[%d/%d] %s FAILED: %s", i, len(pending), trade_date, exc)
                 err += 1
+
+        if not args.dry_run and args.publish_mode == "staged" and staged_batches:
+            from datastore.staging.gate import null_check_validator, stage_via_sql
+            from datastore.staging.publish import publish_run_lock, publish_table
+
+            # fno_data is 100M+ rows — merge entirely inside DuckDB
+            # (stage_via_sql) rather than round-tripping the whole
+            # production table through pandas (confirmed live: doing that
+            # here pushed the process to 8GB+ RSS and into swap; see
+            # datastore/staging/gate.py::stage_via_sql's docstring).
+            new_df = pd.concat(staged_batches, ignore_index=True)
+            new_dates = list(new_df["trade_date"].unique())
+            placeholders = ", ".join("?" * len(new_dates))
+            merge_sql = (
+                f"SELECT * FROM fno_data WHERE trade_date NOT IN ({placeholders}) "
+                "UNION ALL SELECT * FROM _stage_new_batch"
+            )
+
+            with publish_run_lock() as acquired:
+                if not acquired:
+                    logger.error("Another publish is in progress — aborting staged publish.")
+                    sys.exit(1)
+                result = stage_via_sql(
+                    conn, "fno_data", new_df, merge_sql, new_dates,
+                    validators=[null_check_validator(["trade_date", "ticker"])],
+                )
+                if not result.ok:
+                    logger.error("Staging gate rejected the entire new batch — nothing published.")
+                    sys.exit(1)
+                published_rows = publish_table(conn, "fno_data")
+                logger.info(
+                    "Staged publish: %d new rows staged, %d rejected, %d now in fno_data",
+                    result.staged_rows, result.rejected_rows, published_rows,
+                )
 
         if not args.dry_run:
             conn.commit()

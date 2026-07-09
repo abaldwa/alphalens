@@ -219,3 +219,40 @@ def test_checkpoint_does_not_advance_past_a_failed_ticker(tmp_path):
     # Neither ticker succeeded, so the checkpoint file must still be empty —
     # a subsequent run must retry both, not skip them as "already done".
     assert backfill_runner.read_resume_checkpoint(checkpoint_path) is None
+
+
+def test_staged_publish_mode_matches_ohlcv_adjusted_full_schema(tmp_path):
+    """A25 staged mode's merge SQL does 'SELECT * FROM ohlcv_adjusted UNION ALL
+    SELECT * FROM _stage_new_batch' — DuckDB requires equal column counts for
+    UNION ALL. download_history() only returns 7 columns; ohlcv_adjusted has
+    11 (delivery_qty, delivery_pct, vol_adj_factor are schema-only). Staging
+    must pad the batch to the full column set or every staged-mode backfill
+    run raises duckdb.BinderException the moment it's exercised."""
+    create_normalised.create_schema(in_memory=True)
+    checkpoint_path = tmp_path / "resume.txt"
+
+    class _RecordingClient:
+        def download_history(self, ticker, from_date, to_date, timeframe="D"):
+            return pd.DataFrame(
+                {
+                    "date": ["2024-01-01"],
+                    "ticker": [ticker],
+                    "open": [100.0],
+                    "high": [101.0],
+                    "low": [99.0],
+                    "close": [100.5],
+                    "volume": [1000],
+                }
+            )
+
+    results = backfill_runner.run_backfill(
+        ["AAA"],
+        "2024-01-01",
+        "2024-01-01",
+        in_memory=True,
+        checkpoint_path=checkpoint_path,
+        client=_RecordingClient(),
+        publish_mode="staged",
+    )
+
+    assert results["AAA"] == 1

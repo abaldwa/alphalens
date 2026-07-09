@@ -36,7 +36,7 @@ async def get_regime_history(
     days: int = Query(30, ge=1, le=365, description="Number of most recent days to return"),
 ) -> RegimeHistoryResponse:
     """Last `days` market-wide HMM regime rows, ascending by date (SPEC-UI-002)."""
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         rows = conn.execute(
             """
             SELECT date, hmm_regime, hmm_regime_prob, hmm_stability FROM ml_signals
@@ -57,7 +57,7 @@ async def get_regime(
     as_of: Optional[date_type] = Query(None, description="PIT reference date (default: latest available)"),
 ) -> RegimeResponse:
     """Latest market-wide HMM regime state at or before `as_of`."""
-    with get_duckdb_connection(SIGNALS_DUCKDB_PATH) as conn:
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         if as_of is None:
             row = conn.execute(
                 """

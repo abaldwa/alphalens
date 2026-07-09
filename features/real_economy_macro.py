@@ -39,6 +39,72 @@ Real-economy macro data is read from
 lightweight stub-loader; the daily pipeline writes real data via
 ingestion/scrapers/macro_real_economy.py (a Phase 3 deliverable).
 When the Parquet is absent or empty, all features return NaN.
+
+Source research (2026-07-07) — no scraper built yet
+-----------------------------------------------------
+All 10 features above are currently 100% NaN because
+`ingestion/scrapers/macro_real_economy.py` does not exist. Live research
+was done into a free, programmatically-fetchable source for each of the
+10 series before concluding this. Findings, so this isn't re-litigated
+every session:
+
+- FRED (`fredgraph.csv`, same pattern already used by
+  `ingestion/scrapers/macro.py` for yield_10yr/yield_3m) was checked
+  first, since it already has working plumbing in this repo. Its India
+  industrial-production series (`INDPROINDMISMEI`, OECD MEI via FRED)
+  is real but **dead** — last observation 2023-01-01, over 3 years
+  stale as of 2026-07 — not usable for iip_growth; nothing else in
+  FRED's India tag set covers GST, auto sales, cement, power, rail
+  freight, UPI, or bank credit growth at a useful frequency.
+- `data.gov.in` (Open Government Data Platform India) hosts an RBI
+  bank-credit dataset (API id `e26d8bcd-4f3a-4bea-aa24-fe95a1012440`)
+  behind `api.data.gov.in/resource/<id>?api-key=...`. This requires a
+  user-specific registered API key (free, but a manual signup step);
+  the commonly-referenced public tutorial demo key
+  (`579b464db66ec23bdd000001cdd3946e44ce4aad7209ff7b23ac571`) returned
+  `{"error": "Key not authorised"}` when tried live. No
+  `DATA_GOV_IN_API_KEY` exists in this repo's config/.env. This is a
+  legitimate free path for bank_credit_growth (and possibly others)
+  once a project owner registers for a key — tracked as a blocked
+  prerequisite, not a "no source exists" gap.
+- RBI DBIE (`dbie.rbi.org.in` / `data.rbi.org.in/DBIE/`) is the
+  authoritative bank-credit/sectoral-deployment source but is a
+  session-based BI portal (Excel/CSV export via UI), not a stable
+  unauthenticated REST/CSV endpoint — same class of blocker
+  `ingestion/scrapers/macro.py`'s docstring already documents for the
+  2yr G-Sec yield.
+- GST collections are published monthly only as PIB press releases and
+  as GST-Council PDF tables (e.g.
+  `tutorial.gst.gov.in/downloads/news/*.pdf`) — no JSON/CSV endpoint
+  found.
+- PMI (manufacturing/services) is commercially licensed by S&P
+  Global/HSBC; there is no free official series. Confirmed no
+  free alternative exists.
+- Auto sales: SIAM (siam.in) publishes a monthly Flash Report but its
+  publications page states prior written permission is required to
+  share/publish its statistics; no CSV/API endpoint found.
+- Cement dispatches: no free official series found (industry data is
+  sold by CMA India / commercial research firms).
+- Power consumption: CEA (cea.nic.in) advertises "API for Central
+  Electricity Authority Data" but the page did not return a stable,
+  documented endpoint on live fetch (connection reset / no parseable
+  links); POSOCO/Grid-India's daily reports are PDF. Worth revisiting
+  with more time, but not verified live as of this writing.
+- Rail freight: Indian Railways publishes freight-loading figures only
+  via PIB press releases, no API/CSV found.
+- UPI transactions: NPCI's statistics page
+  (`npci.org.in/what-we-do/upi/product-statistics`) returned HTTP 403
+  to a non-browser client; no alternative JSON/CSV endpoint found.
+
+Net result: none of the 10 series has a verified, currently-working,
+free, unauthenticated JSON/CSV endpoint. `ingestion/scrapers/macro_real_
+economy.py` was therefore NOT created — building it would mean either
+fabricating values or shipping dead code with no reachable data source,
+both of which are excluded by this project's no-synthetic-data policy.
+The most promising unblocked path is `data.gov.in`'s bank-credit
+dataset once a project owner obtains a free registered API key; PMI is
+the one series with no free path even in principle (commercial
+licensing).
 """
 
 import logging

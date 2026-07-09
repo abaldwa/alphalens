@@ -34,7 +34,7 @@ import talib
 
 from backtest.costs import IndianTransactionCosts
 from backtest.integrity_checker import BacktestIntegrityChecker
-from config.settings import DUCKDB_PATH, MIN_ADT_INR, MODELS_DIR
+from config.settings import DEFAULT_TRAINING_INTERVAL_DAYS, DUCKDB_PATH, MIN_ADT_INR, MODELS_DIR
 from config.timezone import now_ist
 from features.technical import BENCHMARK_TICKERS, CORE_TECHNICAL_FEATURES, compute_technical_features
 from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, load_pnd_training_data_from_db
@@ -82,7 +82,16 @@ def load_ohlcv_from_db(
     from datastore.api.db import get_duckdb_connection
 
     db_path = db_path or DUCKDB_PATH
-    with get_duckdb_connection(db_path) as conn:
+    # persist=False (SPEC-SCHED-013): this is a read-only query, but the
+    # caller (train_all_phase1/retrain_phase2) runs for hours afterward and
+    # itself calls out to the DataStore API for fundamentals/governance/
+    # MF-holdings panels — those API requests need their own DB read access.
+    # A cached persist=True write connection here would hold the file's
+    # single-writer lock for the training process's entire lifetime,
+    # deadlocking the API server's own reads for the rest of the run (see
+    # 2026-07-07 retrain: fundamentals/governance/F&O panel calls all failed
+    # with "Could not set lock" pointing at this exact process's PID).
+    with get_duckdb_connection(db_path, read_only=True, persist=False) as conn:
         cutoff = conn.execute(
             "SELECT MAX(date) - INTERVAL (?) DAY FROM ohlcv_adjusted", [lookback_days]
         ).fetchone()[0]
@@ -152,7 +161,7 @@ def load_benchmark_from_db(
     date_min = dates.min()
     date_max = dates.max()
 
-    with get_duckdb_connection(db_path) as conn:
+    with get_duckdb_connection(db_path, read_only=True, persist=False) as conn:
         raw = conn.execute(
             f"""
             SELECT date, ticker, close
@@ -253,6 +262,16 @@ def _save_model(
     meta = {**meta, **(metadata_extra or {})}
     meta["saved_path"] = str(versioned_path)
     meta["saved_at"] = run_date.isoformat()
+    # SPEC-MODEL-005/SPEC-SCHED-007: scripts/model_training_status.py and
+    # pipeline_scheduler._execute_model_training_job's overdue check both
+    # key off last_trained_date/training_interval_days. Without these two
+    # fields every retrain would make the model look "never trained" again
+    # (missing last_trained_date), causing the 20:00 IST scheduler job to
+    # re-queue it every single day forever. Preserve a previously-set
+    # interval (registry entries loaded before this call already carry it)
+    # rather than resetting it to the 30-day default on every retrain.
+    meta["last_trained_date"] = run_date.date().isoformat()
+    meta["training_interval_days"] = DEFAULT_TRAINING_INTERVAL_DAYS
     registry[name] = meta
     logger.info(f"Saved {name} -> {versioned_path}")
     return versioned_path
@@ -345,7 +364,12 @@ def train_all_phase1(
         hmm_dir.mkdir(parents=True, exist_ok=True)
         hmm_path = hmm_dir / f"hmm_market_v{run_date.strftime(MODEL_VERSION_DATE_FORMAT)}.pkl"
         joblib.dump(hmm_model, hmm_path)
-        registry["hmm_market"] = {"saved_path": str(hmm_path), "saved_at": run_date.isoformat()}
+        registry["hmm_market"] = {
+            "saved_path": str(hmm_path),
+            "saved_at": run_date.isoformat(),
+            "last_trained_date": run_date.date().isoformat(),
+            "training_interval_days": DEFAULT_TRAINING_INTERVAL_DAYS,
+        }
         logger.info(f"Saved hmm_market -> {hmm_path}")
 
     # ===== 2. P&D =====
@@ -423,7 +447,11 @@ def train_all_phase1(
             conf_path = conf_dir / f"conformal_signal5d_v{run_date.strftime(MODEL_VERSION_DATE_FORMAT)}.pkl"
             joblib.dump(conformal, conf_path)
             registry["conformal_signal5d"] = {
-                "saved_path": str(conf_path), "saved_at": run_date.isoformat(), "coverage": conformal_result,
+                "saved_path": str(conf_path),
+                "saved_at": run_date.isoformat(),
+                "coverage": conformal_result,
+                "last_trained_date": run_date.date().isoformat(),
+                "training_interval_days": DEFAULT_TRAINING_INTERVAL_DAYS,
             }
 
     if save:

@@ -64,6 +64,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from features.fundamental_quality_gate import validate_and_annotate  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s — %(message)s",
@@ -308,6 +310,14 @@ def _extract_quarterly_rows(ticker: str, body: Dict) -> List[Dict]:
         }
         for tl_key, db_col in _Q_FIELDS.items():
             row[db_col] = _safe(period.get(tl_key))
+        # Trendlyne's OPMPCT_Q/NETPCT_Q are already percent (e.g. 27.0 = 27%); the
+        # fundamentals.operating_margin/net_margin columns are a fraction contract
+        # (matches ingestion/scrapers/screener.py's operating_profit/revenue), and
+        # the dashboard's fmtPct() multiplies by 100 at display time — storing
+        # percent here made margins render 100x too high (e.g. "2700%").
+        for pct_col in ("operating_margin", "net_margin"):
+            if row.get(pct_col) is not None:
+                row[pct_col] = row[pct_col] / 100
 
         # gross_profit: SR_Q - OEXPNS_Q (if available)
         sr = _safe(period.get("SR_Q"))
@@ -389,12 +399,14 @@ INSERT INTO fundamentals (
     roe, roce, debt_to_equity, interest_coverage, fcf, gross_profit,
     total_debt, cash_and_equivalents, asset_turnover,
     current_assets, current_liabilities,
-    book_value_per_share, depreciation
+    book_value_per_share, depreciation,
+    quality_flag, quality_flag_reason
 ) VALUES (
     ?,?,?,?,?,
     ?,?,?,?,?,?,?,
     ?,?,?,?,?,?,
     ?,?,?,
+    ?,?,
     ?,?,
     ?,?
 )
@@ -418,13 +430,19 @@ ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET
     current_assets     = COALESCE(fundamentals.current_assets, excluded.current_assets),
     current_liabilities = COALESCE(fundamentals.current_liabilities, excluded.current_liabilities),
     book_value_per_share = COALESCE(fundamentals.book_value_per_share, excluded.book_value_per_share),
-    depreciation       = COALESCE(fundamentals.depreciation, excluded.depreciation)
+    depreciation       = COALESCE(fundamentals.depreciation, excluded.depreciation),
+    quality_flag       = COALESCE(excluded.quality_flag, fundamentals.quality_flag),
+    quality_flag_reason = COALESCE(excluded.quality_flag_reason, fundamentals.quality_flag_reason)
 """
 
 
 def _write_rows(conn, rows: List[Dict]) -> int:
     written = 0
     for r in rows:
+        # backlog #12/AF-5: flag (never silently write) out-of-range ratios,
+        # e.g. a margin still in 0-100 scale that slipped past the /100
+        # conversion above, before this row ever reaches the DB.
+        r = validate_and_annotate(r)
         try:
             conn.execute(_UPSERT_SQL, [
                 r["ticker"], r["fiscal_year"], r["quarter"],
@@ -436,6 +454,7 @@ def _write_rows(conn, rows: List[Dict]) -> int:
                 r.get("total_debt"), r.get("cash_and_equivalents"),
                 r.get("asset_turnover"), r.get("current_assets"), r.get("current_liabilities"),
                 r.get("book_value_per_share"), r.get("depreciation"),
+                r.get("quality_flag"), r.get("quality_flag_reason"),
             ])
             written += 1
         except Exception as exc:
@@ -456,6 +475,12 @@ def main() -> None:
                         help="Stop after N tickers (for testing)")
     parser.add_argument("--sleep", type=float, default=SLEEP_BETWEEN_TICKERS,
                         help=f"Seconds between tickers (default: {SLEEP_BETWEEN_TICKERS})")
+    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="direct",
+                        help="'direct' (default): unchanged legacy per-batch COALESCE upsert. "
+                             "'staged' (A25): accumulate every row across the whole run, merge "
+                             "against production with the same existing-wins COALESCE policy "
+                             "(datastore/staging/merge.py::coalesce_merge), and publish "
+                             "atomically once at the end.")
     args = parser.parse_args()
 
     from config.settings import DUCKDB_PATH
@@ -523,8 +548,11 @@ def main() -> None:
                             r0.get("revenue") or 0, r0.get("ebitda") or 0,
                             r0.get("pat") or 0, r0.get("roe"))
 
-        # Flush every BATCH_SIZE tickers
-        if not args.dry_run and len(pending_rows) >= BATCH_SIZE * 15:
+        # Flush every BATCH_SIZE tickers — direct mode only. Staged mode
+        # (A25) accumulates every row for the whole run and merges +
+        # publishes once at the end (see below), since a partial
+        # mid-run publish would defeat the point of an atomic swap.
+        if not args.dry_run and args.publish_mode == "direct" and len(pending_rows) >= BATCH_SIZE * 15:
             with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
                 _flush(conn)
             gc.collect()
@@ -539,9 +567,41 @@ def main() -> None:
         time.sleep(args.sleep)
 
     # Final flush
-    if not args.dry_run and pending_rows:
+    if not args.dry_run and args.publish_mode == "direct" and pending_rows:
         with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
             _flush(conn)
+
+    if not args.dry_run and args.publish_mode == "staged" and pending_rows:
+        import pandas as pd
+
+        from datastore.staging.gate import stage_dataframe
+        from datastore.staging.merge import coalesce_merge
+        from datastore.staging.publish import publish_run_lock, publish_table
+
+        annotated_rows = [validate_and_annotate(r) for r in pending_rows]
+        new_df = pd.DataFrame(annotated_rows)
+        total_rows = len(new_df)
+
+        with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+            existing_df = conn.execute("SELECT * FROM fundamentals").df()
+            merged_df = coalesce_merge(
+                existing_df, new_df, key_cols=["ticker", "fiscal_year", "quarter"],
+                new_wins=False,  # trendlyne never overwrites an already-populated value
+                force_new_wins_cols=["quality_flag", "quality_flag_reason"],
+            )
+            with publish_run_lock() as acquired:
+                if not acquired:
+                    logger.error("Another publish is in progress — staged trendlyne backfill NOT published.")
+                else:
+                    result = stage_dataframe(conn, "fundamentals", merged_df, validators=[])
+                    if not result.ok:
+                        logger.error("Staging gate rejected the entire batch — nothing published.")
+                    else:
+                        published_rows = publish_table(conn, "fundamentals")
+                        logger.info(
+                            "Staged publish: %d new rows merged, %d now in fundamentals",
+                            total_rows, published_rows,
+                        )
 
     # Summary
     if not args.dry_run:

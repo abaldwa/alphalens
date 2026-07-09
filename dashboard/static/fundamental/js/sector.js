@@ -20,7 +20,7 @@ function load() {
 
   apiGet(`/api/v1/fundamentals/sector/${encodeURIComponent(sector)}`)
     .then((r) => {
-      document.getElementById("sector-count").textContent = `${r.ticker_count} tickers`;
+      document.getElementById("sector-count").textContent = `${fmtInt(r.ticker_count)} tickers`;
       const c = document.getElementById("sector-avg-table");
       if (!r.ticker_count) {
         c.innerHTML = `<div class="empty">No tickers found for sector "${sector}"</div>`;

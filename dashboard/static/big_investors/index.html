@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.BigInvestors — Bulk/Block Deals</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/shell.css">
+</head>
+<body>
+<div class="app-bar" id="app-bar"></div>
+<div class="sub-tabs" id="sub-tabs"></div>
+<div class="page">
+  <div class="sec">
+    <div id="reconciliation-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-title">Big Investor Entries/Exits</span>
+    </div>
+    <div id="family-filters"></div>
+    <div id="family-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-title">Raw Bulk/Block Deals</span>
+      <span class="sec-sub">Every NSE/BSE client_name row as-is, before family attribution or netting.</span>
+    </div>
+    <div class="filters" id="deal-filters"></div>
+    <div id="deals-table"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+<script src="../js/api.js"></script>
+<script src="../js/shell.js"></script>
+<script src="../js/empty_state.js"></script>
+<script src="js/index.js"></script>
+</body>
+</html>

@@ -73,6 +73,21 @@ _COLUMNS = [
     "depreciation",
     "sector_specific_metric_1", "sector_specific_metric_2", "sector_specific_metric_3",
     "sector_specific_metric_4", "sector_specific_metric_5", "sector_specific_metric_6",
+    # 2026-07-07: these exist in the DB (P3.11 + this session's deep-forensic
+    # gap fix) but were missing from this SELECT list, so every GET response
+    # silently omitted them even after the Pydantic schema was fixed — see
+    # schemas.py's FundamentalsWrite docstring note for the full incident.
+    "total_equity", "retained_earnings", "total_assets", "cwip",
+    # 2026-07-07: NSE XBRL Integrated Filing pipeline — see
+    # ingestion/scrapers/nse_xbrl_financials.py and datastore/schema/
+    # create_normalised.py's _CREATE_FUNDAMENTALS comment for sourcing.
+    "goodwill", "inventories", "trade_receivables_current", "trade_payables_current",
+    "total_liabilities", "audit_qualified_flag",
+    "property_plant_equipment", "intangible_assets", "non_current_investments",
+    "non_current_trade_receivables", "deferred_tax_assets", "current_investments",
+    "current_tax_assets", "borrowings_current", "borrowings_noncurrent",
+    "deferred_tax_liabilities", "provisions_current", "provisions_noncurrent",
+    "equity_share_capital", "other_equity", "non_controlling_interest", "non_current_liabilities",
 ]
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -119,7 +134,15 @@ async def get_fundamentals_history_by_quarters(
     df = pd.DataFrame(rows, columns=_COLUMNS)
     if not df.empty:
         df["announcement_date"] = pd.to_datetime(df["announcement_date"])
-        df = df.sort_values("announcement_date")
+        # 2026-07-07: same tie-break fix as GET /{ticker} — see that route's
+        # comment for the full incident (a Screener row and an NSE-XBRL row
+        # for the same real quarter, identical quarter_end_date AND
+        # approximated announcement_date, different (fiscal_year, quarter)
+        # labels). This route additionally returns multiple quarters (not
+        # just the single latest), so the tiebreak matters for every
+        # duplicate-quarter pair in the window, not just the newest.
+        df["_nonnull_count"] = df.notna().sum(axis=1)
+        df = df.sort_values(["announcement_date", "quarter_end_date", "_nonnull_count"]).drop(columns="_nonnull_count")
         df = df.astype(object).where(df.notna(), None)
 
     data = [FundamentalsRow(**row) for row in df.to_dict(orient="records")]
@@ -305,6 +328,24 @@ async def get_fundamentals(
     if not df.empty:
         df["announcement_date"] = pd.to_datetime(df["announcement_date"])
         df = enforce_pit_fundamentals(df, as_of=pit_reference, announcement_date_col="announcement_date")
+        # 2026-07-07: real tie-break bug caught via NSE XBRL pipeline
+        # verification — a Screener-sourced row and an NSE-XBRL-sourced row
+        # for the SAME real quarter (confirmed: identical quarter_end_date)
+        # can carry DIFFERENT (fiscal_year, quarter) labels — Screener's
+        # _indian_fiscal_year_quarter mislabeled a 2026-03-31 quarter as
+        # (2025, 1) instead of the documented-convention-correct (2026, 4)
+        # this pipeline computed for the same date — and both then get the
+        # same approximated announcement_date (neither source gives a true
+        # filing timestamp), so enforce_pit_fundamentals' single-key sort
+        # can't disambiguate at all. DataStoreClient.get_fundamentals_pit's
+        # `rows[-1]` was silently picking whichever row DuckDB happened to
+        # return first, sometimes the older/less-complete one. Break a full
+        # tie by preferring the row with fewer NULL columns (more complete
+        # data) — a generic, source-agnostic tiebreaker; does not attempt to
+        # fix Screener's underlying (fiscal_year, quarter) mislabeling bug
+        # itself, which is out of scope here.
+        df["_nonnull_count"] = df.notna().sum(axis=1)
+        df = df.sort_values(["announcement_date", "quarter_end_date", "_nonnull_count"]).drop(columns="_nonnull_count")
     # NaN → None: cast to object dtype first so pandas doesn't coerce None back to NaN
     # in float64 columns. Pydantic v2 rejects float('nan') for finite-number fields.
     if not df.empty:
@@ -349,7 +390,7 @@ async def write_fundamentals(record: FundamentalsWrite) -> FundamentalsWriteResu
     # (e.g. screener.py re-filing a restated quarter's revenue).
     update_clause = ", ".join(f"{c} = COALESCE(excluded.{c}, fundamentals.{c})" for c in update_cols)
 
-    with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(
             f"""
             INSERT INTO fundamentals ({_SELECT_COLS}) VALUES ({placeholders})

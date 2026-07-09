@@ -196,59 +196,58 @@ current/latest per-share basis. Today's NSE-reported price is always preserved u
     are traded (SEBI circular). Reported to NSE/BSE by end of day.
   - Block Deal: a single transaction of ≥ 500,000 shares OR ≥ Rs. 10 crore, executed
     exclusively in the block deal window (9:15–9:30 AM IST). Reported immediately.
-- **Sources:** NSE (historical bulk/block deal API + snapshot fallback) and BSE (open API)
-- **Endpoint map:**
-  - NSE Bulk: `https://www.nseindia.com/api/historical/bulk-deals?from=DD-MM-YYYY&to=DD-MM-YYYY`
-  - NSE Block: `https://www.nseindia.com/api/historical/block-deals?from=DD-MM-YYYY&to=DD-MM-YYYY`
-  - BSE Bulk: `https://api.bseindia.com/BseIndiaAPI/api/BulkDeals/w?strdate=DDMMYYYY&enddate=DDMMYYYY`
-  - BSE Block: `https://api.bseindia.com/BseIndiaAPI/api/BlockDeals/w?strdate=DDMMYYYY&enddate=DDMMYYYY`
+- **Sources:** NSE (3-tier fallback chain) and BSE (currently unavailable — see below).
+- **NSE endpoint map, tried in order (all three real, verified live 2026-07-05):**
+  1. Historical: `https://www.nseindia.com/api/historical/bulk-deals?from=DD-MM-YYYY&to=DD-MM-YYYY`
+     (and `.../historical/block-deals`) — date-specific, but **currently returns an
+     anti-bot 503 challenge page**, not real data.
+  2. Snapshot: `https://www.nseindia.com/api/snapshot-capital-market-bulk-deals` (and
+     `.../block-deals`) — today-only, but **currently returns an anti-bot 404 challenge
+     page**, not real data.
+  3. **Archive CSV (the tier that actually works):**
+     `https://archives.nseindia.com/content/equities/bulk.csv` and `.../block.csv` —
+     static files, no cookie priming, no anti-bot challenge. Only ever carry the most
+     recent trading day's deals (single-day snapshot, refreshed daily by NSE) — a fetch
+     for `target_date` is only accepted if the CSV's own `Date` column matches
+     `target_date`; otherwise treated as unavailable rather than mislabeling stale data.
+     Tried automatically after tiers 1–2 fail, so NSE's JSON endpoints are used again
+     transparently if NSE ever restores them.
+- **BSE — [AS BUILT, 2026-07-05] REAL INCIDENT, currently unavailable:**
+  `https://api.bseindia.com/BseIndiaAPI/api/BulkDeals/w` and `.../BlockDeals/w` now
+  302-redirect every request to `https://api.bseindia.com/error_Bse.html` regardless of
+  headers, cookies, or params. Confirmed this is BSE retiring the endpoint, not an
+  anti-bot block: other `api.bseindia.com` JSON endpoints (e.g.
+  `LitsOfScripCSVDownload/w`) succeed with an identical session at the same time. Two
+  actively maintained third-party BSE API wrapper libraries
+  (`BennyThadikaran/BseIndiaApi`, `RuchiTanmay/bseindia`) have both dropped bulk/block-
+  deals support entirely, and a Playwright headless-browser load of the real BSE
+  bulk-deals page (to observe whatever internal API its Angular frontend calls) was
+  blocked with a 403 before any JS ran. No working BSE alternative found. **This is a
+  documented gap, not a bug** — `download_large_deals()` degrades to NSE-only coverage
+  and logs the BSE failure as non-critical (SPEC-PIPE-006 pattern); revisit if BSE
+  republishes this data.
 - **`large_deals` table schema:**
   - `trade_date`, `exchange` (NSE/BSE), `deal_type` (BULK/BLOCK), `ticker`
   - `client_name`, `transaction_type` (B/S), `quantity`, `price`, `remarks`
 - No PRIMARY KEY — delete-then-insert per (trade_date, exchange, deal_type) per day;
   multiple deals per client per stock per day are valid
-- Each of the 4 sources fetched independently; any single source failure is caught, logged,
-  and skipped — the others still contribute rows (SPEC-PIPE-006 "non-critical" pattern)
+- Each of the 4 sources (NSE bulk, NSE block, BSE bulk, BSE block) fetched independently;
+  any single source failure is caught, logged, and skipped — the others still contribute
+  rows (SPEC-PIPE-006 "non-critical" pattern)
 - BSE ticker field uses BSE's SCRIP_ID which usually matches NSE symbol but may differ;
   no automatic reconciliation — cross-reference via company name if needed
 - Raw JSON retained at `datastore/raw/large_deals/{date}_{exchange}_{type}.json`
-- Implemented in `ingestion/scrapers/large_deals.py`
+- Implemented in `ingestion/scrapers/large_deals.py`; daily pipeline step
+  `download_large_deals` (`ingestion/scheduler/daily_pipeline.py`)
 
-### SPEC-PIPE-009 · Large Deals Family Filter (Clean Layer)
-- **Problem:** A significant fraction of reported bulk/block deals are intra-family
-  transfers — e.g. Rakesh Jhunjhunwala selling to Rekha Jhunjhunwala, or RARE Enterprises
-  (his vehicle) transferring to a family trust. These are not open-market buys/sells by
-  independent participants. Including them in signals creates false activity flags.
-- **Clean layer definition:** A `large_deals_clean` daily Parquet (or DuckDB view) derived
-  from `large_deals` with all intra-family and intra-promoter-group pairs removed.
-- **Family identification — three-tier approach (all applied in order; any match → drop):**
-  1. **Entity-family registry** (primary, highest precision): A curated table
-     `entity_families(entity_name VARCHAR, family_name VARCHAR, entity_type VARCHAR)`
-     mapping known investor entities to their family. Seeded from Trendlyne StratQ's
-     superstar investor list (which names the entity/vehicle alongside the person) and
-     manually maintained. Examples: `("RARE Enterprises", "Jhunjhunwala", "HNI_VEHICLE")`,
-     `("Rekha Jhunjhunwala", "Jhunjhunwala", "HNI_INDIVIDUAL")`. A deal where both buyer
-     and seller map to the same `family_name` → `is_intra_family = True`.
-  2. **Surname similarity** (secondary, broader net): Extract the last token of
-     `client_name` after stripping common suffixes (`LLP`, `Ltd`, `PVT`, `Trust`,
-     `Fund`, `Enterprises`, `Capital`). If two same-stock same-day counterparties share
-     the same cleaned surname → `is_intra_family = True`. Handles new entrants not yet
-     in the registry. Prone to false positives for common surnames (Patel, Sharma, Singh)
-     — mitigated by requiring the match on same stock, same day.
-  3. **Promoter cross-reference** (tertiary): If both client names appear in
-     `shareholding` promoter disclosures for the same ticker → `is_intra_promoter = True`
-     (a subset of intra-family but covers non-family promoter group transfers).
-- **Output columns added to clean layer:** `is_intra_family BOOL`, `is_intra_promoter BOOL`,
-  `family_name VARCHAR` (NULL if not matched), `filter_reason VARCHAR`
-- **Source preference:** If Trendlyne or Tijori already tag deals with entity type
-  (promoter/FII/DII/HNI/institution), persist that tag directly and use it to enrich
-  the family registry rather than rebuilding from scratch.
-- **Implementation target:** P3.5. `large_deals` raw table is built and populated in
-  P3.4; the clean-layer filter is a separate daily post-processing step added after
-  `download_large_deals` in the pipeline.
-- **Spec for clean layer retention:** Raw `large_deals` rows are never deleted — only the
-  clean Parquet is filtered. This preserves the ability to re-run filtering with an
-  updated registry without re-fetching from NSE/BSE.
+### SPEC-PIPE-009 · Large Deals Family Attribution (superseded design — see SPEC-BIGINV-002)
+- **[AS BUILT, 2026-07-05]** The "large_deals_clean Parquet + surname-similarity"
+  design originally specced here was superseded during the Big Investor Activity build
+  (plan: gentle-wobbling-swing.md) by a simpler, DB-native design: a seeded
+  `investor_family` table joined against `large_deals` to produce a derived, rebuildable
+  `bulk_deal_positions` table, with same-day wash-trade netting instead of a
+  surname-similarity heuristic. See **SPEC-BIGINV-002** for the actual as-built spec.
+  This entry is kept only so historical spec IDs are never silently deleted/renumbered.
 
 ### SPEC-MFHOLD-001 · MF Holdings Sourcing Strategy (P2.2)
 - AMFI does not centrally host scheme-wise portfolio holdings — SEBI's
@@ -276,13 +275,175 @@ current/latest per-share basis. Today's NSE-reported price is always preserved u
   Open/Closed) — new AMC coverage is added by registering a
   `(fetch_fn, parse_fn)` pair, never by editing the registry/
   orchestration core.
-- Ingestion runs twice monthly (config.settings.MF_HOLDINGS_SCHEDULE_DAYS,
-  default day 5 and day 20) rather than once, because AMC disclosure
-  timing varies and Groww's "current snapshot" can change mid-cycle.
+- **[AS BUILT, 2026-07-05, supersedes the original schedule below]** Ingestion now
+  runs **weekly, every Saturday at 13:00 IST**
+  (`config.settings.MF_HOLDINGS_SCHEDULE_DAY_OF_WEEK = "sat"`,
+  `AMFI_SCHEDULE_TIME = "13:00"`), matching the Big Investor Activity dashboard's
+  weekly-publish cadence (SPEC-BIGINV-003) — changed from the original twice-monthly
+  (day 5 and day 20) schedule below per explicit operator instruction.
+  ~~Ingestion runs twice monthly (config.settings.MF_HOLDINGS_SCHEDULE_DAYS, default
+  day 5 and day 20) rather than once, because AMC disclosure timing varies and Groww's
+  "current snapshot" can change mid-cycle.~~
 - PIT (SPEC-PIPE-003): `availability_date` = the
   `MF_HOLDINGS_AVAILABILITY_DELAY_DAYS`-th day of the month following
   the disclosure month, stamped on every row at write time — features
   consume this column, never `month` directly.
+
+---
+
+## SPEC-BIGINV: Big Investor Activity (Bulk/Block Deals + MF Holdings + Reconciliation)
+
+Built 2026-07-05 per plan `gentle-wobbling-swing.md`. Objective: a dashboard tab
+highlighting where large investors ("big investors" — HNI superstar investors, mutual
+funds, and other >1% public shareholders) are entering/exiting positions, filtered for
+related-party/intraday noise, cross-checked against quarterly disclosures. Focus:
+mid/small/micro-cap names, since that is where a single large investor's activity is
+most informative.
+
+### SPEC-BIGINV-001 · Cap-Band Classification
+- Fixed Rs. crore thresholds (`config/settings.py`), independent of
+  `stock_master.current_tier` (rank-based):
+  `BIG_INVESTOR_CAP_LARGE_CR=20000`, `BIG_INVESTOR_CAP_MID_CR=5000`,
+  `BIG_INVESTOR_CAP_SMALL_CR=1000`. Below `BIG_INVESTOR_CAP_SMALL_CR` → "micro";
+  `market_cap_cr` NULL/0/missing → "unknown" (never silently bucketed into a real band).
+- Every Big Investor Activity API response row is annotated with `cap_band`, joined from
+  `stock_master.market_cap_cr`.
+- **[AS BUILT, 2026-07-05] REAL GAP FOUND AND FIXED:** `stock_master` (schema defined
+  since Phase 0.1) had never been populated by any code path in this project — every
+  join against it silently returned NULL, so every dashboard row showed `cap_band:
+  "unknown"` regardless of the real market cap. Fixed via a new one-time/rerunnable
+  sync, `scripts/sync_stock_master_from_universe.py`, upserting the real
+  `config/nifty500_universe.csv` (the actual canonical universe source everywhere else,
+  via `config/universe.py`) into `stock_master`. Rows with a NaN `company_name` in the
+  CSV (~691 tickers, the same screener.in-unresolved backlog tracked in
+  `config/company_metadata_enrichment_unresolved.csv`) are skipped rather than given a
+  fabricated name — `stock_master.company_name` is `NOT NULL`, so making one up was not
+  an option; they backfill automatically once the parked Trendlyne-enrichment task
+  resolves them and the sync is rerun. A first draft of this script stringified NaN
+  company names as the literal `"nan"` — caught and fixed before merge, with the 691
+  bad rows cleaned up.
+- A small number of real tickers (31, as of 2026-07-05) have `market_cap_cr == 0` in the
+  universe CSV itself — a pre-existing, already-documented "not yet sourced" gap
+  (`config/universe.py`'s own comment on `MIN_MCAP_CR` filtering), not introduced by
+  this feature and not fixed here (out of scope — would require a market-cap backfill
+  effort, not a join fix).
+
+### SPEC-BIGINV-002 · Investor-Family Attribution and Wash-Trade Netting
+- **`investor_family` table** (`datastore/schema/create_normalised.py`): seed mapping,
+  `entity_name` (normalized — upper-case, whitespace-collapsed raw `client_name`) →
+  `family_id`, `family_display_name`, `match_type`, `source`, `confidence`, `added_date`,
+  `notes`. Loaded via `scripts/load_investor_family_seed.py --dry-run|--apply` from the
+  human-reviewed `datastore/seed/investor_family_seed.yaml` — never auto-loaded.
+  71 real entities seeded as of 2026-07-05, sourced from Trendlyne's public superstar-
+  investor index (`https://trendlyne.com/portfolio/superstar-shareholders/index/`),
+  with explicit merge/no-merge decisions on ambiguous surname clusters (Sheth, Parekh,
+  Bhanshali, Javeri) confirmed by the operator rather than guessed.
+- **`bulk_deal_positions` table**: derived, rebuildable — never a second source of
+  truth over `large_deals` + `investor_family`. PK
+  `(family_id, ticker, trade_date, deal_type)`. `family_id` is either a real
+  `investor_family.family_id` or `'unmapped:<normalized_client_name>'` for clients with
+  no known family mapping yet.
+- **Intraday wash-trade netting** (`ingestion/scrapers/bulk_deal_attribution.py`): per
+  `(family_id, ticker, deal_type, trade_date)`, net BUY vs. SELL quantity
+  (`_net_group`). A group that fully washes (equal buy/sell) nets to zero and is
+  dropped entirely (no row written). A near-equal pair within
+  `config.settings.INTRADAY_NETTING_QTY_TOLERANCE_PCT` (default 2%) is still logged as
+  a "substantial wash" for audit, but still resolves to its real residual — no separate
+  code path silently keeps both sides.
+  - **[AS BUILT, 2026-07-05] REAL BUG FOUND AND FIXED:** `attribute_bulk_deals` compared
+    `transaction_type == "BUY"/"SELL"`, but `large_deals.transaction_type` is always
+    normalized to `"B"/"S"` by `large_deals.py`'s `_normalise_transaction_type` — this
+    silently zeroed out every real attribution run (0 rows written) until fixed. Went
+    undetected through initial build and unit testing because `large_deals` itself held
+    no real data yet; only surfaced once the NSE archive-CSV fix (SPEC-PIPE-008) put
+    real rows in `large_deals` for the first time. Unit test fixtures had the same
+    wrong literal and were fixed alongside the production code
+    (`tests/unit/test_bulk_deal_attribution.py`).
+- **Cumulative position tracking**: each `(family_id, ticker, deal_type)` position
+  carries forward from the prior trade_date's `cumulative_position_est`.
+  `is_new_entry` = prior position was 0 and the new position is non-zero.
+  `is_full_exit` = prior position was positive and the new position is ≤ 0.
+- Idempotent per `run_date`: `attribute_bulk_deals` deletes and rebuilds that date's rows
+  before inserting, so a rerun (e.g. after a family-seed update) never double-counts.
+- Position tracking is scoped **per deal_type** (bulk vs. block never combined) —
+  documented simplification; revisit only if real data shows cross-deal-type wash
+  trades are common.
+- Daily pipeline step: `attribute_bulk_deals`, depends on `download_large_deals`
+  (`ingestion/scheduler/checkpoint.py` STEPS).
+- 12 real unit tests (`tests/unit/test_bulk_deal_attribution.py`) cover: unmapped-client
+  attribution, full/partial wash-trade netting, seeded-family mapping, cumulative
+  position carry-forward, full-exit flagging, and same-date rerun idempotency — against
+  an isolated in-memory DuckDB, never the real project database (SPEC-SYS-006).
+
+### SPEC-BIGINV-003 · MF Holdings Movers/Entries-Exits
+- Promotes the existing `mf_holdings` monthly parquet snapshots (SPEC-MFHOLD-001) into
+  a queryable table via `amfi_holdings.sync_duckdb_table` — parquet stays the raw/audit
+  artifact.
+- `GET /api/v1/big-investors/mf-holdings/movers`: month-over-month quantity change per
+  ticker, `direction` ∈ {new_entry, exit, increased, decreased}, cap-band annotated.
+- Weekly refresh, Saturdays 13:00 IST — see SPEC-MFHOLD-001's as-built schedule note.
+
+### SPEC-BIGINV-004 · Quarterly Reconciliation Against Named Public Shareholders
+- **`public_shareholders` table**: real named-holder disclosures (>1% holders),
+  sourced from Trendlyne's superstar-investor portfolio pages (all ~62 investors on
+  Trendlyne's public index, not just a hardcoded handful — see
+  `ingestion/scrapers/trendlyne.py`'s `discover_superstar_investors`). One row per
+  `(ticker, holder_name, quarter_end_date)`. `reported_shares` carries Trendlyne's real
+  "Qty Held" figure when disclosed that quarter (confirmed via live authenticated
+  fetch — Trendlyne reports absolute share counts, not just stake %).
+- **`bulk_deal_reconciliation_log` table**: audit trail — one row per
+  `(family_id, ticker, quarter_end_date)` reconciliation attempt, with
+  `estimated_position_pre_correction`, `reported_shares_est`, `correction_applied`,
+  `correction_delta`, `discrepancy_pct`, `status`.
+- **Reconciliation logic** (`ingestion/scrapers/bulk_deal_reconciliation.py`):
+  1. Prefer `public_shareholders.reported_shares` (real). Fall back to
+     `stake_pct% × shares_outstanding` (`market_cap_cr × 1e7 / close price`, nearest
+     trading day on/before quarter end) only when Trendlyne itself shows
+     "Filing Awaited"/"-" for quantity that quarter — an explicit estimate, never
+     conflated with the real figure.
+  2. Discrepancy within `RECONCILIATION_TOLERANCE_PCT` (10%) → `status = "resolved"`,
+     `bulk_deal_positions` untouched.
+  3. Discrepancy beyond tolerance → **correct the historical estimate first** (per
+     operator instruction): insert a `deal_type = 'reconciliation'` anchor row at
+     `quarter_end_date` carrying the corrected `cumulative_position_est`, then propagate
+     the same delta to any `trade_date > quarter_end_date` rows (those already reflect
+     real trades since, so they're offset, not overwritten) — `status =
+     "flagged_for_review"`.
+     - **[AS BUILT] Bug guarded against**: an anchor row is always inserted at
+       `quarter_end_date` even when the family's most recent trade predates it (no
+       row would otherwise exist there for a plain UPDATE to touch) — regression-
+       tested in `tests/unit/test_bulk_deal_reconciliation.py`.
+  4. Known Phase D simplification: if a family has trades under more than one
+     `deal_type` after quarter-end, the full `correction_delta` is applied to each
+     deal_type's series independently rather than split proportionally — acceptable,
+     revisit only if real data shows this matters.
+- 8 real unit tests cover: no-data, within-tolerance, large-discrepancy correction +
+  anchor insertion, forward propagation, the anchor-row regression case, market-cap
+  fallback estimation, and multi-pair batch reconciliation — isolated in-memory DuckDB.
+
+### SPEC-BIGINV-005 · Dashboard (AlphaLens.BigInvestors)
+- New app `dashboard/static/big_investors/` (`index.html` + `mf_holdings.html`),
+  registered in `shell.js`'s `APPS` array and `index.html`'s `APP_STATUS` map as "Live".
+- Two views: Bulk/Block Deals (raw + family-attributed, with a reconciliation-flags
+  panel and resolve action) and MF Holdings movers — both cap-band filterable.
+- Backend: `datastore/api/routers/big_investors.py`, prefix `/api/v1/big-investors`.
+  Literal-path routes (`/bulk-deals/entries-exits`, `/bulk-deals/families/entries-exits`)
+  registered before their `{ticker}` wildcard counterparts (SPEC-TRACE-consistent
+  route-ordering discipline, same pattern as `main.py`'s forensic/signals routers).
+
+### SPEC-BIGINV-006 · Known Gaps (honestly documented, not hidden)
+- **BSE bulk/block deals unavailable** — see SPEC-PIPE-008. NSE-only coverage for now.
+- **Reconciliation only covers investors on Trendlyne's superstar-shareholder index**
+  (real, currently ~62 named investors) — a family with no Trendlyne presence has no
+  `public_shareholders` rows and is never reconciled, only tracked via the daily
+  bulk-deal estimate.
+- **Shares-outstanding fallback is a derived estimate**, not a fact, used only when
+  Trendlyne itself has no real quantity for that quarter.
+- **691 tickers with no resolved `company_name`/`sector`** — parked as the last phase
+  of this feature (Trendlyne-based enrichment, `scripts/
+  enrich_missing_company_metadata_trendlyne.py`), tracked in
+  `config/company_metadata_enrichment_unresolved.csv`. These tickers are excluded from
+  `stock_master` (SPEC-BIGINV-001) until resolved, not given fabricated names.
 
 ---
 

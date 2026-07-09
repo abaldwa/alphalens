@@ -31,6 +31,105 @@ PIT Assumptions (SPEC-PIPE-003 CRITICAL)
 All fundamental data accessed via DataStoreClient.get_fundamentals_history()
 which filters on announcement_date <= as_of. Shareholding data uses
 filing_date <= as_of. No quarter_end_date used as a join key.
+
+Real-data availability audit (2026-07-07)
+------------------------------------------
+Of Group D's 12 columns and Group E's 8 columns, the underlying
+`fundamentals` raw fields were confirmed 100%-NaN because the schema never
+had the columns at all (not a parsing bug). Investigated against a real
+live screener.in fetch (ingestion/scrapers/screener.py) plus Tijori and
+NSE corporate-actions sourcing patterns already used elsewhere in this repo:
+
+- NOW REAL (schema + scraper added this session): `total_assets`, `cwip`
+  are genuine labeled rows in Screener's free-tier #balance-sheet table
+  (verified live against TCS). This makes `cwip_ratio` and
+  `asset_inflation_flag` real, non-fabricated values wherever Screener has
+  data. `asset_quality_score`/`balance_sheet_manipulation_score` partially
+  improve (their goodwill_ratio/noncash_assets_ratio/current_assets
+  components remain NaN — see below).
+- STILL GENUINELY UNAVAILABLE (grepped for on a real live Screener page —
+  zero matches; not on Tijori, which has no verified live account in this
+  repo; not on any scrapeable NSE endpoint): goodwill, intangibles,
+  contingent_liabilities, subsidiary_count, loans_to_related_parties,
+  capex (free-tier cash-flow table doesn't expose it either — same gap
+  screener.py's module docstring already documents for `fcf`), and
+  current_assets/cash_and_equivalents (also already-documented free-tier
+  gaps). So `goodwill_ratio`, `contingent_liability_ratio`,
+  `subsidiary_count`, `loans_to_related`, `capex_to_assets`,
+  `intangibles_growth`, `off_balance_sheet_proxy`, `noncash_assets_ratio`
+  stay NaN until a real structured source is found — not fabricated.
+- Group E (governance/promoter risk) is ENTIRELY unavailable from any free
+  structured source investigated: `salary_to_pat`/`rpt_intensity` need
+  director_remuneration/related_party_transactions, which Screener only
+  exposes via an "Experimental", Premium-gated, per-company-variable-schema
+  RPT modal that still blanks the most recent 1-2 FYs (see screener.py's
+  docstring) — too unreliable to auto-aggregate. `audit_qualification_flag`,
+  `auditor_change_flag`, `cfo_tenure_months`, `board_independence`,
+  `director_resignation_count_4q`, `whistle_blower_policy` are corporate-
+  governance-report/annual-report/MCA21 data — grepped for on a live
+  Screener page (zero matches: no "auditor", "whistle", "independent
+  director", or "remuneration" text anywhere) and not published as
+  structured (non-PDF) data on any NSE/BSE endpoint this repo's
+  ingestion/scrapers/corporate_actions.py-style authenticated session can
+  reach. All 8 Group E columns remain NaN — real gap, not fabricated.
+
+Cluster E.2 follow-up (2026-07-07)
+------------------------------------
+- `total_assets`/`cwip` (added to the schema by an earlier session this
+  same day) had NEVER actually been backfilled into the real DB — a fresh
+  `SELECT COUNT(*) FROM fundamentals WHERE total_assets IS NOT NULL` was 0
+  despite ~3,300 cached raw Screener pages already having the real data on
+  them (the parsing only fires on a fresh live scrape going forward, and
+  none had run since). Added scripts/backfill_balance_sheet_from_screener.py
+  and ran it from the existing cache (no network call): total_assets/cwip
+  are now real, populated for 2,308/27,176 rows (8.5% — one current-quarter
+  snapshot per ticker, not full history). This makes `cwip_ratio` and
+  `asset_inflation_flag` produce real non-NaN values for the first time
+  (live-verified: TCS's 2026-03-31 row now gives cwip_ratio = 2665/181167
+  = 0.0147, matching the real Screener page).
+- `altman_z` was WIRED but had real bugs that made it always NaN regardless
+  of data availability: it looked up `market_cap`/`book_equity`, neither a
+  real fundamentals column, and had no derivation for
+  `working_capital`/`total_liabilities`/`retained_earnings`. Fixed:
+  `total_liabilities` derives from `total_assets - total_equity` (both real
+  columns, confirmed via `book_equity` never matching the real
+  `total_equity` column name); `retained_earnings` is now a real column
+  (Screener's "Reserves" row, kept separate from `total_equity` instead of
+  only summed into it — see datastore/schema/create_normalised.py and
+  scripts/backfill_equity_from_screener.py, backfilled for real: 6,519
+  (ticker, fiscal_year) groups patched from the existing cache).
+  `altman_z` as a WHOLE still resolves to NaN in every real case today: (1)
+  `working_capital` needs `current_assets`/`current_liabilities`, real
+  schema columns but ALWAYS NULL from Screener's free tier (confirmed —
+  see screener.py's module docstring); (2) no real, PIT-correct market-cap
+  column exists anywhere `fundamentals` — `market_cap_cr` lives only on
+  `stock_master` (current snapshot, not historical PIT data) and this
+  function's inputs (fundamentals + shareholding history only) have no
+  price series to derive one, unlike features/fundamental.py's
+  ev_to_ebitda which is handed a `close` price series. Left NaN rather than
+  fabricated from a non-PIT current price. Not a regression — previously
+  silently-wrong-always-NaN from field-name typos, now correctly-NaN for a
+  documented, real data gap; the fix is real even though the net output is
+  unchanged today.
+- `peer_outlier_score`, `tax_rate_anomaly` were already correctly wired
+  against real columns (`roe`, `tax_expense`, `pbt`) — verified by
+  re-reading and a live DB query, no bug found.
+- `insider_selling_flag` had a real bug: it read `fund_df["promoter_pct"]`
+  (the `fundamentals` table), but `promoter_pct` only exists on
+  `shareholding` — so `"promoter_pct" in fund_df.columns` was always False
+  and this feature was always NaN regardless of real data availability.
+  Fixed to read from the same shareholding rows already fetched for
+  pledge_spiral_risk. `pledge_spiral_risk` separately looked up
+  "promoter_pledge_pct" instead of the real "promoter_pledge" column name
+  — fixed too, though `promoter_pledge` is itself always None (see below),
+  so this fix alone doesn't unblock it.
+- `pledge_spiral_risk` depends on `shareholding.promoter_pledge`, which is
+  always None — see ingestion/scrapers/screener.py's
+  `_build_shareholding_row` docstring for the live investigation into NSE's
+  pledge-disclosure page (no discoverable public JSON API despite testing
+  the adjacent, working `api/CorpInfo?corpType=sast` endpoint pattern
+  against a company with a real, currently-disclosed 51.82% pledge).
+  Genuinely blocked, not fabricated.
 """
 
 import logging
@@ -42,6 +141,7 @@ import numpy as np
 import pandas as pd
 
 from datastore.client import DataStoreClient
+from features.fundamental import _latest_close_on_or_before
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +297,7 @@ def compute_deep_forensic_features(
     sector_fundamentals: Optional[pd.DataFrame] = None,
     pre_loaded_fundamentals=None,
     pre_loaded_shareholding=None,
+    ticker_ohlcv: "Optional[pd.DataFrame]" = None,
 ) -> Dict[str, Any]:
     """
     Compute all 28 deep forensic features for one ticker.
@@ -368,7 +469,40 @@ def compute_deep_forensic_features(
             result["benford_mad"] = _benford_mad(revenue_series)
 
     # altman_z (requires fields that may not all be populated)
+    # [AS BUILT, deep-forensic altman_z fix 2026-07-07] This block previously
+    # always produced NaN: no `working_capital`/`total_liabilities` columns
+    # exist in the fundamentals schema at all, and the two field names used
+    # to look up market cap / equity ("market_cap", "book_equity") don't
+    # match any real fundamentals column — so even the derivation fallback
+    # silently never fired. Fixed:
+    #  - total_liabilities derives from total_assets - total_equity (both
+    #    real columns).
+    #  - retained_earnings is now a real column (Screener's "Reserves" row,
+    #    kept separate from total_equity in the schema this session — see
+    #    datastore/schema/create_normalised.py's docstring).
+    #  - working_capital derives from current_assets - current_liabilities,
+    #    which ARE real schema columns but are ALWAYS NULL from Screener's
+    #    free tier (see ingestion/scrapers/screener.py's module docstring —
+    #    not a distinct labeled row on the free-tier balance sheet). So
+    #    working_capital, and therefore altman_z's X1 term, stays genuinely
+    #    blocked today, not a wiring bug.
+    #  - market cap (X4's numerator) — [FIXED 2026-07-07, same-day
+    #    follow-up] now derived the same way features/fundamental.py's
+    #    ev_to_ebitda does: real PIT-safe close price (via
+    #    _latest_close_on_or_before, same helper, imported directly rather
+    #    than duplicated) x shares_outstanding (a real, already-existing
+    #    fundamentals column). Requires ticker_ohlcv to be passed in by the
+    #    caller (compute_deep_forensic_features_panel now accepts and
+    #    forwards ohlcv_panel, same as fundamental/governance/corp-action
+    #    panels) — if the caller doesn't provide it, market_cap stays NaN
+    #    (no fabricated fallback), same honest-degradation behavior as
+    #    every other field here.
     wc = _get(latest, "working_capital")
+    if np.isnan(wc):
+        ca = _get(latest, "current_assets")
+        cl = _get(latest, "current_liabilities")
+        if not np.isnan(ca) and not np.isnan(cl):
+            wc = ca - cl
     retained = _get(latest, "retained_earnings")
     ebit_v = _get(latest, "ebit")
     # Derive ebit if not directly available: operating_margin * revenue
@@ -379,11 +513,24 @@ def compute_deep_forensic_features(
             ebit_v = op_margin * rev
     total_liab = _get(latest, "total_liabilities")
     if np.isnan(total_liab):
-        # Derive: total_assets - book_equity (total_equity)
-        equity = _get(latest, "book_equity")
+        # Derive: total_assets - total_equity (both real columns)
+        equity = _get(latest, "total_equity")
         if not np.isnan(total_assets) and not np.isnan(equity):
             total_liab = total_assets - equity
     mktcap = _get(latest, "market_cap")
+    if np.isnan(mktcap):
+        shares_out = _get(latest, "shares_outstanding")
+        try:
+            close = _latest_close_on_or_before(client, ticker, as_of, ticker_ohlcv=ticker_ohlcv)
+        except Exception:
+            # Never let a price-lookup failure (real API error, or a test
+            # double that doesn't stub get_ohlcv) crash the other 27
+            # forensic features this function computes — same
+            # never-fabricate-but-never-crash pattern used throughout this
+            # module (e.g. every other _get(...) NaN-on-missing path).
+            close = None
+        if not np.isnan(shares_out) and close is not None:
+            mktcap = (shares_out * close) / 1e7  # raw rupees -> Crore, same unit as total_liabilities
     rev_latest = _get(latest, "revenue")
     result["altman_z"] = _altman_z(wc, retained, ebit_v, total_assets, total_liab, rev_latest, mktcap)
 
@@ -396,6 +543,25 @@ def compute_deep_forensic_features(
             result["interest_coverage_trend"] = float(slope)
 
     # pledge_spiral_risk: promoter pledge × |price_decline_proxy|
+    # insider_selling_flag: promoter holding QoQ decline > threshold
+    # [AS BUILT, deep-forensic cluster E.2 fix 2026-07-07] Both features need
+    # `shareholding` table rows (promoter_pct/promoter_pledge live there, NOT
+    # on `fundamentals` — see datastore/schema/create_normalised.py's
+    # _CREATE_SHAREHOLDING). This block previously had two real bugs:
+    #  - pledge_spiral_risk looked up "promoter_pledge_pct", but the real
+    #    shareholding column is "promoter_pledge" (still always None today —
+    #    see ingestion/scrapers/screener.py's _build_shareholding_row
+    #    docstring for the live NSE pledge-source investigation — so this
+    #    field-name fix alone doesn't unblock it, just removes a second,
+    #    independent bug stacked on top of the real data gap).
+    #  - insider_selling_flag read `fund_df["promoter_pct"]`, a column that
+    #    only exists on `shareholding`, never on `fundamentals` — so
+    #    `"promoter_pct" in fund_df.columns` was always False and this
+    #    feature was always NaN regardless of real data availability. Fixed
+    #    to use the same shareholding rows fetched for pledge_spiral_risk.
+    #    Live-verified this now produces real 0/1 flags wherever
+    #    shareholding history has >= 2 quarters (promoter_pct IS populated
+    #    from Screener — see screener.py's #shareholding parsing).
     try:
         share_rows = (
             pre_loaded_shareholding if pre_loaded_shareholding is not None
@@ -405,11 +571,11 @@ def compute_deep_forensic_features(
             sh_df = pd.DataFrame(share_rows).sort_values("quarter_end_date")
             if not sh_df.empty:
                 latest_sh = sh_df.iloc[-1]
-                pledge_pct = _get(latest_sh, "promoter_pledge_pct")
+                pledge_pct = _get(latest_sh, "promoter_pledge")
                 # Promoter pledge change (risk increases as pledge grows)
                 if len(sh_df) >= 2:
                     prior_sh = sh_df.iloc[-2]
-                    pledge_prior = _get(prior_sh, "promoter_pledge_pct")
+                    pledge_prior = _get(prior_sh, "promoter_pledge")
                     if not np.isnan(pledge_pct) and not np.isnan(pledge_prior):
                         pledge_delta = pledge_pct - pledge_prior
                         result["pledge_spiral_risk"] = float(pledge_pct * max(0.0, pledge_delta) / 100.0)
@@ -417,6 +583,12 @@ def compute_deep_forensic_features(
                         result["pledge_spiral_risk"] = float(pledge_pct / 100.0)
                 elif not np.isnan(pledge_pct):
                     result["pledge_spiral_risk"] = float(pledge_pct / 100.0)
+
+                if "promoter_pct" in sh_df.columns and len(sh_df) >= 2:
+                    recent_promoter = sh_df["promoter_pct"].dropna()
+                    if len(recent_promoter) >= 2:
+                        change = recent_promoter.iloc[-1] - recent_promoter.iloc[-2]
+                        result["insider_selling_flag"] = float(1 if change < -2.0 else 0)
     except Exception as exc:
         logger.debug(f"shareholding fetch failed for {ticker}: {exc}")
 
@@ -440,13 +612,6 @@ def compute_deep_forensic_features(
         effective_rate = tax_provision / pbt
         result["tax_rate_anomaly"] = float(abs(effective_rate - STATUTORY_TAX))
 
-    # insider_selling_flag: from shareholding — promoter holding decline > threshold
-    if "promoter_pct" in fund_df.columns and len(fund_df) >= 2:
-        recent_promoter = fund_df["promoter_pct"].dropna()
-        if len(recent_promoter) >= 2:
-            change = recent_promoter.iloc[-1] - recent_promoter.iloc[-2]
-            result["insider_selling_flag"] = float(1 if change < -2.0 else 0)
-
     return result
 
 
@@ -459,6 +624,7 @@ def compute_deep_forensic_features_panel(
     as_of: datetime,
     lookback_years: int = 3,
     data_cache=None,
+    ohlcv_panel: "Optional[pd.DataFrame]" = None,
 ) -> pd.DataFrame:
     """
     Compute deep forensic features for all tickers.
@@ -469,6 +635,13 @@ def compute_deep_forensic_features_panel(
     tickers : list of str
     as_of : datetime
     lookback_years : int
+    ohlcv_panel : pd.DataFrame, optional
+        Pre-fetched bulk OHLCV panel (same one build_feature_matrix already
+        fetches for every other panel) — 2026-07-07: forwarded to
+        compute_deep_forensic_features so altman_z's market_cap term (close
+        price x shares_outstanding) can be computed PIT-safely without an
+        extra per-ticker API call; without it, market_cap (and therefore
+        altman_z) stays NaN, same honest-degradation behavior as before.
 
     Returns
     -------
@@ -486,10 +659,12 @@ def compute_deep_forensic_features_panel(
     for ticker in tickers:
         pre_fund = data_cache.get_fundamentals(ticker, as_of) if data_cache is not None else None
         pre_sh = data_cache.get_shareholding(ticker, as_of) if data_cache is not None else None
+        t_ohlcv = ohlcv_panel[ohlcv_panel["ticker"] == ticker] if ohlcv_panel is not None else None
         feat = compute_deep_forensic_features(
             client, ticker, as_of, lookback_years,
             pre_loaded_fundamentals=pre_fund,
             pre_loaded_shareholding=pre_sh,
+            ticker_ohlcv=t_ohlcv,
         )
         feat["ticker"] = ticker
         rows.append(feat)

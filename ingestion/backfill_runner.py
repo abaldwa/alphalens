@@ -247,6 +247,7 @@ def run_backfill(
     in_memory: bool = False,
     checkpoint_path: Optional[Path] = None,
     client: Optional[FYERSBackfill] = None,
+    publish_mode: str = "direct",
 ) -> Dict[str, int]:
     """
     Run the full FYERS backfill loop across `tickers`.
@@ -267,6 +268,15 @@ def run_backfill(
     client : FYERSBackfill, optional
         Defaults to a freshly constructed FYERSBackfill() — injectable for
         tests.
+    publish_mode : str
+        'direct' (default): unchanged legacy per-ticker upsert, applied
+        immediately as each ticker completes. 'staged' (A25): every
+        ticker's fetched rows are accumulated in memory and, once the
+        whole run finishes, staged + published atomically as a single
+        table swap via datastore/staging — appropriate for this script's
+        one-time/occasional-backfill usage, not for a high-frequency path
+        (see FeatureBacklog.md A25; the daily ohlcv_adjusted write path is
+        ingestion/adjust/price_adjuster.py, not this script).
 
     Returns
     -------
@@ -319,6 +329,7 @@ def run_backfill(
         resolved_db_path = db_path or DUCKDB_PATH
 
     results: Dict[str, int] = {}
+    staged_frames = []  # A25 staged mode: accumulated instead of per-ticker upsert
     # persist=False (SPEC-SCHED-013): this is called from both a one-shot
     # CLI process (where it's moot) and the scheduler's recurring
     # backfill-catchup job (a long-lived process sharing DUCKDB_PATH with
@@ -334,7 +345,29 @@ def run_backfill(
 
             try:
                 df = client.download_history(ticker, from_date, to_date)
-                rows_written = write_ohlcv_to_duckdb(conn, ticker, df)
+                if publish_mode == "staged":
+                    rows_written = 0 if df.empty else len(df)
+                    if not df.empty:
+                        # Must match ohlcv_adjusted's full column set/order —
+                        # stage_via_sql's merge SQL UNION ALLs this against
+                        # "SELECT * FROM ohlcv_adjusted", which requires equal
+                        # column counts (DuckDB BinderException otherwise).
+                        # delivery_qty/delivery_pct are NULL pre-adjustment,
+                        # same as write_ohlcv_to_duckdb's direct-mode INSERT.
+                        staged_frames.append(
+                            df.assign(
+                                delivery_qty=None,
+                                delivery_pct=None,
+                                adj_factor=1.0,
+                                vol_adj_factor=1.0,
+                            )[[
+                                "date", "ticker", "open", "high", "low", "close",
+                                "volume", "delivery_qty", "delivery_pct",
+                                "adj_factor", "vol_adj_factor",
+                            ]]
+                        )
+                else:
+                    rows_written = write_ohlcv_to_duckdb(conn, ticker, df)
             except Exception as exc:
                 logger.error(f"{ticker}: backfill failed: {exc}")
                 results[ticker] = 0
@@ -347,6 +380,42 @@ def run_backfill(
             results[ticker] = rows_written
             write_resume_checkpoint(checkpoint_path, ticker)
             logger.info(f"{ticker}: {rows_written} rows written ({len(results)}/{len(tickers)} tickers done)")
+
+        if publish_mode == "staged" and staged_frames:
+            import pandas as pd
+
+            from datastore.staging.gate import null_check_validator, stage_via_sql
+            from datastore.staging.publish import publish_run_lock, publish_table
+
+            # ohlcv_adjusted is 7M+ rows — merge entirely inside DuckDB
+            # (stage_via_sql), never materializing the whole production
+            # table in pandas (same fix as scripts/insert_fno_files.py's
+            # staged path — see datastore/staging/gate.py::stage_via_sql's
+            # docstring for the live 8GB+ RSS/swap incident this avoids).
+            new_df = pd.concat(staged_frames, ignore_index=True)
+            new_tickers = list(new_df["ticker"].unique())
+            placeholders = ", ".join("?" * len(new_tickers))
+            merge_sql = (
+                f"SELECT * FROM ohlcv_adjusted WHERE ticker NOT IN ({placeholders}) "
+                "UNION ALL SELECT * FROM _stage_new_batch"
+            )
+
+            with publish_run_lock() as acquired:
+                if not acquired:
+                    logger.error("Another publish is in progress — staged backfill NOT published.")
+                else:
+                    result = stage_via_sql(
+                        conn, "ohlcv_adjusted", new_df, merge_sql, new_tickers,
+                        validators=[null_check_validator(["date", "ticker", "close"])],
+                    )
+                    if not result.ok:
+                        logger.error("Staging gate rejected the entire new batch — nothing published.")
+                    else:
+                        published_rows = publish_table(conn, "ohlcv_adjusted")
+                        logger.info(
+                            "Staged publish: %d new rows staged, %d rejected, %d now in ohlcv_adjusted",
+                            result.staged_rows, result.rejected_rows, published_rows,
+                        )
 
     total_rows = sum(results.values())
     logger.info(f"Backfill complete: {len(results)} tickers processed, {total_rows} rows written")
@@ -365,6 +434,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="FYERS historical OHLCV backfill")
     parser.add_argument("--from", dest="from_date", default=default_from.isoformat())
     parser.add_argument("--to", dest="to_date", default=default_to.isoformat())
+    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="direct",
+                         help="'direct' (default): unchanged legacy per-ticker upsert. "
+                              "'staged' (A25): stage + publish the whole run atomically at the end.")
     args = parser.parse_args()
 
     tickers = get_tickers()
@@ -375,7 +447,7 @@ def main() -> None:
         flush=True,
     )
 
-    run_backfill(tickers, args.from_date, args.to_date)
+    run_backfill(tickers, args.from_date, args.to_date, publish_mode=args.publish_mode)
 
 
 if __name__ == "__main__":

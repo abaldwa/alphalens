@@ -48,6 +48,23 @@ YAHOO_FX_URL = "https://query1.finance.yahoo.com/v8/finance/chart/INR=X"
 # specifically, and Indian crude imports are priced off Brent, not WTI.
 YAHOO_CRUDE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F"
 YAHOO_GOLD_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+# Global index snapshots (2026-07, backlog #1/#2/#3 "Morning Catch-Up
+# redesign", Sub-task B): same Yahoo Finance chart JSON endpoint already
+# used above for USD/INR/Crude/Gold — no new dependency needed (yfinance
+# is not in requirements/*.txt; this project already has its own
+# direct-HTTP Yahoo chart client here, so that's the "existing precedent"
+# to follow rather than adding a package). Captured once daily at 07:30
+# IST alongside VIX/FII-DII/USD-INR — see
+# ingestion/scheduler/daily_pipeline.py's step_download_macro_morning.
+YAHOO_NASDAQ_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EIXIC"
+YAHOO_DOW_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EDJI"
+YAHOO_SP500_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC"
+YAHOO_NIKKEI_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EN225"
+YAHOO_HANGSENG_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EHSI"
+# [backlog #2, 2026-07-04] ICE US Dollar Index futures continuous — same
+# Yahoo chart endpoint pattern, live-verified (DX-Y.NYB returned a real
+# price during design review). Captured alongside the other 5 indices above.
+YAHOO_DXY_URL = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB"
 # FRED series IDs (free, no API key, plain CSV) for India bond yields —
 # both monthly, not daily; download_bond_yields forward-fills via "most
 # recent value <= as_of", same convention as the rest of this module's
@@ -487,6 +504,135 @@ def download_gold(date: str, db_path: Optional[Path] = None, in_memory: bool = F
             raise
         logger.warning(f"Gold unavailable for {date}; using previous value {previous}")
         return {"gold_price": previous}
+
+
+def _download_yahoo_index(
+    date: str,
+    url: str,
+    indicator: str,
+    label: str,
+    result_key: str,
+    db_path: Optional[Path] = None,
+    in_memory: bool = False,
+) -> Dict:
+    """
+    Shared fetch for one global index snapshot via Yahoo Finance's chart
+    JSON endpoint — same request/parse/fallback shape as download_fx/
+    download_crude_oil/download_gold above, factored out so the five new
+    indices (Nasdaq/Dow/S&P 500/Nikkei/Hang Seng, 2026-07 backlog #1/#2/#3
+    Sub-task B) don't each re-duplicate it.
+
+    Parameters
+    ----------
+    date : str
+        "YYYY-MM-DD".
+    url : str
+        Yahoo Finance chart endpoint for this index's ticker.
+    indicator : str
+        macro_indicators `indicator` name used for the previous-value
+        fallback lookup, e.g. 'NASDAQ_COMPOSITE'.
+    label : str
+        Used only for log/error messages.
+    result_key : str
+        Key under which the fetched value is returned, e.g. 'nasdaq_composite'.
+    db_path : Path, optional
+        macro_indicators DuckDB path, used only for the fallback lookup.
+    in_memory : bool
+        See download_vix's parameter of the same name.
+
+    Returns
+    -------
+    dict
+        {result_key: float}
+
+    Spec References
+    ----------------
+    2026-07 backlog #1/#2/#3 (Morning Catch-Up redesign), Sub-task B.
+
+    PIT Assumptions
+    ----------------
+    None — same-day market data when fetched after that market's close;
+    when fetched pre-market IST (07:30, well before US/Japan/HK market
+    hours), Yahoo's `regularMarketPrice` reflects the most recent prior
+    close, same as every other same-day-snapshot indicator in this module
+    — see step_download_macro_morning's docstring for why that is the
+    intended PIT behavior here, not a bug.
+
+    Raises
+    ------
+    ConnectionError
+        If the live fetch fails after MAX_RETRIES and no previous value
+        exists to fall back to.
+    """
+    trade_date = datetime.strptime(date, "%Y-%m-%d").date()
+
+    def _fetch() -> Dict:
+        session = requests.Session()
+        session.headers.update({"User-Agent": USER_AGENT})
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        result = payload.get("chart", {}).get("result") or []
+        if not result:
+            raise requests.RequestException(f"Empty Yahoo Finance 'result' for {label} {date}")
+        close = result[0]["meta"]["regularMarketPrice"]
+        return {result_key: float(close)}
+
+    try:
+        return _retry(_fetch, label=label)
+    except ConnectionError:
+        previous = _get_previous_value(indicator, trade_date, db_path, in_memory)
+        if previous is None:
+            raise
+        logger.warning(f"{label} unavailable for {date}; using previous value {previous}")
+        return {result_key: previous}
+
+
+def download_nasdaq(date: str, db_path: Optional[Path] = None, in_memory: bool = False) -> Dict:
+    """Fetch Nasdaq Composite (^IXIC) via Yahoo Finance. See _download_yahoo_index."""
+    return _download_yahoo_index(
+        date, YAHOO_NASDAQ_URL, "NASDAQ_COMPOSITE", "Nasdaq Composite", "nasdaq_composite",
+        db_path, in_memory,
+    )
+
+
+def download_dow(date: str, db_path: Optional[Path] = None, in_memory: bool = False) -> Dict:
+    """Fetch Dow Jones Industrial Average (^DJI) via Yahoo Finance. See _download_yahoo_index."""
+    return _download_yahoo_index(
+        date, YAHOO_DOW_URL, "DOW_JONES", "Dow Jones", "dow_jones", db_path, in_memory,
+    )
+
+
+def download_sp500(date: str, db_path: Optional[Path] = None, in_memory: bool = False) -> Dict:
+    """Fetch S&P 500 (^GSPC) via Yahoo Finance. See _download_yahoo_index."""
+    return _download_yahoo_index(
+        date, YAHOO_SP500_URL, "SP500", "S&P 500", "sp500", db_path, in_memory,
+    )
+
+
+def download_nikkei(date: str, db_path: Optional[Path] = None, in_memory: bool = False) -> Dict:
+    """Fetch Nikkei 225 (^N225) via Yahoo Finance. See _download_yahoo_index."""
+    return _download_yahoo_index(
+        date, YAHOO_NIKKEI_URL, "NIKKEI_225", "Nikkei 225", "nikkei_225", db_path, in_memory,
+    )
+
+
+def download_hangseng(date: str, db_path: Optional[Path] = None, in_memory: bool = False) -> Dict:
+    """Fetch Hang Seng (^HSI) via Yahoo Finance. See _download_yahoo_index."""
+    return _download_yahoo_index(
+        date, YAHOO_HANGSENG_URL, "HANG_SENG", "Hang Seng", "hang_seng", db_path, in_memory,
+    )
+
+
+def download_dxy(date: str, db_path: Optional[Path] = None, in_memory: bool = False) -> Dict:
+    """Fetch ICE US Dollar Index futures continuous (DX-Y.NYB) via Yahoo Finance.
+
+    [backlog #2, 2026-07-04] See _download_yahoo_index for the shared
+    fetch/mark-unavailable pattern.
+    """
+    return _download_yahoo_index(
+        date, YAHOO_DXY_URL, "DXY", "US Dollar Index", "dxy", db_path, in_memory,
+    )
 
 
 def _fetch_fred_series(url: str, label: str) -> pd.Series:

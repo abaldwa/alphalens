@@ -147,8 +147,17 @@ def _fetch_scheme_detail(scheme_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _normalize_company_name(name: Optional[str]) -> str:
-    """'HDFC Bank Ltd' / 'Hdfc Bank Limited' -> 'hdfcbank' — robust enough for exact-set matching, not fuzzy."""
-    if not name:
+    """'HDFC Bank Ltd' / 'Hdfc Bank Limited' -> 'hdfcbank' — robust enough for exact-set matching, not fuzzy.
+
+    [AS BUILT, 2026-07-05] `not name` alone does not catch a NaN float —
+    `bool(float("nan"))` is True, not False — so a company_name that is
+    NaN (stock_master has ~691 still-unresolved blank rows, see
+    FutureDevelopment.md's #31) would crash re.sub with a TypeError
+    instead of normalizing to "" like a real empty name would. Found via
+    trendlyne.py's identical helper crashing on a real run against the
+    same universe data; fixed here too since both duplicate this logic.
+    """
+    if not isinstance(name, str) or not name:
         return ""
     cleaned = _NAME_NOISE_PATTERN.sub("", name)
     return re.sub(r"[^a-z0-9]+", "", cleaned.lower())

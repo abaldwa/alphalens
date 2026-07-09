@@ -33,16 +33,33 @@ from systems.ml_signal_engine.models.multibagger.multibagger_model import (
 )
 
 
+# Small real-ticker sample (not the full ~2,300-ticker universe) so this
+# module's training tests exercise the real load_multibagger_training_data_from_db()
+# path against real OHLCV without materializing a full-universe (ticker, date)
+# panel in memory — that full panel (5yrs x full universe, rolling features +
+# PnD panel scoring all held at once) was large enough to exhaust host memory
+# during test runs. See FutureDevelopment.md #27 / BuildLog.md.
+_TEST_TICKER_SAMPLE = [
+    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR",
+    "SBIN", "BHARTIARTL", "ITC", "KOTAKBANK", "LT", "AXISBANK",
+    "BAJFINANCE", "MARUTI", "SUNPHARMA",
+]
+
+
 def _load_real_training_data():
     """
     Cached real-data loader shared across this module's training tests.
     There is no synthetic-data fallback — skips with a clear reason if
     DuckDB's ohlcv_adjusted doesn't have enough real history yet. See
-    BuildLog.md "Real data sourcing — Multibagger".
+    BuildLog.md "Real data sourcing — Multibagger". Restricted to
+    _TEST_TICKER_SAMPLE (real tickers, not the full universe) purely to
+    bound memory/runtime in CI — see module-level comment above.
     """
     if not hasattr(_load_real_training_data, "_cache"):
         try:
-            _load_real_training_data._cache = load_multibagger_training_data_from_db()
+            _load_real_training_data._cache = load_multibagger_training_data_from_db(
+                tickers=_TEST_TICKER_SAMPLE,
+            )
         except RuntimeError as exc:
             pytest.skip(f"real multibagger training data not yet available: {exc}")
     return _load_real_training_data._cache

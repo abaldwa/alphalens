@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.ML — My Holdings</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/shell.css">
+</head>
+<body>
+<div class="app-bar" id="app-bar"></div>
+<div class="sub-tabs" id="sub-tabs"></div>
+<div class="page">
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">My Holdings</span><span class="sec-sub">Monitor your real (non-paper-trading) portfolio against daily signals</span></div>
+    <div class="alert-banner alert-info">
+      Read-only. Uploaded tickers/quantities are stored only in this browser
+      (localStorage) — nothing is written to a server table, and nothing
+      here ever feeds model training or backtest data (#24).
+    </div>
+    <div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+      <input type="file" id="csv-input" accept=".csv">
+      <span style="font-size:12px;color:var(--tx2)">CSV with header: ticker,quantity</span>
+      <button id="clear-btn" style="background:var(--red)">Clear Holdings</button>
+    </div>
+    <div id="holdings-table"><div class="empty">Upload a CSV to see your holdings' signals</div></div>
+  </div>
+</div>
+<script src="../js/api.js"></script>
+<script src="../js/shell.js"></script>
+<script src="../js/empty_state.js"></script>
+<script src="js/holdings.js"></script>
+</body>
+</html>
+</content>

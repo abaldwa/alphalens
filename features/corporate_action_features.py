@@ -13,24 +13,50 @@ no name divergence this time, unlike P2.1's fundamental/governance lists).
 [AS BUILT] Real, honest coverage split — not every feature is computable
 from data this codebase actually ingests today:
 
-REAL today (5): days_to_record_date, corp_action_anticipation_return,
-ipo_lockin_expiry_proximity, ipo_listing_age_months,
-post_earnings_drift_signal — all derivable from `corporate_actions`
-(SPLIT/BONUS, the only action types ingestion/adjust/price_adjuster.py
-and ingestion/scrapers/bhavcopy.py actually write), `stock_master.
-listing_date`, OHLCV, and `fundamentals.announcement_date` (P2.1).
+REAL today (5, updated 2026-07-07): days_to_record_date,
+corp_action_anticipation_return, ipo_lockin_expiry_proximity,
+ipo_listing_age_months, post_earnings_drift_signal. `corporate_actions`
+now has real SPLIT/BONUS (894 rows) and real BUYBACK rows (131 rows,
+ingested via NSE's corporates-corporateActions feed — see
+ingestion/scrapers/corporate_actions.py) as of this session. The PIT
+filter in `_pit_filter_actions` was fixed (2026-07-07) to stop requiring
+`announcement_date` (which NSE's endpoint never populates directly —
+`caBroadcastDate` confirmed live, 2006-2026, to always be null) and
+instead prefer a derived `announcement_date` (`record_date -
+CORP_ACTION_NOTICE_DAYS`, a SEBI LODR Reg 42(2)-based conservative
+lower bound — see ingestion/scrapers/corporate_actions.py's docstring),
+falling back further to `record_date` then `ex_date` when even
+record_date is unknown — see that function's docstring for the full
+reasoning. This was a genuine PIT-filter bug, not a missing-data gap: it
+silently zeroed out every corporate-action row for every feature in
+this module before the fix, contradicting this docstring's previous
+(stale) claim that only days_to_record_date/corp_action_anticipation_
+return were real.
 
-Structurally ready but NaN-by-design today (5): buyback_price_spread,
+`buyback_price_spread` uses `ratio` as the offer price — NSE's BUYBACK
+purpose strings this codebase currently sees ("Buy Back", no embedded
+price) do not carry a parseable offer price, so `ratio` is honestly 0.0
+("unknown") for all 131 BUYBACK rows today. This function now guards
+against treating that 0.0 as a real price (`if close and buyback_price`)
+— it used to silently compute a fabricated ~-100% spread for every
+buyback, which would have violated this codebase's no-synthetic-data
+policy. `buyback_price_spread` therefore moves to the NaN-by-design
+bucket below until the offer-price extraction itself exists — see
+`_parse_purpose`'s BUYBACK branch in ingestion/scrapers/
+corporate_actions.py — a real, separate gap this fix does not close.
+
+Genuinely NaN-by-design today (5): buyback_price_spread,
 buyback_acceptance_estimated, index_inclusion_days, qip_dilution_impact,
 dividend_yield_vs_fd_rate — these need corporate-action *types*
-(BUYBACK, QIP, INDEX_INCLUSION) and a DIVIDEND-yield data source that no
-scraper in this codebase writes yet (P0.4's ingestion only handles
-SPLIT/BONUS for retroactive price adjustment — BUYBACK/QIP/INDEX_
-INCLUSION/DIVIDEND corporate-action ingestion is a separate, future
-ingestion task, not part of this prompt's explicit deliverable list).
-The computation logic here is correct and ready the moment those rows
-exist — same "honest NaN, not fabricated" precedent as P2.1's
-screener.py-sourced gaps (gross_profit, capex, current_assets, ...).
+(INDEX_INCLUSION, QIP with a real dilution ratio), a parseable BUYBACK
+offer price, and a DIVIDEND-yield/FD-rate data source this codebase does
+not ingest at all (no INDEX_INCLUSION rows exist; QIP rows exist in the
+action_type enum but 0 have ever been observed from NSE's feed in this
+dataset; buyback_acceptance_estimated needs buyback size + free float,
+not present in the corporate_actions schema). The computation logic here
+is correct and ready the moment those rows/values exist — same "honest
+NaN, not fabricated" precedent as P2.1's screener.py-sourced gaps
+(gross_profit, capex, current_assets, ...).
 
 PIT Assumptions
 ----------------
@@ -74,14 +100,41 @@ CORPORATE_ACTION_FEATURES: List[str] = [
 
 
 def _pit_filter_actions(actions: List[Dict[str, Any]], as_of: datetime) -> pd.DataFrame:
-    """SPEC-PIPE-003: keep only actions whose announcement_date <= as_of (or unannounced/unknown-date rows excluded)."""
+    """
+    SPEC-PIPE-003: keep only actions that were publicly knowable as of `as_of`.
+
+    [AS BUILT, bug fix 2026-07-07] `announcement_date` is set to None for
+    every row ingestion/scrapers/corporate_actions.py writes (confirmed
+    live against the real DuckDB: `select count(announcement_date) from
+    corporate_actions` -> 0 across all 7669 rows / all 7 action_type
+    values, not just BUYBACK) because NSE's corporates-corporateActions
+    endpoint genuinely does not expose a separate announcement date field
+    (see that module's docstring). The original filter required
+    `announcement_date.notna()`, which is therefore *never* true — this
+    silently zeroed out every row for every ticker regardless of as_of,
+    making days_to_record_date/corp_action_anticipation_return/
+    buyback_price_spread/index_inclusion_days/qip_dilution_impact always
+    NaN even though the module docstring claimed the first two were
+    "REAL today". That claim was stale/incorrect.
+
+    PIT-safe fix without fabricating an announcement date: fall back to
+    `record_date` (when present — NSE sets this whenever a record date
+    applies, and by construction a record date is only published once the
+    action is public) and finally to `ex_date` (always present; NSE only
+    lists a corporate action in this feed once it has already been
+    announced, so ex_date is a real, conservative upper bound on public
+    knowledge — never an earlier, more-favourable date than the truth).
+    This never look-aheads: the effective "known as of" date used is
+    always >= the true (unrecorded) announcement date.
+    """
     if not actions:
-        return pd.DataFrame(columns=["ticker", "ex_date", "action_type", "ratio", "announcement_date", "record_date"])
+        return pd.DataFrame(columns=["ticker", "ex_date", "action_type", "ratio", "announcement_date", "record_date", "known_as_of"])
     df = pd.DataFrame(actions)
     df["ex_date"] = pd.to_datetime(df["ex_date"])
     df["announcement_date"] = pd.to_datetime(df["announcement_date"])
     df["record_date"] = pd.to_datetime(df["record_date"])
-    return df[df["announcement_date"].notna() & (df["announcement_date"] <= as_of)].sort_values("ex_date")
+    df["known_as_of"] = df["announcement_date"].fillna(df["record_date"]).fillna(df["ex_date"])
+    return df[df["known_as_of"].notna() & (df["known_as_of"] <= as_of)].sort_values("ex_date")
 
 
 def _close_on_or_before(rows: List[Dict[str, Any]], target: datetime) -> Optional[float]:
@@ -162,9 +215,13 @@ def compute_corporate_action_features(
                     ordered = sorted(price_rows, key=lambda r: r["date"])
                     corp_action_anticipation_return = (ordered[-1]["close"] / ordered[0]["close"]) - 1.0
 
-    # BUYBACK/QIP/INDEX_INCLUSION rows are never written by any ingestion
-    # module in this codebase today (module docstring) — structurally
-    # ready, NaN until that ingestion exists.
+    # BUYBACK rows ARE ingested (131 real rows in corporate_actions), but
+    # NSE's "purpose" text for them (e.g. "Buy Back-Tender Offer",
+    # "Buyback") never states the tender price — confirmed live across
+    # every real BUYBACK row — so _parse_purpose() correctly returns
+    # ratio=0.0 for "price unknown," not "price is zero". QIP/
+    # INDEX_INCLUSION action types are genuinely never written by any
+    # ingestion module in this codebase today (module docstring).
     buyback_rows = actions[actions["action_type"] == "BUYBACK"]
     buyback_price_spread = np.nan
     if len(buyback_rows):
@@ -175,7 +232,10 @@ def compute_corporate_action_features(
             price_rows = client.get_ohlcv(ticker, from_date=as_of - timedelta(days=14), to_date=as_of)
             close = _close_on_or_before(price_rows, as_of)
         buyback_price = buyback_rows.iloc[-1]["ratio"]  # convention: ratio holds the offer price for BUYBACK rows
-        if close:
+        # buyback_price == 0.0 means "unknown" (see comment above), never a
+        # real tender price — computing a spread against it would silently
+        # fabricate a -100% spread for every buyback. Stay honestly NaN.
+        if close and buyback_price:
             buyback_price_spread = (buyback_price - close) / close
     buyback_acceptance_estimated = np.nan  # needs buyback size + free float, not in corporate_actions schema
 

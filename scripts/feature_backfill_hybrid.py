@@ -161,6 +161,23 @@ def _parse_args() -> argparse.Namespace:
         help="Skip Stage 2 date assembly after Stage 1 completes (per-ticker staging only).",
     )
     p.add_argument(
+        "--ticker-batch-size", type=int, default=None, metavar="N",
+        help=(
+            "Restrict Stage 1 to the Nth slice of --ticker-batch-size tickers "
+            "(use with --ticker-batch-index). Added 2026-07-05 so a large "
+            "--all-db-tickers run can be split across several fresh processes "
+            "instead of one long-lived process holding the full-universe "
+            "BackfillDataCache preload in memory at once (that preload alone "
+            "was enough to trigger an OOM kill on a 14 GB machine at ~2500 "
+            "tickers). Each batch still gets its own resumable staging-parquet "
+            "cache, same as the unbatched path."
+        ),
+    )
+    p.add_argument(
+        "--ticker-batch-index", type=int, default=0, metavar="I",
+        help="Which batch (0-indexed) to run when --ticker-batch-size is set.",
+    )
+    p.add_argument(
         "--rebuild-daily", action="store_true",
         help=(
             "Skip Stage 1 entirely and rebuild daily parquets (Stage 2 only) from "
@@ -585,7 +602,19 @@ def run_stage1(
 
                 t0 = time.monotonic()
                 try:
-                    ohlcv = ohlcv_by_ticker.get(ticker, pd.DataFrame())
+                    # ohlcv_by_ticker is intentionally {} whenever --all-db-tickers
+                    # is set (see caller) so the >1-worker path can load OHLCV
+                    # itself per-ticker from DuckDB without a giant upfront
+                    # preload. But the sequential path (n_workers==1, the
+                    # default) has no other way to get OHLCV — falling back to
+                    # ohlcv_by_ticker.get(ticker, pd.DataFrame()) silently NaNs
+                    # every price-derived feature for every ticker (found
+                    # 2026-07-05: rsi_14 etc. 100% null after a full sequential
+                    # --all-db-tickers run "succeeded"). Load directly here
+                    # instead of trusting the empty dict.
+                    ohlcv = ohlcv_by_ticker.get(ticker)
+                    if ohlcv is None:
+                        ohlcv = _load_ohlcv_for_ticker(ticker, fno_conn)
                     fno_df = _load_fno_for_ticker(ticker, fno_conn, fno_eligible=fno_eligible)
                     mf_tk = mf_by_ticker.get(ticker, pd.DataFrame())
                     listing_dt = listing_dates.get(ticker)
@@ -662,8 +691,20 @@ def run_stage2(
     # [first_date - 760 days, last_date] — gives the rolling window for all dates.
     mb_by_date: Dict[pd.Timestamp, pd.DataFrame] = {}
     if universe_ohlcv_panel is not None and pending_dates:
-        first_ts = pd.Timestamp(pending_dates[0])
-        last_ts = pd.Timestamp(pending_dates[-1])
+        # min()/max() rather than pending_dates[0]/[-1] — Stage 2's default date
+        # order is newest-first, which inverted this range (see the identical
+        # class of bug fixed 2026-07-05 in run_stage2_chunked's chunk-date
+        # filter). With [0]/[-1], first_ts was the newest date and last_ts the
+        # oldest, so mb_panel got filtered to `date <= last_ts` (the OLDEST
+        # date in the chunk) — computing multibagger features only up through
+        # the start of the window instead of through today. The subsequent
+        # `ts >= first_ts_norm` (comparing against the newest date) then never
+        # matched, so mb_by_date came out EMPTY every chunk ("Multibagger
+        # precomputed: 0 dates"), silently forcing every one of the 150 dates
+        # per chunk down assemble_date's ~15-25s/date uncached fallback path
+        # (~40-60 min/chunk) instead of the ~15s-for-the-whole-chunk fast path.
+        first_ts = pd.Timestamp(min(pending_dates))
+        last_ts = pd.Timestamp(max(pending_dates))
         window_cutoff = first_ts - pd.Timedelta(days=760)
         mb_panel = universe_ohlcv_panel[
             (universe_ohlcv_panel["date"] >= window_cutoff)
@@ -678,9 +719,8 @@ def run_stage2(
         try:
             mb_all = compute_multibagger_features(mb_panel, bm_wide_full, sector_map)
             mb_all["date"] = pd.to_datetime(mb_all["date"])
-            first_ts_norm = pd.Timestamp(pending_dates[0])
             for ts, grp in mb_all.groupby("date"):
-                if ts >= first_ts_norm:
+                if ts >= first_ts:
                     mb_by_date[ts] = grp.drop(columns="date").reset_index(drop=True)
             del mb_all, mb_panel
             logger.info(
@@ -846,8 +886,15 @@ def run_stage2_chunked(
 
     for chunk_idx, chunk_start in enumerate(range(0, len(dates), chunk_size), start=1):
         chunk_dates = dates[chunk_start:chunk_start + chunk_size]
-        d_start = pd.Timestamp(chunk_dates[0])
-        d_end = pd.Timestamp(chunk_dates[-1])
+        # `dates` may be newest-first (the default Stage 2 ordering) or
+        # chronological (--chronological) — min/max rather than [0]/[-1]
+        # so the parquet predicate-pushdown filter below is never an
+        # inverted (always-empty) range regardless of ordering. Found
+        # 2026-07-05: every chunk was silently loading 0 tickers because
+        # chunk_dates[0] > chunk_dates[-1] under the default newest-first
+        # order, making "date >= d_start AND date <= d_end" impossible.
+        d_start = pd.Timestamp(min(chunk_dates))
+        d_end = pd.Timestamp(max(chunk_dates))
         n_chunks = (len(dates) + chunk_size - 1) // chunk_size
 
         logger.info(
@@ -1024,6 +1071,19 @@ def main() -> None:
                 for _, row in universe_meta.iterrows()
             }
         logger.info("Universe: %d tickers", len(tickers))
+
+    if args.ticker_batch_size:
+        tickers = sorted(tickers)
+        start = args.ticker_batch_index * args.ticker_batch_size
+        end = start + args.ticker_batch_size
+        batch = tickers[start:end]
+        n_batches = (len(tickers) + args.ticker_batch_size - 1) // args.ticker_batch_size
+        logger.info(
+            "Ticker batch %d/%d: %d tickers (of %d total) — indices [%d:%d]",
+            args.ticker_batch_index + 1, n_batches, len(batch), len(tickers), start, end,
+        )
+        tickers = batch
+        listing_dates = {t: listing_dates[t] for t in tickers if t in listing_dates}
 
     # Stage 2 is always skipped in --all-db-tickers mode (loading 4000+ staging
     # parquets into RAM at once would OOM; Stage 2 is re-run separately on the

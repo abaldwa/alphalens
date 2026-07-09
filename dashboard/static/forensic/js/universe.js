@@ -17,10 +17,10 @@ function loadSummary() {
       c.innerHTML = "";
       c.appendChild(
         el("div", { class: "card-grid grid grid-4" }, [
-          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Green"]), el("div", { class: "stat-value up" }, [String(r.green_count)])])]),
-          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Amber"]), el("div", { class: "stat-value", style: "color:var(--amber)" }, [String(r.amber_count)])])]),
-          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Red"]), el("div", { class: "stat-value dn" }, [String(r.red_count)])])]),
-          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Total Scored"]), el("div", { class: "stat-value" }, [String(r.total_scored)])])]),
+          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Green"]), el("div", { class: "stat-value up" }, [fmtInt(r.green_count)])])]),
+          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Amber"]), el("div", { class: "stat-value", style: "color:var(--amber)" }, [fmtInt(r.amber_count)])])]),
+          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Red"]), el("div", { class: "stat-value dn" }, [fmtInt(r.red_count)])])]),
+          el("div", { class: "card" }, [el("div", { class: "stat" }, [el("div", { class: "stat-label" }, ["Total Scored"]), el("div", { class: "stat-value" }, [fmtInt(r.total_scored)])])]),
         ])
       );
     })

@@ -6,9 +6,11 @@ Specs: CLAUDE.md Absolute Rule 6, SPEC-PIPE-003 (CRITICAL — PIT)
 Owner: Platform / Ingestion
 Consumers: fundamentals.total_equity (in-place UPDATE), features/financial_ratios.py
 
-Patches `fundamentals.total_equity` (Equity Capital + Reserves, INR Cr) for
-every existing row, read per fiscal year from Screener.in's #balance-sheet
-table (ingestion/scrapers/screener.py's `_parse_balance_sheet_history`).
+Patches `fundamentals.total_equity` (Equity Capital + Reserves, INR Cr) AND
+`fundamentals.retained_earnings` (Reserves alone, INR Cr — the accounting
+analog of Altman Z's retained-earnings term, added 2026-07-07) for every
+existing row, read per fiscal year from Screener.in's #balance-sheet table
+(ingestion/scrapers/screener.py's `_parse_balance_sheet_history`).
 
 One equity value per fiscal year is patched onto every quarter row of that
 FY already in the DB — same one-value-per-FY pattern as Trendlyne's annual
@@ -117,13 +119,14 @@ def main() -> None:
                 }
 
                 ticker_touched = False
-                for fiscal_year, equity_cr in history.items():
+                for fiscal_year, values in history.items():
                     if fiscal_year not in existing_fys:
                         continue
                     if not args.dry_run:
                         conn.execute(
-                            "UPDATE fundamentals SET total_equity = ? WHERE ticker = ? AND fiscal_year = ?",
-                            [equity_cr, ticker, fiscal_year],
+                            "UPDATE fundamentals SET total_equity = ?, retained_earnings = ? "
+                            "WHERE ticker = ? AND fiscal_year = ?",
+                            [values["total_equity"], values["retained_earnings"], ticker, fiscal_year],
                         )
                     n_rows_updated += 1  # counts (ticker, fiscal_year) groups, not raw row count
                     ticker_touched = True

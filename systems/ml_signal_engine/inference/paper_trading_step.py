@@ -33,6 +33,7 @@ import pandas as pd
 
 from backtest.portfolio import PortfolioSimulator
 from scripts.paper_trading_tracker import PaperTradingTracker
+from systems.ml_signal_engine.models.exit.rule_based_exit_policy import MAX_HOLD_DAYS, TARGET_PCT
 
 logger = logging.getLogger(__name__)
 
@@ -138,11 +139,21 @@ def apply_daily_entries(
         buy_prob_col, ascending=False
     ).head(n_positions)
 
-    for ticker, _row in ranked.iterrows():
+    for ticker, row in ranked.iterrows():
         price = prices.get(ticker)
         if price is None or price <= 0:
             continue
-        position = portfolio.buy(ticker, sector_map.get(ticker, "UNKNOWN"), price, date, prices)
+        # atr_14_pct (ATR(14)/close * 100, features/technical.py), when the
+        # caller's candidates carry it, seeds Position.entry_atr_pct so
+        # RuleBasedExitPolicy can ATR-scale this position's target/stop
+        # instead of falling back to flat percentages (FutureDevelopment.md
+        # #28). Optional — callers without it (e.g. the live bot's
+        # DataStore-API-sourced candidates) just get the flat fallback.
+        atr_14_pct = row.get("atr_14_pct")
+        entry_atr_pct = float(atr_14_pct) / 100.0 if pd.notna(atr_14_pct) else None
+        position = portfolio.buy(
+            ticker, sector_map.get(ticker, "UNKNOWN"), price, date, prices, entry_atr_pct=entry_atr_pct,
+        )
         if position is not None:
             entry_context[ticker] = {"entry_time": DEFAULT_ENTRY_TIME}
 
@@ -151,6 +162,7 @@ def propose_daily_exits(
     portfolio: PortfolioSimulator,
     exit_policy,
     held_context: pd.DataFrame,
+    name_map: Dict[str, str] = None,
 ) -> List[Dict]:
     """
     Same candidate selection as apply_daily_exits() (exit_policy.predict_full()
@@ -171,6 +183,7 @@ def propose_daily_exits(
     if held_context.empty:
         return []
 
+    name_map = name_map or {}
     exit_out = exit_policy.predict_full(held_context)
     proposals: List[Dict] = []
     for ticker in held_context.index:
@@ -184,6 +197,7 @@ def propose_daily_exits(
         proposals.append({
             "action_type": action_type,
             "ticker": ticker,
+            "company_name": name_map.get(ticker),
             "price": held_context.loc[ticker].get("entry_price"),
             "reason": f"{exit_type} (urgency {urgency:.0f})",
         })
@@ -197,6 +211,7 @@ def propose_daily_entries(
     n_positions: int,
     held_tickers: List[str],
     buy_prob_col: str = "buy_prob",
+    name_map: Dict[str, str] = None,
 ) -> List[Dict]:
     """
     Same candidate ranking as apply_daily_entries() but returns proposed buy
@@ -205,11 +220,19 @@ def propose_daily_entries(
     re-checked at accept time, since other accepted proposals earlier the
     same day can change available cash/sector exposure).
 
+    target_price/duration_days use RuleBasedExitPolicy's flat TARGET_PCT/
+    MAX_HOLD_DAYS bootstrap barriers (the live bot's default --exit-policy)
+    as a display estimate — this proposal step runs before the position (and
+    its entry ATR) exists, so it can't yet show the real ATR-scaled target
+    RuleBasedExitPolicy.predict_full() would apply once atr_pct is known at
+    entry; not a promise the model-based exit policy would use the same
+    numbers if --exit-policy model is selected instead.
+
     Returns
     -------
     List[Dict]
-        One dict per proposed buy: {action_type='buy', ticker, sector,
-        price, reason}.
+        One dict per proposed buy: {action_type='buy', ticker, company_name,
+        sector, price, target_price, duration_days, reason}.
     """
     if candidates.empty:
         return []
@@ -218,6 +241,12 @@ def propose_daily_entries(
         buy_prob_col, ascending=False
     ).head(n_positions)
 
+    def _clean(value):
+        """None/NaN -> None so json.dumps emits `null`, not a literal NaN
+        token that JS JSON.parse rejects (the dashboard reads pending.json)."""
+        return None if value is None or pd.isna(value) else value
+
+    name_map = name_map or {}
     proposals: List[Dict] = []
     for ticker, row in ranked.iterrows():
         price = prices.get(ticker)
@@ -226,8 +255,21 @@ def propose_daily_entries(
         proposals.append({
             "action_type": "buy",
             "ticker": ticker,
+            "company_name": name_map.get(ticker),
             "sector": sector_map.get(ticker, "UNKNOWN"),
             "price": price,
+            "buy_prob": round(float(row[buy_prob_col]), 4),
+            # Signal metadata carried through so, if this proposal is later
+            # accepted, the accept endpoint can log it onto the closed-trade
+            # CSV row for a future live-outcome comparison — see
+            # scripts/paper_trading_tracker.py's FIELDNAMES.
+            "model_name": _clean(row.get("model_name")),
+            "meta_label_prob": _clean(row.get("meta_label_prob")),
+            "q10_return": _clean(row.get("q10_return")),
+            "q50_return": _clean(row.get("q50_return")),
+            "q90_return": _clean(row.get("q90_return")),
+            "target_price": round(price * (1 + TARGET_PCT), 2),
+            "duration_days": MAX_HOLD_DAYS,
             "reason": f"buy_prob={row[buy_prob_col]:.2f}",
         })
     return proposals

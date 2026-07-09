@@ -10,9 +10,61 @@ from typing import Dict, List, Optional
 
 from config.timezone import now_ist
 
+# exit_type -> target_outcome classification (FutureDevelopment.md #28):
+# whether the position's target price was actually reached before it
+# closed, vs. timed out (max-hold) or missed (stopped/thesis-broken/PnD-
+# forced out) — a coarser, ExitSignalModel-scorable summary of exit_type
+# that survives even for rows logged by callers that only pass exit_type.
+_TARGET_OUTCOME_BY_EXIT_TYPE = {
+    "target_achieved": "hit",
+    "opportunity_cost": "timeout",
+    "thesis_broken": "miss",
+    "risk_management": "miss",
+    "pnd_exit": "miss",
+    # Position gave back gains after a real unrealised profit rather than
+    # ever crossing the target barrier — didn't reach target, so "miss".
+    "momentum_exhaustion": "miss",
+}
+
+
+def classify_target_outcome(exit_type: Optional[str]) -> str:
+    """Map an EXIT_TYPES value to a hit/miss/timeout outcome for scoring a
+    future ExitSignalModel retrain against "did the target actually get
+    reached", not just raw P&L. Unknown/blank exit_type -> "unknown"."""
+    if not exit_type:
+        return "unknown"
+    return _TARGET_OUTCOME_BY_EXIT_TYPE.get(exit_type, "unknown")
+
 
 class PaperTradingTracker:
     """Tracks paper trading executions and computes metrics."""
+
+    # model_name/buy_prob/meta_label_prob/q10-q90_return are entry-time
+    # signal metadata — logged so a future "did the live signal/meta-labeler
+    # call actually pay off" comparison is possible against realized
+    # outcomes, not just backtest-fold estimates. Blank for exit-only
+    # log_trade() calls and for any row logged before this field set existed.
+    FIELDNAMES = [
+        "date",
+        "ticker",
+        "signal_type",
+        "entry_price",
+        "quantity",
+        "entry_time",
+        "exit_price",
+        "exit_time",
+        "exit_date",
+        "exit_type",
+        "target_outcome",
+        "pnl",
+        "pnl_pct",
+        "model_name",
+        "buy_prob",
+        "meta_label_prob",
+        "q10_return",
+        "q50_return",
+        "q90_return",
+    ]
 
     def __init__(self, logs_dir: str = "./paper_trading/executions"):
         """
@@ -23,6 +75,24 @@ class PaperTradingTracker:
         """
         self.logs_dir = Path(logs_dir)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+
+    def _ensure_current_schema(self, log_file: Path) -> None:
+        """Migrate an existing CSV written before the signal-metadata columns
+        existed to the current header, backfilling those columns blank for
+        old rows. A plain DictWriter append would otherwise write new-schema
+        rows under an old, shorter header, misaligning every column."""
+        if not log_file.exists():
+            return
+        with open(log_file, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames == self.FIELDNAMES:
+                return
+            rows = list(reader)
+        with open(log_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({k: row.get(k, "") for k in self.FIELDNAMES})
 
     def log_trade(
         self,
@@ -38,6 +108,13 @@ class PaperTradingTracker:
         exit_type: Optional[str] = None,
         pnl: Optional[float] = None,
         pnl_pct: Optional[float] = None,
+        model_name: Optional[str] = None,
+        buy_prob: Optional[float] = None,
+        meta_label_prob: Optional[float] = None,
+        q10_return: Optional[float] = None,
+        q50_return: Optional[float] = None,
+        q90_return: Optional[float] = None,
+        target_outcome: Optional[str] = None,
     ) -> None:
         """
         Log a paper trading execution.
@@ -69,31 +146,34 @@ class PaperTradingTracker:
                 actually learn the full EXIT_TYPES vocabulary.
             pnl: P&L in rupees (optional)
             pnl_pct: P&L percentage (optional)
+            model_name: Which signal model proposed this entry (e.g.
+                "signal_5d") — entry-time only, optional.
+            buy_prob: The signal model's buy probability at entry (optional).
+            meta_label_prob: The meta_labeler's act-probability at entry
+                (optional) — lets a later analysis check whether
+                meta_labeler's real-time "act" calls actually paid off, not
+                just its backtest-fold validation.
+            q10_return, q50_return, q90_return: The signal model's forward
+                return quantile forecast at entry (optional).
+            target_outcome: hit/miss/timeout — whether the target price was
+                reached before the position closed (optional). If omitted
+                but exit_type is given, derived automatically via
+                classify_target_outcome(exit_type) so future
+                ExitSignalModel retraining can be scored against "did the
+                target actually get hit", not just raw P&L.
         """
+        if target_outcome is None:
+            target_outcome = classify_target_outcome(exit_type)
+
         # Get or create log file for the date
         log_file = self.logs_dir / f"{date}.csv"
+        self._ensure_current_schema(log_file)
 
         # Check if file exists to determine if we need to write header
         file_exists = log_file.exists()
 
         with open(log_file, "a", newline="") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=[
-                    "date",
-                    "ticker",
-                    "signal_type",
-                    "entry_price",
-                    "quantity",
-                    "entry_time",
-                    "exit_price",
-                    "exit_time",
-                    "exit_date",
-                    "exit_type",
-                    "pnl",
-                    "pnl_pct",
-                ],
-            )
+            writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
 
             if not file_exists:
                 writer.writeheader()
@@ -109,8 +189,15 @@ class PaperTradingTracker:
                 "exit_time": exit_time or "",
                 "exit_date": exit_date or "",
                 "exit_type": exit_type or "",
+                "target_outcome": target_outcome if exit_type else "",
                 "pnl": pnl or "",
                 "pnl_pct": pnl_pct or "",
+                "model_name": model_name or "",
+                "buy_prob": buy_prob if buy_prob is not None else "",
+                "meta_label_prob": meta_label_prob if meta_label_prob is not None else "",
+                "q10_return": q10_return if q10_return is not None else "",
+                "q50_return": q50_return if q50_return is not None else "",
+                "q90_return": q90_return if q90_return is not None else "",
             })
 
     def get_trades_for_date(self, date: str) -> List[Dict]:

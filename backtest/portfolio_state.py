@@ -26,8 +26,31 @@ from backtest.portfolio import Position, PortfolioSimulator
 logger = logging.getLogger(__name__)
 
 
-def save_portfolio_state(portfolio: PortfolioSimulator, path: Path, as_of_date: str) -> None:
-    """Write portfolio's cash/positions/equity_curve to `path` as JSON."""
+def save_portfolio_state(
+    portfolio: PortfolioSimulator, path: Path, as_of_date: str, position_meta: Optional[dict] = None
+) -> None:
+    """Write portfolio's cash/positions/equity_curve to `path` as JSON.
+
+    position_meta : dict, optional
+        {ticker: {buy_prob_entry, target_price, target_date, exit_criterion}}
+        for tickers bought *this call* — merged into whatever meta the
+        previous state file already had (so callers only need to pass the
+        newly-opened tickers, not every held position's meta every run) and
+        pruned down to currently-held tickers (a closed position's meta is
+        dropped, same as its Position itself). This dict lives outside
+        PortfolioSimulator/Position on purpose — it's paper-trading-UI
+        display data (SPEC-PT-003 dashboard columns), not backtest mechanics
+        the shared Position dataclass (also used by BacktestEngine) needs.
+    """
+    existing_meta = {}
+    if path.exists():
+        try:
+            existing_meta = json.loads(path.read_text()).get("position_meta", {})
+        except (json.JSONDecodeError, OSError):
+            existing_meta = {}
+    merged_meta = {**existing_meta, **(position_meta or {})}
+    merged_meta = {t: m for t, m in merged_meta.items() if t in portfolio.positions}
+
     state = {
         "as_of_date": as_of_date,
         "cash": portfolio.cash,
@@ -42,12 +65,14 @@ def save_portfolio_state(portfolio: PortfolioSimulator, path: Path, as_of_date: 
                 "entry_price": pos.entry_price,
                 "quantity": pos.quantity,
                 "peak_price": pos.peak_price,
+                "entry_atr_pct": pos.entry_atr_pct,
             }
             for pos in portfolio.positions.values()
         ],
         "equity_curve": [
             {"date": str(point["date"]), "equity": point["equity"]} for point in portfolio._equity_curve
         ],
+        "position_meta": merged_meta,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2))
@@ -81,6 +106,7 @@ def load_portfolio_state(path: Path) -> Optional[PortfolioSimulator]:
             entry_price=p["entry_price"],
             quantity=p["quantity"],
             peak_price=p["peak_price"],
+            entry_atr_pct=p.get("entry_atr_pct"),
         )
         for p in state["positions"]
     }

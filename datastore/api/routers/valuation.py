@@ -20,15 +20,28 @@ Routes:
 from __future__ import annotations
 
 import logging
+from datetime import date as date_type
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from config.settings import SIGNALS_DUCKDB_PATH
 from config.universe import load_universe_raw
 from datastore.api.db import get_duckdb_connection
 from systems.damodaran_valuation.dcf.models import FCFFInputs, FCFFTwoStageModel
-from systems.damodaran_valuation.valuation_engine import ValuationEngine, ValuationResult
+from systems.damodaran_valuation.dcf.wacc import SECTOR_UNLEVERED_BETAS
+from systems.damodaran_valuation.relative.pe_regression import RelativePERegression
+from systems.damodaran_valuation.valuation_engine import (
+    ValuationEngine,
+    ValuationResult,
+    _compute_revenue_cagr,
+    _get_sector,
+    _latest_row,
+    _load_current_price,
+    _load_fundamentals,
+    _safe_float,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +81,17 @@ async def get_batch_ranked(
         default=None,
         description="Comma-separated list of NSE tickers; omit for full universe.",
     ),
+    max_tier: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=6,
+        description=(
+            "Restrict the universe scan to tier<=max_tier (1=Nifty50, 2=NiftyNext50, "
+            "3=Midcap150, 4=Smallcap250, 6=broader NSE). Ignored if `tickers` is set. "
+            "Lets the dashboard offer a fast Nifty-50/100/500 scope instead of always "
+            "scanning the full ~2000+ stock universe."
+        ),
+    ),
     as_of_date: Optional[str] = Query(default=None, description="ISO date YYYY-MM-DD"),
     limit: int = Query(default=50, ge=1, le=500, description="Max results"),
     n_workers: int = Query(default=4, ge=1, le=16),
@@ -80,6 +104,8 @@ async def get_batch_ranked(
     tickers : str, optional
         Comma-separated ticker list.  If omitted, the active Nifty 500 universe
         is used (slower — expect 5–15 min).
+    max_tier : int, optional
+        Restrict to tier<=max_tier when `tickers` is not given.
     as_of_date : str, optional
         Point-in-time date.
     limit : int
@@ -97,6 +123,8 @@ async def get_batch_ranked(
     else:
         try:
             univ = load_universe_raw()
+            if max_tier is not None:
+                univ = univ[univ["tier"] <= max_tier]
             ticker_list = univ["ticker"].dropna().tolist()
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Universe load failed: {exc}")
@@ -209,13 +237,9 @@ async def get_sensitivity(
 
     # We need FCFF components from fundamentals — re-load them
     try:
-        from systems.damodaran_valuation.valuation_engine import (
-            _load_fundamentals,
-            _latest_row,
-            _safe_float,
-            _compute_revenue_cagr,
-        )
-        aod = as_of_date or __import__("datetime").date.today().isoformat()
+        from systems.damodaran_valuation.valuation_engine import _load_market_cap_cr
+
+        aod = as_of_date or date_type.today().isoformat()
         fund_df = _load_fundamentals(ticker, aod)
         latest = _latest_row(fund_df)
         revenue = _safe_float(latest.get("revenue"), 1.0)
@@ -224,7 +248,17 @@ async def get_sensitivity(
         dep = _safe_float(latest.get("depreciation"), 0.0)
         capex = _safe_float(latest.get("capex"), 0.0)
         nwc = revenue * 0.03
-        shares = _safe_float(latest.get("shares_outstanding"), 1.0)
+        # Same crore-units conversion as valuation_engine.value_stock() — FCFF
+        # models expect shares_outstanding in crore units, but `fundamentals`
+        # stores an absolute share count (and is NULL for most rows), so
+        # derive it from market_cap_cr / price when missing rather than
+        # defaulting to a fabricated 1.0 (see BuildLog.md 2026-07-04).
+        market_cap_cr = _load_market_cap_cr(ticker)
+        current_price_for_shares = _load_current_price(ticker, aod)
+        shares_abs = _safe_float(latest.get("shares_outstanding"), default=0.0) or None
+        if shares_abs is None and market_cap_cr and current_price_for_shares:
+            shares_abs = (market_cap_cr * 1e7) / current_price_for_shares
+        shares = (shares_abs / 1e7) if shares_abs else 1.0
         debt = _safe_float(latest.get("total_debt"), 0.0)
         cash = _safe_float(latest.get("cash_and_equivalents"), 0.0)
         g_high = _compute_revenue_cagr(fund_df, 3)
@@ -327,3 +361,122 @@ async def get_valuation_history(
     history = [dict(zip(cols, r)) for r in rows]
 
     return {"ticker": ticker, "count": len(history), "history": history}
+
+
+def _ttm_pe(ticker: str, fund_df: pd.DataFrame, aod: str) -> Optional[float]:
+    """TTM P/E from real data — `fundamentals` has no `pe_ratio` column, so
+    this derives it from trailing-4-quarter EPS (sum, not the single latest
+    quarter — avoids seasonality) and the current OHLCV close."""
+    if "eps" not in fund_df.columns:
+        return None
+    eps_vals = fund_df["eps"].dropna().head(4)
+    if len(eps_vals) < 4:
+        return None
+    ttm_eps = float(eps_vals.sum())
+    if ttm_eps <= 0:
+        return None
+    price = _load_current_price(ticker, aod)
+    if price is None:
+        return None
+    return price / ttm_eps
+
+
+@router.get("/{ticker}/relative")
+async def get_relative_valuation(
+    ticker: str,
+    as_of_date: Optional[str] = Query(default=None, description="ISO date YYYY-MM-DD"),
+    min_peers: int = Query(default=5, ge=3, le=50, description="Minimum sector peers required to fit the regression"),
+) -> Dict[str, Any]:
+    """
+    Sector-relative P/E regression valuation (SPEC-VAL-002 Model 5).
+
+    Builds a same-sector peer group from real fundamentals (config.universe's
+    real sector taxonomy + each peer's own PE/EPS-growth/payout/beta), fits
+    RelativePERegression on the peers, and compares the ticker's actual PE
+    to the peer-implied "fair" PE. This is the actual regression the DCF
+    engine's value_stock() supports via its `peer_df` parameter, but that
+    parameter was never populated by any router endpoint before now — the
+    other valuation endpoints all leave `relative_pe_gap` as None.
+
+    Raises
+    ------
+    404
+        Insufficient fundamentals for the ticker itself.
+    422
+        No sector found, no valid PE for the ticker, or fewer than
+        ``min_peers`` sector peers with a valid PE ratio.
+    """
+    ticker = ticker.upper()
+    aod = as_of_date or date_type.today().isoformat()
+
+    sector = _get_sector(ticker)
+    if not sector:
+        raise HTTPException(status_code=422, detail=f"No sector found for {ticker} in the universe")
+
+    beta = SECTOR_UNLEVERED_BETAS.get(sector, SECTOR_UNLEVERED_BETAS["Default"])
+
+    univ = load_universe_raw()
+    peer_tickers = univ[(univ["sector"] == sector) & (univ["ticker"] != ticker)]["ticker"].tolist()
+
+    peer_rows: List[Dict[str, float]] = []
+    for peer in peer_tickers:
+        fund_df = _load_fundamentals(peer, aod)
+        pe = _ttm_pe(peer, fund_df, aod)
+        if pe is None or pe <= 0:
+            continue
+        peer_rows.append({
+            "pe_ratio": pe,
+            "eps_growth_3y": _compute_revenue_cagr(fund_df, years=3),
+            # payout_ratio isn't a column in `fundamentals` — 0.0 degrades the
+            # regression coefficient for that term rather than crashing.
+            "payout_ratio": 0.0,
+            "beta": beta,
+        })
+
+    if len(peer_rows) < min_peers:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Only {len(peer_rows)} sector peers with a valid TTM PE for {ticker} "
+                f"(sector={sector}); need >= {min_peers} to fit a regression."
+            ),
+        )
+
+    fund_df = _load_fundamentals(ticker, aod)
+    if len(fund_df) < 4:
+        raise HTTPException(status_code=404, detail=f"Insufficient fundamentals for {ticker}")
+    pe = _ttm_pe(ticker, fund_df, aod)
+    if pe is None or pe <= 0:
+        raise HTTPException(status_code=422, detail=f"{ticker} has no valid TTM PE (needs >=4 quarters of EPS + a current price)")
+    latest = _latest_row(fund_df)
+    eps = _safe_float(latest.get("eps"), default=0.0)
+
+    reg = RelativePERegression()
+    try:
+        reg.fit(pd.DataFrame(peer_rows))
+        result = reg.value_gap({
+            "pe_ratio": pe,
+            "eps_growth_3y": _compute_revenue_cagr(fund_df, years=3),
+            "payout_ratio": 0.0,
+            "beta": beta,
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Relative PE regression failed: {exc}")
+
+    current_price = _load_current_price(ticker, aod)
+    implied_price = (eps * result.predicted_pe) if eps > 0 else None
+
+    return {
+        "ticker": ticker,
+        "sector": sector,
+        "as_of_date": aod,
+        "actual_pe": result.actual_pe,
+        "predicted_pe": result.predicted_pe,
+        "gap_pct": result.gap_pct,
+        "is_overvalued": result.is_overvalued,
+        "r_squared": result.r_squared,
+        "n_peers": result.n_peers,
+        "current_price": current_price,
+        "implied_price": implied_price,
+        "coefficients": result.coefficients,
+    }

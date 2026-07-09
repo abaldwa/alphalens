@@ -56,14 +56,14 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import pandas as pd
 import requests
 
-from config.settings import NSE_CA_RATE_LIMIT_SLEEP_SECONDS, NSE_CA_RAW_DIR
+from config.settings import CORP_ACTION_NOTICE_DAYS, NSE_CA_RATE_LIMIT_SLEEP_SECONDS, NSE_CA_RAW_DIR
 from ingestion.scrapers.bhavcopy import NSE_HOMEPAGE_URL, USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -147,23 +147,22 @@ def _parse_purpose(purpose: str, ticker: str) -> Tuple[str, float]:
     if "QUALIFIED INSTITUTIONAL PLACEMENT" in p or re.search(r'\bQIP\b', p):
         return _ACTION_QIP, 0.0
 
-    # ----- DIVIDEND -----
-    if "DIVIDEND" in p:
-        # e.g. "INTERIM DIVIDEND - RS 10 PER SHARE" / "DIVIDEND - RE 0.50/SHARE"
-        m = re.search(r'(?:RS|RE|INR|₹)\s*\.?\s*(\d[\d,]*(?:\.\d+)?)', p)
-        if m:
-            raw_val = m.group(1).replace(",", "")
-            try:
-                return _ACTION_DIVIDEND, float(raw_val)
-            except ValueError:
-                pass
-        logger.debug(f"{ticker}: DIVIDEND purpose but no parseable amount: '{purpose}'")
-        return _ACTION_DIVIDEND, 0.0
-
     # ----- SPLIT (face-value subdivision) -----
+    # SPLIT/BONUS/RIGHTS are checked ahead of DIVIDEND (moved 2026-07-06, found
+    # via #32 triage): NSE often bundles a bonus/split with a dividend in one
+    # purpose string, e.g. "Bonus 1:1 /Dividend- Rs 29 Per Share" (TCS
+    # 2018-05-31). Checking DIVIDEND first silently dropped the BONUS — the
+    # one action type that actually affects price_adjuster (dividends don't,
+    # per PRICE_ADJUSTMENT_ENABLED=False) — for every compound purpose that
+    # spelled out the full word "DIVIDEND" rather than an abbreviation like
+    # "Div"/"Intdiv".
     # Pattern A: "FROM RS.10/- TO RS.2/-" or "FROM RS 10 TO RS 2"
+    # non-greedy gap tolerates text like "PER SHARE" between the two values,
+    # e.g. "FROM RS 10/- PER SHARE TO RS 5/- PER SHARE" (2026-07-06: found via
+    # #32 triage — this common NSE phrasing was silently falling through to
+    # ratio=0.0, a no-op in price_adjuster, for every face-value split using it)
     fv_match = re.search(
-        r'FROM\s+(?:RS|RE|INR)\.?\s*(\d+(?:\.\d+)?)/?\s*(?:/-\s*)?TO\s+(?:RS|RE|INR)\.?\s*(\d+(?:\.\d+)?)',
+        r'FROM\s+(?:RS|RE|INR)\.?\s*(\d+(?:\.\d+)?)/?-?[^0-9]*?TO\s+(?:RS|RE|INR)\.?\s*(\d+(?:\.\d+)?)',
         p,
     )
     if fv_match and ("SPLIT" in p or "SUBDIVIS" in p or "FACE VALUE" in p or "F.?V.?" in p):
@@ -207,6 +206,19 @@ def _parse_purpose(purpose: str, ticker: str) -> Tuple[str, float]:
             return _ACTION_RIGHTS, ratio
         logger.debug(f"{ticker}: RIGHTS purpose but no ratio found: '{purpose}'")
         return _ACTION_RIGHTS, 0.0
+
+    # ----- DIVIDEND (checked after SPLIT/BONUS/RIGHTS — see note above) -----
+    if "DIVIDEND" in p:
+        # e.g. "INTERIM DIVIDEND - RS 10 PER SHARE" / "DIVIDEND - RE 0.50/SHARE"
+        m = re.search(r'(?:RS|RE|INR|₹)\s*\.?\s*(\d[\d,]*(?:\.\d+)?)', p)
+        if m:
+            raw_val = m.group(1).replace(",", "")
+            try:
+                return _ACTION_DIVIDEND, float(raw_val)
+            except ValueError:
+                pass
+        logger.debug(f"{ticker}: DIVIDEND purpose but no parseable amount: '{purpose}'")
+        return _ACTION_DIVIDEND, 0.0
 
     return _ACTION_OTHER, 0.0
 
@@ -306,8 +318,13 @@ def download_corporate_actions(date: str, filter_by_date: bool = True) -> pd.Dat
     PIT Assumptions
     ----------------
     ex_date is the operative date for price adjustments. announcement_date
-    (not available directly from the CA endpoint — set to None here) is the
-    PIT key for features/corporate_action_features.py.
+    is not available directly from the CA endpoint (its `caBroadcastDate`
+    field is confirmed live, across every sample 2006-2026, to always be
+    null — NSE does not populate it) — it is instead derived as
+    `record_date - config.settings.CORP_ACTION_NOTICE_DAYS`, a SEBI LODR
+    Reg 42(2)-based conservative lower bound (see settings.py docstring),
+    or left None when record_date itself is unknown. This is the PIT key
+    for features/corporate_action_features.py.
 
     Raises
     ------
@@ -339,12 +356,20 @@ def download_corporate_actions(date: str, filter_by_date: bool = True) -> pd.Dat
         record_date = _parse_nse_date(rec_date_raw)
         action_type, ratio = _parse_purpose(purpose, symbol)
 
+        # announcement_date is not exposed by the CA endpoint (see
+        # download_corporate_actions docstring) — derived as a SEBI LODR
+        # Reg 42(2)-based conservative lower bound off record_date, never
+        # fabricated when record_date itself is unknown.
+        announcement_date = (
+            record_date - timedelta(days=CORP_ACTION_NOTICE_DAYS) if record_date else None
+        )
+
         rows.append({
             "ticker": symbol,
             "ex_date": ex_date,
             "action_type": action_type,
             "ratio": ratio,
-            "announcement_date": None,  # not exposed by the CA endpoint
+            "announcement_date": announcement_date,
             "record_date": record_date,
             "details": purpose or None,
         })
@@ -371,6 +396,15 @@ def upsert_corporate_actions(conn, df: pd.DataFrame) -> int:
     date is a no-op for existing rows (SPEC-PIPE-002: idempotent). The
     primary key is (ticker, ex_date, action_type) — if the same action
     needs to be corrected, delete the old row first.
+
+    Direct-write only (no staged variant) — this is called from the daily
+    pipeline with one date's worth of rows at a time
+    (ingestion/scheduler/daily_pipeline.py), where a full-table CREATE OR
+    REPLACE for a handful of rows would be wasteful. See
+    upsert_corporate_actions_staged below for the bulk-backfill path
+    (scripts/backfill_corporate_actions.py), which accumulates many
+    quarters/tickers before a single atomic publish, where the tradeoff
+    is worth it.
 
     Parameters
     ----------
@@ -407,3 +441,43 @@ def upsert_corporate_actions(conn, df: pd.DataFrame) -> int:
 
     logger.info(f"upsert_corporate_actions: {count} new rows inserted (of {len(df)} staged)")
     return count
+
+
+def upsert_corporate_actions_staged(conn, df: pd.DataFrame) -> int:
+    """
+    A25 staged path for upsert_corporate_actions: same INSERT ... ON
+    CONFLICT DO NOTHING semantics (existing rows never touched, only
+    genuinely new (ticker, ex_date, action_type) combinations added —
+    datastore/staging/merge.py::insert_ignore_merge), but the whole batch
+    is merged and published as a single atomic table swap instead of one
+    INSERT statement. Intended for scripts/backfill_corporate_actions.py's
+    accumulated multi-quarter batch, not the daily single-date live path
+    (see upsert_corporate_actions's docstring for why).
+
+    Returns the number of genuinely new rows added.
+    """
+    from datastore.staging.gate import stage_dataframe
+    from datastore.staging.merge import insert_ignore_merge
+    from datastore.staging.publish import publish_run_lock, publish_table
+
+    if df.empty:
+        return 0
+
+    df = df.copy()
+    df["ex_date"] = pd.to_datetime(df["ex_date"]).dt.date
+    df["announcement_date"] = pd.to_datetime(df["announcement_date"]).dt.date
+    df["record_date"] = pd.to_datetime(df["record_date"]).dt.date
+
+    existing_df = conn.execute("SELECT * FROM corporate_actions").df()
+    merged_df = insert_ignore_merge(existing_df, df, key_cols=["ticker", "ex_date", "action_type"])
+    new_count = len(merged_df) - len(existing_df)
+
+    with publish_run_lock() as acquired:
+        if not acquired:
+            logger.error("Another publish is in progress — staged corporate_actions NOT published.")
+            return 0
+        stage_dataframe(conn, "corporate_actions", merged_df, validators=[])
+        publish_table(conn, "corporate_actions")
+
+    logger.info(f"upsert_corporate_actions_staged: {new_count} new rows added (of {len(df)} staged)")
+    return new_count

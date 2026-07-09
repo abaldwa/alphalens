@@ -16,7 +16,31 @@ import pytest
 
 from ingestion.scheduler import gap_detector
 from ingestion.scheduler.checkpoint import STEP_NAMES, STEPS, CheckpointManager
-from ingestion.scheduler.pipeline_scheduler import _STEP_DEPS, run_backfill, run_steps_for_date
+from ingestion.scheduler.pipeline_scheduler import (
+    _STEP_DEPS,
+    run_backfill,
+    run_morning_catchup_sequence,
+    run_steps_for_date,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_pipeline_run_lock(tmp_path, monkeypatch):
+    """
+    run_steps_for_date acquires a real cross-process fcntl.flock on
+    config.settings.PIPELINE_RUN_LOCK_PATH (see pipeline_run_lock's
+    docstring, 2026-07-05 race-condition fix). Without this fixture, any
+    test that calls run_steps_for_date/run_backfill/run_morning_catchup_
+    sequence races against whatever real process holds the production
+    lock file — e.g. the actual alphalens-scheduler.service, if it
+    happens to be mid-run when tests execute — and silently gets skipped
+    ("another run is already in progress"), which looks like a step-
+    ordering bug but is really test/production lock-path collision.
+    Point every test at its own tmp_path lock file instead.
+    """
+    import config.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
 
 
 # ===== Gap detection =====
@@ -153,8 +177,12 @@ class TestBackfillOrdering:
                 seen_order.append(run_date)
         assert seen_order == sorted(unordered_dates)
 
-    def test_backfill_never_runs_model_inference_steps(self):
-        """SPEC-SCHED-006: run_models and write_signals must never execute during backfill."""
+    def test_backfill_runs_model_inference_but_never_paper_trades(self):
+        """2026-07-08 (user decision): run_models/write_signals/sanity_check
+        ARE run during backfill — a missed trading day should still get its
+        EOD signals computed and persisted, however late. Only paper_trade
+        stays excluded from backfill (SPEC-SCHED-006/Gate 7: never auto-trade
+        a gap day's signals retroactively)."""
         calls = []
 
         def fake_step_runner(run_date, step_name):
@@ -163,10 +191,103 @@ class TestBackfillOrdering:
         ckpt = CheckpointManager(in_memory=True)
         run_backfill([date(2026, 1, 5)], fake_step_runner, ckpt)
 
-        assert "run_models" not in calls
-        assert "write_signals" not in calls
+        assert "run_models" in calls
+        assert "write_signals" in calls
+        assert "sanity_check" in calls
+        assert "paper_trade" not in calls
         assert "download_bhavcopy" in calls
         assert "compute_features" in calls
+
+
+# ===== Morning catch-up: backward-only gap-backfill (2026-07, backlog #1/#2/#3) =====
+class TestMorningCatchupSequence:
+    """run_morning_catchup_sequence must retry only gap days strictly
+    before `today` and must never attempt today's own pipeline run — the
+    bug schedule_morning_catchup had while it reused run_startup_sequence
+    (which always 404'd on "today" at 07:30 IST)."""
+
+    def test_never_attempts_todays_own_pipeline_run(self, tmp_path):
+        from datastore.schema.create_signals import create_pipeline_runs_schema
+
+        db_path = tmp_path / "pipeline_log.db"
+        create_pipeline_runs_schema(db_path=db_path)
+
+        calls = []
+
+        def fake_step_runner(run_date, step_name):
+            calls.append(run_date)
+
+        ckpt = CheckpointManager(in_memory=True)
+        today = date(2026, 1, 10)
+
+        # No prior successful run recorded -> detect_gaps returns [] (first
+        # run, nothing to backfill) -- and today itself must never appear
+        # in `calls` regardless.
+        ok = run_morning_catchup_sequence(fake_step_runner, ckpt, today=today, db_path=db_path)
+
+        assert ok is True
+        assert today not in calls
+        assert calls == []
+
+    def test_backfills_gap_days_before_today_only(self, tmp_path, monkeypatch):
+        from datastore.schema.create_signals import create_pipeline_runs_schema
+        from datastore.api.db import get_sqlite_connection
+
+        db_path = tmp_path / "pipeline_log.db"
+        create_pipeline_runs_schema(db_path=db_path)
+        # Seed one successful run so detect_gaps has a last_run_date to
+        # walk forward from (2026-01-05 was a Monday).
+        with get_sqlite_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO pipeline_runs (date, started_at, completed_at, status, "
+                "stocks_processed, error_message) VALUES (?, ?, ?, 'success', 0, NULL)",
+                ("2026-01-05", "2026-01-05T18:00:00+05:30", "2026-01-05T18:05:00+05:30"),
+            )
+            conn.commit()
+
+        monkeypatch.setattr(gap_detector, "is_nse_holiday", lambda d: False)
+
+        calls = []
+
+        def fake_step_runner(run_date, step_name):
+            calls.append(run_date)
+
+        ckpt = CheckpointManager(in_memory=True)
+        today = date(2026, 1, 9)  # Friday
+
+        ok = run_morning_catchup_sequence(fake_step_runner, ckpt, today=today, db_path=db_path)
+
+        assert ok is True
+        # Gap days are Tue/Wed/Thu (01-06, 01-07, 01-08) -- strictly between
+        # the seeded last-success and today, both ends excluded.
+        assert set(calls) == {date(2026, 1, 6), date(2026, 1, 7), date(2026, 1, 8)}
+        assert today not in calls
+
+    def test_returns_false_when_a_gap_day_fails(self, tmp_path, monkeypatch):
+        from datastore.schema.create_signals import create_pipeline_runs_schema
+        from datastore.api.db import get_sqlite_connection
+
+        db_path = tmp_path / "pipeline_log.db"
+        create_pipeline_runs_schema(db_path=db_path)
+        with get_sqlite_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO pipeline_runs (date, started_at, completed_at, status, "
+                "stocks_processed, error_message) VALUES (?, ?, ?, 'success', 0, NULL)",
+                ("2026-01-05", "2026-01-05T18:00:00+05:30", "2026-01-05T18:05:00+05:30"),
+            )
+            conn.commit()
+        monkeypatch.setattr(gap_detector, "is_nse_holiday", lambda d: False)
+
+        def failing_step_runner(run_date, step_name):
+            if step_name == "download_bhavcopy":
+                raise RuntimeError("boom")
+
+        ckpt = CheckpointManager(in_memory=True)
+        today = date(2026, 1, 9)
+
+        ok = run_morning_catchup_sequence(failing_step_runner, ckpt, today=today, db_path=db_path)
+
+        assert ok is False
 
 
 # ===== Backfill catch-up scheduling (SPEC-SCHED-012) =====
@@ -256,29 +377,35 @@ class TestBackfillCatchupScheduling:
         ps._execute_backfill_catchup()
 
         assert len(run_backfill_calls) == 1
-        assert heartbeat_calls == [(("backfill_catchup", "success"), {})]
+        assert len(heartbeat_calls) == 1
+        args, kwargs = heartbeat_calls[0]
+        assert args == ("backfill_catchup", "success")
+        # A23: duration_seconds/peak_rss_mb are now measured and passed through.
+        assert set(kwargs) == {"duration_seconds", "peak_rss_mb"}
+        assert kwargs["duration_seconds"] >= 0
+        assert kwargs["peak_rss_mb"] > 0
         assert run_backfill_calls[0][0] == ["AAA", "BBB"]
 
 
 class TestMFHoldingsScheduling:
     """SPEC-PIPE-003: Groww (P2.2's primary MF-holdings source) exposes no historical archive — only "now"."""
 
-    def test_schedule_mf_holdings_ingestion_registers_twice_monthly_cron_job(self):
-        """config.settings.MF_HOLDINGS_SCHEDULE_DAYS = '5,20' -> must fire on both days, not just one."""
+    def test_schedule_mf_holdings_ingestion_registers_weekly_cron_job(self):
+        """config.settings.MF_HOLDINGS_SCHEDULE_DAY_OF_WEEK = 'sat' -> must fire every Saturday at 13:00 IST."""
         from apscheduler.schedulers.background import BackgroundScheduler
 
         from ingestion.scheduler.pipeline_scheduler import schedule_mf_holdings_ingestion
 
         scheduler = BackgroundScheduler()
-        schedule_mf_holdings_ingestion(scheduler, days="5,20", schedule_time="08:00")
+        schedule_mf_holdings_ingestion(scheduler, day_of_week="sat", schedule_time="13:00")
 
         jobs = scheduler.get_jobs()
         assert len(jobs) == 1
         job = jobs[0]
         assert job.id == "mf_holdings_ingestion"
         trigger_str = str(job.trigger)
-        assert "day='5,20'" in trigger_str
-        assert "hour='8'" in trigger_str
+        assert "day_of_week='sat'" in trigger_str
+        assert "hour='13'" in trigger_str
 
     def test_determine_groww_live_snapshot_month_reads_first_available_portfolio_date(self, monkeypatch):
         import ingestion.scheduler.pipeline_scheduler as ps
@@ -341,7 +468,13 @@ class TestMFHoldingsScheduling:
         ps._execute_mf_holdings_job()
 
         assert ingestion_calls == [(2026, 5)]
-        assert heartbeat_calls == [(("mf_holdings_ingestion", "success"), {})]
+        assert len(heartbeat_calls) == 1
+        args, kwargs = heartbeat_calls[0]
+        assert args == ("mf_holdings_ingestion", "success")
+        # A23: duration_seconds/peak_rss_mb are now measured and passed through.
+        assert set(kwargs) == {"duration_seconds", "peak_rss_mb"}
+        assert kwargs["duration_seconds"] >= 0
+        assert kwargs["peak_rss_mb"] > 0
 
     def test_execute_mf_holdings_job_records_failure_heartbeat_on_unexpected_exception(self, monkeypatch):
         import ingestion.scheduler.pipeline_scheduler as ps
@@ -387,11 +520,18 @@ class TestJobDependency:
         assert "download_bhavcopy" in adj["depends_on"]
 
     def test_inference_chain_depends_on_previous(self):
-        """run_models→write_signals→paper_trade form a hard dependency chain."""
+        """run_models→write_signals→sanity_check→paper_trade form a hard dependency chain.
+
+        AF-2 (#9): paper_trade now hard-depends on sanity_check (not
+        write_signals directly) so a day whose signals fail the output
+        sanity gate is never traded on; sanity_check itself still
+        hard-depends on write_signals, so the full chain is preserved.
+        """
         chain = [
             ("run_models", "compute_features"),
             ("write_signals", "run_models"),
-            ("paper_trade", "write_signals"),
+            ("sanity_check", "write_signals"),
+            ("paper_trade", "sanity_check"),
         ]
         for step_name, expected_dep in chain:
             step = next(s for s in STEPS if s["name"] == step_name)
@@ -468,3 +608,63 @@ class TestJobDependency:
         succeeded = cm.get_succeeded_steps(run_date)
         assert succeeded == {"download_bhavcopy", "download_fno"}
         assert "adjust_prices" not in succeeded
+
+
+# ===== Cross-process run lock (2026-07-05 race-condition fix) =====
+def _acquire_lock_in_subprocess(lock_path_str, hold_seconds, result_queue):
+    """Run in a real child process so fcntl.flock's cross-*process*
+    exclusion (not just cross-thread) is actually exercised."""
+    import time as _time
+    from pathlib import Path
+
+    import config.settings as settings_mod
+
+    settings_mod.PIPELINE_RUN_LOCK_PATH = Path(lock_path_str)
+    from ingestion.scheduler.pipeline_scheduler import pipeline_run_lock
+
+    with pipeline_run_lock() as acquired:
+        result_queue.put(acquired)
+        _time.sleep(hold_seconds)
+
+
+class TestPipelineRunLock:
+    """Regression test for the 2026-07-05 double-fire bug: two concurrent
+    callers of run_steps_for_date (daily_pipeline cron + a misfire-grace
+    re-fire, or a separate Ops force_run_step process) both saw steps as
+    'running' and raced on pipeline_checkpoints. pipeline_run_lock's
+    fcntl.flock must let exactly one concurrent holder proceed."""
+
+    def test_second_concurrent_process_does_not_acquire_lock(self, tmp_path):
+        import multiprocessing
+        import time
+
+        lock_path = tmp_path / "pipeline_run.lock"
+        ctx = multiprocessing.get_context("fork")
+        q1, q2 = ctx.Queue(), ctx.Queue()
+
+        p1 = ctx.Process(target=_acquire_lock_in_subprocess, args=(str(lock_path), 2.0, q1))
+        p1.start()
+        time.sleep(0.3)  # let p1 acquire first
+
+        p2 = ctx.Process(target=_acquire_lock_in_subprocess, args=(str(lock_path), 0.1, q2))
+        p2.start()
+
+        p1.join(timeout=5)
+        p2.join(timeout=5)
+
+        assert q1.get(timeout=5) is True, "first process should have acquired the lock"
+        assert q2.get(timeout=5) is False, "second concurrent process must be turned away, not race"
+
+    def test_lock_is_released_for_next_caller(self, tmp_path, monkeypatch):
+        """After the holder exits its `with` block, a fresh call must be
+        able to acquire the lock — the fix must not deadlock same-process
+        sequential runs (e.g. tomorrow's catch-up after today's success)."""
+        import config.settings as settings_mod
+        from ingestion.scheduler.pipeline_scheduler import pipeline_run_lock
+
+        monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
+
+        with pipeline_run_lock() as first:
+            assert first is True
+        with pipeline_run_lock() as second:
+            assert second is True

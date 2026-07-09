@@ -43,10 +43,22 @@ def _mock_client_ohlcv_rows(n_days: int = 760, start_price: float = 100.0) -> li
     return rows
 
 
+# Small real-ticker sample, not the full ~2,300-ticker universe — bounds
+# memory/runtime for this module's training fixture (see
+# tests/unit/test_multibagger.py's _TEST_TICKER_SAMPLE for the same rationale).
+_TEST_TICKER_SAMPLE = [
+    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR",
+    "SBIN", "BHARTIARTL", "ITC", "KOTAKBANK", "LT", "AXISBANK",
+    "BAJFINANCE", "MARUTI", "SUNPHARMA",
+]
+
+
 @pytest.fixture(scope="module")
 def trained_model() -> MultibaggerModel:
     try:
-        X, y, duration, event, groups, _pnd = load_multibagger_training_data_from_db()
+        X, y, duration, event, groups, _pnd = load_multibagger_training_data_from_db(
+            tickers=_TEST_TICKER_SAMPLE,
+        )
     except RuntimeError as exc:
         pytest.skip(f"real multibagger training data not yet available: {exc}")
     model = MultibaggerModel(random_state=2, n_estimators=30)
@@ -113,12 +125,21 @@ class TestScoreUniverse:
         assert results == {"GOODCO": True}
         client.write_multibagger_score.assert_not_called()
 
-    def test_default_model_trains_when_none_injected(self):
-        """score_universe() must work with no injected model (the real CLI path)."""
+    def test_default_model_trains_when_none_injected(self, tmp_path, monkeypatch):
+        """score_universe() must work with no injected model (the real CLI path).
+
+        [backlog #27] score_universe now prefers a cached MultibaggerModel
+        artifact (MODELS_DIR/multibagger/multibagger_current.pkl) over
+        training inline — point MODELS_DIR at an empty tmp_path so this
+        test exercises the fresh-train fallback, not a stray cached model
+        left over from a real training run on this machine.
+        """
         try:
-            real_data = load_multibagger_training_data_from_db()
+            real_data = load_multibagger_training_data_from_db(tickers=_TEST_TICKER_SAMPLE)
         except RuntimeError as exc:
             pytest.skip(f"real multibagger training data not yet available: {exc}")
+
+        monkeypatch.setattr("config.settings.MODELS_DIR", tmp_path)
 
         client = MagicMock()
         client.get_ohlcv.side_effect = lambda ticker, *a, **kw: _mock_client_ohlcv_rows(760)
@@ -128,3 +149,29 @@ class TestScoreUniverse:
         ):
             results = score_universe(["GOODCO"], client=client, write=False)
         assert results == {"GOODCO": True}
+
+    def test_cached_model_artifact_is_loaded_without_retraining(self, tmp_path, monkeypatch):
+        """[backlog #27] A cached artifact at MODELS_DIR/multibagger/multibagger_current.pkl
+        must be loaded directly, without calling load_multibagger_training_data_from_db."""
+        from systems.ml_signal_engine.inference.score_multibagger import _load_cached_model_or_train_fresh
+
+        try:
+            real_data = load_multibagger_training_data_from_db(tickers=_TEST_TICKER_SAMPLE)
+        except RuntimeError as exc:
+            pytest.skip(f"real multibagger training data not yet available: {exc}")
+
+        X, y, duration, event, groups, _pnd = real_data
+        seed_model = MultibaggerModel(random_state=9, n_estimators=10)
+        seed_model.train_full(X, y, duration, event, groups=groups)
+
+        model_dir = tmp_path / "multibagger"
+        model_dir.mkdir()
+        seed_model.save(str(model_dir / "multibagger_current.pkl"))
+
+        monkeypatch.setattr("config.settings.MODELS_DIR", tmp_path)
+        with patch(
+            "systems.ml_signal_engine.inference.score_multibagger.load_multibagger_training_data_from_db"
+        ) as mock_train:
+            loaded = _load_cached_model_or_train_fresh()
+            mock_train.assert_not_called()
+        assert loaded._rsf is not None

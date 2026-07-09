@@ -19,7 +19,16 @@ as its own checkpointed step, separate from download_bhavcopy/download_fno:
 macro indicators are fetched from different NSE/RBI endpoints with
 independent failure modes (e.g. FII/DII can fail while bhavcopy succeeds),
 so folding them into an existing step would hide which source actually
-failed. delivery_qty/delivery_pct are NOT a separate step — bhavcopy.py's
+failed. As of 2026-07 (backlog #1/#2/#3, Sub-task C PIT shift),
+step_download_macro (the function this STEPS entry dispatches to) is a
+no-op placeholder — FII/DII/India VIX/USD-INR plus new global index
+snapshots moved to a 07:30 IST morning-only capture
+(step_download_macro_morning, called from
+ingestion.scheduler.pipeline_scheduler._execute_morning_catchup_job, NOT
+part of this STEPS list) for PIT reasons — see step_download_macro's own
+docstring. The STEPS entry name is kept as-is rather than removed, since
+pipeline_checkpoints history/tests already reference "download_macro" by
+name. delivery_qty/delivery_pct are NOT a separate step — bhavcopy.py's
 download_bhavcopy() already parses them from the same CSV row set used for
 OHLCV, so ingestion/scheduler/daily_pipeline.py's download_bhavcopy
 dispatch writes both in one pass; ingestion/scrapers/nse_delivery_loader.py
@@ -28,6 +37,7 @@ not the daily live case.
 """
 
 import logging
+import sqlite3
 from datetime import date as date_type
 from pathlib import Path
 from typing import Optional
@@ -67,6 +77,9 @@ STEPS = [
     # source outages via try/except and returns normally on failure.
     {"name": "download_fno", "is_backfillable": True, "depends_on": []},
     {"name": "download_macro", "is_backfillable": True, "depends_on": []},
+    # NSE indices-close archive (Nifty 50/500 + sector indices) — independent
+    # of bhavcopy, same as download_fno/download_macro above.
+    {"name": "download_index_ohlcv", "is_backfillable": True, "depends_on": []},
     # Corporate actions must land before adjust_prices so the adjuster sees
     # the full ledger when it eventually runs (PRICE_ADJUSTMENT_ENABLED
     # controls whether adjust_prices actually applies factors — see
@@ -76,13 +89,28 @@ STEPS = [
     # dates regardless, so we still attempt download even if bhavcopy failed.
     {"name": "download_corporate_actions", "is_backfillable": True, "depends_on": []},
     {"name": "download_large_deals", "is_backfillable": True, "depends_on": []},
+    # [AS BUILT, Phase B — gentle-wobbling-swing.md] deterministic
+    # post-processing of that day's own large_deals rows (intraday netting +
+    # investor_family attribution) — no model inference, so backfillable
+    # like check_ta_alerts. Hard-depends on download_large_deals: nothing to
+    # attribute if that step never ran/failed for this date.
+    {"name": "attribute_bulk_deals", "is_backfillable": True, "depends_on": ["download_large_deals"]},
     # adjust_prices is the first hard-dependency step: it needs OHLCV rows
     # (written by download_bhavcopy) to be present. If bhavcopy failed there
     # are no rows to adjust — skip.
     {"name": "adjust_prices", "is_backfillable": True, "depends_on": ["download_bhavcopy"]},
+    # A20 (Data Integrity Checker): audits already-published production
+    # data (corporate-action cross-check, null/NaN sweep, holiday-leakage,
+    # random 5yr spot-check) — placed before compute_features/run_models
+    # per user decision, so a bad ingest never propagates into a day's
+    # features/signals. Deterministic, no model inference, so backfillable
+    # like check_ta_alerts. Hard-depends on adjust_prices (needs that
+    # day's OHLCV settled). Only fails the checkpoint on a 'critical'
+    # finding — 'warning'/'info' findings are recorded but don't block.
+    {"name": "data_integrity_check", "is_backfillable": True, "depends_on": ["adjust_prices"]},
     # compute_features needs adjusted OHLCV. macro/fno data is consumed as
     # NaN-tolerant soft inputs — features compute fine without them.
-    {"name": "compute_features", "is_backfillable": True, "depends_on": ["adjust_prices"]},
+    {"name": "compute_features", "is_backfillable": True, "depends_on": ["adjust_prices", "data_integrity_check"]},
     # check_ta_alerts: evaluates the 42 TA screener templates + user-defined
     # alerts against run_date's own feature Parquet only (systems/
     # technical_analysis/alerts/{daily_alert_checker,alert_store}.py) —
@@ -90,13 +118,52 @@ STEPS = [
     # unlike run_models/write_signals it IS safe to backfill.
     {"name": "check_ta_alerts", "is_backfillable": True, "depends_on": ["compute_features"]},
     # Inference chain: each step hard-depends on the previous one.
-    {"name": "run_models", "is_backfillable": False, "depends_on": ["compute_features"]},
-    {"name": "write_signals", "is_backfillable": False, "depends_on": ["run_models"]},
-    # [AS BUILT, P3.x] paper_trade: not backfillable, same reasoning as
-    # run_models/write_signals — a gap day's signals were never genuinely
-    # live, so trading on them after the fact would let backfill silently
-    # inflate Phase 3 Gate 7's forward-time day count.
-    {"name": "paper_trade", "is_backfillable": False, "depends_on": ["write_signals"]},
+    # 2026-07-08 (user decision): run_models/write_signals made backfillable
+    # — a missed trading day (laptop off across its 18:00 run) should still
+    # get its EOD signals computed and persisted whenever the process next
+    # comes up, however many days later. These are daily-frequency signals
+    # derived purely from that day's own already-final EOD data (bhavcopy +
+    # features), so computing them late introduces no lookahead — unlike
+    # paper_trade below, there's no "was this genuinely live" concern for a
+    # signal that just sits in ml_signals for later reference (e.g. "stock
+    # was flagged at 100, now trading at 95 on day 5 of a 21-day window" —
+    # still actionable). Previously non-backfillable; see git history for
+    # the original SPEC-SCHED-006 rationale this supersedes.
+    {"name": "run_models", "is_backfillable": True, "depends_on": ["compute_features"]},
+    {"name": "write_signals", "is_backfillable": True, "depends_on": ["run_models"]},
+    # AF-2 (#9): output sanity gate. run_models/write_signals silently
+    # produced no real signals for 10 consecutive trading days
+    # (2026-06-23 to 2026-07-02) before a user noticed by coincidence —
+    # both steps only checked their own internal "did it crash" status,
+    # never "did it actually produce plausible output". sanity_check
+    # re-reads that day's own already-written ml_signals rows + feature
+    # Parquet and raises (failing the checkpoint) if the output looks
+    # implausible, instead of silently reporting success. Hard-depends on
+    # write_signals so it can never run against a partial/failed write.
+    # 2026-07-08: made backfillable alongside run_models/write_signals —
+    # backfilled signals still deserve the same plausibility gate as a
+    # same-day run; only paper_trade (below) stays excluded from backfill.
+    {"name": "sanity_check", "is_backfillable": True, "depends_on": ["write_signals"]},
+    # [AS BUILT, P3.x] paper_trade: NOT backfillable — this is the one step
+    # that stays same-day-only, by explicit 2026-07-08 user decision. A gap
+    # day's signals were never genuinely live, so trading on them after the
+    # fact would let backfill silently inflate Phase 3 Gate 7's forward-time
+    # day count (SPEC-SCHED-006/gate7: Gate 7 counts
+    # paper_trading/executions/{date}.csv files as forward-time days — see
+    # 08_specifications.md). Signals from a backfilled day remain fully
+    # queryable in ml_signals/write_signals output for manual/other use;
+    # they're just never auto-traded retroactively. Hard-depends on
+    # sanity_check (AF-2): a day whose own signals failed the sanity gate
+    # must never be traded on.
+    {"name": "paper_trade", "is_backfillable": False, "depends_on": ["sanity_check"]},
+    # A25 (Write-Audit-Publish Architecture): daily incremental rollback
+    # snapshot of the pilot tables (fno_data, ohlcv_adjusted) — see
+    # daily_pipeline.py::step_publish_and_snapshot's docstring. Runs last,
+    # depending on both of that day's writers to those tables, so the
+    # snapshot reflects the full day's final state. Backfillable — a
+    # skipped/late day still deserves its own rollback point once it
+    # eventually runs.
+    {"name": "publish_and_snapshot", "is_backfillable": True, "depends_on": ["download_fno", "adjust_prices"]},
 ]
 STEP_NAMES = [step["name"] for step in STEPS]
 _BACKFILLABLE = {step["name"]: step["is_backfillable"] for step in STEPS}
@@ -113,8 +180,22 @@ _CREATE_PIPELINE_CHECKPOINTS = """
         completed_at TIMESTAMP,
         error_message TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
+        is_backfill BOOLEAN NOT NULL DEFAULT 0,
         PRIMARY KEY (date, step_name)
     )
+"""
+
+# A30: is_backfill distinguishes a step that ran as part of a catch-up/
+# backfill invocation (run_steps_for_date(..., is_backfill=True), see
+# run_backfill/run_morning_catchup_sequence) from a same-day live run — a
+# signal computed 4 days after its own trading day is still actionable but
+# was never eligible for that day's paper_trade, and the Ops dashboard needs
+# to say so instead of presenting it identically to a live row. Existing
+# pipeline_checkpoints.db files predate this column — SQLite has no
+# "ADD COLUMN IF NOT EXISTS", so _ensure_schema adds it via try/except
+# duplicate-column instead.
+_ADD_IS_BACKFILL_COLUMN = """
+    ALTER TABLE pipeline_checkpoints ADD COLUMN is_backfill BOOLEAN NOT NULL DEFAULT 0
 """
 
 
@@ -192,6 +273,11 @@ class CheckpointManager:
     def _ensure_schema(self) -> None:
         with get_sqlite_connection(self._db_path) as conn:
             conn.execute(_CREATE_PIPELINE_CHECKPOINTS)
+            try:
+                conn.execute(_ADD_IS_BACKFILL_COLUMN)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc):
+                    raise
             conn.commit()
 
     def save_checkpoint(
@@ -201,6 +287,7 @@ class CheckpointManager:
         status: str,
         error_message: Optional[str] = None,
         retry_count: int = 0,
+        is_backfill: bool = False,
     ) -> None:
         """
         Upsert the checkpoint row for (run_date, step_name).
@@ -218,6 +305,13 @@ class CheckpointManager:
             success.
         retry_count : int
             Number of retry attempts made for this step so far.
+        is_backfill : bool
+            True if this step ran as part of a backfill/catch-up invocation
+            rather than a same-day live run (SPEC-SCHED-006, A30). Once a
+            (date, step_name) row exists, later same-date live re-runs of an
+            already-backfilled step would overwrite it back to False on a
+            true re-run; in practice a step only ever runs once per date
+            (backfill exists precisely because the live window passed).
 
         Returns
         -------
@@ -254,15 +348,16 @@ class CheckpointManager:
                 """
                 INSERT INTO pipeline_checkpoints
                     (date, step_name, step_index, status, started_at,
-                     completed_at, error_message, retry_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     completed_at, error_message, retry_count, is_backfill)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(date, step_name) DO UPDATE SET
                     step_index = excluded.step_index,
                     status = excluded.status,
                     started_at = COALESCE(pipeline_checkpoints.started_at, excluded.started_at),
                     completed_at = excluded.completed_at,
                     error_message = excluded.error_message,
-                    retry_count = excluded.retry_count
+                    retry_count = excluded.retry_count,
+                    is_backfill = excluded.is_backfill
                 """,
                 (
                     run_date.isoformat(),
@@ -273,6 +368,7 @@ class CheckpointManager:
                     completed_at,
                     error_message,
                     retry_count,
+                    is_backfill,
                 ),
             )
             conn.commit()

@@ -139,9 +139,9 @@ class TestPostEarningsDriftSignal:
 
 
 class TestNotYetIngestedActionTypesDegradeToNaN:
-    """BUYBACK/QIP/INDEX_INCLUSION/DIVIDEND ingestion doesn't exist yet (module docstring) — must not raise."""
+    """QIP/INDEX_INCLUSION/DIVIDEND(FD-rate) ingestion doesn't exist yet (module docstring) — must not raise."""
 
-    def test_all_five_structural_gap_features_are_nan_with_no_data(self):
+    def test_all_structural_gap_features_are_nan_with_no_data(self):
         client = MagicMock()
         client.get_corporate_actions.return_value = []
         client.get_fundamentals_history.return_value = []
@@ -149,7 +149,7 @@ class TestNotYetIngestedActionTypesDegradeToNaN:
         feats = compute_corporate_action_features(client, "TEST", as_of=datetime(2025, 6, 1))
 
         for f in [
-            "buyback_price_spread", "buyback_acceptance_estimated", "index_inclusion_days",
+            "buyback_acceptance_estimated", "index_inclusion_days",
             "dividend_yield_vs_fd_rate", "qip_dilution_impact",
         ]:
             assert np.isnan(feats[f]), f"{f} should be NaN, got {feats[f]}"
@@ -165,6 +165,57 @@ class TestNotYetIngestedActionTypesDegradeToNaN:
         feats = compute_corporate_action_features(client, "TEST", as_of=datetime(2025, 6, 1))
 
         assert feats["buyback_price_spread"] == 0.5  # (150-100)/100
+
+
+class TestPitFallbackWhenAnnouncementDateMissing:
+    """
+    [2026-07-07 bug fix regression coverage] NSE's real corporates-
+    corporateActions feed never populates announcement_date (confirmed
+    live: 0/7669 rows across all action types in the production DB). The
+    PIT filter must fall back to record_date, then ex_date, instead of
+    dropping every row unconditionally — see _pit_filter_actions docstring.
+    """
+
+    def test_buyback_with_no_announcement_date_falls_back_to_ex_date(self):
+        client = MagicMock()
+        client.get_corporate_actions.return_value = [
+            _action("2025-06-01", "BUYBACK", ratio=150.0, announcement_date=None, record_date=None),
+        ]
+        client.get_fundamentals_history.return_value = []
+        client.get_ohlcv.return_value = [{"date": "2025-06-01", "close": 100.0}]
+
+        feats = compute_corporate_action_features(client, "TEST", as_of=datetime(2025, 6, 2))
+
+        assert feats["buyback_price_spread"] == pytest.approx(0.5)
+
+    def test_future_ex_date_with_no_announcement_date_is_excluded(self):
+        """A row whose ex_date (the fallback PIT key) is still in the future must not leak in."""
+        client = MagicMock()
+        client.get_corporate_actions.return_value = [
+            _action("2025-07-01", "BUYBACK", ratio=150.0, announcement_date=None, record_date=None),
+        ]
+        client.get_fundamentals_history.return_value = []
+        client.get_ohlcv.return_value = [{"date": "2025-06-01", "close": 100.0}]
+
+        feats = compute_corporate_action_features(client, "TEST", as_of=datetime(2025, 6, 15))
+
+        assert np.isnan(feats["buyback_price_spread"])
+
+    def test_record_date_used_ahead_of_ex_date_when_announcement_missing(self):
+        """record_date is a tighter real-world proxy than ex_date when both are present but announcement_date is not."""
+        client = MagicMock()
+        client.get_corporate_actions.return_value = [
+            _action("2025-07-10", "BONUS", announcement_date=None, record_date="2025-06-20"),
+        ]
+        client.get_fundamentals_history.return_value = []
+
+        # as_of is before record_date -> row must still be excluded (not yet known)
+        feats_before = compute_corporate_action_features(client, "TEST", as_of=datetime(2025, 6, 10))
+        assert np.isnan(feats_before["days_to_record_date"])
+
+        # as_of is after record_date but before ex_date -> row is known, but record_date already passed
+        feats_after = compute_corporate_action_features(client, "TEST", as_of=datetime(2025, 6, 25))
+        assert np.isnan(feats_after["days_to_record_date"])  # record_date is not in the future anymore
 
 
 class TestPanel:

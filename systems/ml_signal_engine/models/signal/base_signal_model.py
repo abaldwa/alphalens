@@ -274,7 +274,28 @@ class BaseSignalModel(IClassificationModel):
         self._lgbm, self._catboost, self._xgboost = payload["lgbm"], payload["catboost"], payload["xgboost"]
         self._meta = payload["meta"]
         self._q10_model, self._q50_model, self._q90_model = payload["q10"], payload["q50"], payload["q90"]
-        self._thresholds = payload["thresholds"]
+        loaded_thresholds = payload.get("thresholds")
+        if not loaded_thresholds:
+            # config.settings.SIGNAL_THRESHOLD fallback (item #7, user decision
+            # 2026-07-04): a corrupted/incomplete artifact or a bootstrap
+            # model saved before train_full()'s F1-optimized threshold tuning
+            # ran must still produce a usable, non-degenerate decision rule
+            # rather than silently falling back to the 1/3 equal-share
+            # default baked into __init__ — that default was never meant to
+            # reach inference, only to exist before the first train() call.
+            from config.settings import SIGNAL_THRESHOLD
+
+            logger.warning(
+                "%s.load(%s): saved payload has no tuned 'thresholds' — "
+                "falling back to config.settings.SIGNAL_THRESHOLD=%s for "
+                "buy/sell classes",
+                type(self).__name__, path, SIGNAL_THRESHOLD,
+            )
+            loaded_thresholds = {
+                c: (SIGNAL_THRESHOLD if c != DIRECTION_HOLD else 1.0 / len(CLASS_ORDER))
+                for c in CLASS_ORDER
+            }
+        self._thresholds = loaded_thresholds
         self._feature_names = payload["feature_names"]
         self._imputer = payload["imputer"]
         self.horizon_days = payload["horizon_days"]

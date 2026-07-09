@@ -23,8 +23,8 @@ def test_pipeline_resumes_not_restarts_after_crash():
     SPEC-SCHED-002: "If pipeline crashes at step 7, next run resumes from
     step 7 (does not re-execute steps 1 to N-1)."
 
-    Run 1: a step_runner that crashes on 'adjust_prices' (the 3rd step).
-    Verify steps 1-2 are checkpointed 'success' and step 3 is 'failed'.
+    Run 1: a step_runner that crashes on 'adjust_prices'.
+    Verify all prior steps are checkpointed 'success' and 'adjust_prices' is 'failed'.
 
     Run 2 ("restart"): a step_runner that always succeeds. Verify it
     executes ONLY 'adjust_prices' onward — steps 1-2 must NOT re-run —
@@ -44,8 +44,12 @@ def test_pipeline_resumes_not_restarts_after_crash():
     )
 
     assert ok is False
-    assert executed_run1 == ["download_bhavcopy", "download_fno", "download_macro", "adjust_prices"]
-    assert checkpoint_manager.load_checkpoint(run_date) == "download_macro"
+    assert executed_run1 == [
+        "download_bhavcopy", "download_fno", "download_macro",
+        "download_index_ohlcv", "download_corporate_actions",
+        "download_large_deals", "attribute_bulk_deals", "adjust_prices",
+    ]
+    assert checkpoint_manager.load_checkpoint(run_date) == "attribute_bulk_deals"
     assert checkpoint_manager.get_resume_step(run_date) == "adjust_prices"
 
     executed_run2 = []
@@ -62,11 +66,15 @@ def test_pipeline_resumes_not_restarts_after_crash():
     assert "download_bhavcopy" not in executed_run2
     assert "download_fno" not in executed_run2
     assert "download_macro" not in executed_run2
+    assert "download_index_ohlcv" not in executed_run2
     assert executed_run2 == [
         "adjust_prices",
         "compute_features",
+        "check_ta_alerts",
         "run_models",
         "write_signals",
+        "sanity_check",
+        "paper_trade",
     ]
     assert checkpoint_manager.load_checkpoint(run_date) == STEP_NAMES[-1]
     assert checkpoint_manager.get_resume_step(run_date) is None
