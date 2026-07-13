@@ -13423,3 +13423,54 @@ FeatureBacklog.md's new F3 entry.
 `tests/unit/test_backfill_fundamentals_trendlyne.py` (new),
 `FeatureBacklog.md` (new F3 entry). Branch
 `fix/trendlyne-405-waf-circuit-breaker`, commit `66fca7f`.
+
+## Non-Intrusive Backlog Burn: A66/A68/A69/A73/T6/T10/ML23/ML25/ML32 (2026-07-13)
+
+### Task
+Scheduled backlog-burn run. Per explicit user instruction, combined 9
+qualifying non-intrusive dashboard/frontend/documentation backlog items
+into a single feature branch and PR rather than one PR per item.
+
+### Items completed
+- **A66/A68/A73**: framework-wide table conventions applied dashboard-wide
+  — sortable columns, consistent column alignment, resizable columns.
+- **A69**: uniform ticker-hyperlink + deep-dive-icon helper applied across
+  all tables that reference tickers.
+- **ML25**: split Full Universe out of the combined ML dashboard page into
+  its own dedicated page.
+- **T6**: added Technical Deep Dive page; Daily WatchList set as the
+  Technical section's landing page.
+- **T10**: (bundled with the above table-convention/glossary sweep; see
+  FeatureBacklog.md for exact scope).
+- **ML23**: exposed `shap_top5_json` on the universe row via
+  `GET /api/v1/signals/ml/universe/{date}`; added a regression test
+  covering it.
+
+### Item partially completed
+- **ML32**: column glossary documentation delivered. The per-ticker list
+  companion piece is blocked — it requires a live DB read that hit a lock
+  held by a concurrent long-running job (the MultiBagger experimental
+  training run); left as the remaining open piece, not implemented.
+
+### Verification
+Ran the tests relevant to the changed areas (dashboard/API routers) —
+passed. Added a new regression test for ML23's `shap_top5_json` exposure.
+Did not touch `systems/ml_signal_engine/`, `features/`, `backtest/`,
+`datastore/models/`, or any training script — all changes are
+frontend/dashboard/API-surface only.
+
+### Files changed
+Dashboard/table-convention frontend files, API router for
+`signals/ml/universe/{date}`, new regression test, `FeatureBacklog.md`
+(status updates for all 9 items). Branch
+`feature/backlog-burn-a66-a68-a69-a73-t6-t10-ml23-ml25-ml32`, commits
+`e80cef5`, `5609d94`, `eff3a32`, `f835a2b`. PR not opened via `gh` (CLI
+unavailable in this environment) — compare URL:
+https://github.com/abaldwa/alphalens/pull/new/feature/backlog-burn-a66-a68-a69-a73-t6-t10-ml23-ml25-ml32
+
+### Full test suite / self-heal
+Not run to completion as part of this recovery session (this session
+picked up a run that was killed mid-flight, and its scope was limited to
+safely landing the already-completed work rather than re-running the full
+batched suite). No self-heal PRs opened this session. No new backlog items
+added — none surfaced during the recovery steps.
