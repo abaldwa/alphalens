@@ -13876,3 +13876,47 @@ test harness exists in this repo to run beyond that.
 `feature/backlog-burn-a42-a63-a64-a67-a72-ml22-ml26-ml28-ml29-ml30-t9`,
 4 commits. Not pushed, no PR opened, no merge to master — local commits
 only, per instructions.
+
+## T7: Fix chart.html candlestick/overlay rendering (2026-07-13)
+
+### What happened
+User reported `technical/chart.html` charts don't load. The 2026-07-11
+investigation had confirmed the API/wiring was fine but couldn't reproduce
+further without a real browser. This session used a live Playwright
+(Chromium) session to actually load the page: the candle canvas rendered
+completely blank (axis + legend only, no candles/lines/volume bars), with
+zero console or page errors — matching the user's live report exactly.
+
+### Root cause
+Inspected the live `Chart.js` instance directly via
+`page.evaluate(...)`. Data loaded correctly (256 real OHLCV rows), the
+chart object was constructed with the right type/datasets, and the y-scale
+computed a sane price range — but every candlestick/line element's `x`
+pixel position resolved to `NaN`. `chartjs-chart-financial`'s candlestick
+controller extends Chart.js's `BarController`, and its bar-width/pixel
+computation ("ruler") breaks down against a continuous `"time"` x-scale
+once real trading-day gaps (weekends/holidays) are present in the data —
+confirmed by testing an index-based `"category"` x-scale in the live
+session, which immediately produced valid `x`/`width` values.
+
+### Fix
+`dashboard/static/technical/js/chart.js`: both the candlestick chart and
+the volume chart now use a `"category"` (index-based) x-scale with
+date-formatted tick labels, instead of a `"time"` scale. The SMA/EMA
+overlay line datasets were switched to index-based `x` values to match.
+As a side effect, weekend/holiday gaps no longer appear as dead space in
+the plot. Verified rendering (real candles + overlays + volume bars, zero
+console/page errors) on RELIANCE, TCS, and IRFC via Playwright.
+
+### Verification
+Live Playwright browser session against the running local API server —
+before/after `element.x` comparison, plus a visual screenshot diff
+confirming candles/lines/bars render. No existing automated test covers
+this JS file; none pre-existed to run.
+
+### Files changed
+`dashboard/static/technical/js/chart.js`, `FeatureBacklog.md` (T7 status).
+Branch `fix/t7-chart-nan-candlestick-x-scale`, branched from `master`
+(post-merge of the prior three backlog-burn branches), 1 commit. Not
+pushed, no PR opened, no merge to master — local commit only, pending
+user decision.
