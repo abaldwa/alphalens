@@ -14285,3 +14285,116 @@ above are independently verified via `coverage report --include=`).
 `ingestion/scheduler/pipeline_scheduler.py`'s `_execute_*_job` functions
 and `backtest/run_phase{2,3}_backtest.py` remain the next-biggest
 untouched gaps for a future session.
+
+## 2026-07-13 — A65 (test coverage) dedicated 90%-push session, 6th pass
+
+Branch: `feature/backlog-burn-a65-coverage-push-90` (local only, no PR,
+no merge to master — per this run's standing instruction to commit
+incrementally to one branch and report back).
+
+### Production-DB safety
+Per this run's instructions, never connected to or wrote to
+`datastore/normalised/alphalens.duckdb` — every new test uses an
+in-memory or `tmp_path`-file DuckDB/SQLite fixture (`create_normalised.
+create_schema(db_path=...)`, `create_signals.create_schema(sqlite_path=
+..., duckdb_path=...)`, or `object.__new__`-style bypass of network-only
+`__init__`s), matching the established pattern in `test_hybrid_compute.py`/
+`test_ops_router.py`/`test_large_deals.py`/`test_pipeline_scheduler_utils.py`.
+
+### What was added (174 new tests across 10 new files)
+Read A65's full FeatureBacklog.md row for per-file before/after coverage
+numbers and the complete multi-session history; summary here:
+
+- `tests/unit/test_alerts_router.py` (11) — `datastore/api/routers/
+  alerts.py` 0%→100%.
+- `tests/unit/test_pipeline_router.py` (5) — `datastore/api/routers/
+  pipeline.py` 33.33%→100%.
+- `tests/unit/test_system_router.py` (5) — `datastore/api/routers/
+  system.py` 34.00%→100%.
+- `tests/unit/test_models_router.py` (6) — `datastore/api/routers/
+  models.py` 35.71%→100%.
+- `tests/unit/test_features_router.py` (7) — `datastore/api/routers/
+  features.py` 39.29%→96.43%.
+- `tests/unit/test_regime_router.py` (8) — `datastore/api/routers/
+  regime.py` 57.69%→100%.
+- `tests/unit/test_pit.py` (17) — `datastore/api/pit.py` 46.51%→100%.
+- `tests/unit/test_file_lock.py` (5, real `fcntl.flock`) — `datastore/
+  api/utils/file_lock.py` 50%→100%.
+- `tests/unit/test_watchlist_daily_router.py` (8) — closes the `/daily`
+  endpoint gap `test_phase2_endpoints.py` never exercised —
+  `datastore/api/routers/watchlist.py` 38.20%→89.89%.
+- `tests/unit/test_corporate_announcements_router.py` (12) —
+  `datastore/api/routers/corporate_announcements.py` 41.10%→97.26%.
+- `tests/unit/test_paper_trading_pending_router.py` (20) — the SPEC-PT-003
+  pending/accept/reject/sell/backdated_buy endpoints `test_paper_trading_
+  router.py` never touched — `datastore/api/routers/paper_trading.py`
+  40.00%→83.27%.
+- `tests/unit/test_fundamental_composites.py` (28, pure dict/DataFrame
+  logic) — `features/fundamental_composites.py` 40.98%→100%.
+- `tests/unit/test_training_universe.py` (16, real tmp_path JSON
+  snapshots) — `config/training_universe.py` 57.38%→98.36%.
+- `tests/unit/test_nse_indices.py` (7, `_fetch_indices_csv` mocked per
+  `test_nse_ipo.py`'s established live-fetch-mocked pattern) —
+  `ingestion/scrapers/nse_indices.py` 40.91%→68.18% (remaining gap is the
+  live `_nse_session`/`_fetch_indices_csv` HTTP calls, correctly out of
+  scope).
+
+### Coverage: before/after
+Fresh from-scratch, memory-safe batched full-suite measurement (`tests/
+unit/`+`tests/integration/`, heavy ML-training files run one at a time
+per `feedback_coverage`'s convention): **69.12% → 71.13%** (20,945 stmts,
+6,047 missed). Per-package breakdown at session end: `features` 89.73%,
+`config` 79.83%, `datastore` 85.97%, `systems` 55.20%, `ingestion`
+65.09%, `backtest` 64.61%.
+
+90% overall was **not** reached and is honestly assessed as out of reach
+in a single session. Biggest remaining gaps, by category:
+- **Correctly out of scope** (per this row's own charter, unchanged this
+  session): `systems/ml_signal_engine/`+`ml_signal_engine_gainer/`
+  training/inference modules (dozens of 0% files — model training/
+  retraining/inference logic), live-network scraper fetch functions,
+  `ingestion/scheduler/pipeline_scheduler.py`'s `_execute_*_job` targets
+  and `ingestion/scheduler/daily_pipeline.py`'s step orchestration,
+  `backtest/run_phase{1,2,3}_backtest.py`'s live end-to-end scripts,
+  `datastore/api/routers/ops.py`'s live scheduler/systemd/psutil
+  endpoints.
+- **Large, not-yet-attempted** (each would need its own dedicated future
+  session): `datastore/api/routers/big_investors.py` (331 stmts, 62.24%,
+  complex fuzzy-entity-matching logic — existing `test_big_investors.py`
+  covers some but not all of it), `datastore/client.py` (999 lines, 137
+  counted statements, 64.96%, mostly a thin HTTP wrapper), `ingestion/
+  scrapers/corporate_actions.py`/`trendlyne.py`/`tijori.py`/
+  `fyers_backfill.py` (29-64% — these scrapers' parse logic isn't yet
+  isolated from their live-fetch functions the way `nse_ipo.py`/
+  `nse_indices.py`/`fno.py` already are, so mocking just the fetch step
+  the way this session's `test_nse_indices.py` did would need a similar
+  refactor-free pass per file), `systems/ml_signal_engine/models/exit/
+  exit_signal.py`/`forensic/forensic_ml.py` (39-50%, borderline — real
+  scoring logic but adjacent to ML Signal Engine, would need care to
+  confirm still non-ML-core before testing further).
+
+### Quality gates
+Ran `tests/quality/` (`test_no_stub_or_synthetic_data.py`,
+`test_duckdb_connection_discipline.py`, 3 others) after every new test
+file and again at session end: **5/5 passed** throughout — no stub/
+fabricated-data or DuckDB-connection-discipline regressions introduced
+by any of the 174 new tests.
+
+### Pre-existing failures re-confirmed, not touched
+Same 2 failures noted in the 4th/5th pass, re-confirmed unrelated to this
+session's changes: `tests/unit/test_phase2_endpoints.py::
+TestWatchlistCurrent::test_top_n_ranked_by_probability_from_latest_date`
+(HIGHCO/LOWCO aren't real universe tickers, so `filter_recommendable`
+drops them — a test-data bug in that pre-existing test, not a production
+bug or a coverage gap) and `tests/integration/test_daily_pipeline.py::
+TestPnDBlockExcludedFromTopBuys::test_pnd_blocked_ticker_excluded_from_
+top_buys` (DuckDB cross-process connection-config conflict, environmental
+per the 07-11 note — a concurrent production job chain was confirmed
+still potentially active in this shared checkout per this session's
+instructions, and this session never connected to the production DB).
+Both left untouched per this session's coverage-only charter.
+
+### Files changed
+10 new test files under `tests/unit/` (listed above), `FeatureBacklog.md`
+(A65 row appended with this session's numbers), `BuildLog.md` (this
+entry). No production code touched.
