@@ -234,7 +234,7 @@ async def get_signal_universe(
         rows = conn.execute(
             """
             SELECT s.ticker, s.date, s.buy_prob, s.q50_return, m.meta_prob, p.pnd_score,
-                   f.forensic_flag_label, mb.mb_probability
+                   f.forensic_flag_label, mb.mb_probability, s.shap_top5_json
             FROM (SELECT * FROM ml_signals WHERE date = ? AND model_name = 'signal_5d' AND buy_prob IS NOT NULL) s
             LEFT JOIN (SELECT ticker, meta_prob FROM ml_signals WHERE date = ? AND model_name = 'meta_labeler') m
                 ON s.ticker = m.ticker
@@ -257,6 +257,7 @@ async def get_signal_universe(
         SignalUniverseRow(
             ticker=r[0], date=r[1], buy_prob=r[2], q50_return=r[3],
             meta_label_prob=r[4], pnd_score=r[5], forensic_flag=r[6], mb_probability=r[7],
+            shap_top5_json=r[8],
         )
         for r in rows
     ]

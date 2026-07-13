@@ -482,6 +482,10 @@ class SignalUniverseRow(BaseModel):
     pnd_score: Optional[float] = None
     forensic_flag: Optional[str] = None
     mb_probability: Optional[float] = None
+    # ML23: signal_5d's own shap_top5_json (same field already persisted per
+    # ML3/ML8 on ml_signals), surfaced here so the full-universe table can
+    # render a short "Basis" summary without a per-ticker detail fetch.
+    shap_top5_json: Optional[str] = None
 
 
 class MLSignalWriteResult(BaseModel):
