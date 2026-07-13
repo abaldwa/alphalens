@@ -1111,6 +1111,27 @@ class TAWatchlistResponse(BaseModel):
     count: int = 0
 
 
+# ===== T11: Multi-strategy consensus =====
+class TAConsensusRow(BaseModel):
+    """One ticker's multi-strategy consensus for a given date: every
+    ta_signals template that fired for it, ordered so tickers with the most
+    concurrent strategy-recommendations surface first."""
+
+    ticker: str
+    company_name: Optional[str] = None
+    sector: Optional[str] = None
+    strategy_count: int
+    template_names: List[str] = Field(default_factory=list)
+    categories: List[str] = Field(default_factory=list)
+    avg_score: float
+
+
+class TAConsensusResponse(BaseModel):
+    date: Optional[str] = None
+    rows: List[TAConsensusRow] = Field(default_factory=list)
+    count: int = 0
+
+
 class TAUserAlertCreate(BaseModel):
     """Request body for POST /api/v1/ta/user-alerts."""
 

@@ -36,6 +36,8 @@ from datastore.api.schemas import (
     TAAlertRow,
     TACheckTriggersRequest,
     TACompareResponse,
+    TAConsensusResponse,
+    TAConsensusRow,
     TACompareTickerRow,
     TAIndicatorsResponse,
     TAMarketOverviewResponse,
@@ -531,6 +533,74 @@ async def get_ta_daily_watchlist(
         ))
 
     return TAWatchlistResponse(date=target_date, rows=rows, count=len(rows))
+
+
+@router.get("/consensus/daily", response_model=TAConsensusResponse)
+async def get_ta_consensus(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest ta_signals date"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum tickers"),
+) -> TAConsensusResponse:
+    """T11: Multi-strategy consensus — when the same ticker is recommended
+    by multiple templates on the same date (ta_signals, SPEC-TA-006/T10),
+    list every matching strategy and surface the ticker with the most
+    concurrent strategy-recommendations first (ties broken by avg score)."""
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
+            ).fetchall()]
+            if not tables:
+                return TAConsensusResponse(count=0)
+
+            if date:
+                target_date = date
+            else:
+                row = conn.execute("SELECT MAX(date) FROM ta_signals").fetchone()
+                if row is None or row[0] is None:
+                    return TAConsensusResponse(count=0)
+                target_date = str(row[0])
+
+            df = conn.execute(
+                """
+                SELECT ticker,
+                       COUNT(DISTINCT template_name) AS strategy_count,
+                       LIST(DISTINCT template_name) AS template_names,
+                       LIST(DISTINCT category) AS categories,
+                       AVG(score) AS avg_score
+                FROM ta_signals
+                WHERE date = ?
+                GROUP BY ticker
+                ORDER BY strategy_count DESC, avg_score DESC
+                LIMIT ?
+                """,
+                [target_date, limit],
+            ).fetchdf()
+    except Exception as exc:
+        logger.warning("consensus/daily TA query failed: %s", exc)
+        return TAConsensusResponse(count=0)
+
+    if df.empty:
+        return TAConsensusResponse(date=target_date, count=0)
+
+    universe = load_universe_raw()
+    name_map = dict(zip(universe["ticker"], universe["company_name"].fillna("")))
+    sector_map = dict(zip(universe["ticker"], universe["sector"].fillna("")))
+
+    rows: List[TAConsensusRow] = []
+    for _, r in df.iterrows():
+        ticker = str(r["ticker"])
+        rows.append(TAConsensusRow(
+            ticker=ticker,
+            company_name=name_map.get(ticker) or None,
+            sector=sector_map.get(ticker) or None,
+            strategy_count=int(r["strategy_count"]),
+            template_names=sorted(str(t) for t in r["template_names"]),
+            categories=sorted(set(str(c) for c in r["categories"])),
+            avg_score=round(float(r["avg_score"]), 4),
+        ))
+
+    return TAConsensusResponse(date=target_date, rows=rows, count=len(rows))
 
 
 # ---------------------------------------------------------------------------

@@ -234,6 +234,58 @@ class TestWatchlistDaily:
         assert row["current_price"] is not None
 
 
+class TestConsensusDaily:
+    def test_no_ta_signals_table_returns_empty(self, client):
+        r = client.get("/api/v1/ta/consensus/daily")
+        assert r.status_code == 200
+        assert r.json()["count"] == 0
+
+    def test_multi_strategy_ticker_ranked_first(self, client):
+        # _TICKER_A fires 3 templates on 2026-06-01, _TICKER_B fires only 1.
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A,
+            template_name="A1", category="A", score=1.0,
+        )
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A,
+            template_name="B1", category="B", score=0.8,
+        )
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A,
+            template_name="C1", category="C", score=1.0,
+        )
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_B,
+            template_name="A1", category="A", score=1.0,
+        )
+        r = client.get("/api/v1/ta/consensus/daily", params={"date": "2026-06-01"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["date"] == "2026-06-01"
+        assert body["count"] == 2
+        top = body["rows"][0]
+        assert top["ticker"] == _TICKER_A
+        assert top["strategy_count"] == 3
+        assert set(top["template_names"]) == {"A1", "B1", "C1"}
+        assert set(top["categories"]) == {"A", "B", "C"}
+        assert top["avg_score"] == pytest.approx((1.0 + 0.8 + 1.0) / 3, abs=1e-4)
+        assert body["rows"][1]["ticker"] == _TICKER_B
+        assert body["rows"][1]["strategy_count"] == 1
+
+    def test_explicit_date_with_no_match_returns_empty(self, client):
+        _seed_ta_signal(technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A)
+        r = client.get("/api/v1/ta/consensus/daily", params={"date": "2025-01-01"})
+        assert r.status_code == 200
+        assert r.json()["count"] == 0
+
+    def test_limit_param_respected(self, client):
+        _seed_ta_signal(technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A)
+        _seed_ta_signal(technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_B)
+        r = client.get("/api/v1/ta/consensus/daily", params={"date": "2026-06-01", "limit": 1})
+        assert r.status_code == 200
+        assert r.json()["count"] == 1
+
+
 class TestUserAlerts:
     def test_create_list_and_delete_alert(self, client):
         r = client.get("/api/v1/ta/user-alerts")
