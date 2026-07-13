@@ -26,14 +26,13 @@ this module now captures — features/fno_features.py uses both directly.
 
 import io
 import logging
-import time
 from datetime import datetime
-from typing import Optional
 
 import pandas as pd
 import requests
 
 from config.settings import RAW_DIR
+from ingestion.scrapers._retry import RETRY_DELAY_SECONDS, retry_call
 from ingestion.scrapers.bhavcopy import NSE_HOMEPAGE_URL, USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -52,7 +51,6 @@ REQUIRED_COLUMNS = [
 ]
 
 MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 2
 
 
 def _fno_session() -> requests.Session:
@@ -93,29 +91,28 @@ def _fetch_fno_bhavcopy_csv(trade_date: datetime) -> pd.DataFrame:
 
     url = NSE_FNO_BHAVCOPY_URL_TEMPLATE.format(yyyymmdd=trade_date.strftime("%Y%m%d"))
 
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            session = _fno_session()
-            response = session.get(url, timeout=15)
-            response.raise_for_status()
-            with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
-                csv_name = next(n for n in zf.namelist() if n.lower().endswith(".csv"))
-                with zf.open(csv_name) as fh:
-                    return pd.read_csv(fh)
-        except (requests.RequestException, zipfile.BadZipFile, pd.errors.ParserError) as exc:
-            last_exc = exc
-            logger.warning(
-                f"F&O bhavcopy fetch attempt {attempt}/{MAX_RETRIES} failed "
-                f"for {trade_date.date()}: {exc}"
-            )
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
+    def _fetch() -> pd.DataFrame:
+        session = _fno_session()
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+            csv_name = next(n for n in zf.namelist() if n.lower().endswith(".csv"))
+            with zf.open(csv_name) as fh:
+                return pd.read_csv(fh)
 
-    raise ConnectionError(
-        f"Failed to download F&O bhavcopy for {trade_date.date()} "
-        f"after {MAX_RETRIES} attempts: {last_exc}"
-    )
+    try:
+        return retry_call(
+            _fetch,
+            retries=MAX_RETRIES,
+            label=f"F&O bhavcopy fetch for {trade_date.date()}",
+            wait_seconds=RETRY_DELAY_SECONDS,
+            exceptions=(requests.RequestException, zipfile.BadZipFile, pd.errors.ParserError),
+        )
+    except ConnectionError as exc:
+        raise ConnectionError(
+            f"Failed to download F&O bhavcopy for {trade_date.date()} "
+            f"after {MAX_RETRIES} attempts: {exc}"
+        ) from exc
 
 
 def _save_raw(trade_date: datetime, raw: pd.DataFrame) -> None:

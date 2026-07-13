@@ -19,13 +19,13 @@ convention as bhavcopy.py's datastore/raw/bhavcopy/.
 
 import json
 import logging
-import time
 from datetime import datetime
 from typing import Optional
 
 import requests
 
 from config.settings import RAW_DIR
+from ingestion.scrapers._retry import RETRY_DELAY_SECONDS, retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,6 @@ USER_AGENT = (
 )
 
 MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 2
 
 
 def _nse_session() -> requests.Session:
@@ -85,36 +84,36 @@ def download_etf_list(date: str) -> set[str]:
     """
     trade_date = datetime.strptime(date, "%Y-%m-%d")
 
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            session = _nse_session()
-            response = session.get(NSE_ETF_LIST_URL, timeout=15)
-            response.raise_for_status()
-            payload = response.json()
-            rows = payload["data"]
-            tickers = {
-                str(row["symbol"]).strip().upper()
-                for row in rows
-                if row.get("symbol")
-            }
-            if not tickers:
-                raise ValueError("ETF list response contained no symbols")
+    def _fetch() -> set[str]:
+        session = _nse_session()
+        response = session.get(NSE_ETF_LIST_URL, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload["data"]
+        tickers = {
+            str(row["symbol"]).strip().upper()
+            for row in rows
+            if row.get("symbol")
+        }
+        if not tickers:
+            raise ValueError("ETF list response contained no symbols")
 
-            _save_raw(trade_date, payload)
-            logger.info(f"ETF list downloaded for {date}: {len(tickers)} symbols")
-            return tickers
-        except (requests.RequestException, ValueError, KeyError) as exc:
-            last_exc = exc
-            logger.warning(
-                f"ETF list fetch attempt {attempt}/{MAX_RETRIES} failed for {date}: {exc}"
-            )
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
+        _save_raw(trade_date, payload)
+        logger.info(f"ETF list downloaded for {date}: {len(tickers)} symbols")
+        return tickers
 
-    raise ConnectionError(
-        f"Failed to download ETF list for {date} after {MAX_RETRIES} attempts: {last_exc}"
-    )
+    try:
+        return retry_call(
+            _fetch,
+            retries=MAX_RETRIES,
+            label=f"ETF list fetch for {date}",
+            wait_seconds=RETRY_DELAY_SECONDS,
+            exceptions=(requests.RequestException, ValueError, KeyError),
+        )
+    except ConnectionError as exc:
+        raise ConnectionError(
+            f"Failed to download ETF list for {date} after {MAX_RETRIES} attempts: {exc}"
+        ) from exc
 
 
 def load_last_cached_etf_list() -> Optional[set[str]]:

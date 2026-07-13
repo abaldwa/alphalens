@@ -16,14 +16,13 @@ is kept in the parsed output; the rest of NSE's ~80-index CSV is discarded.
 
 import io
 import logging
-import time
 from datetime import datetime
-from typing import Optional
 
 import pandas as pd
 import requests
 
 from config.settings import RAW_DIR
+from ingestion.scrapers._retry import RETRY_DELAY_SECONDS, retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,6 @@ USER_AGENT = (
 )
 
 MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 2
 
 # Indices this project can put to use: the two benchmark-level indices
 # (#30) plus every sector index that config/sector_index_map.py can map to
@@ -79,26 +77,25 @@ def _fetch_indices_csv(trade_date: datetime) -> pd.DataFrame:
     """Fetch the raw ind_close_all CSV for one date, retrying on failure."""
     url = NSE_INDICES_URL_TEMPLATE.format(ddmmyyyy=trade_date.strftime("%d%m%Y"))
 
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            session = _nse_session()
-            response = session.get(url, timeout=15)
-            response.raise_for_status()
-            return pd.read_csv(io.StringIO(response.text))
-        except (requests.RequestException, pd.errors.ParserError) as exc:
-            last_exc = exc
-            logger.warning(
-                f"Indices-close fetch attempt {attempt}/{MAX_RETRIES} failed "
-                f"for {trade_date.date()}: {exc}"
-            )
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
+    def _fetch() -> pd.DataFrame:
+        session = _nse_session()
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        return pd.read_csv(io.StringIO(response.text))
 
-    raise ConnectionError(
-        f"Failed to download indices-close CSV for {trade_date.date()} "
-        f"after {MAX_RETRIES} attempts: {last_exc}"
-    )
+    try:
+        return retry_call(
+            _fetch,
+            retries=MAX_RETRIES,
+            label=f"Indices-close fetch for {trade_date.date()}",
+            wait_seconds=RETRY_DELAY_SECONDS,
+            exceptions=(requests.RequestException, pd.errors.ParserError),
+        )
+    except ConnectionError as exc:
+        raise ConnectionError(
+            f"Failed to download indices-close CSV for {trade_date.date()} "
+            f"after {MAX_RETRIES} attempts: {exc}"
+        ) from exc
 
 
 def _save_raw(trade_date: datetime, raw: pd.DataFrame) -> None:

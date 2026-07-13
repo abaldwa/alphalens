@@ -64,6 +64,7 @@ import pandas as pd
 import requests
 
 from config.settings import CORP_ACTION_NOTICE_DAYS, NSE_CA_RATE_LIMIT_SLEEP_SECONDS, NSE_CA_RAW_DIR
+from ingestion.scrapers._retry import RETRY_DELAY_SECONDS, retry_call
 from ingestion.scrapers.bhavcopy import NSE_HOMEPAGE_URL, USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,6 @@ logger = logging.getLogger(__name__)
 NSE_CA_URL = "https://www.nseindia.com/api/corporates-corporateActions"
 
 MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 2
 
 # action_type values stored in corporate_actions
 _ACTION_DIVIDEND = "DIVIDEND"
@@ -254,32 +254,31 @@ def _fetch_corporate_actions_json(target_date: str) -> List[dict]:
         "to_date": nse_date,
     }
 
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            session = _nse_session()
-            response = session.get(NSE_CA_URL, params=params, timeout=15)
-            response.raise_for_status()
-            payload = response.json()
-            # NSE may return a list directly or wrap it in {"data": [...]}
-            if isinstance(payload, list):
-                return payload
-            if isinstance(payload, dict):
-                return payload.get("data", [])
-            return []
-        except Exception as exc:
-            last_exc = exc
-            logger.warning(
-                f"NSE corporate actions fetch attempt {attempt}/{MAX_RETRIES} "
-                f"failed for {target_date}: {exc}"
-            )
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
+    def _fetch() -> List[dict]:
+        session = _nse_session()
+        response = session.get(NSE_CA_URL, params=params, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        # NSE may return a list directly or wrap it in {"data": [...]}
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            return payload.get("data", [])
+        return []
 
-    raise ConnectionError(
-        f"Failed to download NSE corporate actions for {target_date} "
-        f"after {MAX_RETRIES} attempts: {last_exc}"
-    )
+    try:
+        return retry_call(
+            _fetch,
+            retries=MAX_RETRIES,
+            label=f"NSE corporate actions fetch for {target_date}",
+            wait_seconds=RETRY_DELAY_SECONDS,
+            exceptions=(Exception,),
+        )
+    except ConnectionError as exc:
+        raise ConnectionError(
+            f"Failed to download NSE corporate actions for {target_date} "
+            f"after {MAX_RETRIES} attempts: {exc}"
+        ) from exc
 
 
 def _save_raw(target_date: str, records: List[dict]) -> None:
