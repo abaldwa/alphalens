@@ -29,7 +29,6 @@ tried and rejected.
 
 import io
 import logging
-import time
 from datetime import date as date_type
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +36,8 @@ from typing import Dict, Optional
 
 import pandas as pd
 import requests
+
+from ingestion.scrapers._retry import RETRY_DELAY_SECONDS, retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +83,15 @@ USER_AGENT = (
 )
 
 MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 2
 
 
 def _retry(fetch_fn, *, label: str):
     """
     Call fetch_fn() up to MAX_RETRIES times, sleeping between attempts.
+
+    Thin wrapper over ingestion.scrapers._retry.retry_call, kept under this
+    module's original name/signature so the 7 call sites below didn't need
+    to change — only the retry mechanics moved to the shared helper.
 
     Parameters
     ----------
@@ -109,16 +113,13 @@ def _retry(fetch_fn, *, label: str):
     ConnectionError
         After MAX_RETRIES failed attempts.
     """
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            return fetch_fn()
-        except requests.RequestException as exc:
-            last_exc = exc
-            logger.warning(f"{label} fetch attempt {attempt}/{MAX_RETRIES} failed: {exc}")
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
-    raise ConnectionError(f"Failed to fetch {label} after {MAX_RETRIES} attempts: {last_exc}")
+    return retry_call(
+        fetch_fn,
+        retries=MAX_RETRIES,
+        label=f"{label} fetch",
+        wait_seconds=RETRY_DELAY_SECONDS,
+        exceptions=(requests.RequestException,),
+    )
 
 
 def _get_previous_value(
