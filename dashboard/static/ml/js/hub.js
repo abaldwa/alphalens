@@ -201,57 +201,106 @@ function loadTopBuys() {
     .catch((e) => showError("top-buys", e));
 }
 
-function loadWatchlistMini() {
-  apiGet("/api/v1/watchlist/current")
-    .then((r) => {
-      const c = document.getElementById("watchlist-mini");
-      if (!r.implemented || !r.tickers.length) {
-        c.innerHTML = `<div class="empty">${r.notes || "No watchlist data yet"}</div>`;
-        return;
-      }
-      const top3 = r.tickers.slice(0, 3);
-      const table = el("table", {}, [
-        el("thead", {}, [el("tr", {}, [el("th", {}, ["Stock"]), el("th", {}, ["Prob"]), el("th", {}, ["Deterministic Probability Band"]), el("th", {}, ["Archetype"])])]),
-        el("tbody", {}, top3.map((t) => el("tr", {}, [
-          el("td", { style: "font-weight:600" }, [el("a", { href: `multibagger.html?ticker=${t.ticker}` }, [t.ticker])]),
-          el("td", { class: "mono up" }, [fmtPct(t.mb_probability)]),
-          el("td", {}, [el("span", { class: "badge b-purple" }, [mbTierLabel(t.mb_tier)])]),
-          el("td", {}, [t.mb_archetype || "—"]),
-        ]))),
-      ]);
-      c.innerHTML = "";
-      c.appendChild(el("div", { class: "card" }, [table]));
-    })
-    .catch((e) => showError("watchlist-mini", e));
+// ML22 (2026-07-13): full Daily WatchList tables, merged in from the
+// former standalone watchlist.html/watchlist.js — these supersede the
+// hub's old truncated "watchlist-mini" (MB top-3) and "horizon-mini"
+// (21d/63d top-3) sections, which showed a strict subset of the same
+// underlying /api/v1/watchlist/daily rows with fewer columns.
+function basisLabel(basis) {
+  if (basis === "quantile") return "model";
+  if (basis === "atr") return "ATR-est.";
+  return "—";
 }
 
-function loadHorizonMini() {
-  apiGet("/api/v1/watchlist/daily", { n_per_horizon: 3 })
+function renderHorizonTable(containerId, rows) {
+  const c = document.getElementById(containerId);
+  if (!rows.length) {
+    c.innerHTML = `<div class="empty">No buy signals for this horizon on the latest available date</div>`;
+    return;
+  }
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Stock"]), el("th", {}, ["Name"]), el("th", {}, ["Sector"]),
+      // ML24 (2026-07-13): Buy Prob (the classifier's buy/hold/sell call)
+      // and Target/Expected Return (the separate quantile-regressor's
+      // median forward-return forecast) are two independent model heads
+      // scored independently — they can legitimately disagree (e.g. a
+      // high buy probability alongside a negative expected return) and
+      // are not one unified confidence number. Column headers/tooltips
+      // make this explicit rather than implying a single consistent score.
+      el("th", { title: "Buy/hold/sell classifier's own probability — a separate model head from Target/Expected Return below" }, ["Buy Prob*"]),
+      el("th", {}, ["Price"]),
+      el("th", { title: "Median (q50) of the quantile-regressor's forward-return distribution — independent of Buy Prob*" }, ["Target*"]),
+      el("th", { title: "Median (q50) of the quantile-regressor's forward-return distribution — independent of Buy Prob*" }, ["Expected Return*"]),
+      el("th", {}, ["Range (low–high)"]), el("th", {}, ["Basis"]),
+    ])]),
+    el("tbody", {}, rows.map((r) => el("tr", {}, [
+      el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${r.ticker}` }, [r.ticker])]),
+      el("td", { style: "font-size:12px;color:var(--tx2)" }, [r.company_name || "—"]),
+      el("td", {}, [r.sector || "—"]),
+      el("td", { class: "mono" }, [fmtPct(r.buy_prob)]),
+      el("td", { class: "mono" }, [fmtMoney(r.current_price)]),
+      el("td", { class: "mono" }, [fmtMoney(r.target_price)]),
+      el("td", { class: "mono " + pnlClass(r.expected_return_pct) }, [r.expected_return_pct != null ? `${r.expected_return_pct > 0 ? "+" : ""}${r.expected_return_pct.toFixed(1)}%` : "—"]),
+      el("td", { class: "mono", style: "font-size:12px;color:var(--tx2)" }, [
+        (r.target_low != null && r.target_high != null) ? `${fmtMoney(r.target_low)} – ${fmtMoney(r.target_high)}` : "—",
+      ]),
+      el("td", {}, [el("span", { class: "badge b-gray" }, [basisLabel(r.target_basis)])]),
+    ]))),
+  ]);
+  c.innerHTML = "";
+  c.appendChild(el("div", { class: "card" }, [table]));
+}
+
+function renderMultibaggerTable(containerId, rows) {
+  const mbContainer = document.getElementById(containerId);
+  if (!rows.length) {
+    mbContainer.innerHTML = `<div class="empty">No multibagger scoring data yet</div>`;
+    return;
+  }
+  const cols = ["ticker", "mb_probability", "mb_tier", "mb_archetype", "survival_6m", "survival_12m", "survival_18m", "survival_24m", "survival_36m"];
+  const labels = ["Ticker", "MB Prob", "Deterministic Probability Band", "Archetype", "6m", "12m", "18m", "24m", "36m"];
+  const mbTable = el("table", {}, [
+    el("thead", {}, [el("tr", {}, labels.map((l) => el("th", {}, [l])))]),
+    el("tbody", {}, rows.map((t) => el("tr", {}, cols.map((cc) => {
+      if (cc === "ticker") return el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${t.ticker}` }, [t.ticker])]);
+      if (cc === "mb_probability") return el("td", { class: "mono" }, [fmtPct(t[cc])]);
+      if (cc === "mb_tier") return el("td", {}, [el("span", { class: "badge b-purple" }, [mbTierLabel(t[cc])])]);
+      if (cc.startsWith("survival")) return el("td", { class: "mono" }, [fmtPct(t[cc])]);
+      return el("td", {}, [t[cc] || "—"]);
+    })))),
+  ]);
+  mbContainer.innerHTML = "";
+  mbContainer.appendChild(el("div", { class: "card" }, [mbTable]));
+}
+
+function loadWatchlistDaily() {
+  apiGet("/api/v1/watchlist/daily", { n_per_horizon: 10 })
     .then((r) => {
-      const c = document.getElementById("horizon-mini");
-      const rows = (r.rows || []).filter((row) => row.horizon === "21d" || row.horizon === "63d");
-      if (!rows.length) {
-        c.innerHTML = `<div class="empty">No 21d/63d buy signals for ${r.date || "the latest available date"}</div>`;
-        return;
-      }
-      const table = el("table", {}, [
-        el("thead", {}, [el("tr", {}, [
-          el("th", {}, ["Stock"]), el("th", {}, ["Horizon"]), el("th", {}, ["Buy Prob"]), el("th", {}, ["Expected Return"]),
-        ])]),
-        el("tbody", {}, rows.map((row) => el("tr", {}, [
-          tickerCell(row.ticker),
-          el("td", {}, [el("span", { class: "badge b-gray" }, [row.horizon])]),
-          el("td", { class: "mono" }, [fmtPct(row.buy_prob)]),
-          el("td", { class: "mono " + pnlClass(row.expected_return_pct) }, [row.expected_return_pct != null ? `${row.expected_return_pct > 0 ? "+" : ""}${row.expected_return_pct.toFixed(1)}%` : "—"]),
-        ]))),
-      ]);
-      c.innerHTML = "";
-      c.appendChild(el("div", { class: "card" }, [table]));
-      if (r.date) {
-        c.appendChild(el("div", { style: "font-size:11px;color:var(--tx2);margin-top:4px" }, [`As of ${r.date}`]));
-      }
+      document.getElementById("watchlist-notes").textContent =
+        r.date ? `Signals for ${r.date} — targets from the model's own quantile-regression forward-return distribution (or a volatility/ATR-scaled band when unavailable), never a fixed %. *Buy Prob and Target/Expected Return are independent model outputs (classifier vs. quantile regressor) and can disagree — see column tooltips.` : "No signal data available yet";
+
+      const byHorizon = { "5d": [], "21d": [], "63d": [] };
+      r.rows.forEach((row) => { if (byHorizon[row.horizon]) byHorizon[row.horizon].push(row); });
+      renderHorizonTable("watchlist-5d", byHorizon["5d"]);
+      renderHorizonTable("watchlist-21d", byHorizon["21d"]);
+      renderHorizonTable("watchlist-63d", byHorizon["63d"]);
+
+      document.getElementById("mb-notes").textContent = r.multibagger.length ? `Top ${r.multibagger.length} by multibagger probability` : "";
+      renderMultibaggerTable("watchlist-mb", r.multibagger);
+
+      document.getElementById("mb-lowliq-notes").textContent = r.low_liquidity_multibagger.length
+        ? `${r.low_liquidity_multibagger.length} picks below the Rs20cr/day ADTV recommendation floor — shown separately, not filtered into the main list above`
+        : "";
+      renderMultibaggerTable("watchlist-mb-lowliq", r.low_liquidity_multibagger);
     })
-    .catch((e) => showError("horizon-mini", e));
+    .catch((e) => {
+      showError("watchlist-5d", e);
+      showError("watchlist-21d", e);
+      showError("watchlist-63d", e);
+      showError("watchlist-mb", e);
+      showError("watchlist-mb-lowliq", e);
+    });
 }
 
 function loadPositionsMini() {
@@ -281,6 +330,5 @@ function loadPositionsMini() {
 loadRegime();
 loadAlerts();
 loadTopBuys();
-loadWatchlistMini();
 loadPositionsMini();
-loadHorizonMini();
+loadWatchlistDaily();

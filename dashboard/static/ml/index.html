@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AlphaLens.ML — Daily Insights</title>
+<title>AlphaLens.ML — Daily Insights &amp; WatchList</title>
 <link rel="stylesheet" href="../css/tokens.css">
 <link rel="stylesheet" href="../css/components.css">
 <link rel="stylesheet" href="../css/shell.css">
@@ -22,19 +22,41 @@
     <div class="sec-head"><span class="sec-title">Top Buy Signals</span><span class="sec-sub">Sorted by buy probability</span></div>
     <div id="top-buys"><div class="loading">Loading…</div></div>
   </div>
-  <div class="grid grid-2">
-    <div class="sec">
-      <div class="sec-head"><span class="sec-title" style="font-size:14px">Multibagger Watchlist</span><a href="multibagger.html" class="sec-action">View All &rarr;</a></div>
-      <div id="watchlist-mini"><div class="loading">Loading…</div></div>
-    </div>
-    <div class="sec">
-      <div class="sec-head"><span class="sec-title" style="font-size:14px">Active Positions</span><a href="positions.html" class="sec-action">View All &rarr;</a></div>
-      <div id="positions-mini"><div class="loading">Loading…</div></div>
-    </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title" style="font-size:14px">Active Positions</span><a href="positions.html" class="sec-action">View All &rarr;</a></div>
+    <div id="positions-mini"><div class="loading">Loading…</div></div>
+  </div>
+
+  <!-- ML22 (2026-07-13): merged in from the former standalone Daily
+       WatchList screen — same GET /api/v1/watchlist/daily-backed sections
+       (5d/21d/63d horizon tables + MultiBagger candidates), now the single
+       home for both. Superseded the hub's own "21d/63d Horizon Watchlist"
+       and "Multibagger Watchlist" mini-tables above (those were a subset —
+       top-3 rows, fewer columns — of what these full tables already show;
+       dropped as duplicates rather than kept alongside per the merge
+       decision to collapse overlapping columns/sections into one). -->
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Daily WatchList</span><span class="sec-sub" id="watchlist-notes">Top buy signals per horizon, with realistic (quantile/ATR-derived) price targets — not a fixed %</span></div>
   </div>
   <div class="sec">
-    <div class="sec-head"><span class="sec-title" style="font-size:14px">21d / 63d Horizon Watchlist</span><a href="watchlist.html" class="sec-action">View All &rarr;</a></div>
-    <div id="horizon-mini"><div class="loading">Loading…</div></div>
+    <div class="sec-head"><span class="sec-title">5-Day Horizon</span></div>
+    <div id="watchlist-5d"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">21-Day Horizon</span></div>
+    <div id="watchlist-21d"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">63-Day Horizon</span></div>
+    <div id="watchlist-63d"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">MultiBagger Candidates</span><span class="sec-sub" id="mb-notes"></span><a href="multibagger.html" class="sec-action">View All &rarr;</a></div>
+    <div id="watchlist-mb"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Stocks with ADTV &lt; 20Cr</span><span class="sec-sub" id="mb-lowliq-notes"></span></div>
+    <div id="watchlist-mb-lowliq"><div class="loading">Loading…</div></div>
   </div>
 </div>
 <script src="../js/api.js"></script>
@@ -44,3 +66,5 @@
 <script src="js/hub.js"></script>
 </body>
 </html>
+</content>
+</invoke>

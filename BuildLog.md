@@ -13920,3 +13920,143 @@ Branch `fix/t7-chart-nan-candlestick-x-scale`, branched from `master`
 (post-merge of the prior three backlog-burn branches), 1 commit. Not
 pushed, no PR opened, no merge to master — local commit only, pending
 user decision.
+
+## 2026-07-13 — ML22/ML29/ML33(dev) batch
+
+Branch `feature/backlog-burn-ml22-ml29-ml33dev`, branched from
+`chore/backlog-decisions-and-a22-scope` (which had already recorded the
+user's design decisions for these three rows). Local commits only — no
+push, no PR, no merge to master.
+
+### ML22 — Merge Daily Insights and Daily WatchList
+Merged the two ML dashboard screens into one (`dashboard/static/ml/
+index.html`/`js/hub.js`): kept the hub's regime-strip/alerts/top-buys/
+positions sections, appended the full Daily WatchList tables (5d/21d/63d
+horizon + MultiBagger + low-liquidity, ported straight from the old
+`watchlist.js`) below. Per the user's "keep all non-duplicated columns"
+decision, dropped only the hub's own truncated "watchlist-mini" (MB
+top-3, fewer columns) and "horizon-mini" (21d/63d top-3, fewer columns)
+sections as duplicates of the same `/api/v1/watchlist/daily` data now
+shown in full — no unique columns were lost. `watchlist.html` now
+redirects to `index.html`; `js/shell.js`'s ML sub-tab nav collapsed from
+two entries to one ("Daily Insights & WatchList"). `node --check` clean
+on both touched JS files; no dashboard JS test harness exists in this
+repo beyond that.
+
+### ML29 — Sector accumulation detection
+New `features/sector_accumulation.py`: `compute_sector_accumulation()`
+joins `ohlcv_adjusted` (volume, delivery_pct) with `fundamentals`
+(shares_outstanding, PIT-gated via `pd.merge_asof` on
+`announcement_date`, never `quarter_end_date`) per sector membership
+(`config.universe.load_universe()`); sector's total outstanding shares =
+simple sum of each constituent's own shares_outstanding (user decision).
+`sector_accumulation_drilldown()` gives the per-stock breakdown for one
+(sector, date) cell. New `GET /api/v1/sector_accumulation/daily` +
+`/drilldown` endpoints (`datastore/api/routers/sector_accumulation.py`,
+registered in `datastore/api/main.py`) and a new "Sector Accumulation"
+table + click-to-drill-down section added to the existing Sector
+Rotation dashboard page (`ml/sector_rotation.html`/`js/sector_rotation.
+js`). 9/9 new tests pass (`tests/unit/test_sector_accumulation.py`),
+covering the simple-sum aggregation, PIT correctness (a fundamentals row
+announced after the as-of date must not be used), the no-guess-on-
+missing-shares-outstanding exclusion rule, drilldown, and both API
+endpoints.
+
+### ML33 (development only, user-authorized) — Gainer 21d/63d RSF survival head
+Touched only `systems/ml_signal_engine_gainer/` (verified no shared
+import path with production `systems/ml_signal_engine/`, `backtest/`, or
+`datastore/models/` registry files). Added a `first_touch_day` field to
+`training/labeling.py::compute_fixed_pct_labels` (day index the
++target_pct touch happened, NaN if never touched/censored, also cleared
+when a P&D downgrade zeroes the label) — 6/6 new tests pass (`tests/
+unit/test_gainer_labeling_survival.py`). New `models/signal/
+gainer_survival_head.py::GainerSurvivalHead` (small RandomSurvivalForest,
+median-impute + fit/predict-survival-curve, no checkpointing/subsampling
+needed given the far smaller dataset and healthier ~26-35% positive rate
+vs multibagger's ~0.3%-over-629K case) — 3/3 new tests pass (`tests/
+unit/test_gainer_survival_head.py`), including an end-to-end synthetic-
+data fit/predict test. New standalone entry point `inference/
+train_gainer_survival.py` (21d/63d only — 6d excluded per the backlog
+row's own feasibility note; reuses `train_gainer_signals.py`'s read-only
+OHLCV/benchmark/feature/PnD infra without modifying that file) verified
+live end-to-end against the real DB on small ticker samples:
+gainer_signal_21d (10 tickers, 400d lookback) → 2,467 rows, event_rate
+0.172, in-sample concordance 0.966, completed in ~1s; gainer_signal_63d
+(5 tickers, 500d lookback) → 1,342 rows, event_rate 0.092, concordance
+0.974, completed in ~1s. Does not save to any model registry and is not
+wired into any scheduler/cron/systemd job — scheduling is deferred to an
+explicit follow-up step per the user's own instruction.
+
+### Full test run (batched, this session's new/touched areas)
+`tests/unit/test_gainer_labeling_survival.py` (6/6),
+`tests/unit/test_gainer_survival_head.py` (3/3),
+`tests/unit/test_sector_accumulation.py` (9/9),
+`tests/unit/test_sector_rotation.py` (14/14) — 32/32 passed together.
+`datastore.api.main:app` import verified clean after adding the new
+router; `train_gainer_signals.py`'s own imports verified unaffected by
+the new sibling `train_gainer_survival.py` file.
+
+### Files changed
+`dashboard/static/ml/index.html`, `dashboard/static/ml/watchlist.html`,
+`dashboard/static/ml/js/hub.js` (removed `js/watchlist.js`, folded its
+logic in), `dashboard/static/js/shell.js` (ML22); `features/
+sector_accumulation.py`, `datastore/api/routers/sector_accumulation.py`,
+`datastore/api/main.py`, `dashboard/static/ml/sector_rotation.html`,
+`dashboard/static/ml/js/sector_rotation.js`, `tests/unit/
+test_sector_accumulation.py` (ML29); `systems/ml_signal_engine_gainer/
+training/labeling.py`, `systems/ml_signal_engine_gainer/models/signal/
+gainer_survival_head.py`, `systems/ml_signal_engine_gainer/inference/
+train_gainer_survival.py`, `tests/unit/test_gainer_labeling_survival.py`,
+`tests/unit/test_gainer_survival_head.py` (ML33); `FeatureBacklog.md`
+(ML22/ML29/ML33 status updates). Branch
+`feature/backlog-burn-ml22-ml29-ml33dev`, branched from
+`chore/backlog-decisions-and-a22-scope`. Not pushed, no PR opened, no
+merge to master — local commits only, per instructions.
+
+## fno_data Shadow-Table Bug Found + Fixed During A26 Retry (2026-07-13)
+
+### Task
+Retrying A26's force-run (compute_features cascade for 2026-07-03/06/07)
+surfaced real failures: 2026-07-03's `run_models` timed out, and both
+2026-07-06/07 failed `sanity_check` on 16 all-NaN F&O/options-derived
+columns (`pcr_oi`, `iv_call`/`iv_put`, `max_pain_level`, etc).
+
+### Root cause
+`fno_data` (per the A50 2026-07-10 migration) is meant to live entirely in
+a separate companion file (`alphalens_fno_data.duckdb`, attached as
+`fno_db`), so `datastore/staging/publish.py` can publish it via an atomic
+file-swap instead of rewriting 121M rows in place. Direct inspection
+(`information_schema.tables`) found a **second, stray `fno_data` table
+still living in the main `alphalens.duckdb` file's own `main` schema** —
+0 rows, correct schema, no code anywhere explicitly references it (a
+leftover from before the A50 split, never dropped). The connection's
+`search_path` is `'main,fno_db.main'` — `main` first — so every
+*unqualified* `fno_data` reference (which is all of them; that's the
+whole point of the A50 ATTACH+search_path design) silently resolved to
+this empty shadow table instead of the real, correctly-populated
+`fno_db.fno_data` (120,723,287 rows, 2015-01-01 to 2026-07-10). This
+explains the 16 NaN F&O columns exactly, and predates this session
+entirely (confirmed via `journalctl`-adjacent evidence: this has nothing
+to do with today's crash).
+
+### Fix
+Verified 0 rows twice (once immediately before the drop, inside the same
+write transaction) and confirmed no code references
+`alphalens.main.fno_data`/`alphalens.fno_data` anywhere in the repo, then
+(with explicit user sign-off, since Auto Mode's safety classifier
+correctly flagged an unprompted `DROP TABLE` against production as too
+destructive to run without it): `DROP TABLE alphalens.main.fno_data`.
+Verified post-drop: `information_schema.tables` now shows exactly one
+`fno_data` (in `fno_db`), and an unqualified `SELECT COUNT(*) FROM
+fno_data` correctly returns 120,723,287.
+
+### Follow-up
+Re-ran A26's force-run cascade after the fix (see next entry once it
+completes) to confirm the F&O-derived sanity_check failures are actually
+resolved, and to retry 2026-07-03's timed-out `run_models`.
+
+### Files changed
+None (this was a live data-layer fix, not a code change — the underlying
+`_attach_fno_db`/search_path design in `datastore/api/db.py` is correct;
+the bug was a stray leftover table from before that design existed, not a
+flaw in the design itself).
