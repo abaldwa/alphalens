@@ -50,6 +50,10 @@ class SectorRotationRow(BaseModel):
     rs_63d: Optional[float] = None
     sparkline: List[float] = []
     nifty500_sparkline: List[float] = []
+    # ML28 (2026-07-13): real aggregate market cap (INR cr) summed over the
+    # sector's constituents (PIT-safe close x shares_outstanding) — used to
+    # order the report; None if no constituent had a computable market cap.
+    sector_market_cap_cr: Optional[float] = None
     top_stocks: List[Dict[str, Any]]
 
 

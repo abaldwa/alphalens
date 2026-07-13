@@ -1686,6 +1686,78 @@ def _trigger_model_retrain(model_name: str) -> None:
         logger.error(f"_trigger_model_retrain: '{model_name}' failed to start: {exc}")
 
 
+def trigger_stacking_ensemble_retrain(
+    dry_run: bool = True, timeout_seconds: int = 3600 * 8, output_dir: Optional[str] = None,
+) -> int:
+    """
+    A40 (2026-07-13) — StackingEnsemble's own subprocess-isolation trigger,
+    mirroring `_trigger_model_retrain`'s `python -m <module>` / cwd=repo-root
+    / timeout pattern (ML21) rather than calling `scripts.train_stacking`'s
+    `train_stacking()` in-process: scoring all 5 M-13 base models (3 heavy
+    BacktestEngine OOF passes + 2 deep-model forward passes) in the same
+    process as the caller is the exact "everything in one process" shape
+    that silently OOM-killed the one real 2026-07-02 run (see A40's note in
+    scripts/train_stacking.py's module docstring) — an isolated OS process
+    lets the kernel reclaim all of that memory regardless of any lingering
+    Python references, and a SIGKILL here only takes down the training
+    subprocess, not the scheduler itself.
+
+    Deliberately **not** registered in `_MODEL_TRAINING_SCRIPT_MAP` (so it is
+    not yet picked up by the weekly overdue-retrain check) — per A40's
+    2026-07-10 decision, StackingEnsemble is not yet trusted to run
+    unattended (its own OOM history + A42's still-partial TFT/BiLSTM feature
+    audit). This function exists so the subprocess-isolation call path can
+    be wired and exercised (e.g. via `dry_run=True`, which passes
+    `scripts.train_stacking`'s own `--dry-run` flag and never runs the real
+    training job) ahead of that trust decision, without an operator having
+    to hand-invoke `python -m scripts.train_stacking` to prove it out.
+
+    Parameters
+    ----------
+    dry_run : bool
+        If True (default — the safe choice for exercising this path),
+        passes `--dry-run` through to `scripts/train_stacking.py`, which
+        only verifies argument parsing/module resolution/status-marker
+        writes and returns without training or touching any DB.
+    timeout_seconds : int
+        Hard subprocess timeout (default matches `_trigger_model_retrain`'s
+        8-hour cap).
+    output_dir : str, optional
+        Passed through as `--output-dir` (default None leaves
+        `scripts/train_stacking.py`'s own default, `datastore/models`).
+        Tests pass a `tmp_path` here so even the dry-run's STARTED/
+        COMPLETED status-marker JSON never lands under the real repo's
+        `datastore/models/`.
+
+    Returns
+    -------
+    int
+        The subprocess's return code (0 on success).
+    """
+    import subprocess
+    import sys
+
+    module = "scripts.train_stacking"
+    extra_args = ["--dry-run"] if dry_run else []
+    if output_dir is not None:
+        extra_args += ["--output-dir", output_dir]
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", module, *extra_args],
+            cwd=str(_REPO_ROOT),
+            capture_output=False,
+            timeout=timeout_seconds,
+        )
+        if result.returncode != 0:
+            logger.error(f"trigger_stacking_ensemble_retrain: exited with code {result.returncode}")
+        else:
+            logger.info("trigger_stacking_ensemble_retrain: subprocess completed successfully")
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        logger.error(f"trigger_stacking_ensemble_retrain: exceeded {timeout_seconds}s timeout")
+        return -1
+
+
 def schedule_model_training(
     scheduler: BackgroundScheduler,
     schedule_time: Optional[str] = None,

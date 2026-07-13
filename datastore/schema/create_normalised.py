@@ -709,6 +709,40 @@ _CREATE_BRSR_FILINGS = """
     )
 """
 
+
+# ML30 (2026-07-13): MyHoldings moves off browser localStorage
+# (dashboard/static/ml/holdings.html's prior client-only storage) into a
+# real DuckDB table — CRUD via datastore/api/routers/holdings.py.
+# `id` is a DuckDB SEQUENCE-backed surrogate key (not (ticker,
+# purchase_date), since a real investor can legitimately buy the same
+# ticker on the same date in two separate lots/orders — no natural unique
+# key exists here, unlike most of this schema's other tables). sale_date/
+# sell_price/sell_rationale are NULL for a still-open position; NULL is
+# the correct "not yet sold" state, never a fabricated 0/empty string.
+# Per CLAUDE.md's DuckDB-migration convention (this project has no formal
+# migration system), this DDL only runs via `CREATE TABLE IF NOT EXISTS`
+# — safe/idempotent whenever it's eventually applied to the real
+# datastore/normalised/alphalens.duckdb file (deliberately NOT run against
+# production this session — see ML30's FeatureBacklog.md note: ML31/A26
+# jobs may hold the production DB's write lock).
+_CREATE_MY_HOLDINGS = """
+    CREATE SEQUENCE IF NOT EXISTS my_holdings_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS my_holdings (
+        id BIGINT PRIMARY KEY DEFAULT nextval('my_holdings_id_seq'),
+        ticker VARCHAR NOT NULL,
+        purchase_date DATE NOT NULL,
+        qty DOUBLE NOT NULL,
+        purchase_price DOUBLE,
+        sale_date DATE,
+        sell_price DOUBLE,
+        purchase_rationale VARCHAR,
+        sell_rationale VARCHAR,
+        journal_entry VARCHAR,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
 _ALL_TABLES = {
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
     "index_ohlcv": _CREATE_INDEX_OHLCV,
@@ -737,6 +771,7 @@ _ALL_TABLES = {
     "data_integrity_findings": _CREATE_DATA_INTEGRITY_FINDINGS,
     "job_run_log": _CREATE_JOB_RUN_LOG,
     "missed_job_findings": _CREATE_MISSED_JOB_FINDINGS,
+    "my_holdings": _CREATE_MY_HOLDINGS,
 }
 
 # [AS BUILT, P2.1] This project has no formal migration system — `CREATE

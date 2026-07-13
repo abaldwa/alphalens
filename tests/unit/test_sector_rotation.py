@@ -152,6 +152,64 @@ class TestComputeIndexRelativeStrength:
         assert spark[0] == pytest.approx(0.0)
         assert spark[-1] > spark[0]
 
+    def test_ml28_ordered_by_real_sector_market_cap(self, normalised_db, monkeypatch):
+        """ML28: rows are ordered by real per-sector market cap (sum of
+        constituents' close x shares_outstanding, PIT-safe), not by
+        relative strength — the smaller-RS sector with the bigger real
+        market cap should sort first."""
+        days = _trading_days(date(2026, 1, 1), 25)
+        nifty500_closes = {d: 1000.0 for d in days}
+        it_closes = {d: 1000.0 + i * 4.0 for i, d in enumerate(days)}  # IT: strong RS
+        fmcg_closes = {d: 1000.0 - i * 1.0 for i, d in enumerate(days)}  # FMCG: weak RS
+        _seed_index_ohlcv(normalised_db, "Nifty 500", nifty500_closes)
+        _seed_index_ohlcv(normalised_db, "Nifty IT", it_closes)
+        _seed_index_ohlcv(normalised_db, "Nifty FMCG", fmcg_closes)
+
+        universe = pd.DataFrame(
+            {
+                "ticker": ["ITCO", "FMCGCO"],
+                "sector": ["Information Technology", "Fast Moving Consumer Goods"],
+            }
+        )
+        monkeypatch.setattr(sector_rotation_mod, "load_universe", lambda: universe)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=False) as conn:
+            last_day = days[-1]
+            # FMCGCO: small price, huge share count => much bigger real market cap.
+            conn.execute(
+                "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume) VALUES (?, ?, 100, 100, 100, 100, 1000)",
+                [last_day, "FMCGCO"],
+            )
+            conn.execute(
+                "INSERT INTO fundamentals (ticker, fiscal_year, quarter, quarter_end_date, announcement_date, shares_outstanding) "
+                "VALUES ('FMCGCO', 2026, 1, ?, ?, 5000000000)",
+                [last_day, last_day],
+            )
+            # ITCO: small share count => small real market cap despite strong RS.
+            conn.execute(
+                "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume) VALUES (?, ?, 100, 100, 100, 100, 1000)",
+                [last_day, "ITCO"],
+            )
+            conn.execute(
+                "INSERT INTO fundamentals (ticker, fiscal_year, quarter, quarter_end_date, announcement_date, shares_outstanding) "
+                "VALUES ('ITCO', 2026, 1, ?, ?, 1000000)",
+                [last_day, last_day],
+            )
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            result = sector_rotation_mod.compute_index_relative_strength(conn)
+
+        it_row = result[result["sector"] == "Information Technology"].iloc[0]
+        fmcg_row = result[result["sector"] == "Fast Moving Consumer Goods"].iloc[0]
+        # Real market caps sanity check.
+        assert fmcg_row["sector_market_cap_cr"] > it_row["sector_market_cap_cr"]
+        # RS-based rank still favours IT (unchanged from the prior test)...
+        assert it_row["rank"] < fmcg_row["rank"]
+        # ...but the returned row *order* is now market-cap descending, so
+        # FMCG (bigger market cap, weaker RS) appears before IT.
+        sectors_in_order = result["sector"].tolist()
+        assert sectors_in_order.index("Fast Moving Consumer Goods") < sectors_in_order.index("Information Technology")
+
     def test_insufficient_history_excludes_sector_no_guess(self, normalised_db):
         days = _trading_days(date(2026, 1, 1), 25)
         nifty500_closes = {d: 1000.0 for d in days}

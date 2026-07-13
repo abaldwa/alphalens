@@ -42,6 +42,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from backtest.engine import BacktestEngine
+from backtest.report_utils import write_per_horizon_reports
 from backtest.run_phase1_backtest import (
     _fetch_historical_tickers,
     _fetch_real_benchmark,
@@ -174,6 +175,16 @@ def run_phase2_backtest(
     with open(report_path, "w") as fh:
         json.dump(report, fh, indent=2, default=str)
     print(f"\nReport written to {report_path}")
+
+    # ML17(b) — each horizon variant also gets its own standalone report
+    # (fold-level results + real-benchmark comparison, ML17(a)) alongside
+    # the combined comparison report above.
+    per_horizon_paths = write_per_horizon_reports(
+        {"signal_5d": phase1, "signal_63d_watchlist": phase2},
+        REPORTS_DIR, run_date.strftime("%Y%m%d"), "phase2",
+    )
+    for name, path in per_horizon_paths.items():
+        print(f"  {name}'s own report written to {path}")
 
     return report
 

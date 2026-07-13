@@ -14060,3 +14060,155 @@ None (this was a live data-layer fix, not a code change — the underlying
 `_attach_fno_db`/search_path design in `datastore/api/db.py` is correct;
 the bug was a stray leftover table from before that design existed, not a
 flaw in the design itself).
+
+## 2026-07-13 — Backlog burn: A24/A40/A64-followup/A65/A67/A72/ML17b/ML26/ML28/ML30
+
+Branch `feature/backlog-burn-a24-a40-a64followup-a65-a67-a72-ml17b-ml26-ml28-ml30`
+off master (061facc). All work is read-only queries, feature computation,
+dashboard/frontend, or test-only — no writes to or connections against
+the production `datastore/normalised/alphalens.duckdb` file (ML31/A26
+retrain jobs were flagged as possibly in-flight against it this session).
+Committed locally only — no push, no PR, per instructions.
+
+### A24 — responsive layout, remaining 4 apps ✅
+New shared `dashboard/static/css/responsive.css` (same `.card:has(> table)`
+horizontal-scroll / `.kv-row` stacking / table font-shrink / app-bar
+collapse rules as AlphaLens.Ops' own copy), linked after `shell.css` in
+every HTML file under `technical/`, `fundamental/`, `forensic/`,
+`valuation/`, plus `ml/backtest.html`.
+
+### A40 — StackingEnsemble subprocess isolation ✅ (wired, not enabled unattended)
+`scripts/train_stacking.py` gained `--dry-run` (verifies arg parsing/
+STARTED-COMPLETED status markers without running the real multi-hour
+training job). New `ingestion/scheduler/pipeline_scheduler.
+trigger_stacking_ensemble_retrain()` invokes it as an isolated
+`python -m` subprocess, mirroring `_trigger_model_retrain`'s ML21
+pattern — deliberately NOT added to `_MODEL_TRAINING_SCRIPT_MAP` (so it's
+still not auto-triggered by the weekly overdue-retrain check; A40's
+"not trusted unattended yet" decision stands). Verified with
+`tests/unit/test_stacking_ensemble_subprocess_isolation.py` (2 tests,
+real `python -m scripts.train_stacking --dry-run` subprocess, output-dir
+pointed at tmp_path so nothing lands under the real repo's
+`datastore/models/`).
+
+### A64-followup — re-verified, already resolved ✅
+`ml_multibagger`/`ml_signals` schema/doc drift (the follow-up A64 itself
+flagged) turned out to already be fixed by an intervening session —
+`create_signals.py`'s DDL, `12_platform_architecture.md`, and
+`test_schema.py::TestCreateSignalsSchema`'s expected-column sets match
+exactly (confirmed via a direct column-set diff). No code change; status
+updated to ✅.
+
+### A65 — features/hybrid_compute.py coverage ✅ (0% → 35%)
+New `tests/unit/test_hybrid_compute.py` (8 tests, no DB/network/mocks) —
+`_empty_staging`, `build_benchmark_wide`, and `assemble_date`'s pure
+cross-ticker steps (sector z-scoring of RATIO_FEATURES, mf_crowdedness_rank,
+calendar-feature merge), exercised with small real-shaped injected staging
+DataFrames. `compute_per_ticker`'s full per-ticker path (needs a real
+BackfillDataCache/multi-source fixture) remains untested — out of scope
+for this pass.
+
+### A67 — sparkline extended to Signal Deep Dive ✅
+`ml/signal.js`'s Raw Signal Log gained a "Trend" column: since-
+recommendation price sparkline per historical call, reusing the OHLCV
+closes already fetched for the recommended-price lookup (no extra API
+call). Two real consumers of `sparklineSvg()` now (Sector Rotation +
+this) — convention proven framework-wide.
+
+### A72 — Events + chart overlay ✅ (3 of 4 event types)
+New `GET /api/v1/events/{ticker}` (`datastore/api/routers/events.py`)
+merges `corporate_action` (reuse of `corporate_actions`), `bulk_deal`
+(reuse of `bulk_deal_positions`), and `recommendation_trigger` (new
+query over existing `ml_signals` — detects a ticker crossing INTO a
+signal_5d "buy" call). `chart.html`/`chart.js` gained a real marker
+overlay: a second Chart.js dataset plotting a colored triangle above
+each event's candle, tooltip shows the real description — no vendored
+annotation plugin exists, so this is a plain dataset, not a plugin
+overlay. `forensic-flag date` (4th type) NOT implemented — `ml_forensic`
+only records composite scores as of each quarterly scoring date, not a
+discrete "flag raised" event; defining that needs its own pass, logged
+as a follow-up. Tests: `tests/unit/test_events_router.py` (4 tests, real
+seeded DuckDB via TestClient).
+
+### ML17(b) — per-horizon backtest reporting ✅
+New `backtest/report_utils.py::write_per_horizon_reports()` (pure
+function over already-computed `BacktestResults.to_dict()` dicts — no
+engine/training changes) writes one standalone JSON report per horizon
+variant alongside each script's existing combined comparison report;
+wired into `run_phase2_backtest.py` and `run_phase3_backtest.py`. Each
+horizon's own fold-level results + real-benchmark comparison (ML17a) now
+stand independently. Not run as a real backtest this session (multi-hour,
+DB-read-heavy) — verified via `tests/unit/test_backtest_report_utils.py`
+(3 tests, injected dicts) plus a real module-import smoke check of both
+scripts.
+
+### ML26 — buy/sell-pairing aggregation ✅ (pairing logic; broader layout redesign not done)
+New `pairBuySellHistory()` (`ml/signal.js`) collapses a persisted N-day
+Buy signal into one paired Buy-date/Buy-price/Sell-date/Sell-price/CMP/
+rationale row. Edge cases: unmatched Buy shows CMP instead of Sell-date/
+price; Buy→Sell→Buy re-entry produces two separate rows; extra Sells
+after a position already closed are ignored; "hold" doesn't change state.
+Rendered as a new paired "Recommendation History & Sell Rationale"
+section above the pre-existing raw per-call table (relabeled "Raw Signal
+Log"). Verified via a real Node invocation of the extracted pairing
+function against a constructed sequence (no JS test runner exists in
+this repo) — 3-day persistence collapsed correctly, first Sell closes,
+extra Sell ignored, re-entry gets its own open row. The rest of ML26's
+scope (Forensic/MultiBagger/52wk-hi-lo reordering, per-horizon meta-label
+panel, raw scores moved to bottom) not attempted this pass.
+
+### ML28 — "ordered by market cap" ✅
+New `_sector_market_cap_cr()` (`features/sector_rotation.py`) — real
+per-sector market cap (sum of constituents' own market cap: latest real
+`ohlcv_adjusted` close × most recent real `fundamentals.shares_outstanding`,
+PIT-safe asof-join, same pattern as `sector_accumulation.py`). Report row
+order is now market-cap descending (sectors with no computable market cap
+sort last); the pre-existing RS-based `rank` column is unchanged and now
+independent of row order (a real test confirms a smaller-RS/bigger-cap
+sector sorts before a bigger-RS/smaller-cap one). New sortable "Market
+Cap (₹ cr)" column in `sector_rotation.js`, now the default sort.
+15/15 tests pass in `tests/unit/test_sector_rotation.py` (1 new).
+
+### ML30 — MyHoldings DB-backed table ✅ (schema/API/frontend); production migration still pending
+New `my_holdings` table (`create_normalised.py` — SEQUENCE-backed `id`
+surrogate key, since (ticker, purchase_date) isn't unique). New
+`datastore/api/routers/holdings.py`: full CRUD + `POST
+/api/v1/holdings/upload-csv` (CSV as raw request body, not multipart —
+this project doesn't otherwise depend on `python-multipart`). `ml/
+holdings.html`/`js/holdings.js` swapped from localStorage to this API.
+Tests: `tests/unit/test_holdings_router.py` (10 tests, real seeded
+DuckDB via TestClient). Deliberately NOT run against the real production
+DB this session (ML31/A26 may hold its write lock) — the router's lazy
+`CREATE TABLE IF NOT EXISTS` is safe/idempotent whenever it first runs
+against production; follow-up is just to confirm the table appears after
+those jobs finish, no manual migration needed.
+
+### Test results
+`tests/unit/test_sector_rotation.py` (15), `test_schema.py` (18),
+`test_scheduler.py` (38), `test_stacking_ensemble_subprocess_isolation.py`
+(2), `test_backtest_report_utils.py` (3), `test_hybrid_compute.py` (8),
+`test_holdings_router.py` (10), `test_events_router.py` (4) — **98/98
+passed**. Full `tests/quality/` gate battery (no-stub/synthetic-data,
+DuckDB connection discipline, etc.) — **5/5 passed**. `datastore.api.
+main.app` imports cleanly with all new routers registered (33 routes).
+
+### Files changed
+`dashboard/static/css/responsive.css` (new, shared), 24 app HTML files
+(A24 `<link>` addition), `scripts/train_stacking.py`, `ingestion/
+scheduler/pipeline_scheduler.py`, `features/sector_rotation.py`,
+`datastore/api/routers/sector_rotation.py`, `dashboard/static/ml/js/
+sector_rotation.js`, `dashboard/static/ml/js/signal.js`, `dashboard/
+static/ml/signal.html`, `backtest/report_utils.py` (new), `backtest/
+run_phase2_backtest.py`, `backtest/run_phase3_backtest.py`,
+`datastore/schema/create_normalised.py`, `datastore/api/routers/
+holdings.py` (new), `datastore/api/routers/events.py` (new),
+`datastore/api/main.py`, `dashboard/static/ml/holdings.html`,
+`dashboard/static/ml/js/holdings.js`, `dashboard/static/technical/js/
+chart.js`, plus the 8 new test files listed above.
+
+### Skipped / not attempted
+None outright skipped this session — all 10 named items got at least a
+real, tested partial-or-full implementation (see per-item notes above
+for exactly what's still open: A40's unattended scheduling, A72's
+forensic-flag event type, ML26's broader layout redesign, ML30's
+production-DB migration).

@@ -229,6 +229,94 @@ function renderSellRationale(container, latestRow) {
   container.appendChild(box);
 }
 
+// ML26 — collapse a Buy signal that persists across N consecutive days
+// into one paired Buy-date/Sell-date/Buy-price/Sell-price/CMP/rationale
+// row, instead of showing every individual daily call. `rows` must be
+// sorted ASCENDING by date (oldest first) for the persistence-walk below
+// to work; the caller (loadHistory) fetches them descending from the API
+// so callers of this function should reverse first.
+//
+// Edge cases (deliberately conservative, no guessed pairing):
+//   - An unmatched Buy (no Sell call yet in the fetched window) reports
+//     sellDate=null/sellPrice=null and the caller shows CMP instead.
+//   - A Buy -> Sell -> Buy sequence (re-entry) produces two separate
+//     paired rows, never merged into one.
+//   - Consecutive Sell calls after a Buy only close the position once
+//     (the first Sell ends it); further Sells with no open Buy are
+//     ignored (nothing to pair them with) rather than fabricating one.
+//   - "hold" calls neither open nor close a position — they're ignored
+//     for pairing purposes (the position, if any, just continues).
+function pairBuySellHistory(rowsAscending) {
+  const pairs = [];
+  let open = null; // { buyDate, buyRow }
+  for (const r of rowsAscending) {
+    const dir = r.signal_direction;
+    if (dir === "buy") {
+      if (!open) {
+        open = { buyDate: r.date.slice(0, 10), buyRow: r };
+      }
+      // else: Buy persists across another day — same open position, no
+      // new row (this IS the "collapsing an N-day-persisted Buy" case).
+    } else if (dir === "sell") {
+      if (open) {
+        pairs.push({
+          buyDate: open.buyDate,
+          buyRow: open.buyRow,
+          sellDate: r.date.slice(0, 10),
+          sellRow: r,
+        });
+        open = null;
+      }
+      // else: a Sell with nothing open — no matching Buy in this window,
+      // nothing to pair.
+    }
+    // "hold" (or any other value): no state change.
+  }
+  if (open) {
+    // Unmatched Buy — still open as of the latest fetched call.
+    pairs.push({ buyDate: open.buyDate, buyRow: open.buyRow, sellDate: null, sellRow: null });
+  }
+  return pairs;
+}
+
+function renderPairedHistory(rows, closeByDate, cmp, ticker) {
+  const c = document.getElementById("paired-history-table");
+  const ascending = rows.slice().reverse(); // API returns newest-first
+  const pairs = pairBuySellHistory(ascending);
+  if (!pairs.length) {
+    c.innerHTML = `<div class="empty">No buy/sell-paired calls for ${ticker} in the last 10 signal_5d calls</div>`;
+    return;
+  }
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Buy Date"]), el("th", {}, ["Buy Price"]),
+      el("th", {}, ["Sell Date"]), el("th", {}, ["Sell Price"]),
+      el("th", {}, ["CMP"]), el("th", {}, ["Return"]), el("th", {}, ["Rationale"]),
+    ])]),
+    el("tbody", {}, pairs.slice().reverse().map((p) => {
+      const buyPrice = closeByDate[p.buyDate] ?? null;
+      const sellPrice = p.sellDate ? (closeByDate[p.sellDate] ?? null) : null;
+      const isOpen = p.sellDate === null;
+      const refPrice = isOpen ? cmp : sellPrice;
+      const ret = (buyPrice && refPrice) ? (refPrice / buyPrice - 1) : null;
+      const rationale = p.sellRow && p.sellRow.exit_type
+        ? (EXIT_TYPE_TEXT[p.sellRow.exit_type] || p.sellRow.exit_type)
+        : (isOpen ? "Position still open — no Sell call yet" : "—");
+      return el("tr", {}, [
+        el("td", { class: "mono" }, [p.buyDate]),
+        el("td", { class: "mono" }, [buyPrice != null ? fmtMoney(buyPrice) : "—"]),
+        el("td", { class: "mono" }, [p.sellDate || "—"]),
+        el("td", { class: "mono" }, [isOpen ? "—" : (sellPrice != null ? fmtMoney(sellPrice) : "—")]),
+        el("td", { class: "mono" }, [isOpen && cmp != null ? fmtMoney(cmp) : "—"]),
+        el("td", { class: "mono " + pnlClass(ret) }, [ret != null ? fmtPct(ret) : "—"]),
+        el("td", { style: "font-size:12px;color:var(--tx2)" }, [rationale]),
+      ]);
+    })),
+  ]);
+  c.innerHTML = "";
+  c.appendChild(el("div", { class: "card" }, [table]));
+}
+
 function loadHistory() {
   const ticker = document.getElementById("ticker-input").value.trim().toUpperCase();
   if (!ticker) return;
@@ -252,20 +340,35 @@ function loadHistory() {
       .catch(() => ({ data: [] }))
       .then((ohlcvResp) => {
         const closeByDate = {};
-        (ohlcvResp.data || []).forEach((r) => {
+        const sortedOhlcv = (ohlcvResp.data || [])
+          .slice()
+          .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+        sortedOhlcv.forEach((r) => {
           closeByDate[String(r.date).slice(0, 10)] = r.close;
         });
+
+        // A67 — since-recommendation price trend sparkline, reusing the
+        // same closes already fetched for the recommended-price lookup;
+        // no extra API call needed.
+        function trendSparkline(recDate) {
+          const series = sortedOhlcv
+            .filter((r) => String(r.date).slice(0, 10) >= recDate)
+            .map((r) => r.close);
+          return sparklineSvg(series, { strokeAuto: true });
+        }
 
         const table = el("table", {}, [
           el("thead", {}, [el("tr", {}, [
             el("th", {}, ["Recommended Date"]), el("th", {}, ["Recommended Price"]),
             el("th", {}, ["Expected Return (q50)"]), el("th", {}, ["CMP"]), el("th", {}, ["Current Return"]),
-            el("th", {}, ["Direction"]),
+            el("th", {}, ["Direction"]), el("th", {}, ["Trend"]),
           ])]),
           el("tbody", {}, rows.map((r) => {
             const recDate = r.date.slice(0, 10);
             const recPrice = closeByDate[recDate] ?? null;
             const currentReturn = (recPrice && cmp) ? (cmp / recPrice - 1) : null;
+            const trendTd = el("td", {}, []);
+            trendTd.innerHTML = trendSparkline(recDate);
             return el("tr", {}, [
               el("td", { class: "mono" }, [recDate]),
               el("td", { class: "mono" }, [recPrice != null ? fmtMoney(recPrice) : "—"]),
@@ -273,13 +376,18 @@ function loadHistory() {
               el("td", { class: "mono" }, [cmp != null ? fmtMoney(cmp) : "—"]),
               el("td", { class: "mono " + pnlClass(currentReturn) }, [currentReturn != null ? fmtPct(currentReturn) : "—"]),
               el("td", {}, [el("span", { class: "badge " + (r.signal_direction === "sell" ? "b-red" : r.signal_direction === "buy" ? "b-green" : "b-blue") }, [r.signal_direction || "—"])]),
+              trendTd,
             ]);
           })),
         ]);
         c.appendChild(el("div", { class: "card" }, [table]));
         renderSellRationale(c, rows[0]);
+        renderPairedHistory(rows, closeByDate, cmp, ticker);
       });
-  }).catch((e) => showError("history-table", e));
+  }).catch((e) => {
+    showError("history-table", e);
+    showError("paired-history-table", e);
+  });
 }
 
 document.getElementById("load-btn").addEventListener("click", () => {

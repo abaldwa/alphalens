@@ -84,6 +84,78 @@ def _sparkline_series(closes: pd.Series, window_days: int = SPARKLINE_WINDOW_DAY
     return [float(c / base - 1) for c in tail.tolist()]
 
 
+def _sector_market_cap_cr(
+    normalised_conn: Any, universe: pd.DataFrame, as_of_date: Optional[str]
+) -> Dict[str, float]:
+    """
+    ML28 — total real market cap (INR crore) per sector, summed over each
+    constituent's own market cap: latest real ohlcv_adjusted close
+    (as of `as_of_date`, or overall latest if None) times the most recent
+    real fundamentals.shares_outstanding as of that same close date
+    (PIT asof-join on announcement_date, never quarter_end_date —
+    SPEC-PIPE-003, same pattern as features/sector_accumulation.py's
+    _latest_shares_outstanding_asof). A stock only contributes if both a
+    real close and a real shares_outstanding figure exist — no guessed
+    fallback (CLAUDE.md Absolute Rule 6). Sectors with zero contributing
+    constituents are simply absent from the returned dict.
+    """
+    tickers = universe["ticker"].tolist() if not universe.empty else []
+    if not tickers:
+        return {}
+
+    placeholders = ",".join("?" for _ in tickers)
+    close_where = f"ticker IN ({placeholders})"
+    close_params: List[Any] = list(tickers)
+    if as_of_date is not None:
+        close_where += " AND date <= ?"
+        close_params.append(as_of_date)
+    closes = normalised_conn.execute(
+        f"""
+        SELECT ticker, date, close FROM ohlcv_adjusted
+        WHERE {close_where}
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) = 1
+        """,
+        close_params,
+    ).fetch_df()
+    if closes.empty:
+        return {}
+    closes["date"] = pd.to_datetime(closes["date"])
+
+    fundamentals = normalised_conn.execute(
+        f"""
+        SELECT ticker, announcement_date, shares_outstanding
+        FROM fundamentals
+        WHERE ticker IN ({placeholders}) AND shares_outstanding IS NOT NULL
+        ORDER BY ticker, announcement_date
+        """,
+        list(tickers),
+    ).fetch_df()
+    if fundamentals.empty:
+        return {}
+    fundamentals["announcement_date"] = pd.to_datetime(fundamentals["announcement_date"])
+
+    closes = closes.sort_values(["ticker", "date"])
+    fundamentals = fundamentals.sort_values(["ticker", "announcement_date"])
+    merged = pd.merge_asof(
+        closes,
+        fundamentals.rename(columns={"announcement_date": "date"}),
+        on="date",
+        by="ticker",
+        direction="backward",
+    )
+    merged = merged.dropna(subset=["close", "shares_outstanding"])
+    if merged.empty:
+        return {}
+    merged["market_cap_cr"] = merged["close"] * merged["shares_outstanding"] / 1e7
+
+    ticker_to_sector = dict(zip(universe["ticker"], universe["sector"]))
+    merged["sector"] = merged["ticker"].map(ticker_to_sector)
+    merged = merged.dropna(subset=["sector"])
+    if merged.empty:
+        return {}
+    return merged.groupby("sector")["market_cap_cr"].sum().to_dict()
+
+
 def compute_index_relative_strength(
     normalised_conn: Any, as_of_date: Optional[str] = None
 ) -> pd.DataFrame:
@@ -179,10 +251,28 @@ def compute_index_relative_strength(
     ]
     result = pd.DataFrame(records, columns=columns)
     if result.empty:
-        return result.assign(rank=pd.Series(dtype="int"))
+        return result.assign(rank=pd.Series(dtype="int"), sector_market_cap_cr=pd.Series(dtype="float"))
 
+    # `rank` stays relative-strength-based (unchanged, existing consumers
+    # rely on it) — computed before the ML28 market-cap reordering below so
+    # it still reflects "how in-favor is this sector" regardless of size.
     result = result.sort_values("relative_strength", ascending=False).reset_index(drop=True)
     result["rank"] = result.index + 1
+
+    # ML28 — "ordered by market cap": each sector's real aggregate market
+    # cap (sum of its constituents' own market cap, PIT-safe — see
+    # _sector_market_cap_cr). Sectors with no computable market cap (no
+    # real ohlcv_adjusted/fundamentals overlap for any constituent) sort
+    # last rather than being guessed at.
+    try:
+        universe = load_universe()
+    except Exception:
+        universe = pd.DataFrame(columns=["ticker", "sector"])
+    market_caps = _sector_market_cap_cr(normalised_conn, universe, as_of_date) if not universe.empty else {}
+    result["sector_market_cap_cr"] = result["sector"].map(market_caps)
+    result = result.sort_values(
+        "sector_market_cap_cr", ascending=False, na_position="last"
+    ).reset_index(drop=True)
     return result
 
 
@@ -285,6 +375,7 @@ def compute_sector_rotation_report(
                 "rs_63d": row.get("rs_63d"),
                 "sparkline": list(row["sparkline"]) if isinstance(row.get("sparkline"), (list, tuple)) else [],
                 "nifty500_sparkline": list(row["nifty500_sparkline"]) if isinstance(row.get("nifty500_sparkline"), (list, tuple)) else [],
+                "sector_market_cap_cr": row.get("sector_market_cap_cr") if pd.notna(row.get("sector_market_cap_cr")) else None,
                 "top_stocks": top_stocks_df.to_dict(orient="records"),
             }
         )

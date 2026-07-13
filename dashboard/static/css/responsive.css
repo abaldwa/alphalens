@@ -1,0 +1,63 @@
+/* dashboard/static/css/responsive.css — A24 (framework-wide follow-up).
+   AlphaLens.Ops already has its own page-scoped copy at
+   dashboard/static/ops/css/responsive.css (added first, before this
+   pattern was proven out). This file applies the same technique to the
+   remaining apps (Trading Terminal/Technical, Fundamental, Forensic,
+   Backtest/Valuation): every .card wrapping a <table> gets its own
+   horizontal-scroll region instead of overflowing the page, .kv-row
+   stacks label-over-value under 900px, table font/padding shrink under
+   900px/480px, and the app-bar's brand text/build-info clock hide under
+   480px to leave room for the tab strip.
+
+   Loaded after shell.css so it can add these overrides without editing
+   the shared stylesheet every app depends on. */
+
+.card:has(> table) {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 900px) {
+  .page {
+    padding: 14px 12px;
+  }
+
+  .sec-head {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  table {
+    font-size: 12px;
+  }
+
+  table th,
+  table td {
+    padding: 6px 8px;
+    white-space: nowrap;
+  }
+
+  .kv-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .kv-key {
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-logo span:not(.dot) {
+    display: none;
+  }
+
+  .app-meta {
+    display: none;
+  }
+
+  table {
+    font-size: 11px;
+  }
+}

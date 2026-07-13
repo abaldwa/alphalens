@@ -452,10 +452,22 @@ def main() -> None:
     parser.add_argument("--full-universe", action="store_true", help="Override --max-tickers, use the full universe.")
     parser.add_argument("--min-history", type=int, default=252)
     parser.add_argument("--output-dir", default="datastore/models")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="A40 (2026-07-13): verify the subprocess-isolation call path (arg parsing, module resolution, "
+             "STARTED/COMPLETED status markers) without running the real (multi-hour, OOM-risk) training job. "
+             "Used to prove out pipeline_scheduler.py's trigger_stacking_ensemble_retrain() wiring without "
+             "actually training or touching any production DuckDB file.",
+    )
     args = parser.parse_args()
 
     max_tickers = None if args.full_universe else args.max_tickers
-    _write_status_marker(args.output_dir, "STARTED", f"max_tickers={max_tickers}")
+    _write_status_marker(args.output_dir, "STARTED", f"max_tickers={max_tickers} dry_run={args.dry_run}")
+    if args.dry_run:
+        logger.info("--dry-run: skipping real train_stacking() call — only verifying invocation plumbing.")
+        _write_status_marker(args.output_dir, "COMPLETED", "dry-run: no training performed")
+        print("Dry run OK — arguments parsed and status markers written, no training executed.")
+        return
     try:
         train_stacking(
             from_date=args.from_date, n_folds=args.n_folds, optuna_trials=args.trials, seed=args.seed,

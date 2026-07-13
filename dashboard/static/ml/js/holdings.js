@@ -1,63 +1,42 @@
-// dashboard/static/ml/js/holdings.js — #24 Upload-current-portfolio page
-// Storage note: uploaded (ticker, quantity) rows are kept ONLY in this
-// browser's localStorage under HOLDINGS_KEY below — no server table, no
-// backend write. This is a deliberate read-only "monitor my real holdings"
-// layer over the existing signals endpoints; explicitly excluded from any
-// model training/backtest data since nothing here is ever persisted server-side.
+// dashboard/static/ml/js/holdings.js — #24 My Holdings page.
+// ML30 (2026-07-13): storage moved off browser localStorage into a real
+// DB-backed table (my_holdings) via GET/POST/PUT/DELETE
+// /api/v1/holdings and POST /api/v1/holdings/upload-csv
+// (datastore/api/routers/holdings.py) — this is still a read-only
+// "monitor my real holdings against daily signals" layer; nothing here
+// ever feeds model training or backtest data (#24).
 renderAppShell("ml", "holdings");
-
-const HOLDINGS_KEY = "alphalens_my_holdings_v1";
-
-function loadStoredHoldings() {
-  try {
-    return JSON.parse(localStorage.getItem(HOLDINGS_KEY) || "[]");
-  } catch (e) {
-    return [];
-  }
-}
-
-function saveStoredHoldings(rows) {
-  localStorage.setItem(HOLDINGS_KEY, JSON.stringify(rows));
-}
-
-function parseCsv(text) {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (!lines.length) return [];
-  const header = lines[0].toLowerCase().split(",").map((h) => h.trim());
-  const tickerIdx = header.indexOf("ticker");
-  const qtyIdx = header.indexOf("quantity");
-  const startIdx = tickerIdx === -1 ? 0 : 1;
-  const rows = [];
-  for (let i = startIdx; i < lines.length; i++) {
-    const cols = lines[i].split(",");
-    const ticker = (tickerIdx === -1 ? cols[0] : cols[tickerIdx]).trim().toUpperCase();
-    const qty = Number(tickerIdx === -1 ? cols[1] : cols[qtyIdx]);
-    if (ticker) rows.push({ ticker, quantity: Number.isFinite(qty) ? qty : null });
-  }
-  return rows;
-}
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function fmtHoldingDate(d) {
+  return d || "—";
+}
+
 function renderHoldings(rows, signalsByTicker) {
   const c = document.getElementById("holdings-table");
   if (!rows.length) {
-    c.innerHTML = `<div class="empty">Upload a CSV to see your holdings' signals</div>`;
+    c.innerHTML = `<div class="empty">Add a holding above or upload a CSV to see your positions' signals</div>`;
     return;
   }
   const table = el("table", {}, [
     el("thead", {}, [el("tr", {}, [
-      el("th", {}, ["Ticker"]), el("th", {}, ["Quantity"]), el("th", {}, ["Direction (signal_5d)"]),
-      el("th", {}, ["Buy Prob"]), el("th", {}, ["Exit Urgency"]), el("th", {}, ["Exit Type"]),
-      el("th", {}, ["P&D Score"]), el("th", {}, ["Remove"]),
+      el("th", {}, ["Ticker"]), el("th", {}, ["Qty"]), el("th", {}, ["Buy Date"]), el("th", {}, ["Buy Price"]),
+      el("th", {}, ["Sale Date"]), el("th", {}, ["Sell Price"]),
+      el("th", {}, ["Direction (signal_5d)"]), el("th", {}, ["Buy Prob"]), el("th", {}, ["Exit Urgency"]),
+      el("th", {}, ["Exit Type"]), el("th", {}, ["P&D Score"]), el("th", {}, ["Remove"]),
     ])]),
     el("tbody", {}, rows.map((h) => {
       const sig = signalsByTicker[h.ticker];
       const row = el("tr", {}, [
         el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${h.ticker}` }, [h.ticker])]),
-        el("td", { class: "mono" }, [h.quantity != null ? fmtInt(h.quantity) : "—"]),
+        el("td", { class: "mono" }, [h.qty != null ? fmtNum(h.qty, 0) : "—"]),
+        el("td", { class: "mono" }, [fmtHoldingDate(h.purchase_date)]),
+        el("td", { class: "mono" }, [h.purchase_price != null ? fmtMoney(h.purchase_price) : "—"]),
+        el("td", { class: "mono" }, [fmtHoldingDate(h.sale_date)]),
+        el("td", { class: "mono" }, [h.sell_price != null ? fmtMoney(h.sell_price) : "—"]),
         el("td", {}, [el("span", { class: "badge " + (sig && sig.signal_direction === "sell" ? "b-red" : sig && sig.signal_direction === "buy" ? "b-green" : "b-blue") }, [sig ? (sig.signal_direction || "—") : "no signal"])]),
         el("td", { class: "mono" }, [sig ? fmtPct(sig.buy_prob) : "—"]),
         el("td", { class: "mono" }, [sig && sig.exit_urgency != null ? fmtNum(sig.exit_urgency, 0) : "—"]),
@@ -66,9 +45,8 @@ function renderHoldings(rows, signalsByTicker) {
         el("td", {}, []),
       ]);
       const btn = el("button", { style: "background:var(--red)" }, ["x"]);
-      btn.addEventListener("click", () => {
-        const remaining = loadStoredHoldings().filter((r) => r.ticker !== h.ticker);
-        saveStoredHoldings(remaining);
+      btn.addEventListener("click", async () => {
+        await apiDelete(`/api/v1/holdings/${h.id}`);
         refresh();
       });
       row.lastChild.appendChild(btn);
@@ -79,48 +57,77 @@ function renderHoldings(rows, signalsByTicker) {
   c.appendChild(el("div", { class: "card" }, [table]));
 }
 
-function refresh() {
-  const rows = loadStoredHoldings();
+async function refresh() {
+  showLoading("holdings-table");
+  let rows;
+  try {
+    rows = await apiGet("/api/v1/holdings/");
+  } catch (e) {
+    showError("holdings-table", e);
+    return;
+  }
   if (!rows.length) {
     renderHoldings([], {});
     return;
   }
-  showLoading("holdings-table");
   const today = todayStr();
-  Promise.all(
+  const sigs = await Promise.all(
     rows.map((h) =>
       apiGet(`/api/v1/signals/ml/${h.ticker}/${today}`, { carry_forward: true })
-        .then((sigs) => sigs.find((s) => s.model_name === "signal_5d") || null)
+        .then((s) => s.find((x) => x.model_name === "signal_5d") || null)
         .catch(() => null)
     )
-  ).then((sigs) => {
-    const signalsByTicker = {};
-    rows.forEach((h, i) => {
-      signalsByTicker[h.ticker] = sigs[i];
-    });
-    renderHoldings(rows, signalsByTicker);
+  );
+  const signalsByTicker = {};
+  rows.forEach((h, i) => {
+    signalsByTicker[h.ticker] = sigs[i];
   });
+  renderHoldings(rows, signalsByTicker);
 }
 
 document.getElementById("csv-input").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
-    const parsed = parseCsv(reader.result);
-    const existing = loadStoredHoldings();
-    const byTicker = {};
-    existing.forEach((r) => (byTicker[r.ticker] = r));
-    parsed.forEach((r) => (byTicker[r.ticker] = r));
-    saveStoredHoldings(Object.values(byTicker));
+  reader.onload = async () => {
+    try {
+      await fetch("/api/v1/holdings/upload-csv", {
+        method: "POST",
+        headers: { "Content-Type": "text/csv" },
+        body: reader.result,
+      }).then((r) => {
+        if (!r.ok) return r.json().then((body) => { throw new Error(body.detail || "Upload failed"); });
+      });
+    } catch (err) {
+      alert(`CSV upload failed: ${err.message}`);
+    }
+    e.target.value = "";
     refresh();
   };
   reader.readAsText(file);
 });
 
-document.getElementById("clear-btn").addEventListener("click", () => {
-  if (!confirm("Clear all uploaded holdings from this browser?")) return;
-  localStorage.removeItem(HOLDINGS_KEY);
+document.getElementById("add-btn").addEventListener("click", async () => {
+  const ticker = document.getElementById("add-ticker").value.trim().toUpperCase();
+  const purchase_date = document.getElementById("add-purchase-date").value || todayStr();
+  const qty = Number(document.getElementById("add-qty").value);
+  const priceVal = document.getElementById("add-price").value;
+  const rationale = document.getElementById("add-rationale").value.trim();
+  if (!ticker || !qty) {
+    alert("Ticker and quantity are required");
+    return;
+  }
+  await apiPost("/api/v1/holdings/", {
+    ticker,
+    purchase_date,
+    qty,
+    purchase_price: priceVal ? Number(priceVal) : null,
+    purchase_rationale: rationale || null,
+  });
+  document.getElementById("add-ticker").value = "";
+  document.getElementById("add-qty").value = "";
+  document.getElementById("add-price").value = "";
+  document.getElementById("add-rationale").value = "";
   refresh();
 });
 

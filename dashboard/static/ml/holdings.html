@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="../css/tokens.css">
 <link rel="stylesheet" href="../css/components.css">
 <link rel="stylesheet" href="../css/shell.css">
+<link rel="stylesheet" href="../css/responsive.css">
 </head>
 <body>
 <div class="app-bar" id="app-bar"></div>
@@ -15,16 +16,24 @@
   <div class="sec">
     <div class="sec-head"><span class="sec-title">My Holdings</span><span class="sec-sub">Monitor your real (non-paper-trading) portfolio against daily signals</span></div>
     <div class="alert-banner alert-info">
-      Read-only. Uploaded tickers/quantities are stored only in this browser
-      (localStorage) — nothing is written to a server table, and nothing
-      here ever feeds model training or backtest data (#24).
+      ML30 (2026-07-13): holdings are now stored in a real DB-backed
+      table (my_holdings) via GET/POST/PUT/DELETE
+      <code>/api/v1/holdings</code> — no longer browser-localStorage-only.
+      Still never feeds model training or backtest data (#24).
     </div>
     <div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
       <input type="file" id="csv-input" accept=".csv">
-      <span style="font-size:12px;color:var(--tx2)">CSV with header: ticker,quantity</span>
-      <button id="clear-btn" style="background:var(--red)">Clear Holdings</button>
+      <span style="font-size:12px;color:var(--tx2)">CSV header: ticker,purchase_date,qty[,purchase_price,sale_date,sell_price,purchase_rationale,sell_rationale,journal_entry]</span>
     </div>
-    <div id="holdings-table"><div class="empty">Upload a CSV to see your holdings' signals</div></div>
+    <div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+      <input type="text" id="add-ticker" placeholder="Ticker" style="width:100px">
+      <input type="date" id="add-purchase-date">
+      <input type="number" id="add-qty" placeholder="Qty" style="width:80px">
+      <input type="number" id="add-price" placeholder="Buy Price" style="width:100px">
+      <input type="text" id="add-rationale" placeholder="Purchase rationale" style="flex:1;min-width:160px">
+      <button id="add-btn">Add Holding</button>
+    </div>
+    <div id="holdings-table"><div class="empty">Add a holding above or upload a CSV to see your positions' signals</div></div>
   </div>
 </div>
 <script src="../js/api.js"></script>
@@ -33,4 +42,3 @@
 <script src="js/holdings.js"></script>
 </body>
 </html>
-</content>

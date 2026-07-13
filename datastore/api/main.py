@@ -47,11 +47,13 @@ from .routers import (
     big_investors,
     corporate_actions,
     corporate_announcements,
+    events,
     features,
     fno,
     forensic,
     fundamentals,
     governance,
+    holdings,
     macro,
     models,
     multibagger,
@@ -176,6 +178,15 @@ app.include_router(sector_rotation.router)
 # [AS BUILT, ML29] Sector accumulation detection — delivery-weighted-volume
 # vs sector total outstanding shares, tracked daily.
 app.include_router(sector_accumulation.router)
+# [AS BUILT, ML30] MyHoldings — moved off browser localStorage into a real
+# DB-backed table (my_holdings, datastore/schema/create_normalised.py) with
+# CRUD + CSV-upload endpoints.
+app.include_router(holdings.router)
+# [AS BUILT, A72 partial] Cross-cutting Events (corporate actions, bulk/
+# block deals, recommendation-trigger dates) for the chart.html marker
+# overlay. "forensic-flag date" event type deliberately not included this
+# pass — see events.py's module docstring.
+app.include_router(events.router)
 
 # ===== Static UI (P3.x — zero-new-dependency web UI, StaticFiles ships with
 # Starlette/FastAPI already; rebuilt to the 27-screen/5-app prototype layout

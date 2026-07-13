@@ -8,10 +8,17 @@
 renderAppShell("ml", "sector_rotation");
 
 let currentSectors = [];
-let sortState = { key: "rank", dir: "asc" };
+// ML28 — default ordering is now by sector market cap (largest first)
+// rather than plain rank/alphabetical; `rank` (relative-strength-based)
+// stays sortable via its own column for users who want that view.
+let sortState = { key: "sector_market_cap_cr", dir: "desc" };
 
 function fmtSectorPct(x) {
   return x == null ? "—" : fmtPct(x, 2);
+}
+
+function fmtMarketCapCr(x) {
+  return x == null ? "—" : fmtNum(x, 0);
 }
 
 function topStocksCellHtml(topStocks) {
@@ -50,6 +57,7 @@ function renderSectorTable(sectors) {
       sortableHeader("Rank", "rank", sortState, onSort),
       sortableHeader("Sector", "sector", sortState, onSort),
       el("th", {}, ["Index"]),
+      sortableHeader("Market Cap (₹ cr)", "sector_market_cap_cr", sortState, onSort),
       el("th", {}, ["Trend (63d)"]),
       sortableHeader("RS 1d", "rs_1d", sortState, onSort),
       sortableHeader("RS 5d", "rs_5d", sortState, onSort),
@@ -68,6 +76,7 @@ function renderSectorTable(sectors) {
         el("td", { class: "mono" }, [String(s.rank)]),
         el("td", { style: "font-weight:600" }, [s.sector]),
         el("td", {}, [s.index_name]),
+        el("td", { class: "mono" }, [fmtMarketCapCr(s.sector_market_cap_cr)]),
         sparkTd,
         el("td", { class: `mono ${rsClass(s.rs_1d)}` }, [fmtSectorPct(s.rs_1d)]),
         el("td", { class: `mono ${rsClass(s.rs_5d)}` }, [fmtSectorPct(s.rs_5d)]),

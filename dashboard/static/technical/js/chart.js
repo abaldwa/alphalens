@@ -86,14 +86,54 @@ function dateAxisTickLabel(dates) {
   };
 }
 
+// A72 (2026-07-13, partial) — real event markers (corporate actions,
+// bulk/block deals, recommendation-trigger buy crossings) from
+// GET /api/v1/events/{ticker}, drawn as a second Chart.js "scatter"-style
+// dataset at each event's matching candle index (no vendored annotation
+// plugin exists under dashboard/static/vendor/, so this is a plain
+// second dataset rather than a plugin-based line/box annotation) —
+// pointStyle triangle sitting just above that day's high, with the
+// event description in the tooltip.
+function eventOverlayDataset(rows, events) {
+  if (!events.length) return null;
+  const indexByDate = {};
+  rows.forEach((r, i) => { indexByDate[r.date.slice(0, 10)] = i; });
+  const points = [];
+  events.forEach((ev) => {
+    const idx = indexByDate[ev.date];
+    if (idx === undefined) return; // event date outside the loaded window
+    points.push({ x: idx, y: rows[idx].high * 1.01, eventType: ev.event_type, description: ev.description, date: ev.date });
+  });
+  if (!points.length) return null;
+  const colorByType = {
+    corporate_action: "#a855f7",
+    bulk_deal: "#f59e0b",
+    recommendation_trigger: "#16a34a",
+  };
+  return {
+    type: "scatter",
+    label: "Events",
+    data: points,
+    pointStyle: "triangle",
+    pointRadius: 6,
+    pointHoverRadius: 8,
+    backgroundColor: points.map((p) => colorByType[p.eventType] || "#64748b"),
+    showLine: false,
+    yAxisID: "y",
+  };
+}
+
 function loadCandles(ticker) {
   const to = new Date();
   const from = new Date();
   from.setDate(from.getDate() - 400); // enough real trading days to cover SMA200 warmup
   const fmt = (d) => d.toISOString().slice(0, 10);
 
-  apiGet(`/api/v1/ohlcv/${ticker}`, { from: fmt(from), to: fmt(to) })
-    .then((resp) => {
+  Promise.all([
+    apiGet(`/api/v1/ohlcv/${ticker}`, { from: fmt(from), to: fmt(to) }),
+    apiGet(`/api/v1/events/${ticker}`, { from_date: fmt(from), to_date: fmt(to) }).catch(() => []),
+  ])
+    .then(([resp, events]) => {
       const rows = (resp.data || []).slice().sort((a, b) => (a.date < b.date ? -1 : 1));
       const canvasEl = document.getElementById("candle-canvas");
       const volEl = document.getElementById("volume-canvas");
@@ -122,6 +162,8 @@ function loadCandles(ticker) {
       if (document.getElementById("ov-sma50").checked) datasets.push(overlayDataset("SMA50", sma(closes, 50), "#3b82f6"));
       if (document.getElementById("ov-sma200").checked) datasets.push(overlayDataset("SMA200", sma(closes, 200), "#a855f7"));
       if (document.getElementById("ov-ema21").checked) datasets.push(overlayDataset("EMA21", ema(closes, 21), "#f59e0b"));
+      const eventsDataset = eventOverlayDataset(rows, events || []);
+      if (eventsDataset) datasets.push(eventsDataset);
 
       candleChart = new Chart(canvasEl.getContext("2d"), {
         type: "candlestick",
@@ -132,7 +174,18 @@ function loadCandles(ticker) {
             x: { type: "category", ticks: { maxRotation: 0, autoSkip: true, callback: dateAxisTickLabel(dates) } },
             y: { position: "right" },
           },
-          plugins: { legend: { display: true, position: "top" } },
+          plugins: {
+            legend: { display: true, position: "top" },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const raw = ctx.raw;
+                  if (raw && raw.description) return `${raw.date}: ${raw.description}`;
+                  return undefined;
+                },
+              },
+            },
+          },
         },
       });
 
