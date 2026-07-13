@@ -111,6 +111,11 @@ SIGNAL_DUCKDB_TABLE_COLUMNS = {
         "hmm_stability", "exit_urgency", "exit_type",
         "exit_survival_5d", "exit_survival_21d", "exit_survival_63d",  # [AS BUILT, P1.7]
         "shap_top5_json",
+        # [AS BUILT, ML24/ML27 2026-07-11] flags whether this ticker was in
+        # the ADTV-curated training universe (config/training_universe.py)
+        # the model was actually trained on — see create_signals.py's
+        # column comment for detail.
+        "in_training_universe",
     },
     "ml_multibagger": {
         "date", "ticker", "mb_probability", "mb_tier", "mb_archetype",
@@ -120,6 +125,9 @@ SIGNAL_DUCKDB_TABLE_COLUMNS = {
         # DDL was missing 18m.
         "survival_18m",
         "shap_top5_json", "analogues_json",
+        # [AS BUILT, ML24/ML27 2026-07-11] see ml_signals.in_training_universe
+        # above.
+        "in_training_universe",
     },
     "ml_forensic": {
         "date", "ticker", "beneish_m", "altman_z", "piotroski_f", "ohlson_o",

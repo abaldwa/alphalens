@@ -220,12 +220,19 @@ ml_signals(date, ticker, model_name, model_version,
            pnd_score, pnd_phase, pnd_block,
            hmm_regime, hmm_regime_prob, hmm_stability,
            exit_urgency, exit_type,
-           shap_top5_json)
+           exit_survival_5d, exit_survival_21d, exit_survival_63d,
+           shap_top5_json,
+           -- [AS BUILT, ML24/ML27 2026-07-11] was this ticker in the
+           -- ADTV-curated training universe (config/training_universe.py)
+           -- the model was actually trained on? NULL for rows written
+           -- before this column existed.
+           in_training_universe)
 
 -- Multibagger outputs (written by ML Signal Engine, weekly)
 ml_multibagger(date, ticker, mb_probability, mb_tier, mb_archetype,
-               survival_6m, survival_12m, survival_24m, survival_36m,
-               shap_top5_json, analogues_json)
+               survival_6m, survival_12m, survival_18m, survival_24m, survival_36m,
+               shap_top5_json, analogues_json,
+               in_training_universe)
 
 -- Forensic outputs (written by ML Signal Engine, quarterly)
 ml_forensic(date, ticker, beneish_m, altman_z, piotroski_f,
