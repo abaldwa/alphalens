@@ -331,7 +331,7 @@ def _apply_fracdiff(series: np.ndarray, d: float) -> np.ndarray:
     return result
 
 
-def _optimal_fracdiff_d(log_prices: np.ndarray, target_adf_threshold: float = -3.5) -> float:
+def _optimal_fracdiff_d(log_prices: np.ndarray) -> float:
     """
     Find minimum d such that the fracdiff series is stationary (ADF stat < threshold).
 
