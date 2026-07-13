@@ -62,7 +62,14 @@ import numpy as np
 import pandas as pd
 import talib
 
-from features._vector_utils import safe_div as _safe_div
+from features._vector_utils import (
+    apply_per_ticker as _apply_per_ticker,
+    grouped_rolling as _grouped_rolling,
+    grouped_shift as _grouped_shift,
+    grouped_talib_multi as _grouped_talib_multi,
+    grouped_talib_single as _grouped_talib_single,
+    safe_div as _safe_div,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,38 +116,6 @@ HISTORICAL_MULTIBAGGER_REFERENCE = {
 }
 
 BASE_TIGHT_BAND_PCT = 0.08  # within ±8% of rolling 20d SMA counts as a "tight" (basing) day
-
-
-# ===== Shared vectorized helpers (mirrors technical.py's/pnd_features.py's own private helpers) =====
-def _grouped_rolling(df: pd.DataFrame, col: str, window: int, how: str) -> pd.Series:
-    grouped = df.groupby("ticker", sort=False)[col].rolling(window, min_periods=window)
-    return getattr(grouped, how)().reset_index(level=0, drop=True)
-
-
-def _grouped_shift(df: pd.DataFrame, col: str, periods: int) -> pd.Series:
-    return df.groupby("ticker", sort=False)[col].shift(periods)
-
-
-def _apply_per_ticker(df: pd.DataFrame, fn):
-    parts = [fn(g) for _, g in df.groupby("ticker", sort=False)]
-    return pd.concat(parts)
-
-
-def _grouped_talib_single(df: pd.DataFrame, cols: List[str], fn, **kwargs) -> pd.Series:
-    def _one(g: pd.DataFrame) -> pd.Series:
-        arrays = [g[c].to_numpy(dtype=np.float64) for c in cols]
-        return pd.Series(fn(*arrays, **kwargs), index=g.index)
-
-    return _apply_per_ticker(df, _one)
-
-
-def _grouped_talib_multi(df: pd.DataFrame, cols: List[str], fn, out_names: List[str], **kwargs) -> pd.DataFrame:
-    def _one(g: pd.DataFrame) -> pd.DataFrame:
-        arrays = [g[c].to_numpy(dtype=np.float64) for c in cols]
-        outs = fn(*arrays, **kwargs)
-        return pd.DataFrame({name: arr for name, arr in zip(out_names, outs)}, index=g.index)
-
-    return _apply_per_ticker(df, _one)
 
 
 def _consecutive_true_run(flags: pd.Series, ticker: pd.Series) -> pd.Series:

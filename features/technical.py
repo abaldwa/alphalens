@@ -34,7 +34,14 @@ import numpy as np
 import pandas as pd
 import talib
 
-from features._vector_utils import safe_div as _safe_div
+from features._vector_utils import (
+    apply_per_ticker as _apply_per_ticker,
+    grouped_rolling as _grouped_rolling,
+    grouped_shift as _grouped_shift,
+    grouped_talib_multi as _grouped_talib_multi,
+    grouped_talib_single as _grouped_talib_single,
+    safe_div as _safe_div,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,55 +166,6 @@ BENCHMARK_TICKERS = {
 
 SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3.0
-
-
-# ===== Generic grouped-computation helpers =====
-def _grouped_rolling(df: pd.DataFrame, col: str, window: int, how: str) -> pd.Series:
-    """Per-ticker rolling aggregate, full window required (SPEC-FEAT-001 NaN-until-ready)."""
-    grouped = df.groupby("ticker", sort=False)[col].rolling(window, min_periods=window)
-    return getattr(grouped, how)().reset_index(level=0, drop=True)
-
-
-def _grouped_shift(df: pd.DataFrame, col: str, periods: int) -> pd.Series:
-    return df.groupby("ticker", sort=False)[col].shift(periods)
-
-
-def _apply_per_ticker(df: pd.DataFrame, fn):
-    """
-    Apply fn(ticker_group) -> Series/DataFrame per ticker, concatenating results.
-
-    Deliberately avoids `df.groupby('ticker').apply(fn)`: when the input
-    has exactly one ticker and fn returns a Series, pandas' apply silently
-    reshapes the result into a single wide row instead of concatenating it
-    as a per-row Series (a long-standing pandas footgun, not a bug in fn).
-    Caught by tests/unit/test_features_technical.py's single-ticker
-    minimum-history test. A plain per-group loop + pd.concat sidesteps it
-    while remaining the same "per-ticker dispatch, not per-stock Python
-    feature-math loop" pattern used throughout this module (SPEC-PIPE-004).
-    """
-    parts = [fn(g) for _, g in df.groupby("ticker", sort=False)]
-    return pd.concat(parts)
-
-
-def _grouped_talib_single(df: pd.DataFrame, cols: List[str], fn, **kwargs) -> pd.Series:
-    """Apply a single-output TA-Lib function per ticker (vectorized C call per group)."""
-
-    def _one(g: pd.DataFrame) -> pd.Series:
-        arrays = [g[c].to_numpy(dtype=np.float64) for c in cols]
-        return pd.Series(fn(*arrays, **kwargs), index=g.index)
-
-    return _apply_per_ticker(df, _one)
-
-
-def _grouped_talib_multi(df: pd.DataFrame, cols: List[str], fn, out_names: List[str], **kwargs) -> pd.DataFrame:
-    """Apply a multi-output TA-Lib function (e.g. MACD, STOCH, BBANDS) per ticker."""
-
-    def _one(g: pd.DataFrame) -> pd.DataFrame:
-        arrays = [g[c].to_numpy(dtype=np.float64) for c in cols]
-        outs = fn(*arrays, **kwargs)
-        return pd.DataFrame({name: arr for name, arr in zip(out_names, outs)}, index=g.index)
-
-    return _apply_per_ticker(df, _one)
 
 
 # ===== Category 1: Price Position & Range =====
