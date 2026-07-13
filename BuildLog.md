@@ -13636,3 +13636,89 @@ this session, user chose to keep focus on the MultiBagger relaunch.
 (`train_multibagger_variant` wires the RSF checkpoint path through,
 cleans it up on success).
 `FeatureBacklog.md` (new row ML33).
+
+## Backlog Follow-Up: T11/T8/T12 (2026-07-13)
+
+### Task
+Continuation of branch `feature/backlog-burn-t7-t8-t11-t12-fo9` (FO9/FO1
+already committed prior to this pass; T7 left as investigated-not-
+reproducible). Finished the three remaining named items: T11 (already
+drafted uncommitted in the working tree), T8, T12.
+
+### T11 — Multi-strategy consensus (DONE)
+The uncommitted draft `GET /api/v1/ta/consensus/daily` endpoint
+(`datastore/api/routers/technical.py` + `TAConsensusRow`/`TAConsensusResponse`
+in `datastore/api/schemas.py`) was verified against the real `ta_signals`
+table schema (`systems/technical_analysis/alerts/daily_alert_checker.py`'s
+DDL matches the query exactly) and end-to-end via `TestClient` against the
+live signals DuckDB (2026-07-10 data — real multi-template consensus rows,
+e.g. UJJIVANSFB/NORTHARC each with 25 concurrent template fires). Added
+`TestConsensusDaily` to `tests/unit/test_technical_router.py` (no-table,
+multi-strategy-ranked-first, explicit-date-no-match, limit-param cases) —
+full file: 27/27 pass. Committed as `1c81c89`. FeatureBacklog.md's T11 row
+marked done.
+
+### T8 — Backtested Confidence Factor (NOT IMPLEMENTED — review gate blocked)
+Per the task's own instruction, T8 required `ml-rigor-reviewer`/
+`backtest-reviewer` sign-off before implementation given its lookahead-bias
+sensitivity (hit-rate of resistance-before-support over a trailing 200-day
+window — ambiguous "hit" definition, and risk that the resistance/support
+levels used in the forward-looking hit-test aren't computed strictly
+as-of the signal date). No Agent/Task tool was available in this run's
+toolset to actually invoke those reviewer subagents, so per the "don't
+guess, stop and document" rule this item was left unimplemented rather
+than proceeding without the review. FeatureBacklog.md's T8 row updated
+with the specific concerns to resolve next session (needs either a proper
+reviewer-agent pass or a user-supplied proposal). Committed as `8972f8f`
+(doc-only).
+
+### T12 — Sell-recommendation for previously-Buy tickers (DONE)
+Investigated existing recommendation-history data: `ml_signals` already
+persists a per-row `signal_direction` field with literal `"buy"`/`"hold"`/
+`"sell"` values (`CLASS_NAMES` in
+`systems/ml_signal_engine/models/signal/base_signal_model.py`, read for
+context only, not modified). This meant T12 didn't need ML26's
+buy/sell-pairing redesign (still ⏳) or any new probability threshold —
+implemented `GET /api/v1/signals/ml/downgrades/{date}`
+(`datastore/api/routers/signals.py`, new `SignalDowngradeRow`/
+`SignalDowngradeResponse` schemas), a pure read-only query flagging any
+ticker whose most recent row is `"sell"` but which had an earlier `"buy"`
+row within a configurable `lookback_days` window (default 200). Verified
+end-to-end against the live signals DuckDB (2026-07-10 — real buy-to-sell
+transitions, e.g. 3IINFOLTD, AARVI, AETHER) and via `TestClient`. Added
+`tests/unit/test_signals_downgrades.py` (6/6 pass: buy-then-sell flagged,
+always-sell/buy-then-hold not flagged, lookback-window exclusion,
+carry-forward date resolution). Committed as `2c427b7`. FeatureBacklog.md's
+T12 row marked done.
+
+### Test health check
+Ran `tests/unit -k "technical or screener or ta_ or signals or downgrade or
+consensus"`: 190 passed, 3 failed (all pre-existing, unrelated to this
+session's changes — `test_schema.py::TestCreateSignalsSchema::
+test_duckdb_table_columns_match_architecture_doc` fails for `ml_forensic`/
+`ml_multibagger`/`ml_signals`, an architecture-doc-vs-DDL column drift, e.g.
+`in_training_universe` present in the live DuckDB schema but not in the
+doc's expected column set — pre-dates this session, not caused by any T11/
+T8/T12 change; not fixed here since it's out of this pass's scope and
+touches `datastore/schema` column lists tied to model-facing tables. Logged
+here for visibility rather than a new backlog row since it looks like
+drift from an earlier session's schema change (ML31/exit-signal work) that
+didn't update the architecture-doc constant.
+
+### Incidental recovery note
+A stale, unrelated git stash (`stash@{0}`, pre-existing before this
+session, unrelated to T11/T8/T12) surfaced via an accidental `git stash`/
+`git stash pop` round-trip while diagnosing an unrelated question; its
+content was byte-for-byte identical to what's already in `BuildLog.md`'s
+committed history, so the resulting merge conflict was resolved by simply
+removing the conflict markers (no content was added, changed, or
+discarded) — confirmed via diff against `HEAD:BuildLog.md` post-resolution
+showing zero delta. The stash itself was left untouched/not dropped.
+
+### Files changed
+`datastore/api/routers/technical.py`, `datastore/api/schemas.py`,
+`tests/unit/test_technical_router.py` (T11); `datastore/api/routers/
+signals.py`, `tests/unit/test_signals_downgrades.py` (T12); `FeatureBacklog.md`
+(T8/T11/T12 status updates). Branch
+`feature/backlog-burn-t7-t8-t11-t12-fo9`, commits `1c81c89`, `8972f8f`,
+`2c427b7`. Not pushed, no PR opened per instructions — local commits only.
