@@ -210,12 +210,36 @@ def _login() -> requests.Session:
     return session
 
 
-def _fetch_ticker_data(session: requests.Session, ticker: str) -> Optional[Dict]:
+def _fetch_ticker_data(session: requests.Session, ticker: str) -> Tuple[Optional[Dict], str]:
     """
     Fetch Trendlyne fundamental JSON for a single ticker.
-    Returns the parsed body dict, or None if the ticker is not found.
 
-    Two HTTP requests:
+    Returns
+    -------
+    (body, reason)
+        body is the parsed dict on success, else None.
+        reason is one of "ok", "404" (ticker genuinely not on Trendlyne),
+        "405" (HTTP 405/blocked — see note below), "error" (network/parse
+        failure).
+
+    [Fix 2026-07-13] The two live backfill runs on record (2026-06-25,
+    2026-06-30 — logs/trendlyne_backfill*.log) both collapsed to near-0%
+    success after the first ~100-150 tickers, uniformly across large-cap
+    names (ADANIPORTS, TCS-adjacent tickers, etc.) that are unquestionably
+    on Trendlyne — a live re-check on 2026-07-13 confirmed these same
+    tickers resolve fine (200, real data) with the exact same session/URL
+    logic. The 405s were NOT a ticker-matching/URL bug — they are Trendlyne
+    WAF/rate-limit responses that started appearing mid-run and then
+    self-reinforced: the caller's old code treated 405 exactly like a
+    genuine 404 "not on Trendlyne" and slept the SHORT 0.3x notfound delay
+    before the next request, so once the WAF started blocking, every
+    subsequent request fired even faster and never gave the block a chance
+    to clear — a cascading near-100%-failure tail. This function now
+    reports 405 distinctly so the caller can apply a full-length backoff
+    (not the fast 404 skip) and a circuit-breaker pause + re-login on a
+    run of consecutive 405s (see main()'s _consecutive_405 handling).
+
+    Two HTTP requests on success:
       1. Company page  → extract data-tablesurl (session-specific hash)
       2. tablesurl     → JSON with quarterly + annual data
     """
@@ -224,14 +248,14 @@ def _fetch_ticker_data(session: requests.Session, ticker: str) -> Optional[Dict]
         r = session.get(company_url, timeout=30)
     except requests.RequestException as exc:
         logger.debug("Network error for %s: %s", ticker, exc)
-        return None
+        return None, "error"
 
     if r.status_code == 404:
         logger.debug("%s: 404 on Trendlyne (not listed)", ticker)
-        return None
+        return None, "404"
     if r.status_code in (405, 410):
-        # Trendlyne returns 405 for tickers not in their routing table
-        # (BSE-only, delisted, or very small cos). Try dash-slug fallback.
+        # Try the dash-slug fallback first (a genuine, if rare, ticker/slug
+        # mismatch) before concluding this is a WAF block.
         slug = ticker.lower().replace("&", "-")
         alt_url = f"{BASE_URL}/equity/{ticker}/{slug}/"
         if alt_url != company_url:
@@ -241,23 +265,23 @@ def _fetch_ticker_data(session: requests.Session, ticker: str) -> Optional[Dict]
                     r = r2
                 else:
                     logger.debug("%s: not on Trendlyne (405 + alt %d)", ticker, r2.status_code)
-                    return None
+                    return None, "405"
             except requests.RequestException:
-                return None
+                return None, "405"
         else:
             logger.debug("%s: not on Trendlyne (HTTP 405)", ticker)
-            return None
-    if r.status_code == 403:
+            return None, "405"
+    elif r.status_code == 403:
         logger.debug("%s: 403 — may need re-login", ticker)
-        return None
-    if r.status_code != 200:
+        return None, "405"  # same "possible block" bucket as 405 — full backoff, not the fast 404 skip
+    elif r.status_code != 200:
         logger.warning("%s: company page → HTTP %d", ticker, r.status_code)
-        return None
+        return None, "error"
 
     tablesurl_m = re.search(r'data-tablesurl=(https://[^\s>]+)', r.text)
     if not tablesurl_m:
         logger.debug("%s: data-tablesurl not found on company page", ticker)
-        return None
+        return None, "404"
     tablesurl = tablesurl_m.group(1)
 
     try:
@@ -267,23 +291,23 @@ def _fetch_ticker_data(session: requests.Session, ticker: str) -> Optional[Dict]
         )
     except requests.RequestException as exc:
         logger.debug("Network error fetching tablesurl for %s: %s", ticker, exc)
-        return None
+        return None, "error"
 
     if rj.status_code != 200 or not rj.text.strip():
         logger.debug("%s: tablesurl → HTTP %d (empty=%s)", ticker, rj.status_code, not rj.text.strip())
-        return None
+        return None, "405" if rj.status_code in (405, 403, 410) else "error"
 
     try:
         js = rj.json()
     except Exception:
         logger.debug("%s: tablesurl response is not JSON", ticker)
-        return None
+        return None, "error"
 
     if js.get("head", {}).get("status") != "0":
         logger.debug("%s: Trendlyne API returned non-success: %s", ticker, js.get("head"))
-        return None
+        return None, "404"
 
-    return js.get("body")
+    return js.get("body"), "ok"
 
 
 # ── Data extraction ───────────────────────────────────────────────────────────
@@ -489,6 +513,13 @@ def main() -> None:
     t_start = time.monotonic()
     ok = notfound = errors = total_rows = 0
     pending_rows: List[Dict] = []
+    # [Fix 2026-07-13] Circuit breaker for Trendlyne WAF/rate-limit 405s —
+    # see _fetch_ticker_data's docstring for why 405 must never use the
+    # fast 404-skip sleep (that's exactly what turned a transient block
+    # into a near-100%-failure cascade in the 2026-06-25/06-30 runs).
+    consecutive_405 = 0
+    _CONSECUTIVE_405_THRESHOLD = 5
+    _BACKOFF_SECONDS = 60
 
     def _flush(conn):
         nonlocal total_rows
@@ -500,18 +531,41 @@ def main() -> None:
 
     for i, ticker in enumerate(tickers, start=1):
         try:
-            body = _fetch_ticker_data(session, ticker)
+            body, reason = _fetch_ticker_data(session, ticker)
         except Exception as exc:
             logger.warning("[%d/%d] %s: fetch error — %s", i, len(tickers), ticker, exc)
             errors += 1
+            consecutive_405 = 0
             time.sleep(args.sleep)
             continue
 
-        if body is None:
+        if reason == "405":
+            consecutive_405 += 1
             notfound += 1
-            time.sleep(args.sleep * 0.3)   # shorter sleep for 404s
+            if consecutive_405 >= _CONSECUTIVE_405_THRESHOLD:
+                logger.warning(
+                    "[%d/%d] %d consecutive HTTP 405s (likely Trendlyne WAF/rate-limit) — "
+                    "backing off %ds and re-logging in before continuing",
+                    i, len(tickers), consecutive_405, _BACKOFF_SECONDS,
+                )
+                time.sleep(_BACKOFF_SECONDS)
+                try:
+                    session = _login()
+                except Exception as exc:
+                    logger.warning("Re-login failed: %s — continuing with the existing session", exc)
+                consecutive_405 = 0
+            else:
+                time.sleep(args.sleep)   # full sleep, not the fast 404 skip — do not feed the block
             continue
 
+        if body is None:
+            # Genuine 404 / not-on-Trendlyne / parse miss — safe to skip fast.
+            notfound += 1
+            consecutive_405 = 0
+            time.sleep(args.sleep * 0.3)
+            continue
+
+        consecutive_405 = 0
         try:
             q_rows = _extract_quarterly_rows(ticker, body)
             a_patch = _extract_annual_patch(body)
