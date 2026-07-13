@@ -97,9 +97,17 @@ function loadSignals() {
       }
       const table = el("table", {}, [
         el("thead", {}, [el("tr", {}, [
-          el("th", {}, ["Model"]), el("th", {}, ["Direction"]), el("th", {}, ["Buy Prob"]),
+          el("th", {}, ["Model"]),
+          el("th", {}, ["Direction"]),
+          // ML24 (2026-07-13): Buy Prob (classifier head) and Q50 Return
+          // (quantile-regressor head) are scored independently and can
+          // legitimately disagree even for the same model_name/horizon —
+          // tooltips make this explicit rather than implying one unified
+          // confidence number.
+          el("th", { title: "Buy/hold/sell classifier's own probability — independent of Q50 Return" }, ["Buy Prob*"]),
           el("th", {}, ["Meta"]), el("th", {}, ["P&D"]), el("th", {}, ["Exit Urgency"]),
-          el("th", {}, ["Q50 Return"]), el("th", {}, ["Interval"]),
+          el("th", { title: "Median (q50) of the quantile-regressor's forward-return distribution — independent of Buy Prob" }, ["Q50 Return*"]),
+          el("th", {}, ["Interval"]),
         ])]),
         el("tbody", {}, rows.map((r) => el("tr", {}, [
           el("td", { style: "font-weight:600" }, [r.model_name]),
@@ -113,6 +121,9 @@ function loadSignals() {
         ]))),
       ]);
       c.innerHTML = "";
+      c.appendChild(el("div", { style: "font-size:12px;color:var(--tx3);margin-bottom:6px" }, [
+        "*Buy Prob and Q50 Return are separate model heads (classifier vs. quantile regressor), scored independently — they can disagree (e.g. a high buy probability alongside a negative Q50 Return) and are not one unified confidence score.",
+      ]));
       const legend = renderModelLegend(rows);
       if (legend) c.appendChild(legend);
       const signalDate = rows[0].date ? rows[0].date.slice(0, 10) : null;

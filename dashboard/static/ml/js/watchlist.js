@@ -17,8 +17,17 @@ function renderHorizonTable(containerId, rows) {
   const table = el("table", {}, [
     el("thead", {}, [el("tr", {}, [
       el("th", {}, ["Stock"]), el("th", {}, ["Name"]), el("th", {}, ["Sector"]),
-      el("th", {}, ["Buy Prob"]), el("th", {}, ["Price"]),
-      el("th", {}, ["Target"]), el("th", {}, ["Expected Return"]),
+      // ML24 (2026-07-13): Buy Prob (the classifier's buy/hold/sell call)
+      // and Target/Expected Return (the separate quantile-regressor's
+      // median forward-return forecast) are two independent model heads
+      // scored independently — they can legitimately disagree (e.g. a
+      // high buy probability alongside a negative expected return) and
+      // are not one unified confidence number. Column headers/tooltips
+      // make this explicit rather than implying a single consistent score.
+      el("th", { title: "Buy/hold/sell classifier's own probability — a separate model head from Target/Expected Return below" }, ["Buy Prob*"]),
+      el("th", {}, ["Price"]),
+      el("th", { title: "Median (q50) of the quantile-regressor's forward-return distribution — independent of Buy Prob*" }, ["Target*"]),
+      el("th", { title: "Median (q50) of the quantile-regressor's forward-return distribution — independent of Buy Prob*" }, ["Expected Return*"]),
       el("th", {}, ["Range (low–high)"]), el("th", {}, ["Basis"]),
     ])]),
     el("tbody", {}, rows.map((r) => el("tr", {}, [
@@ -42,7 +51,7 @@ function renderHorizonTable(containerId, rows) {
 apiGet("/api/v1/watchlist/daily", { n_per_horizon: 10 })
   .then((r) => {
     document.getElementById("watchlist-notes").textContent =
-      r.date ? `Signals for ${r.date} — targets from the model's own quantile-regression forward-return distribution (or a volatility/ATR-scaled band when unavailable), never a fixed %.` : "No signal data available yet";
+      r.date ? `Signals for ${r.date} — targets from the model's own quantile-regression forward-return distribution (or a volatility/ATR-scaled band when unavailable), never a fixed %. *Buy Prob and Target/Expected Return are independent model outputs (classifier vs. quantile regressor) and can disagree — see column tooltips.` : "No signal data available yet";
 
     const byHorizon = { "5d": [], "21d": [], "63d": [] };
     r.rows.forEach((row) => { if (byHorizon[row.horizon]) byHorizon[row.horizon].push(row); });
