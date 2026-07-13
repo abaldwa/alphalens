@@ -83,6 +83,7 @@ import pandas as pd
 
 from config.settings import ASSUMED_TAX_RATE
 from datastore.client import DataStoreClient
+from features.fundamental import _latest_close_on_or_before
 from systems.ml_signal_engine.models.forensic.classical_scores import (
     altman_z_score,
     beneish_m_score,
@@ -511,15 +512,35 @@ def compute_forensic_classical_scores(
     beneish = beneish_m_score(_build_beneish_inputs(latest, yoy))
 
     wc = ca - cl if pd.notna(ca) and pd.notna(cl) else np.nan
+    # [FIXED, FO1/FO9 2026-07-13] `retained_earnings` is a real column
+    # (create_normalised.py:214, exposed by the API since the 2026-07-07
+    # gap fix — see schemas.py's FundamentalsWrite docstring note) but this
+    # function was still using a book-equity proxy (shares x bvps) instead
+    # of reading it directly. Real value used now; the proxy is only a
+    # documented fallback when retained_earnings itself is null (e.g. an
+    # older filing that predates the field being captured).
+    retained_earnings_cr = get_quarter_value(latest, "retained_earnings")
     book_equity_cr = shares * bvps / CRORE if pd.notna(shares) and pd.notna(bvps) else np.nan
-    mktcap = book_equity_cr  # no live market-cap feed wired here — book equity used as the documented proxy
-    # Retained earnings has no direct line item — book equity (bvps x shares)
-    # is used as a documented proxy (same approximation class as
-    # derive_total_assets), since retained earnings is the dominant
-    # component of book equity for a going concern with no recent capital
-    # raise (a real but bounded approximation, not a fabricated value).
-    re_proxy = book_equity_cr
-    ebit = get_quarter_value(latest, "ebitda")  # depreciation not reliably available — EBITDA used as EBIT proxy
+    re_proxy = retained_earnings_cr if pd.notna(retained_earnings_cr) else book_equity_cr
+    # [FIXED, FO1/FO9 2026-07-13] market cap (X4's numerator) now built from
+    # a real PIT-safe close price x shares_outstanding, same pattern as
+    # features/fundamental.py's ev_to_ebitda / features/deep_forensic.py's
+    # altman_z market_cap term (both use _latest_close_on_or_before). Only
+    # falls back to the book-equity proxy when a close price genuinely
+    # cannot be found (e.g. delisted ticker, API outage) — never fabricated.
+    close = None
+    try:
+        close = _latest_close_on_or_before(client, ticker, as_of)
+    except Exception as exc:
+        logger.debug(f"close price lookup failed for {ticker} altman market_cap: {exc}")
+    mktcap = (
+        (close * shares) / CRORE
+        if close is not None and pd.notna(shares)
+        else book_equity_cr  # documented fallback proxy, not a fabricated value
+    )
+    ebit = get_quarter_value(latest, "ebit")
+    if pd.isna(ebit):
+        ebit = get_quarter_value(latest, "ebitda")  # depreciation not reliably available — EBITDA used as EBIT proxy
     altman = altman_z_score(
         {"wc": wc, "re": re_proxy, "ebit": ebit, "ta": ta, "mktcap": mktcap, "tl": tl, "sales": revenue}
     )

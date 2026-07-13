@@ -74,6 +74,14 @@ class FundamentalsWrite(BaseModel):
     announcement_date: datetime  # SPEC-PIPE-003: the PIT key — NEVER quarter_end_date
     revenue: Optional[float] = None
     ebitda: Optional[float] = None
+    # [AS BUILT, FO1/FO9 wiring fix] `ebit` is a real, computed column
+    # (datastore/schema/create_normalised.py:184, populated from ebitda -
+    # depreciation) but was missing from both this Pydantic model and
+    # fundamentals.py's `_COLUMNS` SELECT list — same silently-dropped-
+    # column class of bug as total_equity/retained_earnings/total_assets/
+    # cwip above. This left forensic_classical.py's Altman Z ebit term
+    # depending on an EBITDA proxy even where real ebit existed.
+    ebit: Optional[float] = None
     pat: Optional[float] = None
     eps: Optional[float] = None
     operating_margin: Optional[float] = None

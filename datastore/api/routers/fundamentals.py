@@ -71,7 +71,7 @@ router = APIRouter(prefix="/api/v1/fundamentals", tags=["Fundamentals"])
 
 _COLUMNS = [
     "ticker", "fiscal_year", "quarter", "quarter_end_date", "announcement_date",
-    "revenue", "ebitda", "pat", "eps", "operating_margin", "ebitda_margin", "net_margin",
+    "revenue", "ebitda", "ebit", "pat", "eps", "operating_margin", "ebitda_margin", "net_margin",
     "roe", "roce", "debt_to_equity", "interest_coverage", "fcf", "asset_turnover",
     "inventory_days", "receivable_days", "payable_days", "book_value_per_share", "shares_outstanding",
     "gross_profit", "capex", "current_assets", "current_liabilities", "total_debt", "cash_and_equivalents",
