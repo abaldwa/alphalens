@@ -175,6 +175,38 @@ KEYWORD_ALLOWLIST: dict[str, set[str]] = {
     # per his published ratings-spread table) — not a fabricated-data
     # stand-in.
     "systems/damodaran_valuation/dcf/wacc.py": {"synthetic rating"},
+    # Prose describing the *previous* fixed-date-only holiday-calendar
+    # implementation that this module supersedes — historical context in a
+    # comment/docstring, not a live data-fabrication path.
+    "config/nse_holidays.py": {
+        "old fixed-date-only placeholder",
+    },
+    # Prose note describing Trendlyne Premium's own UI rendering a literal
+    # "xxx" placeholder string for locked/paywalled data — describes the
+    # third-party source's behavior being detected, not fabricated data
+    # produced by this codebase.
+    "datastore/schema/create_normalised.py": {
+        'still renders "xxx" placeholder',
+    },
+    # Docstring describing the manual-backfill script recording a real,
+    # honest placeholder *note* (not fabricated numeric data) in
+    # corporate_actions when a bonus is known to have occurred but the
+    # ratio couldn't be confirmed — an honesty marker, not a data stand-in.
+    "scripts/align_remaining_to_fyers.py": {
+        'placeholder note ("a bonus has',
+    },
+    # sklearn's own `DummyClassifier` baseline-comparator import — a
+    # standard scikit-learn utility class name, not fabricated/synthetic
+    # data.
+    "systems/ml_signal_engine_gainer/models/multibagger/multibagger_model.py": {
+        "from sklearn.dummy import DummyClassifier",
+    },
+    "systems/ml_signal_engine_gainer/models/signal/signal_ranker.py": {
+        "from sklearn.dummy import DummyClassifier",
+    },
+    "systems/ml_signal_engine/models/multibagger/multibagger_model.py": {
+        "from sklearn.dummy import DummyClassifier",
+    },
 }
 
 
