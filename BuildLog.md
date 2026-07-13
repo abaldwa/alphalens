@@ -13367,56 +13367,97 @@ parquet records. Findings, ranked by confidence:
 `BuildLog.md` (this entry). No code changes this session — diagnostic and
 harness-results write-up only.
 
-## Trendlyne Fundamentals Backfill 405-Cascade Fix (2026-07-13)
+## ML31 Meta-Labeler Fix + A28(g)/A38/A26 Tier-1 Backlog Sweep (2026-07-13)
 
 ### Task
-Investigation + fix for why `scripts/backfill_fundamentals_trendlyne.py` —
-the correct, working fallback source for `current_assets`/
-`current_liabilities` when NSE XBRL is capped by its FY2023-24+ filing-regime
-floor — has never actually populated the DB at scale (0 rows tagged
-`fundamentals_source='trendlyne'` despite being correctly wired into
-`features/fundamental_source_priority.py`'s priority system).
+User asked to work Tier-1 backlog items that block the paper-trading gate:
+ML31 (meta-labeler mis-calibration — the confirmed root cause of zero Buy
+recommendations reaching paper trading), A28(g) (signal_63d retrain, last
+open leg of the A28 emergency-recompute saga), and A38 (TFT/BiLSTM
+go/no-go — infra landed but neither has ever been trained), with A26 (Ops
+force-run of the 2026-07-03/06/07 recompute + sanity_check/paper_trade)
+added mid-session. Explicit constraint: a MultiBagger experimental
+training job (`systems/ml_signal_engine_gainer/`, unrelated copy package,
+PID 6990) had already been running 12+ hours and must not be disturbed or
+risk OOM.
 
-### Root cause
-Not the ticker-matching bug it first looked like. `logs/trendlyne_backfill.log`
-(2026-06-25, 0/~1148 matched) and `logs/trendlyne_backfill_full2644_20260630.log`
-(2026-06-30, only 138/2644 matched) both fail on tickers that resolve fine
-today under live re-check with identical login/URL/dash-slug-fallback logic.
-The real bug: Trendlyne intermittently returns HTTP 405 as a WAF/rate-limit
-signal (confirmed live — even the login endpoint itself returned 405 during
-one rapid-succession validation attempt, recovering after ~90s). The old
-`_fetch_ticker_data` treated 405 exactly like a genuine 404 "ticker not on
-Trendlyne" and applied the fast `0.3x` notfound retry delay before the next
-request — feeding the block instead of backing off from it, turning a
-transient rate-limit trip into a cascading near-100%-failure tail for the
-rest of the run.
+### ML31 — root cause and fix (code landed)
+`MetaLabeler.train()` (`systems/ml_signal_engine/models/signal/meta_labeler.py`)
+tunes its Act/Don't-Act decision threshold via `_optimize_precision_threshold`
+on the **same data it just fit on** — a genuine `tune_threshold()` method
+exists specifically to re-tune on a held-out fold, but
+`train_all_phase1.py`'s MetaLabeler stage (§5) never called it. This is a
+textbook in-sample-threshold overfit: precision/recall look fine on the
+fitting data, but the chosen cutoff has no reason to generalize. This
+exactly matches FeatureBacklog ML31's earlier live finding — 20 legitimate
+`signal_direction: "buy"` candidates on 2026-07-08, every one landing
+`meta_label: "no_act"` with `meta_prob` clustered tightly at 0.44-0.54,
+right on the boundary.
 
-### Fix
-`_fetch_ticker_data` now returns `(body, reason)` with `reason` in
-`{"ok", "404", "405", "error"}`, preserving the existing dash-slug fallback
-but classifying a still-failing 405/403 as a possible block rather than
-folding it into "not on Trendlyne". `main()`'s loop applies the full-length
-sleep (not the fast 404 skip) on 405, plus a circuit breaker: after 5
-consecutive 405s, back off 60s and re-login before continuing — observed
-live during validation (triggered once at ticker 70/80, recovered on the
-next attempt).
+Fix (`train_all_phase1.py`, MetaLabeler stage): the Act-labeled rows drawn
+from Signal5D's validation fold are now further split chronologically
+(70/30, mirroring `WalkForwardValidator.get_train_validation_split`'s
+date-based approach) into a fit slice and a genuinely held-out tune slice;
+`meta_model.tune_threshold()` is called on the held-out slice after
+`train()`. Falls back to the old in-sample behavior (with a warning) only
+if there are fewer than 10 held-out Act-labeled rows — an edge case, not
+the normal path.
 
-### Validation
-Live sampled runs (small-sample only, no full backfill executed): 10/10,
-then 65/65 (before hitting a live block), then 20/20 sampled universe
-tickers all succeeded, with real values pulled (e.g. INFY CA=103489.0
-CL=52322.0, HDFCBANK CA=3611332.96 CL=252977.53, RELIANCE CA=594249.0
-CL=541254.0, ADANIPORTS CA=21974.83 CL=15760.35 — all cross-checked as
-plausible real INR-Cr balance-sheet figures for FY2026). Added
-`tests/unit/test_backfill_fundamentals_trendlyne.py` (6 tests, mocked
-`requests.Session`, no live network) covering the 404-vs-405-vs-ok
-classification.
+Verified: `tests/unit/test_signal_models.py::TestMetaLabeler` (7/7),
+`tests/unit/test_daily_inference_chunking.py` (8/8),
+`tests/unit/test_signal_models.py` full file (29/29) all pass unchanged.
+`tests/integration/test_daily_pipeline.py` errored on setup — confirmed
+unrelated: a DuckDB file-lock conflict against the MultiBagger job's own
+PID (2137, a child of 6990), not a regression from this change.
 
-### Not done this session
-The full 2644-ticker production backfill was deliberately not run — that's
-a separate live-system action needing its own explicit go-ahead, same
-precedent as A26's Ops force-run. Recommended command documented in
-FeatureBacklog.md's new F3 entry.
+**Not yet done**: an actual production retrain to write a real corrected
+`meta_labeler` model into the registry — deferred (see below), since
+`train_all_phase1.py` needs the same DuckDB lock the MultiBagger job holds.
+
+### A28(g) — signal_63d retrain
+Confirmed the correct entry point is
+`retrain_phase2.py --horizon 63` (single-horizon, in-process, memory-bounded
+per the script's own flag) rather than a fresh script. Not yet run — same
+DB-lock/OOM-avoidance reasoning as ML31's retrain.
+
+### A38 — TFT/BiLSTM go/no-go
+Confirmed both `TFTSignalModel`
+(`systems/ml_signal_engine/models/deep/tft_model.py`) and the BiLSTM model
+are real, complete implementations (PyTorch, CPU-only device selection,
+GRN/VSN/attention blocks for TFT) with a working CLI
+(`train_deep_models.py`), including a `--quick` smoke-test mode (2 epochs,
+~30s per its own docstring). Attempted the smoke test live
+(`--model tft --folds 2 --quick`) to actually verify go/no-go rather than
+just reading code — it produced **zero output and had to be killed after a
+120s timeout**, most likely blocked on the same DuckDB lock the MultiBagger
+job holds (consistent with the `test_daily_pipeline.py` lock-conflict seen
+in the same session). Given free system memory was already down to ~475MB
+at the time (buff/cache reclaimable but tight) with the MultiBagger job at
+365% CPU, did not retry or force it — re-attempt once the DB is free.
+
+**Decision needed from user, not yet made**: once a smoke test succeeds,
+whether to commit to a full overnight `--model all --folds 5` run (real
+resource cost) or continue deprioritizing TFT/BiLSTM — this item explicitly
+asked for a go/no-go, not silent continuation, and that decision is still
+open pending a working smoke-test result.
+
+### A26 — Ops force-run
+Confirmed the mechanism (`POST /api/v1/ops/steps/{step_name}/force`,
+`datastore/api/routers/ops.py`) but did **not** fire it — it's a live-system
+action recorded in `pipeline_checkpoints`/would kick off a real backfill on
+the running scheduler, and per this session's own risk-review standard that
+needs explicit user go-ahead rather than being bundled into an "any relevant
+Tier-1 item" sweep. Left for a follow-up explicit request.
+
+### Sequencing (avoiding the MultiBagger job)
+Wrote `/tmp/run_production_retrains.py` (ML31 verification via a full
+`train_all_phase1` run, then A28(g)'s `retrain_phase2 --horizon 63`) and
+armed `/tmp/monitor_and_launch_production_retrains.sh` — polls for PID 6990
+to exit, waits for the already-armed Phase B monitor
+(`/tmp/monitor_and_launch_phaseB.sh`, from the unrelated gainer-experiment
+work) to also finish, then launches the production retrains. This avoids
+DB-lock contention and OOM risk from running three separate heavy jobs
+concurrently on a 14GB box that was already down to ~475MB free.
 
 ### Files changed
 `ingestion/scrapers/trendlyne.py`, `scripts/backfill_fundamentals_trendlyne.py`,
@@ -13474,3 +13515,24 @@ picked up a run that was killed mid-flight, and its scope was limited to
 safely landing the already-completed work rather than re-running the full
 batched suite). No self-heal PRs opened this session. No new backlog items
 added — none surfaced during the recovery steps.
+
+### Files changed
+`systems/ml_signal_engine/inference/train_all_phase1.py` (MetaLabeler
+held-out threshold-tuning fix, ML31).
+
+### Addendum (same session, 2026-07-13): A26 queued too
+User gave explicit go-ahead to fire A26's Ops force-run. No live API server
+was up to hit `POST /api/v1/ops/steps/compute_features/force` over HTTP, so
+called its underlying sync core directly instead —
+`ingestion/scheduler/force_run.py::force_run_date_sync("compute_features",
+[2026-07-03, 2026-07-06, 2026-07-07], cascade=True)` — added as a 3rd step
+in `/tmp/run_production_retrains.py`, after ML31's retrain and A28(g)'s
+signal_63d retrain, so it only runs once the in-flight MultiBagger job (and
+the already-armed Phase B) have released the DB lock. Verified via
+`pipeline_checkpoints` that `compute_features`/`sanity_check` already show
+`status='success'` for all 3 dates (pre-dating the corporate-action fix) —
+`force_run_date_sync` re-runs regardless of prior success on the
+*requested* step (it only checks lower-index prerequisites), so this is a
+genuine forced recompute, not a no-op. `paper_trade` correctly stays
+un-run for these past dates (SPEC-SCHED-006, enforced inside
+`force_run_date_sync` itself).
