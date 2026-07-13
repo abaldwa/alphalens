@@ -496,6 +496,28 @@ class SignalUniverseRow(BaseModel):
     shap_top5_json: Optional[str] = None
 
 
+# ===== T12: Sell-recommendation section for previously-Buy tickers =====
+class SignalDowngradeRow(BaseModel):
+    """One ticker whose most recent signal_5d `signal_direction` is "sell"
+    (as of the resolved date) but which had an earlier "buy" row within the
+    lookback window — surfaces AlphaLens.ML's own buy-to-sell downgrades,
+    using the model's own signal_direction classification (no new
+    buy/sell threshold invented here)."""
+
+    ticker: str
+    prior_buy_date: datetime
+    prior_buy_prob: Optional[float] = None
+    current_date: datetime
+    current_sell_prob: Optional[float] = None
+    current_buy_prob: Optional[float] = None
+
+
+class SignalDowngradeResponse(BaseModel):
+    date: Optional[str] = None
+    rows: List[SignalDowngradeRow] = Field(default_factory=list)
+    count: int = 0
+
+
 class MLSignalWriteResult(BaseModel):
     """Confirmation response for a single MLSignalWrite upsert."""
 

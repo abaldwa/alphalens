@@ -42,6 +42,8 @@ from datastore.api.schemas import (
     MLSignalRow,
     MLSignalWrite,
     MLSignalWriteResult,
+    SignalDowngradeResponse,
+    SignalDowngradeRow,
     SignalUniverseRow,
 )
 from ingestion.scheduler.checkpoint import CheckpointManager
@@ -261,6 +263,79 @@ async def get_signal_universe(
         )
         for r in rows
     ]
+
+
+@router.get("/ml/downgrades/{date}", response_model=SignalDowngradeResponse)
+async def get_signal_downgrades(
+    date: date_type = Path(..., description="Resolved 'as of' signal date (YYYY-MM-DD)"),
+    model_name: str = Query("signal_5d", description="Which signal model's direction to use"),
+    lookback_days: int = Query(
+        200,
+        ge=1,
+        le=1000,
+        description="How many trailing calendar days to look back for a prior 'buy' row",
+    ),
+    carry_forward: bool = Query(
+        True,
+        description="If true and there are no rows for `date`, fall back to the most recent earlier date that has rows.",
+    ),
+) -> SignalDowngradeResponse:
+    """T12: stocks previously flagged 'buy' by AlphaLens.ML that have since
+    downgraded to 'sell' — uses the model's own already-computed
+    `signal_direction` classification (no new buy/sell probability threshold
+    invented here), so this is a pure read-only query over existing
+    `ml_signals` history, same pattern as T11's /ta/consensus/daily."""
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+        query_date = date
+        if carry_forward:
+            resolved = conn.execute(
+                "SELECT MAX(date) FROM ml_signals WHERE date <= ? AND model_name = ?",
+                [date, model_name],
+            ).fetchone()[0]
+            if resolved is None:
+                return SignalDowngradeResponse(count=0)
+            query_date = resolved
+
+        rows = conn.execute(
+            """
+            WITH current_sell AS (
+                SELECT ticker, date, buy_prob, sell_prob
+                FROM ml_signals
+                WHERE date = ? AND model_name = ? AND signal_direction = 'sell'
+            ),
+            prior_buy AS (
+                SELECT ticker, MAX(date) AS prior_buy_date
+                FROM ml_signals
+                WHERE model_name = ?
+                  AND signal_direction = 'buy'
+                  AND date < ?
+                  AND date >= CAST(? AS DATE) - INTERVAL (?) DAY
+                GROUP BY ticker
+            )
+            SELECT cs.ticker, pb.prior_buy_date, ps.buy_prob AS prior_buy_prob,
+                   cs.date AS current_date, cs.sell_prob AS current_sell_prob,
+                   cs.buy_prob AS current_buy_prob
+            FROM current_sell cs
+            JOIN prior_buy pb ON cs.ticker = pb.ticker
+            JOIN ml_signals ps
+                ON ps.ticker = pb.ticker AND ps.date = pb.prior_buy_date
+               AND ps.model_name = ?
+            ORDER BY pb.prior_buy_date DESC, cs.ticker
+            """,
+            [query_date, model_name, model_name, query_date, query_date, lookback_days, model_name],
+        ).fetchall()
+
+    if not rows:
+        return SignalDowngradeResponse(date=str(query_date), count=0)
+
+    result_rows = [
+        SignalDowngradeRow(
+            ticker=r[0], prior_buy_date=r[1], prior_buy_prob=r[2],
+            current_date=r[3], current_sell_prob=r[4], current_buy_prob=r[5],
+        )
+        for r in rows
+    ]
+    return SignalDowngradeResponse(date=str(query_date), rows=result_rows, count=len(result_rows))
 
 
 @router.get("/ml/{ticker}/{date}", response_model=List[MLSignalRow])
