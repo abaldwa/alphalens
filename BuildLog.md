@@ -13968,3 +13968,51 @@ train_gainer_survival.py`, `tests/unit/test_gainer_labeling_survival.py`,
 `feature/backlog-burn-ml22-ml29-ml33dev`, branched from
 `chore/backlog-decisions-and-a22-scope`. Not pushed, no PR opened, no
 merge to master — local commits only, per instructions.
+
+## fno_data Shadow-Table Bug Found + Fixed During A26 Retry (2026-07-13)
+
+### Task
+Retrying A26's force-run (compute_features cascade for 2026-07-03/06/07)
+surfaced real failures: 2026-07-03's `run_models` timed out, and both
+2026-07-06/07 failed `sanity_check` on 16 all-NaN F&O/options-derived
+columns (`pcr_oi`, `iv_call`/`iv_put`, `max_pain_level`, etc).
+
+### Root cause
+`fno_data` (per the A50 2026-07-10 migration) is meant to live entirely in
+a separate companion file (`alphalens_fno_data.duckdb`, attached as
+`fno_db`), so `datastore/staging/publish.py` can publish it via an atomic
+file-swap instead of rewriting 121M rows in place. Direct inspection
+(`information_schema.tables`) found a **second, stray `fno_data` table
+still living in the main `alphalens.duckdb` file's own `main` schema** —
+0 rows, correct schema, no code anywhere explicitly references it (a
+leftover from before the A50 split, never dropped). The connection's
+`search_path` is `'main,fno_db.main'` — `main` first — so every
+*unqualified* `fno_data` reference (which is all of them; that's the
+whole point of the A50 ATTACH+search_path design) silently resolved to
+this empty shadow table instead of the real, correctly-populated
+`fno_db.fno_data` (120,723,287 rows, 2015-01-01 to 2026-07-10). This
+explains the 16 NaN F&O columns exactly, and predates this session
+entirely (confirmed via `journalctl`-adjacent evidence: this has nothing
+to do with today's crash).
+
+### Fix
+Verified 0 rows twice (once immediately before the drop, inside the same
+write transaction) and confirmed no code references
+`alphalens.main.fno_data`/`alphalens.fno_data` anywhere in the repo, then
+(with explicit user sign-off, since Auto Mode's safety classifier
+correctly flagged an unprompted `DROP TABLE` against production as too
+destructive to run without it): `DROP TABLE alphalens.main.fno_data`.
+Verified post-drop: `information_schema.tables` now shows exactly one
+`fno_data` (in `fno_db`), and an unqualified `SELECT COUNT(*) FROM
+fno_data` correctly returns 120,723,287.
+
+### Follow-up
+Re-ran A26's force-run cascade after the fix (see next entry once it
+completes) to confirm the F&O-derived sanity_check failures are actually
+resolved, and to retry 2026-07-03's timed-out `run_models`.
+
+### Files changed
+None (this was a live data-layer fix, not a code change — the underlying
+`_attach_fno_db`/search_path design in `datastore/api/db.py` is correct;
+the bug was a stray leftover table from before that design existed, not a
+flaw in the design itself).
