@@ -73,6 +73,10 @@ NORMALISED_TABLE_COLUMNS = {
         "current_tax_assets", "borrowings_current", "borrowings_noncurrent",
         "deferred_tax_liabilities", "provisions_current", "provisions_noncurrent",
         "equity_share_capital", "other_equity", "non_controlling_interest", "non_current_liabilities",
+        # [AS BUILT, A36 fix 2026-07-09] row-level provenance — see
+        # create_normalised.py's column comment and
+        # features/fundamental_source_priority.py.
+        "fundamentals_source", "fundamentals_source_priority",
     },
     "shareholding": {
         "ticker", "quarter_end_date", "filing_date", "promoter_pct",
@@ -80,6 +84,15 @@ NORMALISED_TABLE_COLUMNS = {
         # [AS BUILT, P2.6] Trendlyne StratQ superstar-investor tracking — `shareholding`
         # IS this project's "governance" store (12_platform_architecture.md line 320).
         "superstar_flag", "superstar_change",
+    },
+    # [AS BUILT, CA4 2026-07-05, added to this rebuild-from-scratch schema
+    # 2026-07-11 per FeatureBacklog.md CA4 follow-up] Fyers cross-validation
+    # tracking for corporate_actions rows — see create_normalised.py's
+    # column comment and scripts/validate_corporate_actions_fyers.py.
+    "corporate_actions_validation": {
+        "ticker", "ex_date", "action_type", "ratio",
+        "expected_price_factor", "observed_price_factor", "pct_diff",
+        "validation_status", "fyers_validated_at", "needs_retrain", "notes",
     },
     "macro_indicators": {"date", "indicator", "value"},
     "stock_master": {

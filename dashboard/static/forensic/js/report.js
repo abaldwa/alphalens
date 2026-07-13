@@ -1,8 +1,9 @@
 // dashboard/static/forensic/js/report.js — FOREN-F Investigation Report
 //
 // This is a real-data report builder, not a generative/LLM report: every
-// sentence is a template populated from real ForensicRow fields. Export is
-// browser print-to-PDF (window.print()) — zero new dependency.
+// sentence is a template populated from real ForensicRow fields. FO6 —
+// export is a real server-side PDF (datastore/api/routers/forensic.py's
+// GET /{ticker}/report/pdf, reportlab-rendered), not just window.print().
 renderAppShell("forensic", "report");
 TickerPicker.attach("ticker-input");
 
@@ -38,8 +39,9 @@ function load() {
         el("div", { class: "card", html: `<div style="font-size:13px;line-height:1.8">${lines.join("<br>")}</div>` }, [])
       );
       c.appendChild(
-        el("div", { style: "margin-top:12px;text-align:center" }, [
-          el("button", { onclick: "window.print()" }, ["📄 Print / Export as PDF"]),
+        el("div", { style: "margin-top:12px;text-align:center;display:flex;gap:8px;justify-content:center" }, [
+          el("button", { onclick: `window.location.href='${API_BASE}/api/v1/signals/ml/forensic/${ticker}/report/pdf'` }, ["Download PDF"]),
+          el("button", { onclick: "window.print()" }, ["Print"]),
         ])
       );
     })

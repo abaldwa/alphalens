@@ -50,6 +50,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+import httpx
 import numpy as np
 import pandas as pd
 
@@ -407,6 +408,13 @@ def compute_fundamental_features_panel(
             feats = compute_fundamental_features(
                 client, ticker, as_of, pre_loaded_rows=pre_rows, ticker_ohlcv=t_ohlcv
             )
+        except httpx.RequestError as exc:
+            logger.error(
+                f"Fundamentals fetch failed for {ticker} with a connection error ({exc}) — "
+                "DataStore API is very likely unreachable; aborting the panel build rather than "
+                "silently writing NaN fundamentals for the rest of the universe"
+            )
+            raise
         except Exception as exc:
             logger.warning(f"fundamental features failed for {ticker}: {exc}")
             feats = {f: np.nan for f in FUNDAMENTAL_FEATURES}

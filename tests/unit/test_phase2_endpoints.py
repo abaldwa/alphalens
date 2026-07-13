@@ -184,6 +184,83 @@ class TestForensicEndpoint:
         response = client.get("/api/v1/signals/ml/forensic/MULTIDATE", params={"as_of": "2026-04-01"})
         assert response.json()["forensic_composite"] == 30.0
 
+    def test_benford_detail_json_round_trip(self, client):
+        """FO5: the full chi-square/p-value/per-digit distribution payload
+        (not just the aggregate benford_mad float) survives a write+read."""
+        import json
+
+        detail = {
+            "benford_revenue_chi2": 12.3,
+            "benford_revenue_p_value": 0.14,
+            "benford_revenue_mad": 0.012,
+            "benford_revenue_digit_distribution": [0.30, 0.18, 0.12, 0.10, 0.08, 0.07, 0.06, 0.05, 0.04],
+            "benford_revenue_n_obs": 16,
+            "benford_expected_distribution": [0.301, 0.176, 0.125, 0.097, 0.079, 0.067, 0.058, 0.051, 0.046],
+            "benford_mad": 0.012,
+        }
+        r = client.post(
+            "/api/v1/signals/ml/forensic/write",
+            json={"date": "2026-06-01", "ticker": "DIGITCO", "benford_mad": 0.012,
+                  "benford_detail_json": json.dumps(detail)},
+        )
+        assert r.status_code == 200, r.text
+
+        response = client.get("/api/v1/signals/ml/forensic/DIGITCO")
+        body = response.json()
+        assert body["benford_mad"] == 0.012
+        round_tripped = json.loads(body["benford_detail_json"])
+        assert round_tripped["benford_revenue_n_obs"] == 16
+        assert len(round_tripped["benford_revenue_digit_distribution"]) == 9
+        assert round_tripped["benford_revenue_p_value"] == 0.14
+
+
+class TestForensicUniverseScan:
+    """FO7: on-demand universe-scan trigger, POST /api/v1/signals/ml/forensic/scan/run.
+
+    score_universe()'s own real-scoring orchestration (per-ticker isolation,
+    write gating) already has dedicated coverage in test_score_forensic.py
+    (mocked DataStoreClient + a real trained ForensicMLModel). This test
+    only exercises the router's own wiring: universe loading, the `limit`
+    bound, and response shape — so it stubs score_universe itself rather
+    than re-running the full classical+ML scoring pipeline end-to-end.
+    """
+
+    def test_scan_run_bounds_universe_and_reports_results(self, client, monkeypatch):
+        import config.universe as universe_module
+        from systems.ml_signal_engine.inference import score_forensic as score_forensic_module
+
+        monkeypatch.setattr(
+            universe_module, "get_tickers",
+            lambda: ["SCANCO1", "SCANCO2", "SCANCO3", "SCANCO4"],
+        )
+
+        seen_tickers = {}
+
+        def fake_score_universe(tickers, write=True):
+            seen_tickers["tickers"] = list(tickers)
+            return {t: True for t in tickers[:-1]} | {tickers[-1]: False} if tickers else {}
+
+        monkeypatch.setattr(score_forensic_module, "score_universe", fake_score_universe)
+
+        response = client.post("/api/v1/signals/ml/forensic/scan/run", params={"limit": 2})
+        assert response.status_code == 200, response.text
+        body = response.json()
+
+        # Bounded to limit=2 even though the fake universe has 4 tickers.
+        assert seen_tickers["tickers"] == ["SCANCO1", "SCANCO2"]
+        assert body["scanned"] == 2
+        assert body["succeeded"] == 1
+        assert body["failed"] == 1
+
+    def test_scan_run_empty_universe_returns_zero_scanned(self, client, monkeypatch):
+        import config.universe as universe_module
+
+        monkeypatch.setattr(universe_module, "get_tickers", lambda: [])
+
+        response = client.post("/api/v1/signals/ml/forensic/scan/run")
+        assert response.status_code == 200
+        assert response.json()["scanned"] == 0
+
     def test_route_not_swallowed_by_signals_ml_ticker_date_wildcard(self, client):
         """Regression test for the route-ordering bug caught while wiring
         this router into main.py — see main.py's module comment."""

@@ -172,3 +172,64 @@ class TestBuildFeatureMatrix:
         assert expected.exists()
         roundtrip = pd.read_parquet(expected)
         assert roundtrip.shape[0] == 1
+
+
+class TestChunkedComputationMatchesUnchunked:
+    """A47 (2026-07-10): the critical regression test — chunking
+    technical/intraday/hmm/pnd/adv_tech/patterns must produce numerically
+    identical output to computing them in one full-universe pass. This is
+    the test that proves chunking is safe: any future change that makes
+    chunk boundaries leak into a per-ticker computation (e.g. a rolling
+    window accidentally spanning a chunk boundary) would fail this."""
+
+    @pytest.fixture
+    def multi_ticker_client(self):
+        rows = {
+            t: _make_ohlcv_rows(300, seed=i)
+            for i, t in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
+        }
+        bm_rows = {name: _make_ohlcv_rows(300, seed=hash(name) % 1000) for name in BENCHMARK_TICKERS.values()}
+        return _FakeDataStoreClient({**rows, **bm_rows})
+
+    def test_small_chunk_size_matches_single_chunk_result(self, multi_ticker_client, monkeypatch):
+        import config.settings as settings
+
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+
+        # Single chunk (chunk size >= universe size) — everything in one pass.
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 100)
+        mat_unchunked = build_feature_matrix(
+            target_date, tickers, client=multi_ticker_client, save=False, compute_hmm=False
+        )
+
+        # Force many small chunks (chunk size 2 -> 3 chunks for 6 tickers).
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 2)
+        mat_chunked = build_feature_matrix(
+            target_date, tickers, client=multi_ticker_client, save=False, compute_hmm=False
+        )
+
+        mat_unchunked = mat_unchunked.sort_values("ticker").reset_index(drop=True)
+        mat_chunked = mat_chunked.sort_values("ticker").reset_index(drop=True)
+        pd.testing.assert_frame_equal(mat_unchunked, mat_chunked)
+
+    def test_single_ticker_chunks_match_full_pass(self, multi_ticker_client, monkeypatch):
+        """Most extreme case: chunk size 1 -- every ticker computed alone."""
+        import config.settings as settings
+
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 100)
+        mat_unchunked = build_feature_matrix(
+            target_date, tickers, client=multi_ticker_client, save=False, compute_hmm=False
+        )
+
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 1)
+        mat_chunked = build_feature_matrix(
+            target_date, tickers, client=multi_ticker_client, save=False, compute_hmm=False
+        )
+
+        mat_unchunked = mat_unchunked.sort_values("ticker").reset_index(drop=True)
+        mat_chunked = mat_chunked.sort_values("ticker").reset_index(drop=True)
+        pd.testing.assert_frame_equal(mat_unchunked, mat_chunked)

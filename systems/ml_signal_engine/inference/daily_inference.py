@@ -57,7 +57,7 @@ from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel
 from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy
 from systems.ml_signal_engine.models.hmm.regime_detector import compute_hmm_observables
 from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector
-from systems.ml_signal_engine.models.signal.base_signal_model import CLASS_NAMES
+from systems.ml_signal_engine.models.signal.base_signal_model import CLASS_NAMES, BaseSignalModel
 from systems.ml_signal_engine.models.signal.meta_labeler import MetaLabeler
 from systems.ml_signal_engine.models.signal.signal_5d import Signal5DModel
 from systems.ml_signal_engine.models.signal.signal_21d import Signal21DModel
@@ -166,7 +166,7 @@ def _load_conformal(models_dir: Path):
     return joblib.load(candidates[-1])
 
 
-def _compute_shap_top5(signal_model: Signal5DModel, X: pd.DataFrame, direction: pd.Series) -> Dict[str, str]:
+def _compute_shap_top5(signal_model: "BaseSignalModel", X: pd.DataFrame, direction: pd.Series) -> Dict[str, str]:
     """
     FutureDevelopment.md #16: top-5 |SHAP value| features per ticker for
     signal_5d's LightGBM classifier, serialized as JSON for the
@@ -253,6 +253,21 @@ def _step_psi_check(feature_matrix: pd.DataFrame, psi_baseline: Optional[dict]) 
     ingestion/quality/baseline_runner.py hasn't been run (e.g. first-ever
     pipeline run) is a data-availability gap, not a reason to block
     inference on day one.
+
+    A55 (2026-07-11): deliberately NOT chunked, unlike _step_pnd_filter/
+    _step_signals_and_meta below. PSI (population stability index) is a
+    genuinely cross-sectional statistic — it compares today's full
+    per-feature DISTRIBUTION against the baseline distribution, not a
+    per-ticker value. Splitting the universe into chunks and computing PSI
+    per chunk would compare each chunk's much-smaller, non-representative
+    sub-distribution against the baseline and silently produce wrong (and
+    inconsistent-across-chunks) drift numbers — exactly the kind of
+    statistic A47's matrix_builder.py audit excluded from chunking
+    (fundamental/mf_holdings/multibagger, for the same "real cross-ticker
+    aggregation" reason). CORE_TECHNICAL_FEATURES x ~2,317 tickers is a
+    small, bounded DataFrame slice (tens of MB at most) — nowhere near the
+    per-ticker model-scoring steps' memory footprint — so there is no
+    memory-pressure reason to chunk it even if it were safe to.
     """
     monitor = PSIMonitor()
     try:
@@ -273,23 +288,47 @@ def _step_psi_check(feature_matrix: pd.DataFrame, psi_baseline: Optional[dict]) 
 def _step_pnd_filter(
     pnd_feature_matrix: pd.DataFrame, run_date: date_type, client: httpx.Client, api_base_url: str, models_dir: Path
 ) -> set:
-    """SPEC-MODEL-006: score every ticker, write each row, return the set of blocked tickers."""
+    """SPEC-MODEL-006: score every ticker, write each row, return the set of blocked tickers.
+
+    A55 (2026-07-11): scored/written in ticker CHUNKS (same
+    resource_guard.adaptive_chunk_size pattern as A47's
+    _compute_chunked_ticker_independent_panels in features/matrix_builder.py)
+    instead of one full-universe predict_full() call. pnd_model.predict_full
+    is per-ticker-independent (no cross-ticker groupby/rank), so chunking
+    changes nothing about its output — only how much of `out` is held in
+    memory at once. The model object itself is loaded ONCE outside the loop
+    (it is small and constant-size regardless of ticker count; reloading it
+    per chunk would be pure waste, not a memory fix)."""
+    from ingestion.scheduler.resource_guard import adaptive_chunk_size
+
+    from config.settings import PIPELINE_MEMORY_CEILING_MB, SCREENER_BATCH_EXPORT_CHUNK_SIZE
+
     pnd_model = _load_model(PnDDetector, PND_MODEL_NAME, models_dir)
     feature_cols = [c for c in PND_FEATURES if c in pnd_feature_matrix.columns]
-    out = pnd_model.predict_full(pnd_feature_matrix.set_index("ticker")[feature_cols])
+    indexed = pnd_feature_matrix.set_index("ticker")[feature_cols]
+    tickers = list(indexed.index)
 
     blocked = set()
-    for ticker, row in out.iterrows():
-        if bool(row["pnd_block"]):
-            blocked.add(ticker)
-        _write_signal(
-            client, api_base_url,
-            {
-                "date": run_date.isoformat(), "ticker": ticker, "model_name": PND_MODEL_NAME, "model_version": "1.0",
-                "pnd_score": None if pd.isna(row["pnd_score"]) else float(row["pnd_score"]),
-                "pnd_phase": row["pnd_phase"], "pnd_block": bool(row["pnd_block"]),
-            },
-        )
+    i = 0
+    while i < len(tickers):
+        chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
+        chunk_tickers = tickers[i : i + chunk_size]
+        i += chunk_size
+
+        out = pnd_model.predict_full(indexed.loc[chunk_tickers])
+        for ticker, row in out.iterrows():
+            if bool(row["pnd_block"]):
+                blocked.add(ticker)
+            _write_signal(
+                client, api_base_url,
+                {
+                    "date": run_date.isoformat(), "ticker": ticker, "model_name": PND_MODEL_NAME,
+                    "model_version": "1.0",
+                    "pnd_score": None if pd.isna(row["pnd_score"]) else float(row["pnd_score"]),
+                    "pnd_phase": row["pnd_phase"], "pnd_block": bool(row["pnd_block"]),
+                },
+            )
+        del out
     return blocked
 
 
@@ -307,11 +346,42 @@ def _step_signals_and_meta(
     is empty — rather than letting sklearn's "0 samples" ValueError
     propagate (caught via a live smoke test: a synthetic, unrealistic
     P&D feature matrix blocked all 10 test tickers and crashed here).
+
+    A55 (2026-07-11, real production OOM incident — see BuildLog.md): this
+    is the step that actually blew up alphalens-scheduler.service's memory
+    ceiling during a 6-day catch-up backfill (~2,317-ticker full universe).
+    It is the heaviest per-run step by far — 5 models (signal_5d, meta,
+    signal_21d, signal_63d, conformal) each scoring the FULL eligible
+    cross-section at once, plus a SHAP TreeExplainer pass (shap_values
+    returns an (n_samples, n_features, n_classes) array — for ~150
+    features x 3 classes x 2,317 tickers that is a large dense float64
+    array held in memory all at once), all before a single row is written.
+    Scoring/SHAP/writing is now done in ticker CHUNKS (same
+    resource_guard.adaptive_chunk_size pattern as A47/A55's _step_pnd_filter
+    above) — each model's predict_signals/predict/predict_full/SHAP calls
+    are per-row-independent (no cross-ticker aggregation), so chunking the
+    ROWS they're called on cannot change any individual row's output, only
+    how many rows' intermediate arrays are held in memory simultaneously.
+    Models themselves are loaded ONCE outside the chunk loop — model
+    objects are constant-size regardless of ticker count, so reloading
+    them per chunk would add I/O cost for no memory benefit.
     """
     eligible = feature_matrix[~feature_matrix["ticker"].isin(blocked_tickers)].set_index("ticker")
     if eligible.empty:
         logger.warning("daily_inference: no eligible (non-P&D-blocked) tickers to score today")
         return pd.DataFrame()
+
+    # ML24 (2026-07-11): tag every written row with whether its ticker was in
+    # the ADTV-curated set the live model was actually trained on — models
+    # still score the full universe (pooled panel models, not per-ticker
+    # artifacts), this is purely an out-of-distribution flag for the UI.
+    from config.training_universe import load_current_training_universe
+
+    try:
+        training_universe_set = set(load_current_training_universe())
+    except Exception as exc:
+        logger.warning(f"daily_inference: could not load training universe, in_training_universe left null today ({exc})")
+        training_universe_set = None
 
     signal_model = _load_model(Signal5DModel, SIGNAL_MODEL_NAME, models_dir)
     meta_model = _load_model(MetaLabeler, META_MODEL_NAME, models_dir)
@@ -364,72 +434,105 @@ def _step_signals_and_meta(
     # feature subset any given model version was trained on.
     X = eligible
 
-    proba = signal_model.predict_signals(X)
-    direction = signal_model.predict(X)  # threshold-based call (SPEC-MODEL-007), not a bare probability argmax
-    meta_out = meta_model.predict_full(X)
+    from ingestion.scheduler.resource_guard import adaptive_chunk_size
 
-    # FutureDevelopment.md #16: SHAP top-5 per ticker for signal_5d's
-    # predicted class. One bad ticker's/whole-batch SHAP failure must not
-    # block signal_5d/meta from being written — this is enrichment, not a
-    # required column (shap_top5_json is Optional in the schema).
-    try:
-        shap_top5 = _compute_shap_top5(signal_model, X, direction)
-    except Exception as exc:
-        shap_top5 = {}
-        logger.warning(f"daily_inference: SHAP computation failed, shap_top5_json left null today ({exc})")
+    from config.settings import PIPELINE_MEMORY_CEILING_MB, SCREENER_BATCH_EXPORT_CHUNK_SIZE
 
-    # FutureDevelopment.md #14: conformal_lower/upper for signal_5d, scored
-    # against CORE_TECHNICAL_FEATURES only (see the load-time comment above
-    # for why it can't take the full 150-col X).
-    conformal_intervals = None
-    if conformal is not None:
+    conformal_cols = [c for c in CORE_TECHNICAL_FEATURES if c in X.columns]
+
+    tickers = list(X.index)
+    result_chunks: List[pd.DataFrame] = []
+    i = 0
+    while i < len(tickers):
+        chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
+        chunk_tickers = tickers[i : i + chunk_size]
+        i += chunk_size
+
+        Xc = X.loc[chunk_tickers]
+
+        proba = signal_model.predict_signals(Xc)
+        # threshold-based call (SPEC-MODEL-007), not a bare probability argmax
+        direction = signal_model.predict(Xc)
+        meta_out = meta_model.predict_full(Xc)
+
+        # FutureDevelopment.md #16: SHAP top-5 per ticker for signal_5d's
+        # predicted class. One bad chunk's SHAP failure must not block
+        # signal_5d/meta from being written for that chunk — this is
+        # enrichment, not a required column (shap_top5_json is Optional
+        # in the schema).
         try:
-            conformal_cols = [c for c in CORE_TECHNICAL_FEATURES if c in X.columns]
-            conformal_intervals = conformal.predict_interval(X[conformal_cols])
+            shap_top5 = _compute_shap_top5(signal_model, Xc, direction)
         except Exception as exc:
-            logger.warning(f"daily_inference: conformal scoring failed, conformal_lower/upper left null today ({exc})")
+            shap_top5 = {}
+            logger.warning(f"daily_inference: SHAP computation failed, shap_top5_json left null today ({exc})")
 
-    for ticker in X.index:
-        payload = {
-            "date": run_date.isoformat(), "ticker": ticker, "model_name": SIGNAL_MODEL_NAME, "model_version": "1.0",
-            "signal_direction": CLASS_NAMES[int(direction.loc[ticker])],
-            "buy_prob": float(proba.loc[ticker, "signal_buy_prob"]),
-            "hold_prob": float(proba.loc[ticker, "signal_hold_prob"]),
-            "sell_prob": float(proba.loc[ticker, "signal_sell_prob"]),
-            "q10_return": float(proba.loc[ticker, "signal_q10"]),
-            "q50_return": float(proba.loc[ticker, "signal_q50"]),
-            "q90_return": float(proba.loc[ticker, "signal_q90"]),
-        }
-        if conformal_intervals is not None and ticker in conformal_intervals.index:
-            payload["conformal_lower"] = float(conformal_intervals.loc[ticker, "conformal_lower"])
-            payload["conformal_upper"] = float(conformal_intervals.loc[ticker, "conformal_upper"])
-        if ticker in shap_top5:
-            payload["shap_top5_json"] = shap_top5[ticker]
-        _write_signal(client, api_base_url, payload)
-        _write_signal(
-            client, api_base_url,
-            {
-                "date": run_date.isoformat(), "ticker": ticker, "model_name": META_MODEL_NAME, "model_version": "1.0",
-                "meta_label": "act" if bool(meta_out.loc[ticker, "meta_label_act"]) else "no_act",
-                "meta_prob": float(meta_out.loc[ticker, "meta_label_prob"]),
-            },
-        )
+        # FutureDevelopment.md #14: conformal_lower/upper for signal_5d,
+        # scored against CORE_TECHNICAL_FEATURES only (see the load-time
+        # comment above for why it can't take the full 150-col X).
+        conformal_intervals = None
+        if conformal is not None:
+            try:
+                conformal_intervals = conformal.predict_interval(Xc[conformal_cols])
+            except Exception as exc:
+                logger.warning(
+                    f"daily_inference: conformal scoring failed, conformal_lower/upper left null today ({exc})"
+                )
 
-    # FutureDevelopment.md #14: signal_21d/signal_63d scoring — same
-    # BUY/HOLD/SELL + Q10/Q50/Q90 output contract as signal_5d, written as
-    # their own (date, ticker, model_name) rows (SPEC-DS-004), never
-    # blended into the signal_5d row itself.
-    for name, model in longer_horizon_models.items():
-        try:
-            lh_proba = model.predict_signals(X)
-            lh_direction = model.predict(X)
-        except Exception as exc:
-            logger.warning(f"daily_inference: {name} scoring failed for this batch, skipping it today ({exc})")
-            continue
-        for ticker in X.index:
+        for ticker in Xc.index:
+            payload = {
+                "date": run_date.isoformat(), "ticker": ticker, "model_name": SIGNAL_MODEL_NAME,
+                "model_version": "1.0",
+                "signal_direction": CLASS_NAMES[int(direction.loc[ticker])],
+                "buy_prob": float(proba.loc[ticker, "signal_buy_prob"]),
+                "hold_prob": float(proba.loc[ticker, "signal_hold_prob"]),
+                "sell_prob": float(proba.loc[ticker, "signal_sell_prob"]),
+                "q10_return": float(proba.loc[ticker, "signal_q10"]),
+                "q50_return": float(proba.loc[ticker, "signal_q50"]),
+                "q90_return": float(proba.loc[ticker, "signal_q90"]),
+            }
+            if training_universe_set is not None:
+                payload["in_training_universe"] = ticker in training_universe_set
+            if conformal_intervals is not None and ticker in conformal_intervals.index:
+                payload["conformal_lower"] = float(conformal_intervals.loc[ticker, "conformal_lower"])
+                payload["conformal_upper"] = float(conformal_intervals.loc[ticker, "conformal_upper"])
+            if ticker in shap_top5:
+                payload["shap_top5_json"] = shap_top5[ticker]
+            _write_signal(client, api_base_url, payload)
             _write_signal(
                 client, api_base_url,
                 {
+                    "date": run_date.isoformat(), "ticker": ticker, "model_name": META_MODEL_NAME,
+                    "model_version": "1.0",
+                    "meta_label": "act" if bool(meta_out.loc[ticker, "meta_label_act"]) else "no_act",
+                    "meta_prob": float(meta_out.loc[ticker, "meta_label_prob"]),
+                },
+            )
+
+        # FutureDevelopment.md #14: signal_21d/signal_63d scoring — same
+        # BUY/HOLD/SELL + Q10/Q50/Q90 output contract as signal_5d, written
+        # as their own (date, ticker, model_name) rows (SPEC-DS-004), never
+        # blended into the signal_5d row itself.
+        for name, model in longer_horizon_models.items():
+            try:
+                lh_proba = model.predict_signals(Xc)
+                lh_direction = model.predict(Xc)
+            except Exception as exc:
+                logger.warning(f"daily_inference: {name} scoring failed for this batch, skipping it today ({exc})")
+                continue
+
+            # ML24 (2026-07-11): this module's own comment previously claimed
+            # signal_21d/signal_63d SHAP was "already wired in" — false; SHAP
+            # was only ever computed for signal_5d above. _compute_shap_top5
+            # only touches _lgbm/_feature_names/_impute_transform, all present
+            # on every BaseSignalModel subclass, so it's reusable as-is here.
+            try:
+                lh_shap_top5 = _compute_shap_top5(model, Xc, lh_direction)
+            except Exception as exc:
+                lh_shap_top5 = {}
+                logger.warning(f"daily_inference: {name} SHAP computation failed, shap_top5_json left null today ({exc})")
+
+            for ticker in Xc.index:
+                lh_payload = {
                     "date": run_date.isoformat(), "ticker": ticker, "model_name": name, "model_version": "1.0",
                     "signal_direction": CLASS_NAMES[int(lh_direction.loc[ticker])],
                     "buy_prob": float(lh_proba.loc[ticker, "signal_buy_prob"]),
@@ -438,10 +541,22 @@ def _step_signals_and_meta(
                     "q10_return": float(lh_proba.loc[ticker, "signal_q10"]),
                     "q50_return": float(lh_proba.loc[ticker, "signal_q50"]),
                     "q90_return": float(lh_proba.loc[ticker, "signal_q90"]),
-                },
-            )
+                }
+                if training_universe_set is not None:
+                    lh_payload["in_training_universe"] = ticker in training_universe_set
+                if ticker in lh_shap_top5:
+                    lh_payload["shap_top5_json"] = lh_shap_top5[ticker]
+                _write_signal(
+                    client, api_base_url,
+                    lh_payload,
+                )
 
-    return proba.join(meta_out)
+        result_chunks.append(proba.join(meta_out))
+        del proba, direction, meta_out, shap_top5, conformal_intervals, Xc
+
+    if not result_chunks:
+        return pd.DataFrame()
+    return pd.concat(result_chunks)
 
 
 def _step_exit(

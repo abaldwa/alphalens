@@ -1,4 +1,16 @@
 
+> **Superseded 2026-07-08 — frozen historical record.** Ongoing backlog
+> tracking moved to `FeatureBacklog.md` (reorganized by area, ID scheme
+> A#/T#/F#/BI#/D#/FO#/CA#/ML# instead of this file's plain `#N`). This
+> file's content below is intentionally left unchanged/unrenumbered —
+> ~30 code comments across the live codebase (`daily_inference.py`,
+> `pipeline_scheduler.py`, `rule_based_exit_policy.py`, and others) cite
+> specific numbered items here (e.g. `FutureDevelopment.md #14`, `#25`,
+> `#28`) as the historical rationale for why something was built a
+> certain way, and those references would break if renumbered. For
+> current status of anything below, check `FeatureBacklog.md` first —
+> most items here have a matching (often more detailed) entry there.
+
 Improvement ideas surfaced during the truthful-mode "Explain-Me Walkthrough"
 series (PHASE X, prompts X.0–X.10) in `CLAUDE_CODE_PROMPTS.md`, plus the
 2026-07-04 architecture review. Reorganized 2026-07-04 by the code area each

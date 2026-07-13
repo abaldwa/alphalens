@@ -20,6 +20,7 @@ from ingestion.scheduler.pipeline_scheduler import (
     _STEP_DEPS,
     run_backfill,
     run_morning_catchup_sequence,
+    run_startup_sequence,
     run_steps_for_date,
 )
 
@@ -609,6 +610,26 @@ class TestJobDependency:
         assert succeeded == {"download_bhavcopy", "download_fno"}
         assert "adjust_prices" not in succeeded
 
+    def test_get_step_is_backfill_returns_recorded_flag(self):
+        """A43: CheckpointManager.get_step_is_backfill lets the DataStore API
+        join is_backfill onto ml_signals rows by (date, step_name) since
+        ml_signals (DuckDB) and pipeline_checkpoints (SQLite) can't be
+        joined in SQL directly."""
+        cm = CheckpointManager(in_memory=True)
+        live_date = date(2026, 7, 3)
+        backfilled_date = date(2026, 7, 6)
+        cm.save_checkpoint(live_date, "write_signals", "success", is_backfill=False)
+        cm.save_checkpoint(backfilled_date, "write_signals", "success", is_backfill=True)
+
+        assert cm.get_step_is_backfill(live_date, "write_signals") is False
+        assert cm.get_step_is_backfill(backfilled_date, "write_signals") is True
+
+    def test_get_step_is_backfill_returns_none_when_no_checkpoint_row(self):
+        """No checkpoint row for (date, step_name) yet -> None, not False,
+        so API callers can distinguish 'known live' from 'unknown'."""
+        cm = CheckpointManager(in_memory=True)
+        assert cm.get_step_is_backfill(date(2026, 7, 3), "write_signals") is None
+
 
 # ===== Cross-process run lock (2026-07-05 race-condition fix) =====
 def _acquire_lock_in_subprocess(lock_path_str, hold_seconds, result_queue):
@@ -668,3 +689,98 @@ class TestPipelineRunLock:
             assert first is True
         with pipeline_run_lock() as second:
             assert second is True
+
+
+class TestPipelineRunsStartedFinishedRecording:
+    """Pipeline & Monitoring Remediation Phase 1 (2026-07-10): reproduces
+    the real incident where bhavcopy download succeeded but
+    compute_features failed, yet nothing on the Ops dashboard clearly
+    reflected "this run did not finish cleanly" for an operator glancing
+    at it. Root cause: pipeline_runs previously only ever got a row at
+    the END of a run (_record_pipeline_run) — a process killed mid-run
+    (e.g. OOM) left NO row at all for that date, so GET /api/v1/ops/runs
+    kept showing a PRIOR day's success as "most recent". Now a 'running'
+    row is written the moment a run starts and updated in place once it
+    finishes, so a crash leaves a diagnosable stale 'running' row instead
+    of silence."""
+
+    def _seed_db(self, tmp_path):
+        from datastore.schema.create_signals import create_pipeline_runs_schema
+
+        db_path = tmp_path / "pipeline_log.db"
+        create_pipeline_runs_schema(db_path=db_path)
+        return db_path
+
+    def _rows(self, db_path):
+        from datastore.api.db import get_sqlite_connection
+
+        with get_sqlite_connection(db_path) as conn:
+            return conn.execute(
+                "SELECT date, started_at, completed_at, status, error_message "
+                "FROM pipeline_runs ORDER BY run_id"
+            ).fetchall()
+
+    def test_successful_run_writes_one_row_running_then_success(self, tmp_path, monkeypatch):
+        db_path = self._seed_db(tmp_path)
+        monkeypatch.setattr(gap_detector, "is_nse_holiday", lambda d: False)
+
+        def always_succeeds(run_date, step_name):
+            return None
+
+        ckpt = CheckpointManager(in_memory=True)
+        today = date(2026, 6, 10)
+
+        ok = run_startup_sequence(always_succeeds, ckpt, today=today, db_path=db_path)
+
+        assert ok is True
+        rows = self._rows(db_path)
+        # Exactly one row for the whole invocation, in its FINAL state —
+        # not two separate rows (the started-row was UPDATEd, not a
+        # second row INSERTed alongside it).
+        assert len(rows) == 1
+        assert rows[0][3] == "success"
+        assert rows[0][2] is not None  # completed_at populated
+
+    def test_partial_failure_run_ends_in_failed_status_not_stale_success(self, tmp_path, monkeypatch):
+        """The exact 2026-07-10 incident shape: download_bhavcopy (and
+        every step before compute_features) succeeds, compute_features
+        raises. The run must end recorded as 'failed', never 'success' —
+        this is the direct regression test for the false-completed bug."""
+        db_path = self._seed_db(tmp_path)
+        monkeypatch.setattr(gap_detector, "is_nse_holiday", lambda d: False)
+
+        def fails_at_compute_features(run_date, step_name):
+            if step_name == "compute_features":
+                raise RuntimeError("feature engineering crashed")
+
+        ckpt = CheckpointManager(in_memory=True)
+        today = date(2026, 6, 10)
+
+        ok = run_startup_sequence(fails_at_compute_features, ckpt, today=today, db_path=db_path)
+
+        assert ok is False
+        rows = self._rows(db_path)
+        assert len(rows) == 1
+        assert rows[0][3] == "failed"
+
+    def test_crash_before_finish_leaves_diagnosable_running_row(self, tmp_path):
+        """Simulates a process kill mid-run: only the 'started' half of
+        the started/finished pair runs (as if the process died before
+        _record_pipeline_run could execute). Must leave a row behind
+        (status='running') rather than nothing — this is what makes the
+        stale run detectable at all, instead of a prior day's success
+        silently remaining "most recent"."""
+        from ingestion.scheduler.pipeline_scheduler import _record_pipeline_run_started
+
+        db_path = self._seed_db(tmp_path)
+        started_at = date(2026, 7, 10)
+
+        from config.timezone import now_ist
+
+        run_id = _record_pipeline_run_started(started_at, now_ist(), db_path=db_path)
+
+        rows = self._rows(db_path)
+        assert len(rows) == 1
+        assert rows[0][3] == "running"
+        assert rows[0][2] is None  # completed_at still NULL
+        assert isinstance(run_id, int)

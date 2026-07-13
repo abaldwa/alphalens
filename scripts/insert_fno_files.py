@@ -184,7 +184,10 @@ def main() -> None:
         universe = set(get_tickers())
         logger.info("Universe filter: %d tickers", len(universe))
 
+    from datastore.api.db import _attach_fno_db
+
     conn = duckdb.connect(str(DUCKDB_PATH))
+    _attach_fno_db(conn, read_only=False)
     try:
         existing_dates = {
             r[0] for r in conn.execute(
@@ -255,7 +258,7 @@ def main() -> None:
 
         if not args.dry_run and args.publish_mode == "staged" and staged_batches:
             from datastore.staging.gate import null_check_validator, stage_via_sql
-            from datastore.staging.publish import publish_run_lock, publish_table
+            from datastore.staging.publish import publish_fno_data, publish_run_lock
 
             # fno_data is 100M+ rows — merge entirely inside DuckDB
             # (stage_via_sql) rather than round-tripping the whole
@@ -281,7 +284,7 @@ def main() -> None:
                 if not result.ok:
                     logger.error("Staging gate rejected the entire new batch — nothing published.")
                     sys.exit(1)
-                published_rows = publish_table(conn, "fno_data")
+                published_rows = publish_fno_data(conn)
                 logger.info(
                     "Staged publish: %d new rows staged, %d rejected, %d now in fno_data",
                     result.staged_rows, result.rejected_rows, published_rows,

@@ -25,17 +25,28 @@ from config.settings import EXIT_REDUCE_THRESHOLD, EXIT_URGENT_THRESHOLD
 from scripts.paper_trading_tracker import PaperTradingTracker
 from systems.ml_signal_engine.models.exit.exit_signal import (
     EXIT_TYPES,
+    MIN_CLOSED_POSITIONS,
     PND_EXIT_SCORE_THRESHOLD,
     ExitSignalModel,
     load_exit_training_data_from_db,
 )
 
 
-def _load_real_exit_data(min_closed_positions: int = 1):
+def _load_real_exit_data(min_closed_positions: int = MIN_CLOSED_POSITIONS):
     """
     Load real closed paper-trading positions, skipping the test if not
     enough real history has accumulated yet. There is no synthetic-data
     fallback — see BuildLog.md "Real data sourcing — Exit Signal".
+
+    2026-07-10: previously defaulted to min_closed_positions=1, overriding
+    the module's own MIN_CLOSED_POSITIONS=200 floor ("below this,
+    urgency/type/CoxPH fits are too noisy to trust" — exit_signal.py's own
+    comment). That let this helper hand back as few as 1-3 real rows,
+    which is mathematically too few for lifelines' CoxPH to converge
+    (ConvergenceError: "delta contains nan value(s)") rather than
+    triggering the intended graceful pytest.skip. Using the real default
+    restores the skip-until-enough-real-data behavior these tests were
+    actually designed around.
     """
     try:
         return load_exit_training_data_from_db(min_closed_positions=min_closed_positions)

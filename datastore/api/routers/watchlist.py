@@ -28,6 +28,7 @@ import pandas as pd
 from fastapi import APIRouter, Query
 
 from config.settings import DUCKDB_PATH, SIGNALS_DUCKDB_PATH
+from config.training_universe import filter_recommendable
 from config.universe import load_universe_raw
 from datastore.api.db import get_duckdb_connection
 from datastore.api.schemas import DailyWatchlistResponse, DailyWatchlistRow, WatchlistResponse
@@ -56,7 +57,13 @@ _ATR_MULTIPLIER = 1.5  # realistic-target fallback: horizon-scaled ATR band, use
 
 @router.get("/current", response_model=WatchlistResponse)
 async def get_watchlist_current() -> WatchlistResponse:
-    """Top 20 tickers by mb_probability, from the most recent ml_multibagger date."""
+    """Top 20 tickers by mb_probability, from the most recent ml_multibagger date.
+
+    ML24/ML27 (2026-07-11): MultiBagger is the one screen that does not
+    exclude sub-recommendation-floor (ADTV < 20cr/day) tickers — it splits
+    them into `low_liquidity_tickers` instead of the main `tickers` list,
+    each independently top-20-by-mb_probability (config/training_universe.py).
+    """
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         latest = conn.execute("SELECT MAX(date) FROM ml_multibagger").fetchone()
         latest_date = latest[0] if latest else None
@@ -68,16 +75,27 @@ async def get_watchlist_current() -> WatchlistResponse:
             SELECT {_SELECT_COLS} FROM ml_multibagger
             WHERE date = ? AND mb_probability IS NOT NULL
             ORDER BY mb_probability DESC
-            LIMIT ?
             """,
-            [latest_date, _TOP_N],
+            [latest_date],
         ).fetchall()
 
-    tickers = [dict(zip(_COLUMNS, r)) for r in rows]
+    all_df = pd.DataFrame([dict(zip(_COLUMNS, r)) for r in rows])
+    if all_df.empty:
+        return WatchlistResponse(implemented=True, notes=f"No multibagger scores for {latest_date}.")
+
+    recommendable_df = filter_recommendable(all_df).head(_TOP_N)
+    low_liq_df = all_df[~all_df["ticker"].isin(recommendable_df["ticker"])].head(_TOP_N)
+
+    tickers = recommendable_df.to_dict("records")
+    low_liquidity_tickers = low_liq_df.to_dict("records")
     return WatchlistResponse(
         tickers=tickers,
+        low_liquidity_tickers=low_liquidity_tickers,
         implemented=True,
-        notes=f"Top {len(tickers)} multibagger watchlist for {latest_date} (SPEC-UI-003).",
+        notes=(
+            f"Top {len(tickers)} multibagger watchlist for {latest_date} (SPEC-UI-003); "
+            f"{len(low_liquidity_tickers)} additional sub-Rs20cr-ADTV picks shown separately (ML27)."
+        ),
     )
 
 
@@ -116,7 +134,11 @@ async def get_daily_watchlist(
             if resolved_date is None:
                 resolved_date = str(query_date)
 
-            sig_rows = conn.execute(
+            # ML24 (2026-07-11): over-fetch by a buffer, then apply the ADTV
+            # recommendation floor in Python and truncate back to
+            # n_per_horizon — a straight SQL LIMIT here would let sub-floor
+            # tickers occupy slots that should go to recommendable ones.
+            sig_rows_raw = conn.execute(
                 """
                 SELECT ticker, buy_prob, signal_direction, q10_return, q50_return, q90_return
                 FROM ml_signals
@@ -128,8 +150,14 @@ async def get_daily_watchlist(
                 ORDER BY buy_prob DESC
                 LIMIT ?
                 """,
-                [query_date, model_name, query_date, n_per_horizon],
+                [query_date, model_name, query_date, n_per_horizon * 5],
             ).fetchall()
+            if not sig_rows_raw:
+                continue
+
+            raw_df = pd.DataFrame(sig_rows_raw, columns=["ticker", "buy_prob", "signal_direction", "q10_return", "q50_return", "q90_return"])
+            filtered_df = filter_recommendable(raw_df)
+            sig_rows = list(filtered_df.head(n_per_horizon).itertuples(index=False, name=None))
             if not sig_rows:
                 continue
 
@@ -196,5 +224,6 @@ async def get_daily_watchlist(
         date=resolved_date,
         rows=rows,
         multibagger=multibagger_resp.tickers,
+        low_liquidity_multibagger=multibagger_resp.low_liquidity_tickers,
         count=len(rows),
     )

@@ -47,31 +47,45 @@ NSE corporate-actions sourcing patterns already used elsewhere in this repo:
   data. `asset_quality_score`/`balance_sheet_manipulation_score` partially
   improve (their goodwill_ratio/noncash_assets_ratio/current_assets
   components remain NaN — see below).
-- STILL GENUINELY UNAVAILABLE (grepped for on a real live Screener page —
-  zero matches; not on Tijori, which has no verified live account in this
-  repo; not on any scrapeable NSE endpoint): goodwill, intangibles,
-  contingent_liabilities, subsidiary_count, loans_to_related_parties,
-  capex (free-tier cash-flow table doesn't expose it either — same gap
-  screener.py's module docstring already documents for `fcf`), and
-  current_assets/cash_and_equivalents (also already-documented free-tier
-  gaps). So `goodwill_ratio`, `contingent_liability_ratio`,
-  `subsidiary_count`, `loans_to_related`, `capex_to_assets`,
-  `intangibles_growth`, `off_balance_sheet_proxy`, `noncash_assets_ratio`
-  stay NaN until a real structured source is found — not fabricated.
-- Group E (governance/promoter risk) is ENTIRELY unavailable from any free
-  structured source investigated: `salary_to_pat`/`rpt_intensity` need
+- A54 correction (2026-07-10): the paragraph below was accurate against
+  screener.py alone but predates ingestion/scrapers/nse_xbrl_financials.py's
+  real "Integrated Filing — IndAS" parser, which populates several of these
+  columns from structured NSE data. Now REAL, non-fabricated, partial
+  coverage: `goodwill_ratio` (`goodwill`), `capex_to_assets` (`capex`, ~65%
+  coverage), `noncash_assets_ratio` (`current_assets`/`cash_and_equivalents`),
+  `intangibles_growth` (`intangible_assets`, 5,760/36,346 rows — this
+  function previously read the wrong key, "intangibles" instead of
+  "intangible_assets", and always returned NaN regardless of data
+  availability; fixed same session), and Group E's `audit_qualification_flag`
+  (`audit_qualified_flag`, populated by `_parse_audit_qualification` from the
+  real structured "Details of Impact of Audit Qualification" section,
+  5,013/36,346 rows). These five should NOT be treated as structurally
+  sparse/allowlisted — their null rate is expected to keep improving as more
+  filings are scraped, same as any other partial-coverage NSE XBRL field.
+- STILL GENUINELY UNAVAILABLE (confirmed via direct inspection of the raw
+  NSE XBRL filing cache, not just a live Screener grep): `contingent_liabilities`
+  is only mentioned in unstructured prose (1.2% of filings, no consistent
+  regex-extractable phrasing) — no schema column exists. `subsidiary_count`,
+  `loans_to_related_parties` — also no schema column, no structured source
+  found. So `contingent_liability_ratio`, `subsidiary_count`,
+  `loans_to_related`, `off_balance_sheet_proxy` stay NaN until real
+  NLP-extraction work is scoped (tracked separately, out of scope here) —
+  not fabricated.
+- Group E's remaining 7 columns (all but `audit_qualification_flag`, see
+  above) are ENTIRELY unavailable from any free structured source
+  investigated: `salary_to_pat`/`rpt_intensity` need
   director_remuneration/related_party_transactions, which Screener only
   exposes via an "Experimental", Premium-gated, per-company-variable-schema
   RPT modal that still blanks the most recent 1-2 FYs (see screener.py's
-  docstring) — too unreliable to auto-aggregate. `audit_qualification_flag`,
-  `auditor_change_flag`, `cfo_tenure_months`, `board_independence`,
-  `director_resignation_count_4q`, `whistle_blower_policy` are corporate-
-  governance-report/annual-report/MCA21 data — grepped for on a live
-  Screener page (zero matches: no "auditor", "whistle", "independent
-  director", or "remuneration" text anywhere) and not published as
-  structured (non-PDF) data on any NSE/BSE endpoint this repo's
-  ingestion/scrapers/corporate_actions.py-style authenticated session can
-  reach. All 8 Group E columns remain NaN — real gap, not fabricated.
+  docstring) — too unreliable to auto-aggregate. `auditor_change_flag`,
+  `cfo_tenure_months`, `board_independence`, `director_resignation_count_4q`,
+  `whistle_blower_policy` are corporate-governance-report/annual-report/
+  MCA21 data — grepped for on a live Screener page (zero matches: no
+  "auditor", "whistle", "independent director", or "remuneration" text
+  anywhere) and not published as structured (non-PDF) data on any NSE/BSE
+  endpoint this repo's ingestion/scrapers/corporate_actions.py-style
+  authenticated session can reach. These 7 Group E columns remain NaN —
+  real gap, not fabricated.
 
 Cluster E.2 follow-up (2026-07-07)
 ------------------------------------
@@ -363,7 +377,10 @@ def compute_deep_forensic_features(
     subsidiaries = _get(latest, "subsidiary_count")
     loans_related = _get(latest, "loans_to_related_parties")
     capex = _get(latest, "capex")
-    intangibles = _get(latest, "intangibles")
+    # A54: schema/NSE-XBRL column is "intangible_assets", not "intangibles" —
+    # this key was wrong, so intangibles_growth was always NaN even though
+    # 5,760/36,346 rows have real data. Fixed the lookup key only, no schema change.
+    intangibles = _get(latest, "intangible_assets")
     current_assets = _get(latest, "current_assets")
     cash_equivalents = _get(latest, "cash_and_equivalents")
 
@@ -387,7 +404,7 @@ def compute_deep_forensic_features(
     # Intangibles growth YoY
     if len(fund_df) >= 5:
         yr_ago = fund_df.iloc[-5]  # approximately 1 year ago (4 quarters)
-        intangibles_prior = _get(yr_ago, "intangibles")
+        intangibles_prior = _get(yr_ago, "intangible_assets")
         if not np.isnan(intangibles) and not np.isnan(intangibles_prior) and intangibles_prior > 0:
             result["intangibles_growth"] = (intangibles - intangibles_prior) / intangibles_prior
 

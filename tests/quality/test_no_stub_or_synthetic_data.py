@@ -269,9 +269,10 @@ STUB_FUNCTION_ALLOWLIST: set[str] = set()
 # Whole packages that are intentionally-empty scaffolding today (Weeks
 # 33-38 of alphalens_docs/11_phase_delivery_plan.md — not yet built). Listed
 # explicitly so a NEW empty package elsewhere is still caught.
-KNOWN_STUB_PACKAGES = {
-    "systems/fundamental_analysis",
-}
+# (systems/fundamental_analysis was deleted 2026-07-10 per F3 — it was a
+# dead stub package with zero imports; real logic lives in
+# features/fundamental_composites.py.)
+KNOWN_STUB_PACKAGES: set[str] = set()
 
 
 def test_no_unallowlisted_stub_function_bodies():

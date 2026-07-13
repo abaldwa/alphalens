@@ -75,6 +75,9 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import httpx
+import json
+
 import numpy as np
 import pandas as pd
 
@@ -427,6 +430,13 @@ def compute_forensic_classical_features_panel(
     for ticker in tickers:
         try:
             feats = compute_forensic_classical_features(client, ticker, as_of)
+        except httpx.RequestError as exc:
+            logger.error(
+                f"Forensic classical features fetch failed for {ticker} with a connection error "
+                f"({exc}) — DataStore API is very likely unreachable; aborting the panel build "
+                "rather than silently writing NaN for the rest of the universe"
+            )
+            raise
         except Exception as exc:
             logger.warning(f"forensic classical features failed for {ticker}: {exc}")
             feats = {f: np.nan for f in FORENSIC_CLASSICAL_FEATURES}
@@ -475,7 +485,7 @@ def compute_forensic_classical_scores(
         return {
             "m_score": np.nan, "z_score": np.nan, "f_score": np.nan, "o_score": np.nan,
             "bankruptcy_prob": np.nan, "dechow_f_score": np.nan, "misstatement_prob": np.nan,
-            "sloan_accrual": np.nan, "benford_mad": np.nan,
+            "sloan_accrual": np.nan, "benford_mad": np.nan, "benford_detail_json": None,
             "forensic_classical_composite": np.nan, "flag": None, "n_models_used": 0,
         }
 
@@ -542,8 +552,32 @@ def compute_forensic_classical_scores(
 
     sloan = sloan_accrual({"ni": ni, "cfo": cfo, "ta": ta})
 
-    revenue_series = history["revenue"].dropna().tolist() if "revenue" in history else []
-    benford = benford_analysis({"revenue": revenue_series}) if revenue_series else {"benford_mad": np.nan}
+    # FO5 (2026-07-11): only `revenue` was ever passed to benford_analysis(),
+    # even though several other real quarterly line items exist in the same
+    # `history` frame — wiring more of them in gives a genuinely richer
+    # multi-series Benford read (a single-series test is weak evidence on
+    # its own) instead of the one-aggregate-float read this used to be.
+    _BENFORD_SERIES_COLS = ["revenue", "ebitda", "pat", "trade_receivables_current", "current_assets", "capex"]
+    benford_series_dict = {
+        col: history[col].dropna().tolist()
+        for col in _BENFORD_SERIES_COLS
+        if col in history and history[col].dropna().shape[0] >= 5
+    }
+    benford = benford_analysis(benford_series_dict) if benford_series_dict else {"benford_mad": np.nan}
+
+    def _nan_to_none(obj: Any) -> Any:
+        """Recursively replace float NaN with None so json.dumps produces
+        strict-JSON `null` (the dashboard's JS `JSON.parse` rejects the
+        bare `NaN` token Python's json module would otherwise emit)."""
+        if isinstance(obj, float) and np.isnan(obj):
+            return None
+        if isinstance(obj, dict):
+            return {k: _nan_to_none(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_nan_to_none(v) for v in obj]
+        return obj
+
+    benford_detail_json = json.dumps(_nan_to_none(benford))
 
     scores = {
         "m_score": beneish["m_score"],
@@ -566,6 +600,7 @@ def compute_forensic_classical_scores(
         "misstatement_prob": dechow["misstatement_prob"],
         "sloan_accrual": sloan["sloan_accrual"],
         "benford_mad": benford.get("benford_mad", np.nan),
+        "benford_detail_json": benford_detail_json,
         "forensic_classical_composite": composite["forensic_classical_composite"],
         "flag": composite["flag"],
         "n_models_used": composite["n_models_used"],

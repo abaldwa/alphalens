@@ -117,6 +117,7 @@ from bs4 import BeautifulSoup
 from config.settings import (
     DEFAULT_RETRY_COUNT,
     FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS,
+    SCREENER_BATCH_EXPORT_CHUNK_SIZE,
     SCREENER_PASSWORD,
     SCREENER_RATE_LIMIT_SLEEP_SECONDS,
     SCREENER_RAW_DIR,
@@ -124,6 +125,7 @@ from config.settings import (
     SHAREHOLDING_FILING_DELAY_DAYS,
 )
 from datastore.client import DataStoreClient
+from ingestion.scheduler.resource_guard import adaptive_chunk_size
 
 logger = logging.getLogger(__name__)
 
@@ -385,37 +387,105 @@ class ScreenerScraper:
         ----------
         tickers : list of str
         write : bool
-            If True (default), upserts via DataStoreClient.write_fundamentals/
+            If True (default), upserts via DataStoreClient.write_fundamentals_batch/
             write_shareholding. If False, exports only (used by tests).
 
         Returns
         -------
         dict
-            ticker -> True if both writes succeeded (or write=False and
-            export succeeded), False if export or any write failed. One
-            bad ticker never aborts the batch — same per-ticker isolation
-            as ingestion/scrapers/fyers_backfill.py's batch_download.
+            ticker -> True if export succeeded (or write=False and export
+            succeeded), False if export failed. One bad ticker's export
+            never aborts the batch — same per-ticker isolation as
+            ingestion/scrapers/fyers_backfill.py's batch_download.
+            [AS BUILT, A35 fix 2026-07-09] A ticker's fundamentals WRITE
+            outcome is no longer known at this per-ticker granularity —
+            see the chunk-flush note below — so a True here for `write=True`
+            means "export succeeded and was queued for the next batch
+            flush", not "already durably written". Shareholding is
+            unaffected: still written per-ticker, synchronously, as before.
 
         Spec References
         ----------------
         SPEC-PIPE-001: rate-limited batch export.
         SPEC-PIPE-003 (CRITICAL): writes go through the DataStore API only.
+
+        [AS BUILT, A35 fix 2026-07-09] Fundamentals records are now
+        accumulated in memory and flushed via ONE
+        DataStoreClient.write_fundamentals_batch() call every
+        SCREENER_BATCH_EXPORT_CHUNK_SIZE tickers (config.settings), instead
+        of one HTTP POST + one DuckDB write-lock acquisition per ticker —
+        the change A35 (FeatureBacklog.md) scoped as "client-side batching":
+        same shape as the other 3 backfill scripts that already batch
+        before writing (trendlyne/nse_xbrl/kaggle), closing the gap that
+        made screener the one fundamentals source that couldn't join A25's
+        staged-publish pattern. Chunked (not one end-of-run flush) as a
+        deliberate partial-checkpoint compromise — see
+        SCREENER_BATCH_EXPORT_CHUNK_SIZE's own comment for the tradeoff
+        this preserves vs. the old fully-synchronous per-ticker design.
+        Shareholding is NOT batched (unaffected by A35 — that item is
+        specifically about the fundamentals table's staged-publish gap).
+
+        [AS BUILT, Pipeline & Monitoring Remediation Phase 2, 2026-07-10]
+        The flush threshold is no longer the fixed
+        SCREENER_BATCH_EXPORT_CHUNK_SIZE alone — it's recomputed before
+        each ticker via resource_guard.adaptive_chunk_size(), which halves
+        it (down to a floor) when this process's RSS is under memory
+        pressure (config.settings.PIPELINE_MEMORY_CEILING_MB). A long
+        batch_export run on a memory-constrained machine now flushes more
+        often and finishes slower rather than risking an OOM kill mid-run
+        — the self-healing counterpart to A35's fixed-size chunking.
         """
+        import gc
+
         results: Dict[str, bool] = {}
+        pending_fundamentals: List[Dict] = []
+        pending_tickers: List[str] = []
+
+        def _flush():
+            if not pending_fundamentals:
+                return
+            try:
+                # Copy before the call: write_fundamentals_batch may retain
+                # a reference to what it's passed (e.g. a mock's call_args
+                # in tests) — clearing pending_fundamentals in place below
+                # would otherwise silently mutate that retained reference too.
+                self.client.write_fundamentals_batch(list(pending_fundamentals))
+            except Exception as exc:
+                logger.warning(
+                    f"screener batch_export: write_fundamentals_batch failed for "
+                    f"{len(pending_fundamentals)} queued ticker(s) ({pending_tickers}): {exc}"
+                )
+                for t in pending_tickers:
+                    results[t] = False
+            pending_fundamentals.clear()
+            pending_tickers.clear()
+            # Phase 2 (memory hygiene): a batch just flushed is exactly
+            # the moment references to a chunk's worth of dict payloads
+            # go away — collect promptly rather than waiting for the next
+            # generational GC cycle, so a long batch_export run doesn't
+            # accumulate garbage across many chunks before it's reclaimed.
+            gc.collect()
+
         for ticker in tickers:
             try:
                 data = self.export_company_data(ticker)
-                ok = True
                 if write:
                     if data["fundamentals"] is not None:
-                        self.client.write_fundamentals(data["fundamentals"])
+                        pending_fundamentals.append(data["fundamentals"])
+                        pending_tickers.append(ticker)
                     if data["shareholding"] is not None:
                         self.client.write_shareholding(data["shareholding"])
-                results[ticker] = ok
+                results[ticker] = True
             except Exception as exc:
                 logger.warning(f"screener export failed for {ticker}: {exc}")
                 results[ticker] = False
             time.sleep(SCREENER_RATE_LIMIT_SLEEP_SECONDS)
+
+            effective_chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE)
+            if len(pending_fundamentals) >= effective_chunk_size:
+                _flush()
+
+        _flush()
         return results
 
 

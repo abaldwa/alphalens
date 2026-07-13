@@ -457,14 +457,20 @@ def benford_analysis(series_dict: Dict[str, List[float]]) -> Dict[str, float]:
     Returns
     -------
     dict
-        `benford_{name}_chi2` per series, `benford_overall_deviation`
+        `benford_{name}_chi2`/`benford_{name}_p_value`/`benford_{name}_mad`/
+        `benford_{name}_digit_distribution` (observed first-digit 1-9
+        frequencies)/`benford_{name}_n_obs` per series,
+        `benford_expected_distribution` (the theoretical Benford 1-9
+        frequencies, same for every series), `benford_overall_deviation`
         (mean chi2 across series), `benford_mad` (mean absolute
         deviation, averaged across series), `is_nonconforming` (MAD >
         0.015), `is_significant_deviation` (MAD > 0.030).
 
     Spec References
     ----------------
-    SPEC-MODEL-009.
+    SPEC-MODEL-009. FO5 (2026-07-11): extended to surface the full
+    chi-square p-value + per-digit distribution that was already computed
+    internally but previously discarded before reaching the API/UI.
 
     Raises
     ------
@@ -473,12 +479,18 @@ def benford_analysis(series_dict: Dict[str, List[float]]) -> Dict[str, float]:
     """
     chi2_results: Dict[str, float] = {}
     mad_results: Dict[str, float] = {}
+    p_value_results: Dict[str, float] = {}
+    digit_dist_results: Dict[str, List[float]] = {}
+    n_obs_results: Dict[str, int] = {}
 
     for name, series in series_dict.items():
         positive = [abs(v) for v in series if v is not None and not np.isnan(v) and v != 0]
         if len(positive) < 5:
             chi2_results[name] = np.nan
             mad_results[name] = np.nan
+            p_value_results[name] = np.nan
+            digit_dist_results[name] = [np.nan] * 9
+            n_obs_results[name] = len(positive)
             continue
 
         first_digits = [int(str(v).lstrip("0.").replace(".", "")[0]) for v in positive]
@@ -486,11 +498,21 @@ def benford_analysis(series_dict: Dict[str, List[float]]) -> Dict[str, float]:
         observed_freq = observed_counts / observed_counts.sum()
 
         expected_counts = _BENFORD_EXPECTED * observed_counts.sum()
-        chi2_stat, _p = chisquare(observed_counts, f_exp=expected_counts)
+        chi2_stat, p_value = chisquare(observed_counts, f_exp=expected_counts)
         chi2_results[name] = float(chi2_stat)
         mad_results[name] = float(np.mean(np.abs(observed_freq - _BENFORD_EXPECTED)))
+        p_value_results[name] = float(p_value)
+        digit_dist_results[name] = [float(f) for f in observed_freq]
+        n_obs_results[name] = len(positive)
 
-    out = {f"benford_{name}_chi2": val for name, val in chi2_results.items()}
+    out: Dict[str, Any] = {}
+    for name in series_dict:
+        out[f"benford_{name}_chi2"] = chi2_results[name]
+        out[f"benford_{name}_p_value"] = p_value_results[name]
+        out[f"benford_{name}_mad"] = mad_results[name]
+        out[f"benford_{name}_digit_distribution"] = digit_dist_results[name]
+        out[f"benford_{name}_n_obs"] = n_obs_results[name]
+    out["benford_expected_distribution"] = [float(f) for f in _BENFORD_EXPECTED]
     valid_chi2 = [v for v in chi2_results.values() if not np.isnan(v)]
     valid_mad = [v for v in mad_results.values() if not np.isnan(v)]
     out["benford_overall_deviation"] = float(np.mean(valid_chi2)) if valid_chi2 else np.nan

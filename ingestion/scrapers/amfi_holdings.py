@@ -244,7 +244,7 @@ def run_monthly_ingestion(year: int, month: int, amcs: Optional[List[str]] = Non
 
 
 def sync_duckdb_table(
-    conn, year: int, month: int, output_dir: Path = MF_HOLDINGS_DIR, publish_mode: str = "direct"
+    conn, year: int, month: int, output_dir: Path = MF_HOLDINGS_DIR, publish_mode: str = "staged"
 ) -> int:
     """
     Phase C (Big Investor Activity — plan: gentle-wobbling-swing.md): mirror
@@ -261,12 +261,14 @@ def sync_duckdb_table(
     month : int
     output_dir : Path, optional
     publish_mode : str
-        'direct' (default): unchanged legacy DELETE+INSERT for this one
-        month. 'staged' (A25): merge this month's replacement into a full
+        'staged' (default as of the 2026-07-10 Pipeline & Monitoring
+        Remediation, A51): merge this month's replacement into a full
         snapshot of mf_holdings (datastore/staging/merge.py::
         partition_replace_merge — same "delete this month, keep every
         other month" semantics) and publish atomically via
-        datastore/staging.
+        datastore/staging, gaining an N=7 rollback point (A25). 'direct':
+        legacy DELETE+INSERT for this one month, no rollback snapshot;
+        kept only as an escape hatch.
 
     Returns
     -------

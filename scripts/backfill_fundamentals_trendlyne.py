@@ -65,6 +65,10 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from features.fundamental_quality_gate import validate_and_annotate  # noqa: E402
+from features.fundamental_source_priority import (  # noqa: E402
+    SOURCE_PRIORITY,
+    build_priority_update_clause,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -392,47 +396,33 @@ def _merge_annual(q_rows: List[Dict], annual_patches: Dict[int, Dict]) -> List[D
 
 # ── DB writes ─────────────────────────────────────────────────────────────────
 
-_UPSERT_SQL = """
+# [AS BUILT, A36 fix 2026-07-09] update clause is now built from
+# features/fundamental_source_priority.py's shared
+# build_priority_update_clause instead of a hand-written COALESCE
+# direction — see that module's docstring for why (4 independently
+# drifting writers was the A36 bug itself). Trendlyne's own priority
+# (SOURCE_PRIORITY["trendlyne"] = 3) is written on every upsert via
+# fundamentals_source/fundamentals_source_priority.
+_UPSERT_DATA_COLS = [
+    "revenue", "ebitda", "pat", "eps", "operating_margin", "ebitda_margin", "net_margin",
+    "roe", "roce", "debt_to_equity", "interest_coverage", "fcf", "gross_profit",
+    "total_debt", "cash_and_equivalents", "asset_turnover",
+    "current_assets", "current_liabilities",
+    "book_value_per_share", "depreciation",
+    "quality_flag", "quality_flag_reason",
+]
+_UPSERT_SQL = f"""
 INSERT INTO fundamentals (
     ticker, fiscal_year, quarter, quarter_end_date, announcement_date,
-    revenue, ebitda, pat, eps, operating_margin, ebitda_margin, net_margin,
-    roe, roce, debt_to_equity, interest_coverage, fcf, gross_profit,
-    total_debt, cash_and_equivalents, asset_turnover,
-    current_assets, current_liabilities,
-    book_value_per_share, depreciation,
-    quality_flag, quality_flag_reason
+    {", ".join(_UPSERT_DATA_COLS)},
+    fundamentals_source, fundamentals_source_priority
 ) VALUES (
     ?,?,?,?,?,
-    ?,?,?,?,?,?,?,
-    ?,?,?,?,?,?,
-    ?,?,?,
-    ?,?,
-    ?,?,
+    {", ".join("?" for _ in _UPSERT_DATA_COLS)},
     ?,?
 )
 ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET
-    revenue            = COALESCE(fundamentals.revenue, excluded.revenue),
-    ebitda             = COALESCE(fundamentals.ebitda, excluded.ebitda),
-    pat                = COALESCE(fundamentals.pat, excluded.pat),
-    eps                = COALESCE(fundamentals.eps, excluded.eps),
-    operating_margin   = COALESCE(fundamentals.operating_margin, excluded.operating_margin),
-    ebitda_margin      = COALESCE(fundamentals.ebitda_margin, excluded.ebitda_margin),
-    net_margin         = COALESCE(fundamentals.net_margin, excluded.net_margin),
-    roe                = COALESCE(fundamentals.roe, excluded.roe),
-    roce               = COALESCE(fundamentals.roce, excluded.roce),
-    debt_to_equity     = COALESCE(fundamentals.debt_to_equity, excluded.debt_to_equity),
-    interest_coverage  = COALESCE(fundamentals.interest_coverage, excluded.interest_coverage),
-    fcf                = COALESCE(fundamentals.fcf, excluded.fcf),
-    gross_profit       = COALESCE(fundamentals.gross_profit, excluded.gross_profit),
-    total_debt         = COALESCE(fundamentals.total_debt, excluded.total_debt),
-    cash_and_equivalents = COALESCE(fundamentals.cash_and_equivalents, excluded.cash_and_equivalents),
-    asset_turnover     = COALESCE(fundamentals.asset_turnover, excluded.asset_turnover),
-    current_assets     = COALESCE(fundamentals.current_assets, excluded.current_assets),
-    current_liabilities = COALESCE(fundamentals.current_liabilities, excluded.current_liabilities),
-    book_value_per_share = COALESCE(fundamentals.book_value_per_share, excluded.book_value_per_share),
-    depreciation       = COALESCE(fundamentals.depreciation, excluded.depreciation),
-    quality_flag       = COALESCE(excluded.quality_flag, fundamentals.quality_flag),
-    quality_flag_reason = COALESCE(excluded.quality_flag_reason, fundamentals.quality_flag_reason)
+    {build_priority_update_clause(_UPSERT_DATA_COLS)}
 """
 
 
@@ -447,14 +437,8 @@ def _write_rows(conn, rows: List[Dict]) -> int:
             conn.execute(_UPSERT_SQL, [
                 r["ticker"], r["fiscal_year"], r["quarter"],
                 r["quarter_end_date"], r["announcement_date"],
-                r.get("revenue"), r.get("ebitda"), r.get("pat"), r.get("eps"),
-                r.get("operating_margin"), r.get("ebitda_margin"), r.get("net_margin"),
-                r.get("roe"), r.get("roce"), r.get("debt_to_equity"),
-                r.get("interest_coverage"), r.get("fcf"), r.get("gross_profit"),
-                r.get("total_debt"), r.get("cash_and_equivalents"),
-                r.get("asset_turnover"), r.get("current_assets"), r.get("current_liabilities"),
-                r.get("book_value_per_share"), r.get("depreciation"),
-                r.get("quality_flag"), r.get("quality_flag_reason"),
+                *[r.get(c) for c in _UPSERT_DATA_COLS],
+                "trendlyne", SOURCE_PRIORITY["trendlyne"],
             ])
             written += 1
         except Exception as exc:
@@ -475,12 +459,14 @@ def main() -> None:
                         help="Stop after N tickers (for testing)")
     parser.add_argument("--sleep", type=float, default=SLEEP_BETWEEN_TICKERS,
                         help=f"Seconds between tickers (default: {SLEEP_BETWEEN_TICKERS})")
-    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="direct",
-                        help="'direct' (default): unchanged legacy per-batch COALESCE upsert. "
-                             "'staged' (A25): accumulate every row across the whole run, merge "
-                             "against production with the same existing-wins COALESCE policy "
-                             "(datastore/staging/merge.py::coalesce_merge), and publish "
-                             "atomically once at the end.")
+    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="staged",
+                        help="'staged' (default as of the 2026-07-10 Pipeline & Monitoring "
+                             "Remediation, A51): accumulate every row across the whole run, "
+                             "merge against production with the same existing-wins COALESCE "
+                             "policy (datastore/staging/merge.py::coalesce_merge), and publish "
+                             "atomically once at the end — gives this backfill an N=7 rollback "
+                             "point (A25) instead of bypassing it. 'direct': legacy per-batch "
+                             "COALESCE upsert, no rollback snapshot; kept only as an escape hatch.")
     args = parser.parse_args()
 
     from config.settings import DUCKDB_PATH

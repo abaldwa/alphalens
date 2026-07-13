@@ -166,6 +166,52 @@ class TestBuySell:
         sim.reduce_position("INFY", 1600.0, "2024-01-10")
         assert len(sim.trades) == 1
 
+    def test_reduce_position_invalid_fraction_raises(self, sim):
+        sim.buy("INFY", "IT", 1500.0, "2024-01-02", {})
+        with pytest.raises(ValueError):
+            sim.reduce_position("INFY", 1600.0, "2024-01-10", fraction=0.0)
+        with pytest.raises(ValueError):
+            sim.reduce_position("INFY", 1600.0, "2024-01-10", fraction=1.5)
+
+    def test_reduce_position_nonexistent_ticker_returns_none(self, sim):
+        assert sim.reduce_position("GHOST", 100.0, "2024-01-10") is None
+
+    def test_reduce_position_tiny_fraction_below_one_share_returns_none(self, sim):
+        sim.buy("INFY", "IT", 1500.0, "2024-01-02", {})
+        qty = sim.positions["INFY"].quantity
+        # A fraction small enough that int(qty * fraction) == 0 -> no-op, no trade recorded.
+        result = sim.reduce_position("INFY", 1600.0, "2024-01-10", fraction=1 / (qty * 10))
+        assert result is None
+        assert len(sim.trades) == 0
+
+    def test_reduce_position_full_fraction_closes_and_removes_position(self, sim):
+        sim.buy("INFY", "IT", 1500.0, "2024-01-02", {})
+        trade = sim.reduce_position("INFY", 1600.0, "2024-01-10", fraction=1.0)
+        assert trade is not None
+        assert "INFY" not in sim.positions
+
+    def test_can_buy_zero_quantity_returns_false(self, sim):
+        # Price so high that even equal-weight sizing rounds down to 0 shares.
+        assert sim.can_buy("EXPENSIVE", "IT", price=10_000_000.0, prices={}) is False
+
+    def test_can_buy_turnover_exceeds_cash_returns_false(self, sim):
+        sim.cash = 100.0
+        assert sim.can_buy("TCS", "IT", price=50.0, prices={}) is False
+
+    def test_can_buy_sector_cap_exceeded_returns_false(self, sim):
+        # n_target_positions=10 -> equal-weight buy is 10% of equity each, and
+        # MAX_POSITION_PCT (config) is also 10%, so a single new IT position
+        # alone can't breach MAX_SECTOR_PCT (40%) — pre-load 4 same-sector
+        # positions (~40% exposure) so the next IT buy pushes sector exposure
+        # over the 40% cap and can_buy's sector-cap gate (line 167-168) fires.
+        for i in range(4):
+            sim.buy(f"IT{i}", "IT", 1000.0, "2024-01-01", {})
+        assert sim.can_buy("ITX", "IT", price=1000.0, prices={}) is False
+
+    def test_sector_exposure_pct_zero_equity_returns_zero(self, sim):
+        sim.cash = 0.0
+        assert sim.sector_exposure_pct("IT", prices={}) == 0.0
+
 
 # ===== apply_exit_signal =====
 

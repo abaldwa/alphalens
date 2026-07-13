@@ -122,6 +122,30 @@ class TestStepDownloadFno:
             rows = conn.execute("SELECT ticker, instrument, oi FROM fno_data ORDER BY instrument").fetchall()
             assert rows == [("AAA", "STF", 1000), ("AAA", "STO", 500)]
 
+    def test_db_write_failure_is_caught_and_non_fatal(self, monkeypatch):
+        """A34: same class of bug as A31 — the DELETE+executemany DB write
+        previously sat outside the try/except that only wrapped the scraper
+        fetch, so a cross-process DuckDB lock conflict (SPEC-SCHED-013)
+        would have failed the whole step despite it being documented as
+        always-non-critical. Must be caught same as a scraper failure."""
+        from ingestion.scrapers import fno
+
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA"], "instrument": ["STF"], "expiry": pd.to_datetime(["2026-01-29"]),
+                "strike": [None], "option_type": [None], "oi": [1000], "oi_change": [50],
+                "volume": [200], "settle_price": [102.0], "close_price": [102.0], "underlying_price": [101.5],
+            }
+        )
+        monkeypatch.setattr(fno, "download_fno_bhavcopy", lambda date_str: df)
+
+        def _raise_lock_conflict(path, persist=True):
+            raise RuntimeError('IO Error: Could not set lock on file "alphalens.duckdb"')
+
+        monkeypatch.setattr(daily_pipeline, "get_duckdb_connection", _raise_lock_conflict)
+
+        daily_pipeline.step_download_fno(date(2026, 1, 5))  # must not raise
+
     def test_rerun_for_same_date_replaces_not_duplicates(self, monkeypatch):
         """Delete-then-insert per trade_date (see datastore/schema/create_normalised.py's
         _CREATE_FNO_DATA comment) — a retry must not duplicate rows."""
@@ -394,20 +418,32 @@ class TestStepDownloadMacroMorning:
 
 
 class TestStepAdjustPrices:
-    def test_calls_adjust_for_corporate_actions_per_universe_ticker(self, monkeypatch):
+    def test_calls_adjust_for_corporate_actions_only_for_tickers_with_actions(self, monkeypatch):
+        """
+        2026-07-10 lock-hold-time remediation: step_adjust_prices now
+        pre-filters to tickers that actually have a corporate_actions row
+        before opening the write connection, instead of holding the write
+        lock for a full-universe loop where most tickers are a no-op. CCC
+        has no corporate_actions row and must be skipped entirely.
+        """
         create_normalised.create_schema(in_memory=True)
         from config import universe
         from ingestion.adjust import price_adjuster
 
-        monkeypatch.setattr(universe, "get_tickers", lambda: ["AAA", "BBB"])
+        monkeypatch.setattr(universe, "get_tickers", lambda: ["AAA", "BBB", "CCC"])
         calls = []
         monkeypatch.setattr(
             price_adjuster, "adjust_for_corporate_actions", lambda conn, ticker: calls.append(ticker)
         )
 
         with get_duckdb_connection(None) as conn:
+            conn.execute(
+                "INSERT INTO corporate_actions (ticker, ex_date, action_type, ratio) VALUES "
+                "('AAA', '2026-01-01', 'split', 2.0), ('BBB', '2026-01-02', 'bonus', 1.5)"
+            )
             monkeypatch.setattr(
-                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
+                daily_pipeline, "get_duckdb_connection",
+                lambda path, persist=True, read_only=False: _FixedConn(conn),
             )
             daily_pipeline.step_adjust_prices(date(2026, 1, 5))
 
@@ -597,16 +633,27 @@ class TestRunDailyPipelineOnceRecordsPipelineRuns:
 
 
 class TestSanityKnownSparseColumns:
-    """A26: capex_to_assets/noncash_assets_ratio are computed by
-    features/deep_forensic.py but confirmed genuinely unsourceable
-    (FeatureBacklog.md FO8 -- the underlying NSE XBRL disclosure renders
-    as freeform "Textual Information", not a structured numeric field) --
-    they must be exempted from step_sanity_check's all-NaN floor like the
-    other already-exempted columns, or every run fails permanently."""
+    """A54 (2026-07-10): capex_to_assets/noncash_assets_ratio/
+    intangibles_growth/audit_qualification_flag/goodwill_ratio were
+    incorrectly believed unsourceable (stale FO8/A26 claim, predating
+    ingestion/scrapers/nse_xbrl_financials.py's real structured parser) --
+    they read real, populated NSE XBRL columns and must NOT be exempted
+    from step_sanity_check's all-NaN floor, so a future regression in their
+    computation is still caught. Genuinely-unsourceable columns (no schema
+    column at all, or freeform-text-only disclosures) remain exempted."""
 
-    def test_confirmed_unsourceable_columns_are_exempted(self):
-        assert "capex_to_assets" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
-        assert "noncash_assets_ratio" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+    def test_now_real_columns_are_not_exempted(self):
+        assert "capex_to_assets" not in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "noncash_assets_ratio" not in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "intangibles_growth" not in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "audit_qualification_flag" not in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "goodwill_ratio" not in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+
+    def test_genuinely_unsourceable_columns_are_still_exempted(self):
+        assert "contingent_liability_ratio" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "subsidiary_count" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "board_independence" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        assert "benford_mad" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
 
 
 class TestStepSanityCheck:
@@ -653,8 +700,8 @@ class TestStepSanityCheck:
         df = pd.DataFrame(
             {
                 "ticker": ["AAA", "BBB"],
-                "capex_to_assets": [float("nan"), float("nan")],
-                "noncash_assets_ratio": [float("nan"), float("nan")],
+                "contingent_liability_ratio": [float("nan"), float("nan")],
+                "board_independence": [float("nan"), float("nan")],
                 "some_real_feature": [1.0, 2.0],
             }
         )
@@ -679,3 +726,84 @@ class TestStepSanityCheck:
 
         with pytest.raises(RuntimeError, match="all-NaN"):
             daily_pipeline.step_sanity_check(run_date)
+
+
+class TestWaitForDatastoreApi:
+    """A44 regression coverage for _wait_for_datastore_api's cold-start
+    race: on a laptop restart, alphalens-scheduler.service can start before
+    the DataStore API's own systemd unit has bound its port, and without
+    this health-gate daily_pipeline.main() would immediately fall through
+    to matrix_builder's unbounded per-ticker OHLCV fallback against a
+    not-yet-listening API (the 2026-07-10 OOM). These tests don't touch a
+    real network/process — httpx.get is monkeypatched to simulate the API
+    being down-then-up, and time.sleep/time.monotonic are patched so the
+    test doesn't actually block for the real poll interval."""
+
+    def test_returns_immediately_when_api_already_up(self, monkeypatch):
+        import httpx
+
+        calls = []
+
+        class _FakeResponse:
+            status_code = 200
+
+        def _fake_get(url, timeout):
+            calls.append(url)
+            return _FakeResponse()
+
+        monkeypatch.setattr(httpx, "get", _fake_get)
+        sleep_calls = []
+        monkeypatch.setattr(daily_pipeline.time, "sleep", lambda s: sleep_calls.append(s))
+
+        daily_pipeline._wait_for_datastore_api(max_wait_seconds=30, poll_interval_seconds=1)
+
+        assert len(calls) == 1
+        assert sleep_calls == []  # no polling needed at all
+
+    def test_retries_until_api_comes_up(self, monkeypatch):
+        import httpx
+
+        attempts = {"n": 0}
+
+        class _FakeResponse:
+            status_code = 200
+
+        def _fake_get(url, timeout):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise httpx.RequestError("connection refused", request=None)
+            return _FakeResponse()
+
+        monkeypatch.setattr(httpx, "get", _fake_get)
+        sleep_calls = []
+        monkeypatch.setattr(daily_pipeline.time, "sleep", lambda s: sleep_calls.append(s))
+
+        daily_pipeline._wait_for_datastore_api(max_wait_seconds=30, poll_interval_seconds=1)
+
+        assert attempts["n"] == 3  # two failed cold-start attempts, third succeeded
+        assert len(sleep_calls) == 2  # slept once after each failed attempt
+
+    def test_gives_up_after_max_wait_without_raising(self, monkeypatch):
+        """SPEC-PIPE-006: an API that never comes up must not crash the
+        pipeline — steps needing it fail cleanly and retry on the next run."""
+        import httpx
+
+        def _always_down(url, timeout):
+            raise httpx.RequestError("connection refused", request=None)
+
+        monkeypatch.setattr(httpx, "get", _always_down)
+        monkeypatch.setattr(daily_pipeline.time, "sleep", lambda s: None)
+
+        # Deterministic deadline: no real wall-clock wait, just verify the
+        # function returns (doesn't raise) once monotonic() has advanced
+        # past its deadline.
+        clock = {"t": 0.0}
+
+        def _fake_monotonic():
+            clock["t"] += 5.0
+            return clock["t"]
+
+        monkeypatch.setattr(daily_pipeline.time, "monotonic", _fake_monotonic)
+
+        daily_pipeline._wait_for_datastore_api(max_wait_seconds=10, poll_interval_seconds=1)
+        # No exception raised is the assertion — proceeding anyway is correct.

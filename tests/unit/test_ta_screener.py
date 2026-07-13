@@ -17,8 +17,8 @@ paths.  No real feature Parquets are required for these tests to pass.
 import pandas as pd
 import pytest
 
-from systems.technical_analysis.screener.engine import ScreenerEngine
-from systems.technical_analysis.screener.templates import TEMPLATE_MAP, TEMPLATES
+from systems.technical_analysis.screener.engine import ScreenerEngine, ScreenerResult
+from systems.technical_analysis.screener.templates import TEMPLATE_MAP, TEMPLATES, ScreenerTemplate
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,6 @@ def test_daily_alert_checker_writes_correct_table():
     The ScreenerEngine is mocked so no real feature Parquet is needed.
     """
     from systems.technical_analysis.alerts.daily_alert_checker import DailyAlertChecker
-    from systems.technical_analysis.screener.engine import ScreenerResult
 
     # Build a minimal set of fake results — 2 full matches for template A1
     fake_results = [
@@ -258,3 +257,307 @@ def test_daily_alert_checker_writes_correct_table():
         assert rows_after == 2, (
             f"Expected 2 rows after idempotent re-write, got {rows_after}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: additional condition ops (gte, lte, eq, between, top_pct, gt_col,
+# unknown op, exception path) and edge cases in ScreenerEngine._screen_df /
+# _apply_single_condition / _load_df / screen() / screen_custom().
+# ---------------------------------------------------------------------------
+
+
+def _make_ops_fixture_df() -> pd.DataFrame:
+    """Test fixture (SPEC-SYS-006 exemption) covering all supported ops."""
+    return pd.DataFrame(
+        {
+            "ticker": ["T1", "T2", "T3", "T4"],
+            "feat_a": [10.0, 20.0, 30.0, 40.0],
+            "feat_b": [5.0, 25.0, 25.0, 45.0],
+            "volume_ratio_21d": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+
+class TestApplySingleConditionOps:
+    def test_gte_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "gte", "value": 20.0}, frozenset(df.columns)
+        )
+        assert not missing
+        assert list(mask) == [False, True, True, True]
+
+    def test_lte_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "lte", "value": 20.0}, frozenset(df.columns)
+        )
+        assert not missing
+        assert list(mask) == [True, True, False, False]
+
+    def test_eq_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "eq", "value": 30.0}, frozenset(df.columns)
+        )
+        assert list(mask) == [False, False, True, False]
+
+    def test_between_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "between", "value": [15.0, 35.0]}, frozenset(df.columns)
+        )
+        assert list(mask) == [False, True, True, False]
+
+    def test_top_pct_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "top_pct", "value": 0.25}, frozenset(df.columns)
+        )
+        assert not missing
+        assert mask.iloc[-1]  # T4 (highest value) always in top 25%
+
+    def test_gt_col_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "gt_col", "feature2": "feat_b"}, frozenset(df.columns)
+        )
+        assert not missing
+        assert list(mask) == [True, False, True, False]
+
+    def test_lt_col_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "lt_col", "feature2": "feat_b"}, frozenset(df.columns)
+        )
+        assert list(mask) == [False, True, False, True]
+
+    def test_gte_col_and_lte_col_ops(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask_gte, _ = engine._apply_single_condition(
+            df, {"feature": "feat_b", "op": "gte_col", "feature2": "feat_b"}, frozenset(df.columns)
+        )
+        assert mask_gte.all()
+        mask_lte, _ = engine._apply_single_condition(
+            df, {"feature": "feat_b", "op": "lte_col", "feature2": "feat_b"}, frozenset(df.columns)
+        )
+        assert mask_lte.all()
+
+    def test_col_vs_col_missing_feature2(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "gt_col", "feature2": "not_a_col"}, frozenset(df.columns)
+        )
+        assert missing
+        assert not mask.any()
+
+    def test_missing_feature_column(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "no_such_feature", "op": "lt", "value": 10}, frozenset(df.columns)
+        )
+        assert missing
+        assert not mask.any()
+
+    def test_unknown_op(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "frobnicate", "value": 1}, frozenset(df.columns)
+        )
+        assert not missing
+        assert not mask.any()
+
+    def test_condition_evaluation_exception_is_caught(self):
+        # 'between' with a malformed value (not a 2-element sequence) raises internally;
+        # the engine must catch it and treat the condition as unmet rather than propagate.
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        mask, missing = engine._apply_single_condition(
+            df, {"feature": "feat_a", "op": "between", "value": 5.0}, frozenset(df.columns)
+        )
+        assert not mask.any()
+
+
+class TestScreenDfEdgeCases:
+    def test_empty_dataframe_returns_no_results(self):
+        engine = ScreenerEngine()
+        empty_df = pd.DataFrame(columns=["ticker", "feat_a"])
+        template = TEMPLATE_MAP["A1"]
+        assert engine._screen_df(empty_df, template, "2026-07-02", limit=50) == []
+
+    def test_missing_ticker_column_returns_no_results(self):
+        engine = ScreenerEngine()
+        df = pd.DataFrame({"feat_a": [1.0, 2.0]})
+        template = TEMPLATE_MAP["A1"]
+        assert engine._screen_df(df, template, "2026-07-02", limit=50) == []
+
+    def test_zero_conditions_returns_no_results(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        template = ScreenerTemplate(
+            name="empty", category="custom", description="No conditions", conditions=[],
+        )
+        assert engine._screen_df(df, template, "2026-07-02", limit=50) == []
+
+    def test_limit_truncates_results(self):
+        engine = ScreenerEngine()
+        df = _make_ops_fixture_df()
+        template = ScreenerTemplate(
+            name="all_pass", category="custom", description="always true",
+            conditions=[{"feature": "feat_a", "op": "gte", "value": 0.0}],
+        )
+        results = engine._screen_df(df, template, "2026-07-02", limit=2)
+        assert len(results) == 2
+
+
+class TestScreenerEnginePublicMethods:
+    def test_screen_unknown_template_raises_keyerror(self):
+        engine = ScreenerEngine()
+        with pytest.raises(KeyError, match="Unknown template"):
+            engine.screen("NOT_A_TEMPLATE")
+
+    def test_load_df_missing_file_returns_none(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        engine = ScreenerEngine()
+        assert engine._load_df("2099-01-01") is None
+
+    def test_screen_reads_real_parquet_end_to_end(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        df = _make_minimal_feature_df()
+        df.to_parquet(tmp_path / "2026-07-02.parquet")
+
+        engine = ScreenerEngine()
+        results = engine.screen("A1", date="2026-07-02", limit=50)
+        assert len(results) == 1
+        assert results[0].ticker == "TICKER_A"
+
+    def test_screen_no_parquet_for_date_returns_empty(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        engine = ScreenerEngine()
+        assert engine.screen("A1", date="2099-01-01", limit=50) == []
+
+    def test_screen_custom_end_to_end(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        df = _make_rsi_fixture_df()
+        df.to_parquet(tmp_path / "2026-07-02.parquet")
+
+        engine = ScreenerEngine()
+        results = engine.screen_custom(
+            [{"feature": "rsi_14", "op": "lt", "value": 30}], date="2026-07-02", limit=50
+        )
+        tickers = {r.ticker for r in results}
+        assert tickers == {"OVERSOLD_A", "OVERSOLD_B"}
+        assert all(r.template_name == "custom" for r in results)
+
+    def test_screen_custom_no_resolved_date_returns_empty(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        monkeypatch.setattr(engine_mod, "resolve_date", lambda date: None)
+        engine = ScreenerEngine()
+        assert engine.screen_custom([{"feature": "x", "op": "lt", "value": 1}]) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 6: DailyAlertChecker.evaluate() and run() end-to-end (SPEC-TA-006).
+# ---------------------------------------------------------------------------
+
+
+class TestDailyAlertCheckerEvaluateAndRun:
+    def test_evaluate_no_parquet_returns_none_and_empty(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
+
+        monkeypatch.setattr(checker_mod, "resolve_date", lambda run_date: None)
+        checker = checker_mod.DailyAlertChecker()
+        resolved, results = checker.evaluate("2099-01-01")
+        assert resolved is None
+        assert results == {}
+
+    def test_evaluate_runs_all_42_templates(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        df = _make_minimal_feature_df()
+        df.to_parquet(tmp_path / "2026-07-02.parquet")
+
+        checker = checker_mod.DailyAlertChecker()
+        resolved, template_results = checker.evaluate("2026-07-02")
+        assert resolved == "2026-07-02"
+        assert len(template_results) == 42
+        # A1 should have TICKER_A as a full match (verified in test 2 above)
+        assert any(r.ticker == "TICKER_A" for r in template_results.get("A1", []))
+
+    def test_evaluate_template_exception_is_caught_and_isolated(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        df = _make_minimal_feature_df()
+        df.to_parquet(tmp_path / "2026-07-02.parquet")
+
+        checker = checker_mod.DailyAlertChecker()
+
+        original_screen = checker._engine.screen
+
+        def flaky_screen(template_name, date=None, limit=50):
+            if template_name == "A1":
+                raise RuntimeError("boom")
+            return original_screen(template_name, date=date, limit=limit)
+
+        monkeypatch.setattr(checker._engine, "screen", flaky_screen)
+        resolved, template_results = checker.evaluate("2026-07-02")
+        assert resolved == "2026-07-02"
+        assert template_results["A1"] == []  # failed template degrades to empty, not a crash
+        assert len(template_results) == 42
+
+    def test_run_writes_to_signals_db_and_returns_counts(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "FEATURES_DAILY_DIR", tmp_path)
+        df = _make_minimal_feature_df()
+        df.to_parquet(tmp_path / "2026-07-02.parquet")
+
+        signals_db_path = tmp_path / "signals" / "signals.duckdb"
+        monkeypatch.setattr(checker_mod, "SIGNALS_DUCKDB_PATH", signals_db_path)
+
+        checker = checker_mod.DailyAlertChecker()
+        counts = checker.run("2026-07-02")
+
+        assert len(counts) == 42
+        assert counts["A1"] == 1
+
+        from datastore.api.db import get_duckdb_connection
+
+        with get_duckdb_connection(signals_db_path, persist=False) as conn:
+            rows = conn.execute(
+                "SELECT ticker, template_name FROM ta_signals"
+            ).fetchall()
+        assert ("TICKER_A", "A1") in rows
+
+    def test_run_no_parquet_returns_empty_dict(self, tmp_path, monkeypatch):
+        import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
+
+        monkeypatch.setattr(checker_mod, "resolve_date", lambda run_date: None)
+        checker = checker_mod.DailyAlertChecker()
+        assert checker.run("2099-01-01") == {}

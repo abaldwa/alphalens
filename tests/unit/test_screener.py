@@ -310,8 +310,37 @@ class TestBatchExport:
         results = scraper.batch_export(["GOODCO", "BADCO", "GOODCO2"])
 
         assert results == {"GOODCO": True, "BADCO": False, "GOODCO2": True}
-        assert scraper.client.write_fundamentals.call_count == 2
+        # A35: fundamentals now flush via ONE write_fundamentals_batch() call
+        # (batch < SCREENER_BATCH_EXPORT_CHUNK_SIZE, so the end-of-run flush
+        # fires exactly once) instead of one write_fundamentals() per ticker.
+        scraper.client.write_fundamentals_batch.assert_called_once_with(
+            [{"ticker": "GOODCO"}, {"ticker": "GOODCO2"}]
+        )
         assert scraper.client.write_shareholding.call_count == 2
+
+    def test_fundamentals_flush_after_chunk_size_reached(self, monkeypatch):
+        """A35: a chunk boundary mid-run triggers its own flush, not just
+        the end-of-run one — verifies the partial-checkpoint behavior
+        SCREENER_BATCH_EXPORT_CHUNK_SIZE's docstring describes."""
+        from ingestion.scrapers import screener as screener_module
+
+        monkeypatch.setattr(screener_module, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 2)
+        scraper = ScreenerScraper(username="u", password="p", client=MagicMock())
+        monkeypatch.setattr(
+            scraper, "export_company_data",
+            lambda t: {"fundamentals": {"ticker": t}, "shareholding": {"ticker": t}},
+        )
+        monkeypatch.setattr("ingestion.scrapers.screener.time.sleep", lambda s: None)
+
+        results = scraper.batch_export(["A", "B", "C"])
+
+        assert results == {"A": True, "B": True, "C": True}
+        # First flush at 2 queued (A, B), second (end-of-run) flush for C alone.
+        assert scraper.client.write_fundamentals_batch.call_count == 2
+        scraper.client.write_fundamentals_batch.assert_any_call(
+            [{"ticker": "A"}, {"ticker": "B"}]
+        )
+        scraper.client.write_fundamentals_batch.assert_any_call([{"ticker": "C"}])
 
     def test_write_false_skips_api_calls(self, monkeypatch):
         scraper = ScreenerScraper(username="u", password="p", client=MagicMock())
@@ -324,5 +353,5 @@ class TestBatchExport:
         results = scraper.batch_export(["GOODCO"], write=False)
 
         assert results == {"GOODCO": True}
-        scraper.client.write_fundamentals.assert_not_called()
+        scraper.client.write_fundamentals_batch.assert_not_called()
         scraper.client.write_shareholding.assert_not_called()

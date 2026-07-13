@@ -13,19 +13,20 @@
 <div class="sub-tabs" id="sub-tabs"></div>
 <div class="page">
   <div class="sec">
-    <div class="sec-head"><span class="sec-title">Valuation Accuracy</span></div>
-    <div id="content"></div>
+    <div class="sec-head"><span class="sec-title">Valuation Accuracy</span><span class="sec-sub" id="accuracy-notes">Backtest of past valuation_signals predictions against realized price outcomes</span></div>
+    <div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+      <label style="font-size:12px;color:var(--tx2)">Horizon (days)
+        <input type="number" id="horizon-input" value="5" min="1" max="252" style="width:70px;margin-left:6px">
+      </label>
+      <button id="run-btn">Run Backtest</button>
+    </div>
+    <div id="summary-cards"></div>
+    <div id="accuracy-table"><div class="empty">Run the backtest to see results</div></div>
   </div>
 </div>
 <script src="../js/api.js"></script>
 <script src="../js/shell.js"></script>
 <script src="../js/empty_state.js"></script>
-<script>
-  renderAppShell("valuation", "accuracy");
-  renderEmptyState("content", {
-    icon: "🎯",
-    detail: "Valuation Accuracy needs a backtest comparing past DCF intrinsic values (valuation_signals table) to what actually happened to the price afterward. Batch/DCF/Relative Valuation are now live and start writing valuation_signals on every run, but there isn't yet enough history accumulated, nor a backtest step that reads it back and scores accuracy. Not yet built.",
-  });
-</script>
+<script src="js/accuracy.js"></script>
 </body>
 </html>

@@ -38,9 +38,12 @@ import argparse
 import logging
 import sqlite3
 from datetime import datetime, timedelta
+from typing import Optional
 
 from config.settings import DUCKDB_PATH, NSE_XBRL_RAW_CACHE_DIR, PIPELINE_LOG_DB_PATH
 from datastore.api.db import get_duckdb_connection
+from features.fundamental_quality_gate import validate_and_annotate
+from features.fundamental_source_priority import SOURCE_PRIORITY, build_priority_update_clause
 from ingestion.scrapers.nse_xbrl_financials import (
     download_indas_filing,
     ensure_ingested_filings_table,
@@ -76,6 +79,13 @@ _TARGET_COLUMNS = [
     "current_assets", "current_liabilities", "total_assets", "cwip", "shares_outstanding",
 ]
 
+# A61 (2026-07-10): derived (not directly parsed) ratio columns — see
+# _derive_ratios_from_raw. Kept as a separate list from _TARGET_COLUMNS
+# above (which is "raw fields this filing itself reports") since these are
+# computed, not scraped — same distinction the schema comments already draw
+# elsewhere in this codebase between reported vs. approximated figures.
+_DERIVED_RATIO_COLUMNS = ["debt_to_equity", "ebitda_margin", "asset_turnover", "roe"]
+
 
 def _fiscal_year_quarter(quarter_end: "datetime.date") -> "tuple[int, int]":
     quarter = _FY_QUARTER_MAP[quarter_end.month]
@@ -94,17 +104,73 @@ def _resolve_announcement_date(broadcast_str, quarter_end) -> "datetime.date":
     return quarter_end + timedelta(days=_ANNOUNCEMENT_DELAY_DAYS)
 
 
+# A61 (2026-07-10): NSE XBRL never parses revenue/pat/ebitda/operating_margin
+# itself (grepped ingestion/scrapers/nse_xbrl_financials.py — no such tags in
+# its tag map), nor interest expense or operating cash flow (no such field
+# anywhere in this codebase), so roce/interest_coverage/fcf cannot be
+# honestly derived here — they'd need raw inputs this pipeline doesn't have.
+# debt_to_equity IS fully self-contained (borrowings + equity_share_capital/
+# other_equity are all real NSE XBRL fields). ebitda_margin/asset_turnover/roe
+# need revenue/pat/ebitda from whichever OTHER source already wrote them for
+# the same (ticker, fiscal_year, quarter) — real numbers from a real source,
+# just not this one, so this is a derivation from real data, not fabrication.
+def _derive_ratios_from_raw(record: dict, other_source_row: "Optional[dict]") -> None:
+    """
+    Fill debt_to_equity/ebitda_margin/asset_turnover/roe on `record` in
+    place, IF NSE XBRL doesn't already report the ratio directly (never
+    overwrites) AND every required raw input is actually present (never
+    a partial/fabricated derivation). `other_source_row` is the existing
+    fundamentals row (if any) for this exact (ticker, fiscal_year,
+    quarter) written by a prior trendlyne/screener run, used only for
+    revenue/pat/ebitda — fields NSE XBRL itself never parses.
+    """
+    def _get(d, k):
+        v = (d or {}).get(k)
+        return v if v is not None else None
+
+    equity_share_capital = _get(record, "equity_share_capital")
+    other_equity = _get(record, "other_equity")
+    total_equity = (
+        equity_share_capital + other_equity
+        if equity_share_capital is not None and other_equity is not None
+        else None
+    )
+    borrowings_current = _get(record, "borrowings_current")
+    borrowings_noncurrent = _get(record, "borrowings_noncurrent")
+    total_borrowings = (
+        borrowings_current + borrowings_noncurrent
+        if borrowings_current is not None and borrowings_noncurrent is not None
+        else None
+    )
+    if record.get("debt_to_equity") is None and total_borrowings is not None and total_equity:
+        record["debt_to_equity"] = total_borrowings / total_equity
+
+    revenue = _get(other_source_row, "revenue")
+    pat = _get(other_source_row, "pat")
+    ebitda = _get(other_source_row, "ebitda")
+    total_assets = _get(record, "total_assets")
+
+    if record.get("ebitda_margin") is None and ebitda is not None and revenue:
+        record["ebitda_margin"] = ebitda / revenue
+    if record.get("asset_turnover") is None and revenue is not None and total_assets:
+        record["asset_turnover"] = revenue / total_assets
+    if record.get("roe") is None and pat is not None and total_equity:
+        record["roe"] = pat / total_equity
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Refresh fundamentals from NSE's real Integrated Filing IndAS data (delta-only, cached)"
     )
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N tickers")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and report, write nothing")
-    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="direct",
-                        help="'direct' (default): unchanged legacy TEMP-TABLE bulk upsert. "
-                             "'staged' (A25): merge the delta against production with the same "
-                             "new-wins COALESCE policy (datastore/staging/merge.py) and publish "
-                             "atomically via datastore/staging.")
+    parser.add_argument("--publish-mode", choices=["direct", "staged"], default="staged",
+                        help="'staged' (default as of the 2026-07-10 Pipeline & Monitoring "
+                             "Remediation, A51): merge the delta against production with the "
+                             "same new-wins COALESCE policy (datastore/staging/merge.py) and "
+                             "publish atomically via datastore/staging, gaining an N=7 rollback "
+                             "point (A25). 'direct': legacy TEMP-TABLE bulk upsert, no rollback "
+                             "snapshot; kept only as an escape hatch.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -203,7 +269,16 @@ def main() -> None:
                 "quarter_end_date": quarter_end,
                 "announcement_date": announcement_date,
                 **{col: parsed.get(col) for col in _TARGET_COLUMNS},
+                **{col: None for col in _DERIVED_RATIO_COLUMNS},
             }
+            # A61 (2026-07-10): validate_and_annotate + provenance stamping
+            # deliberately moved to AFTER the ratio-derivation pass below
+            # (was inline here before) — debt_to_equity/ebitda_margin/
+            # asset_turnover/roe need to be filled in first so the range
+            # gate actually checks the derived values too, not just the
+            # directly-parsed raw fields.
+            record["fundamentals_source"] = "nse_xbrl"
+            record["fundamentals_source_priority"] = SOURCE_PRIORITY["nse_xbrl"]
             delta_records.append(record)
             newly_ingested.append(
                 {"seq_id": seq_id, "ticker": ticker, "fiscal_year": fiscal_year, "quarter": quarter}
@@ -213,6 +288,36 @@ def main() -> None:
         f"Scan complete: {total_filings_seen} filings seen across {len(tickers)} tickers, "
         f"{tickers_with_new_filings} tickers had new filings, {len(delta_records)} rows staged for upsert"
     )
+
+    # A61 (2026-07-10): batch-lookup revenue/pat/ebitda from whatever OTHER
+    # source (trendlyne/screener) already wrote them for the same exact
+    # (ticker, fiscal_year, quarter), then derive debt_to_equity/
+    # ebitda_margin/asset_turnover/roe where NSE XBRL doesn't already report
+    # them directly. One read-only query for the whole batch, not per-row,
+    # to avoid re-opening the DB connection per record.
+    if delta_records:
+        keys = {(r["ticker"], r["fiscal_year"], r["quarter"]) for r in delta_records}
+        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+            existing_rows = conn.execute(
+                "SELECT ticker, fiscal_year, quarter, revenue, pat, ebitda FROM fundamentals"
+            ).fetchall()
+        other_source_lookup = {
+            (row[0], row[1], row[2]): {"revenue": row[3], "pat": row[4], "ebitda": row[5]}
+            for row in existing_rows
+            if (row[0], row[1], row[2]) in keys
+        }
+        for record in delta_records:
+            key = (record["ticker"], record["fiscal_year"], record["quarter"])
+            _derive_ratios_from_raw(record, other_source_lookup.get(key))
+            # [AS BUILT, A36 fix 2026-07-09] This writer previously never ran
+            # rows through features/fundamental_quality_gate.py — confirmed
+            # via grep, the symbol never appeared in this file — the other
+            # A36 finding (nse_xbrl bypassed A12's range-validation gate
+            # entirely, same as screener.py). `_TARGET_COLUMNS`
+            # (current_assets/current_liabilities/etc.) overlaps
+            # RATIO_RANGES's revenue-exempt leverage checks, so this is a
+            # real gap closure, not a no-op.
+            validate_and_annotate(record)
 
     if args.dry_run:
         for r in delta_records[:20]:
@@ -230,10 +335,20 @@ def main() -> None:
     # briefly, instead of the old design's thousands of individual API
     # round-trips spread over hours (a real, observed lock-contention
     # problem against the concurrently-running scheduler).
-    all_cols = ["ticker", "fiscal_year", "quarter", "quarter_end_date", "announcement_date"] + _TARGET_COLUMNS
+    all_cols = (
+        ["ticker", "fiscal_year", "quarter", "quarter_end_date", "announcement_date"]
+        + _TARGET_COLUMNS
+        + _DERIVED_RATIO_COLUMNS
+        + ["quality_flag", "quality_flag_reason", "fundamentals_source", "fundamentals_source_priority"]
+    )
     col_list_sql = ", ".join(all_cols)
-    update_cols = [c for c in _TARGET_COLUMNS]
-    update_clause = ", ".join(f"{c} = COALESCE(excluded.{c}, fundamentals.{c})" for c in update_cols)
+    # [AS BUILT, A36 fix 2026-07-09] shared priority-aware clause
+    # (features/fundamental_source_priority.py) replaces the hand-written
+    # new-value-always-wins COALESCE this writer previously used — see
+    # A36 in FeatureBacklog.md for why 4 independently hand-written
+    # directions was itself the bug.
+    update_cols = _TARGET_COLUMNS + _DERIVED_RATIO_COLUMNS + ["quality_flag", "quality_flag_reason"]
+    update_clause = build_priority_update_clause(update_cols)
 
     if args.publish_mode == "staged":
         import pandas as pd

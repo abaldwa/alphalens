@@ -23,6 +23,29 @@
 .i-duration .insight-label,.i-duration .insight-val{color:var(--purple)}
 .i-confidence .insight-label,.i-confidence .insight-val{color:var(--teal)}
 
+/* Pipeline Stages diagram (Ops — Data Ingestion / Feature Engineering /
+   Model Training). Stage boxes flow left-to-right on wide screens, stack
+   on narrow ones; each stage's border/status-dot color is driven by the
+   worst status among its constituent checkpoint steps. */
+.stage-flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap}
+.stage-box{flex:1;min-width:220px;background:var(--bg2);border:2px solid var(--bdr);border-radius:var(--r2);padding:14px 16px;position:relative}
+.stage-box.st-green{border-color:var(--green)}
+.stage-box.st-amber{border-color:var(--amber)}
+.stage-box.st-red{border-color:var(--red)}
+.stage-box.st-gray{border-color:var(--bdr)}
+.stage-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.stage-title{font-size:13px;font-weight:700}
+.stage-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}
+.stage-dot.st-green{background:var(--green)}
+.stage-dot.st-amber{background:var(--amber)}
+.stage-dot.st-red{background:var(--red)}
+.stage-dot.st-gray{background:var(--tx3)}
+.stage-steps{display:flex;flex-direction:column;gap:4px}
+.stage-step-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:2px 0}
+.stage-step-name{color:var(--tx2)}
+.stage-arrow{display:flex;align-items:center;justify-content:center;min-width:32px;font-size:20px;color:var(--tx3)}
+@media (max-width:900px){.stage-arrow{transform:rotate(90deg);min-height:24px}}
+
 .badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;gap:4px}
 .b-green{background:rgba(26,147,56,.08);color:var(--green)}
 .b-red{background:rgba(209,52,56,.08);color:var(--red)}

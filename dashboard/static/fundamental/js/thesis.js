@@ -70,3 +70,13 @@ function load() {
 
 document.getElementById("load-btn").addEventListener("click", load);
 if (params.get("ticker")) load();
+
+// F4 — server-side PDF export (datastore/api/routers/fundamentals.py's
+// GET /{ticker}/thesis/pdf, reportlab-rendered, same Strengths/Risks logic
+// as load() above). A plain navigation (not fetch+blob) so the browser
+// handles the response's Content-Disposition: attachment header directly.
+document.getElementById("pdf-btn").addEventListener("click", () => {
+  const ticker = document.getElementById("ticker-input").value.trim().toUpperCase();
+  if (!ticker) return;
+  window.location.href = `${API_BASE}/api/v1/fundamentals/${ticker}/thesis/pdf`;
+});

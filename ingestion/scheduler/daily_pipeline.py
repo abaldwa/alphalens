@@ -249,41 +249,47 @@ def step_download_fno(run_date: date_type, db_path: Optional[Path] = None) -> No
     date_str = run_date.isoformat()
     try:
         df = fno.download_fno_bhavcopy(date_str)
+
+        rows = [
+            (
+                date_str,
+                row.ticker,
+                row.instrument,
+                row.expiry.date().isoformat() if pd.notna(row.expiry) else None,
+                None if pd.isna(row.strike) else float(row.strike),
+                None if pd.isna(row.option_type) else row.option_type,
+                None if pd.isna(row.oi) else int(row.oi),
+                None if pd.isna(row.oi_change) else int(row.oi_change),
+                None if pd.isna(row.volume) else int(row.volume),
+                None if pd.isna(row.settle_price) else float(row.settle_price),
+                None if pd.isna(row.close_price) else float(row.close_price),
+                None if pd.isna(row.underlying_price) else float(row.underlying_price),
+            )
+            for row in df.itertuples()
+            if pd.notna(row.expiry)
+        ]
+
+        # Delete-then-insert per trade_date: the bhavcopy file arrives as one
+        # atomic daily snapshot (no incremental updates within a day), and
+        # fno_data has no PRIMARY KEY (strike/option_type are NULL for
+        # futures rows) — see datastore/schema/create_normalised.py's
+        # _CREATE_FNO_DATA comment. persist=False per SPEC-SCHED-013, same as
+        # step_download_bhavcopy.
+        with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+            conn.execute("DELETE FROM fno_data WHERE trade_date = ?", [date_str])
+            conn.executemany(_INSERT_FNO_DATA, rows)
     except Exception as exc:
+        # 2026-07-09 (A34, same class of bug as A31): the DB write (e.g. a
+        # cross-process DuckDB lock conflict, SPEC-SCHED-013) previously sat
+        # outside this try/except, so it could fail the whole step despite
+        # the docstring documenting step_download_fno as always-non-critical.
+        # Widened to cover the write too, matching
+        # step_download_index_ohlcv's A31 fix.
         logger.warning(
             f"download_fno: unavailable for {date_str} ({exc}) — "
             "non-critical, continuing"
         )
         return
-
-    rows = [
-        (
-            date_str,
-            row.ticker,
-            row.instrument,
-            row.expiry.date().isoformat() if pd.notna(row.expiry) else None,
-            None if pd.isna(row.strike) else float(row.strike),
-            None if pd.isna(row.option_type) else row.option_type,
-            None if pd.isna(row.oi) else int(row.oi),
-            None if pd.isna(row.oi_change) else int(row.oi_change),
-            None if pd.isna(row.volume) else int(row.volume),
-            None if pd.isna(row.settle_price) else float(row.settle_price),
-            None if pd.isna(row.close_price) else float(row.close_price),
-            None if pd.isna(row.underlying_price) else float(row.underlying_price),
-        )
-        for row in df.itertuples()
-        if pd.notna(row.expiry)
-    ]
-
-    # Delete-then-insert per trade_date: the bhavcopy file arrives as one
-    # atomic daily snapshot (no incremental updates within a day), and
-    # fno_data has no PRIMARY KEY (strike/option_type are NULL for
-    # futures rows) — see datastore/schema/create_normalised.py's
-    # _CREATE_FNO_DATA comment. persist=False per SPEC-SCHED-013, same as
-    # step_download_bhavcopy.
-    with get_duckdb_connection(resolved_db_path, persist=False) as conn:
-        conn.execute("DELETE FROM fno_data WHERE trade_date = ?", [date_str])
-        conn.executemany(_INSERT_FNO_DATA, rows)
 
     logger.info(f"download_fno: {len(rows)} rows written for {date_str}")
 
@@ -754,15 +760,48 @@ def step_adjust_prices(run_date: date_type, db_path: Optional[Path] = None) -> N
     resolved_db_path = db_path or DUCKDB_PATH
     tickers = get_tickers()
 
+    # Just-in-time DB lock hold (2026-07-10 lock-hold-time remediation): the
+    # write connection used to wrap this whole loop over the *entire*
+    # universe (thousands of tickers), holding DuckDB's single-writer lock
+    # for the full scan even though adjust_for_corporate_actions() itself
+    # early-returns a no-op for any ticker with zero corporate_actions rows
+    # — which is nearly all of them on a typical day. Pre-filter with a
+    # cheap read-only query first (no lock needed — read_only=True), so the
+    # write connection below is only opened for, and only held for the
+    # duration of, the small subset of tickers that actually have work to
+    # do. Falls back to the full universe if the read-only probe itself
+    # fails, so a transient read error degrades to the old (safe, just
+    # slower) behavior rather than silently skipping tickers.
+    try:
+        with get_duckdb_connection(resolved_db_path, persist=False, read_only=True) as ro_conn:
+            actionable = {
+                row[0] for row in ro_conn.execute(
+                    "SELECT DISTINCT ticker FROM corporate_actions"
+                ).fetchall()
+            }
+        tickers_to_adjust = [t for t in tickers if t in actionable]
+    except Exception as exc:
+        logger.warning(
+            f"adjust_prices: could not pre-filter tickers with corporate actions ({exc}) "
+            "— falling back to checking the full universe"
+        )
+        tickers_to_adjust = tickers
+
     # persist=False (SPEC-SCHED-013): this is a long-lived scheduler process
     # sharing DUCKDB_PATH with the DataStore API — release the write lock as
     # soon as this step finishes, rather than holding it for the process's
-    # entire lifetime (see datastore/api/db.py's module docstring).
-    with get_duckdb_connection(resolved_db_path, persist=False) as conn:
-        for ticker in tickers:
-            adjust_for_corporate_actions(conn, ticker)
+    # entire lifetime (see datastore/api/db.py's module docstring). Scoped
+    # to only the actionable tickers (see above) so the lock is held for
+    # just the work that actually needs it, not a full-universe scan.
+    if tickers_to_adjust:
+        with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+            for ticker in tickers_to_adjust:
+                adjust_for_corporate_actions(conn, ticker)
 
-    logger.info(f"adjust_prices: checked {len(tickers)} tickers for {run_date.isoformat()}")
+    logger.info(
+        f"adjust_prices: {len(tickers_to_adjust)}/{len(tickers)} tickers had corporate "
+        f"actions to check for {run_date.isoformat()}"
+    )
 
 
 def step_compute_features(run_date: date_type, db_path: Optional[Path] = None, compute_hmm: bool = True, data_cache=None) -> None:
@@ -812,6 +851,13 @@ def step_compute_features(run_date: date_type, db_path: Optional[Path] = None, c
     from features.backfill_cache import BackfillDataCache
     from features.matrix_builder import build_feature_matrix
     from features.pnd_features import PND_FEATURES, compute_pnd_features
+
+    # 2026-07-10 (A52): this step's fundamentals/forensic panels depend on the
+    # DataStore API for every ticker. A transient outage here used to be
+    # swallowed by the panel builders' per-ticker except-blocks and silently
+    # written as permanent NaN (see features/fundamental.py's A52 fix) — block
+    # on API health first so an outage fails this step loudly instead.
+    _wait_for_datastore_api()
 
     date_str = run_date.isoformat()
     tickers = get_tickers()
@@ -1017,6 +1063,16 @@ _SANITY_MIN_SIGNAL_ROWS_FRACTION = 0.8
 # (paper_trade) on data availability we do not control. Exempted from the
 # all-NaN floor; still computed and stored as usual when a source is
 # available, just not used as a pipeline-failure signal when it isn't.
+# A54 (2026-07-10): removed intangibles_growth, capex_to_assets,
+# noncash_assets_ratio — these read real, populated NSE XBRL columns
+# (intangibles_growth was a lookup-key bug, now fixed in deep_forensic.py;
+# the other two were always correctly wired) and should be measured the
+# same as any other partial-coverage NSE XBRL field, not silenced.
+# audit_qualification_flag/goodwill_ratio were never added here (also
+# correctly wired to real data) — left out on purpose, not an oversight.
+# Added benford_mad after fixing forensic_classical.py's panel-level
+# blanket except-to-NaN bug (same class as A52) — its remaining nulls are
+# legitimate new-listing warmup (needs >=5 quarterly revenue values).
 _SANITY_KNOWN_SPARSE_COLUMNS = {
     "inventory_days", "receivable_days", "payable_days", "cash_conversion_cycle",
     "mf_pct", "mf_change_qoq", "mf_total_holding_change_1m", "mf_sip_inflow_proxy",
@@ -1026,11 +1082,11 @@ _SANITY_KNOWN_SPARSE_COLUMNS = {
     "pmi_services", "iip_growth", "auto_monthly_sales_growth",
     "rail_freight_growth", "upi_transaction_growth", "bank_credit_growth",
     "contingent_liability_ratio", "subsidiary_count", "loans_to_related",
-    "intangibles_growth", "off_balance_sheet_proxy", "salary_to_pat",
+    "off_balance_sheet_proxy", "salary_to_pat",
     "rpt_intensity", "auditor_change_flag", "cfo_tenure_months",
     "board_independence", "director_resignation_count_4q",
     "whistle_blower_policy", "gst_revenue_divergence", "peer_outlier_score",
-    "tax_rate_anomaly", "capex_to_assets", "noncash_assets_ratio",
+    "tax_rate_anomaly", "benford_mad",
 }
 
 
@@ -1614,6 +1670,47 @@ def dry_run_with_timing(today: Optional[date_type] = None) -> dict:
     return {"date": today.isoformat(), "steps": steps, "total_duration_s": total, "within_budget": total < 5400}
 
 
+def _wait_for_datastore_api(max_wait_seconds: int = 120, poll_interval_seconds: int = 5) -> None:
+    """
+    Block until the DataStore API's /health endpoint responds, or give up
+    after max_wait_seconds and log a loud warning (the pipeline still runs
+    afterwards — steps that need the API will fail cleanly and be retried
+    on the next scheduled/catch-up run, same as any other outage under
+    SPEC-PIPE-006's "mark unavailable, non-critical" philosophy).
+
+    Raises
+    ------
+    None
+    """
+    import httpx
+
+    from config.settings import DATASTORE_API_BASE_URL
+
+    deadline = time.monotonic() + max_wait_seconds
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            resp = httpx.get(f"{DATASTORE_API_BASE_URL}/health", timeout=5.0)
+            if resp.status_code == 200:
+                if attempt > 1:
+                    logger.info("DataStore API is up (after %d attempt(s))", attempt)
+                return
+        except httpx.RequestError:
+            pass
+
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "DataStore API at %s did not respond within %ds — proceeding anyway; "
+                "steps requiring it will fail cleanly and be retried on the next run",
+                DATASTORE_API_BASE_URL, max_wait_seconds,
+            )
+            return
+
+        logger.info("Waiting for DataStore API at %s (attempt %d)...", DATASTORE_API_BASE_URL, attempt)
+        time.sleep(poll_interval_seconds)
+
+
 def main() -> None:
     """
     Entry point: catch up once immediately, register the recurring job,
@@ -1660,7 +1757,11 @@ def main() -> None:
             print(f"  Within 90-minute budget (SPEC-SYS-002): {result['within_budget']}")
         return
 
-    from config.settings import DAILY_PIPELINE_SCHEDULE_TIME, MORNING_CATCHUP_SCHEDULE_TIME
+    from config.settings import (
+        DAILY_PIPELINE_SCHEDULE_TIME,
+        MORNING_CATCHUP_ENABLED,
+        MORNING_CATCHUP_SCHEDULE_TIME,
+    )
     from ingestion.scheduler.checkpoint import CheckpointManager
     from ingestion.scheduler.pipeline_scheduler import (
         create_scheduler,
@@ -1670,9 +1771,11 @@ def main() -> None:
         schedule_job_health_check,
         schedule_mf_holdings_ingestion,
         schedule_morning_catchup,
-        schedule_model_training,
+        schedule_balance_sheet_backfill,
+        schedule_model_training_nightly,
         schedule_multibagger_scoring,
         schedule_nse_xbrl_fundamentals,
+        schedule_promoter_pledge_backfill,
         schedule_weekend_feature_backfill,
         schedule_weekend_fundamentals,
     )
@@ -1686,6 +1789,16 @@ def main() -> None:
     from datastore.schema.create_normalised import create_schema
 
     create_schema()
+
+    # 2026-07-10 incident: on a laptop restart the DataStore API (uvicorn,
+    # started separately) isn't guaranteed to be up yet when this process's
+    # startup catch-up fires. Every path below (BackfillDataCache preload,
+    # build_feature_matrix's bulk-then-per-ticker OHLCV fetch) depends on it
+    # over HTTP, and a dead API turned the per-ticker fallback into an
+    # unbounded loop that drove RSS to 5+ GB in under 3 minutes and paged
+    # the OS's low-memory killer. Block here (bounded) instead of letting
+    # that loop discover the outage the expensive way.
+    _wait_for_datastore_api()
 
     logger.info("Startup catch-up: checking for missed trading days, then running today's pipeline")
     run_daily_pipeline_once()
@@ -1710,9 +1823,12 @@ def main() -> None:
     # run" on the Ops page all day. See schedule_morning_catchup's
     # docstring for why this reuses the same catch-up logic rather than
     # something bespoke.
-    schedule_morning_catchup(
-        scheduler, step_runner, checkpoint_manager, schedule_time=MORNING_CATCHUP_SCHEDULE_TIME
-    )
+    if MORNING_CATCHUP_ENABLED:
+        schedule_morning_catchup(
+            scheduler, step_runner, checkpoint_manager, schedule_time=MORNING_CATCHUP_SCHEDULE_TIME
+        )
+    else:
+        logger.info("morning_catchup: disabled via MORNING_CATCHUP_ENABLED=False — not scheduled.")
     schedule_mf_holdings_ingestion(scheduler)  # weekly (Sat 13:00 IST), primary source Groww
     # 2026-07-08: weekly scan for newly-published NSE Integrated Filing —
     # IndAS regulatory disclosures (real balance sheet + audit qualification
@@ -1724,15 +1840,31 @@ def main() -> None:
     # full-universe scan is a real ~2-3h run, so it needs a multi-hour head
     # start over the rest of the weekend batch, not a same-morning gap.
     schedule_nse_xbrl_fundamentals(scheduler)
-    # 2026-07-02: 23-hour window + job-dependency scheduler.
-    # Model training fires after the daily pipeline (~20:00 IST) and runs
-    # overnight if needed — well within the 6 PM–5 PM 23-hour window.
-    schedule_model_training(scheduler)
+    # 2026-07-10 (A52, Pipeline & Monitoring Remediation): replaced the
+    # single weekly Saturday model_training job with
+    # schedule_model_training_nightly's Mon-Thu 23:00 IST per-group jobs
+    # (_MODEL_TRAINING_GROUPS) — spreads training checks across the week
+    # instead of concentrating every model's overdue-check (and any
+    # resulting multi-hour retrain) into one Saturday run. Still well
+    # clear of the 18:00 daily pipeline's own window. Takes effect on the
+    # scheduler process's next restart, same as any other job
+    # registration change here — schedule_model_training (the old
+    # single-job version) is left intact and importable for any script
+    # that still wants the original weekly-catch-up shape.
+    schedule_model_training_nightly(scheduler)
     # Weekend jobs: feature backfill (09:00 IST Sat) + fundamentals (10:30 IST Sat).
     # weekend_fundamentals (Screener/Trendlyne) is the FALLBACK source and
     # deliberately runs after nse_xbrl_fundamentals (the primary source).
     schedule_weekend_feature_backfill(scheduler)
     schedule_weekend_fundamentals(scheduler)
+    # A54 (2026-07-10): two real, live-verified backfill scripts
+    # (promoter-pledge from NSE, balance-sheet from cached Screener pages)
+    # existed and worked but were never scheduled — 71% of
+    # shareholding.promoter_pledge rows were NULL purely because of that.
+    # Fire after weekend_fundamentals (10:30) has refreshed the base rows
+    # these enrich, before model_training (12:00).
+    schedule_promoter_pledge_backfill(scheduler)
+    schedule_balance_sheet_backfill(scheduler)
     # FutureDevelopment.md #14: multibagger/forensic scoring were operator-CLI
     # only until 2026-07-04 — schedule both weekly, Sunday morning (markets
     # closed, no contention with weekday pipeline or Saturday jobs).
@@ -1765,9 +1897,14 @@ def main() -> None:
         logger.info("Removed stale persisted 'backfill_catchup' job (FYERS-only, no longer scheduled)")
     except Exception:
         pass
+    morning_catchup_status = (
+        f"registered for {MORNING_CATCHUP_SCHEDULE_TIME} IST (mon-fri)"
+        if MORNING_CATCHUP_ENABLED
+        else "disabled (MORNING_CATCHUP_ENABLED=False)"
+    )
     logger.info(
         f"Scheduler started: daily pipeline registered for {DAILY_PIPELINE_SCHEDULE_TIME} IST (mon-fri), "
-        f"morning catch-up registered for {MORNING_CATCHUP_SCHEDULE_TIME} IST (mon-fri), "
+        f"morning catch-up {morning_catchup_status}, "
         "MF holdings ingestion registered for 08:00 IST (5th & 20th of each month)"
     )
 

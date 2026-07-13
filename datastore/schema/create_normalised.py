@@ -110,6 +110,36 @@ _CREATE_CORPORATE_ACTIONS = """
     )
 """
 
+# CA4 (2026-07-05, scripts/validate_corporate_actions_fyers.py): tracks
+# per-row Fyers cross-validation of corporate_actions so a bad ratio/missing
+# action (as CA2 found for KANSAINER/AJOONI) surfaces automatically instead
+# of silently corrupting adj_close. Keyed the same way as corporate_actions
+# (ticker, ex_date, action_type) so each action has exactly one validation
+# row. validation_status: 'unchecked' (default, not yet run) | 'confirmed' |
+# 'mismatch' | 'insufficient_window' | 'no_fyers_data' | 'error'.
+# needs_retrain: True once a 'mismatch' is confirmed — signals any
+# ML feature/model built on this ticker's price history may need a
+# recompute once the underlying corporate_actions row is fixed.
+# Added to this rebuild-from-scratch schema 2026-07-11 (CA4 follow-up) —
+# previously this table only existed in the live DB (see BuildLog.md
+# 2026-07-05/08 for the original build).
+_CREATE_CORPORATE_ACTIONS_VALIDATION = """
+    CREATE TABLE IF NOT EXISTS corporate_actions_validation (
+        ticker VARCHAR NOT NULL,
+        ex_date DATE NOT NULL,
+        action_type VARCHAR NOT NULL,
+        ratio DOUBLE,
+        expected_price_factor DOUBLE,
+        observed_price_factor DOUBLE,
+        pct_diff DOUBLE,
+        validation_status VARCHAR DEFAULT 'unchecked',
+        fyers_validated_at TIMESTAMP,
+        needs_retrain BOOLEAN DEFAULT FALSE,
+        notes VARCHAR,
+        PRIMARY KEY (ticker, ex_date, action_type)
+    )
+"""
+
 # SPEC-PIPE-003 (CRITICAL): announcement_date is the PIT key, never quarter_end_date
 _CREATE_FUNDAMENTALS = """
     CREATE TABLE IF NOT EXISTS fundamentals (
@@ -276,7 +306,7 @@ _CREATE_FUNDAMENTALS = """
         -- [AS BUILT, backlog #12/AF-5] Populated by
         -- features/fundamental_quality_gate.py's validate_and_annotate(),
         -- called from scripts/backfill_fundamentals_trendlyne.py and
-        -- scripts/load_kaggle_fundamentals.py before every write. Flags
+        -- scripts/backfill_fundamentals_nse_xbrl.py before every write. Flags
         -- (never rejects) rows with a ratio field outside its plausible
         -- range (e.g. a margin stored as 0-100 instead of 0-1) so a units
         -- bug like the operating_margin/net_margin one (BuildLog.md
@@ -286,6 +316,19 @@ _CREATE_FUNDAMENTALS = """
         -- means the row passed every check (or was revenue-exempt).
         quality_flag BOOLEAN,
         quality_flag_reason VARCHAR,
+        -- [AS BUILT, A36 fix 2026-07-09] Row-level provenance: which of the
+        -- 3 writers (trendlyne/nse_xbrl/screener; kaggle removed A53, see
+        -- features/fundamental_source_priority.py) most recently won a
+        -- real (non-NULL-filling) conflict on this row. Row-level, not
+        -- per-field, matching this table's existing granularity (no other
+        -- column tracks per-field provenance either) — good enough to
+        -- resolve "which source should win" without a much larger
+        -- per-field-provenance migration. NULL for rows written before
+        -- this fix (self-heals: any subsequent write from a covered
+        -- writer sets both fields going forward, per
+        -- build_priority_update_clause's NULL-existing-priority handling).
+        fundamentals_source VARCHAR,
+        fundamentals_source_priority INTEGER,
         PRIMARY KEY (ticker, fiscal_year, quarter)
     )
 """
@@ -626,14 +669,62 @@ _CREATE_MISSED_JOB_FINDINGS = """
     )
 """
 
+# CA6 (2026-07-10): NSE's real `api/corporate-further-issues-qip` endpoint
+# — live-verified against IDFCFIRSTB/ZOMATO, fully structured JSON (no XBRL
+# parsing needed, unlike BRSR below). appId is NSE's own per-filing ID —
+# used as the natural conflict key since a company can do multiple QIPs.
+_CREATE_QIP_DETAILS = """
+    CREATE TABLE IF NOT EXISTS qip_details (
+        ticker VARCHAR NOT NULL,
+        app_id VARCHAR NOT NULL,
+        board_resolution_date DATE,
+        allotment_date DATE,
+        listing_date DATE,
+        issue_price DOUBLE,
+        min_issue_price DOUBLE,
+        final_issue_size DOUBLE,
+        no_of_allottees INTEGER,
+        no_of_shares_allotted BIGINT,
+        no_of_equity_shares_listed BIGINT,
+        dilution_pct DOUBLE,
+        PRIMARY KEY (ticker, app_id)
+    )
+"""
+
+# CA6 (2026-07-10): NSE's real `api/corporate-bussiness-sustainabilitiy`
+# endpoint — live-verified against RELIANCE. Scope deliberately limited to
+# the filing INDEX (submission date, XBRL file URL) rather than parsing
+# every BRSR ESG metric out of the linked XBRL XML — that's a much larger,
+# separately-scoped effort (hundreds of BRSR-specific tags), not attempted
+# here. fy_to as part of the key since a company files at most once per FY.
+_CREATE_BRSR_FILINGS = """
+    CREATE TABLE IF NOT EXISTS brsr_filings (
+        ticker VARCHAR NOT NULL,
+        fy_from INTEGER,
+        fy_to INTEGER NOT NULL,
+        submission_date DATE,
+        xbrl_file_url VARCHAR,
+        attachment_file_url VARCHAR,
+        PRIMARY KEY (ticker, fy_to)
+    )
+"""
+
 _ALL_TABLES = {
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
     "index_ohlcv": _CREATE_INDEX_OHLCV,
     "ohlcv_ca_audit": _CREATE_OHLCV_CA_AUDIT,
     "corporate_actions": _CREATE_CORPORATE_ACTIONS,
+    "corporate_actions_validation": _CREATE_CORPORATE_ACTIONS_VALIDATION,
+    "qip_details": _CREATE_QIP_DETAILS,
+    "brsr_filings": _CREATE_BRSR_FILINGS,
     "fundamentals": _CREATE_FUNDAMENTALS,
     "shareholding": _CREATE_SHAREHOLDING,
-    "fno_data": _CREATE_FNO_DATA,
+    # A50 (2026-07-10): fno_data deliberately NOT in this dict — it lives in
+    # its own file (config.settings.FNO_DATA_DB_PATH) for a real DB, created
+    # separately in create_schema() below via the ATTACHed fno_db alias. For
+    # in_memory=True (tests), it's created inline here like every other
+    # table — the file-split only matters for the live multi-process lock
+    # contention scenario, not test isolation.
     "large_deals": _CREATE_LARGE_DEALS,
     "macro_indicators": _CREATE_MACRO_INDICATORS,
     "stock_master": _CREATE_STOCK_MASTER,
@@ -722,6 +813,10 @@ _MIGRATE_ADDED_COLUMNS = {
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS other_equity DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS non_controlling_interest DOUBLE",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS non_current_liabilities DOUBLE",
+        # [AS BUILT, A36 fix 2026-07-09] see _CREATE_FUNDAMENTALS comment
+        # above these two columns for rationale.
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fundamentals_source VARCHAR",
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fundamentals_source_priority INTEGER",
     ],
     "shareholding": [
         "ALTER TABLE shareholding ADD COLUMN IF NOT EXISTS superstar_flag BOOLEAN",
@@ -817,6 +912,18 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
         for table_name, ddl in _ALL_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")
+        # A50 (2026-07-10): fno_data lives in its own file for a real DB
+        # (get_duckdb_connection already ATTACHed it as `fno_db` for any
+        # connection to the real DUCKDB_PATH — see datastore/api/db.py)
+        # — qualify the CREATE explicitly since unqualified CREATE TABLE
+        # targets the current/default schema, not search_path resolution
+        # (unlike SELECT/INSERT/DELETE, which DO follow search_path).
+        # in_memory=True keeps fno_data inline like every other table.
+        fno_ddl = _CREATE_FNO_DATA if in_memory else _CREATE_FNO_DATA.replace(
+            "CREATE TABLE IF NOT EXISTS fno_data", "CREATE TABLE IF NOT EXISTS fno_db.fno_data"
+        )
+        conn.execute(fno_ddl)
+        logger.info("Ensured table exists: fno_data")
         _migrate_added_columns(conn)
         _migrate_dropped_columns(conn)
 

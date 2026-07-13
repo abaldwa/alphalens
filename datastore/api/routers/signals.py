@@ -44,10 +44,30 @@ from datastore.api.schemas import (
     MLSignalWriteResult,
     SignalUniverseRow,
 )
+from ingestion.scheduler.checkpoint import CheckpointManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/signals", tags=["Signals"])
+
+# A43: is_backfill is a Python-side join, not a SQL one — ml_signals (DuckDB)
+# and pipeline_checkpoints (SQLite) are different databases. A fresh
+# CheckpointManager is cheap (SQLite, opened per call via get_sqlite_connection)
+# so it's safe to construct once per module import and reuse across requests.
+_checkpoint_manager = CheckpointManager()
+
+
+def _attach_is_backfill(rows: List[MLSignalRow]) -> List[MLSignalRow]:
+    """Populate MLSignalRow.is_backfill from pipeline_checkpoints' write_signals
+    step for each row's date, caching one lookup per distinct date so a
+    multi-row response (e.g. top_buys, history) doesn't re-query per row."""
+    cache: dict = {}
+    for row in rows:
+        row_date = row.date.date() if hasattr(row.date, "date") else row.date
+        if row_date not in cache:
+            cache[row_date] = _checkpoint_manager.get_step_is_backfill(row_date, "write_signals")
+        row.is_backfill = cache[row_date]
+    return rows
 
 _ML_SIGNAL_COLUMNS = [
     "date", "ticker", "model_name", "model_version", "signal_direction",
@@ -55,7 +75,7 @@ _ML_SIGNAL_COLUMNS = [
     "meta_label", "meta_prob", "conformal_lower", "conformal_upper",
     "pnd_score", "pnd_phase", "pnd_block", "hmm_regime", "hmm_regime_prob", "hmm_stability",
     "exit_urgency", "exit_type", "exit_survival_5d", "exit_survival_21d", "exit_survival_63d",
-    "shap_top5_json",
+    "shap_top5_json", "in_training_universe",
 ]
 _SELECT_COLS = ", ".join(_ML_SIGNAL_COLUMNS)
 
@@ -151,7 +171,7 @@ async def get_top_buys(
             [query_date, model_name, query_date, n],
         ).fetchall()
 
-    return [_row_to_signal(r) for r in rows]
+    return _attach_is_backfill([_row_to_signal(r) for r in rows])
 
 
 @router.get("/ml/history/{ticker}", response_model=List[MLSignalRow])
@@ -164,8 +184,8 @@ async def get_signal_history(
     Last N dated rows for one ticker/model — #17's rolling scorecard of
     signal_5d's own recent calls (recommended date/price/expected-return vs
     current price/return is computed client-side off these rows plus
-    /api/v1/ohlcv/{ticker} close prices, so this endpoint stays a plain
-    ml_signals read with no cross-database join).
+    /api/v1/ohlcv/{ticker} close prices). is_backfill (A43) is attached via
+    a Python-side join against pipeline_checkpoints after the DuckDB read.
     """
     if not ticker:
         raise HTTPException(status_code=400, detail="Ticker cannot be empty")
@@ -179,7 +199,7 @@ async def get_signal_history(
             """,
             [ticker, model_name, n],
         ).fetchall()
-    return [_row_to_signal(r) for r in rows]
+    return _attach_is_backfill([_row_to_signal(r) for r in rows])
 
 
 # [AS BUILT, #21] Registered before /ml/{ticker}/{date} for the same reason
@@ -285,7 +305,7 @@ async def get_ml_signals(
                 [ticker, date],
             ).fetchall()
 
-    return [_row_to_signal(r) for r in rows]
+    return _attach_is_backfill([_row_to_signal(r) for r in rows])
 
 
 @router.post("/ml/write", response_model=MLSignalWriteResult)

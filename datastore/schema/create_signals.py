@@ -149,6 +149,14 @@ _CREATE_ML_SIGNALS = """
         exit_survival_21d DOUBLE,
         exit_survival_63d DOUBLE,
         shap_top5_json VARCHAR,
+        -- ML24 (2026-07-11): was this ticker in the ADTV-curated training
+        -- universe (config/training_universe.py) the model that produced
+        -- this row was actually trained on? Pooled panel models still score
+        -- every ticker regardless (see training_universe.py's module
+        -- docstring), so this flags out-of-distribution extrapolation
+        -- rather than blocking it. NULL for rows written before this
+        -- column existed.
+        in_training_universe BOOLEAN,
         PRIMARY KEY (date, ticker, model_name)
     )
 """
@@ -174,6 +182,8 @@ _CREATE_ML_MULTIBAGGER = """
         survival_18m DOUBLE,
         shap_top5_json VARCHAR,
         analogues_json VARCHAR,
+        -- ML24/ML27 (2026-07-11): see ml_signals.in_training_universe above.
+        in_training_universe BOOLEAN,
         PRIMARY KEY (date, ticker)
     )
 """
@@ -204,6 +214,17 @@ _CREATE_ML_FORENSIC = """
         forensic_ml_prob DOUBLE,
         shap_top5_json VARCHAR,
         pattern_match VARCHAR,
+        -- [AS BUILT, FO5 2026-07-11] benford_mad stayed the only aggregate
+        -- exposed even though benford_analysis() already computes a real
+        -- chi-square statistic/p-value + full per-digit (1-9) observed
+        -- frequency distribution per financial series (revenue/ebitda/pat/
+        -- trade_receivables_current/current_assets/capex — see
+        -- features/forensic_classical.py's series_dict). benford_detail_json
+        -- carries that full structure (JSON-encoded dict of
+        -- {series_name: {chi2, p_value, mad, n_obs, digit_distribution}}
+        -- plus benford_expected_distribution) so the API/UI can render the
+        -- real chi-square test and per-digit histogram instead of just MAD.
+        benford_detail_json VARCHAR,
         PRIMARY KEY (date, ticker)
     )
 """
@@ -224,6 +245,7 @@ _MIGRATE_ADDED_COLUMNS = {
     ],
     "ml_forensic": [
         "ALTER TABLE ml_forensic ADD COLUMN IF NOT EXISTS forensic_flag_label VARCHAR",
+        "ALTER TABLE ml_forensic ADD COLUMN IF NOT EXISTS benford_detail_json VARCHAR",
     ],
 }
 

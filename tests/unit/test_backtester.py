@@ -229,6 +229,17 @@ class TestIndianTransactionCosts:
         assert costs.is_liquid_enough(MIN_ADT_INR) is True
         assert costs.is_liquid_enough(MIN_ADT_INR - 1) is False
 
+    def test_negative_brokerage_pct_raises(self):
+        with pytest.raises(ValueError):
+            IndianTransactionCosts(brokerage_pct=-0.01)
+
+    def test_validate_against_settings_flags_and_logs_out_of_tolerance_rate(self):
+        # A deliberately wrong brokerage rate should push the round-trip cost
+        # outside TOTAL_ROUNDTRIP_COST's tolerance band -> validate returns False
+        # and logs a warning (backtest/costs.py's not-within-tolerance branch).
+        costs = IndianTransactionCosts(brokerage_pct=0.05)
+        assert costs.validate_against_settings() is False
+
 
 # ===== overfit_checks =====
 

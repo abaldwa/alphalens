@@ -52,6 +52,7 @@ from .routers import (
     forensic,
     fundamentals,
     governance,
+    macro,
     models,
     multibagger,
     ohlcv,
@@ -59,6 +60,7 @@ from .routers import (
     paper_trading,
     pipeline,
     regime,
+    sector_rotation,
     shareholding,
     signals,
     system,
@@ -138,6 +140,7 @@ app.include_router(governance.router)
 app.include_router(corporate_actions.router)
 app.include_router(corporate_announcements.router)
 app.include_router(fno.router)
+app.include_router(macro.router)
 # [AS BUILT, P3.x] paper_trading/backtest_reports added for the Automated
 # Daily Paper Trading + Web UI build (see plan: scalable-bubbling-reddy.md).
 app.include_router(paper_trading.router)
@@ -165,6 +168,10 @@ app.include_router(pipeline.router)
 # [AS BUILT, Phase A — Big Investor Activity] bulk/block deals + MF holdings
 # screen. See plan: gentle-wobbling-swing.md.
 app.include_router(big_investors.router)
+# [AS BUILT, ML12 steps 4-6] Daily Sector Rotation report — trailing-21d
+# relative strength per sector (config/sector_index_map.py) vs Nifty 500,
+# ranked, with top stocks per in-favor sector.
+app.include_router(sector_rotation.router)
 
 # ===== Static UI (P3.x — zero-new-dependency web UI, StaticFiles ships with
 # Starlette/FastAPI already; rebuilt to the 27-screen/5-app prototype layout

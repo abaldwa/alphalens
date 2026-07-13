@@ -6,6 +6,7 @@ automated daily paper-trading bot's portfolio persistence.
 All tests are offline (no DB, no HTTP).
 """
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -75,3 +76,38 @@ class TestSaveLoadRoundtrip:
             trade = reloaded.sell("TICK", 110.0, pd.Timestamp("2024-01-05"), reason="signal")
             assert trade is not None
             assert "TICK" not in reloaded.positions
+
+    def test_position_meta_persisted_and_reloadable_from_disk(self, sim):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "state.json"
+            save_portfolio_state(
+                sim, path, as_of_date="2024-01-01",
+                position_meta={"TICK": {"buy_prob_entry": 0.8, "target_price": 120.0}},
+            )
+            saved = json.loads(path.read_text())
+            assert saved["position_meta"]["TICK"]["buy_prob_entry"] == 0.8
+
+    def test_position_meta_merges_with_existing_and_prunes_closed_positions(self, sim):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "state.json"
+            # First save: TICK open with meta, plus a stale meta entry for a ticker never held.
+            save_portfolio_state(sim, path, as_of_date="2024-01-01", position_meta={"TICK": {"target_price": 100.0}})
+            existing = json.loads(path.read_text())
+            existing["position_meta"]["GHOST"] = {"target_price": 999.0}
+            path.write_text(json.dumps(existing))
+
+            # Second save: no new meta passed -> existing TICK meta preserved, GHOST pruned
+            # (GHOST isn't in sim.positions).
+            save_portfolio_state(sim, path, as_of_date="2024-01-02")
+            saved = json.loads(path.read_text())
+            assert "TICK" in saved["position_meta"]
+            assert "GHOST" not in saved["position_meta"]
+
+    def test_corrupt_existing_state_file_falls_back_to_empty_meta(self, sim):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "state.json"
+            path.write_text("{not valid json")
+            # Must not raise despite the pre-existing file being corrupt JSON.
+            save_portfolio_state(sim, path, as_of_date="2024-01-01", position_meta={"TICK": {"target_price": 1.0}})
+            saved = json.loads(path.read_text())
+            assert saved["position_meta"]["TICK"]["target_price"] == 1.0

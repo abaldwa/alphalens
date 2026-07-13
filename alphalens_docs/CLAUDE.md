@@ -104,8 +104,10 @@ alphalens_platform/
 │   │   ├── inference/daily_inference.py
 │   │   └── api_writer.py
 │   ├── technical_analysis/           ← System 2 (Phase 3)
-│   ├── damodaran_valuation/          ← System 3 (Phase 3)
-│   └── fundamental_analysis/         ← System 4 (Phase 4)
+│   └── damodaran_valuation/          ← System 3 (Phase 3)
+│   (System 4 "fundamental_analysis" was a dead stub package, deleted
+│    2026-07-10 per FeatureBacklog.md F3; real logic lives in
+│    features/fundamental_composites.py)
 │
 ├── backtest/                         ← BACKTESTING (reads from DataStore)
 │   ├── engine.py, portfolio.py, costs.py, metrics.py, integrity_checker.py

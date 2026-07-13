@@ -43,6 +43,40 @@ FileNotFoundError
 ValueError
     If the inner-joined OOF set is empty (no overlapping (date, ticker)
     rows across all 5 models in the requested window).
+
+A40 (2026-07-10) — root cause of the 2026-07-02 09:10:58 silent death
+------------------------------------------------------------------------
+The one real run of this script (logs/train_stacking.log) got through
+signal_5d/21d/63d's BacktestEngine OOF collection (~70 min total) and
+began scoring TFT, loading all 3 v20260701 fold checkpoints — then the
+log simply stops, no traceback, no exit message. `journalctl -k` on this
+same host shows `systemd-oomd` killing other AlphaLens processes on sight
+of memory pressure (>50% cgroup usage for >20s, e.g. the scheduler
+service on 2026-07-10) with a hard SIGKILL and zero cooperation from the
+killed process — which explains the log's silence exactly: a SIGKILL
+gives the Python process no chance to log a traceback or run an atexit
+handler. The 2026-07-02 dmesg/journal window itself has since rotated
+out of /var/log, so this is strong circumstantial evidence (same host,
+same failure signature, systemd-oomd demonstrably active and this
+aggressive), not a smoking-gun log line — but it matches every known
+fact and is the same class of failure as the two dated, confirmed
+2026-07-07/07-09 OOM incidents in retrain_phase2.py's module docstring.
+
+Decision (2026-07-10): NOT wired into the daily/overnight pipeline this
+session. Scoring 5 base models (3 already-heavy BacktestEngine OOF
+passes + 2 deep-model forward passes over 297-feature sequences) in one
+unbounded process on this ~15GB box is the same "everything in one
+process" shape that OOM-killed retrain_phase2.py twice — StackingEnsemble
+needs the same per-model subprocess isolation (see ML21's fix in
+retrain_phase2.py/pipeline_scheduler.py) and a bounded --max-tickers
+default before it's safe to run unattended, and even then the underlying
+ensemble is only as trustworthy as its weakest input (A42: TFT/BiLSTM's
+real per-category feature usage is still unverified). `main()` below now
+writes an explicit `<output-dir>/train_stacking.status.json` marker
+before/after the run specifically so a future silent-death postmortem
+can distinguish "never started," "OOM-killed mid-run" (STARTED, no
+COMPLETED/FAILED), and "completed"/"failed with a real traceback"
+without needing to re-derive this from log timestamps.
 """
 
 import argparse
@@ -391,21 +425,46 @@ def train_stacking(
     return meta
 
 
+def _write_status_marker(output_dir: str, status: str, detail: str = "") -> None:
+    """A40 (2026-07-10): STARTED/COMPLETED/FAILED marker so a future silent
+    death (SIGKILL from systemd-oomd — see module docstring) leaves behind
+    proof of how far the run got, instead of an ambiguous stopped log."""
+    import json as _json
+
+    from config.timezone import now_ist
+
+    path = Path(output_dir) / "train_stacking.status.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"status": status, "detail": detail, "at": now_ist().isoformat()}, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train M-13 StackingMetaLearner on real 5-model OOF predictions")
     parser.add_argument("--from-date", default="2024-01-01")
     parser.add_argument("--n-folds", type=int, default=3)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-tickers", type=int, default=None)
+    parser.add_argument(
+        "--max-tickers", type=int, default=800,
+        help="Cap universe size (default 800, matching retrain_phase2.py's DEFAULT_MAX_TICKERS — see A40/ML21 "
+             "OOM history). Pass --full-universe to override.",
+    )
+    parser.add_argument("--full-universe", action="store_true", help="Override --max-tickers, use the full universe.")
     parser.add_argument("--min-history", type=int, default=252)
     parser.add_argument("--output-dir", default="datastore/models")
     args = parser.parse_args()
 
-    train_stacking(
-        from_date=args.from_date, n_folds=args.n_folds, optuna_trials=args.trials, seed=args.seed,
-        max_real_tickers=args.max_tickers, min_history_days=args.min_history, model_dir=args.output_dir,
-    )
+    max_tickers = None if args.full_universe else args.max_tickers
+    _write_status_marker(args.output_dir, "STARTED", f"max_tickers={max_tickers}")
+    try:
+        train_stacking(
+            from_date=args.from_date, n_folds=args.n_folds, optuna_trials=args.trials, seed=args.seed,
+            max_real_tickers=max_tickers, min_history_days=args.min_history, model_dir=args.output_dir,
+        )
+    except Exception as exc:
+        _write_status_marker(args.output_dir, "FAILED", str(exc))
+        raise
+    _write_status_marker(args.output_dir, "COMPLETED")
 
 
 if __name__ == "__main__":

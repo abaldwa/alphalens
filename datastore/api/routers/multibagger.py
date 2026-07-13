@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api/v1/signals/ml/multibagger", tags=["Multibagger"]
 _COLUMNS = [
     "date", "ticker", "mb_probability", "mb_tier", "mb_archetype",
     "survival_6m", "survival_12m", "survival_18m", "survival_24m", "survival_36m",
-    "shap_top5_json", "analogues_json",
+    "shap_top5_json", "analogues_json", "in_training_universe",
 ]
 _SELECT_COLS = ", ".join(_COLUMNS)
 

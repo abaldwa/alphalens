@@ -12,6 +12,7 @@ stand-in used to bootstrap closed-trade history before ExitSignalModel has
 enough real data to train (see BuildLog.md "Paper Trading Logic Fix").
 """
 
+import httpx
 import pandas as pd
 import pytest
 import talib
@@ -157,7 +158,17 @@ class TestAtrScaledBarriers:
         from datetime import datetime
 
         client = DataStoreClient()
-        rows = client.get_ohlcv(ticker, datetime(2025, 1, 1), datetime(2025, 6, 1))
+        try:
+            rows = client.get_ohlcv(ticker, datetime(2025, 1, 1), datetime(2025, 6, 1))
+        except httpx.RequestError as exc:
+            # ML20: this test needs a live DataStore API server (unlike the
+            # rest of this repo's usual in-process TestClient(app) pattern —
+            # rewriting onto TestClient(app) isn't viable here because
+            # DataStoreClient is a real httpx client with no dependency-
+            # injection seam for an ASGI transport). Skip cleanly when no
+            # server is reachable instead of failing loud and indistinguishably
+            # from a real regression (see BuildLog.md ML20).
+            pytest.skip(f"DataStore API unreachable for real-OHLCV check: {exc}")
         if not rows or len(rows) < 30:
             pytest.skip(f"no real OHLCV available for {ticker} in this environment")
         df = pd_.DataFrame(rows)

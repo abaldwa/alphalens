@@ -56,6 +56,50 @@ def trained_base_model():
     return model, X_val
 
 
+class TestResampleMaxSamplingRatio:
+    """ML21 (2026-07-10): SMOTETomek's oversample ratio can be capped via
+    max_sampling_ratio instead of imblearn's unbounded default 'auto'
+    (1:1 with the majority class) — the root cause of the 2026-07-09
+    signal_63d OOM (49.5% buy / 42.2% hold / 8.3% sell blown up to 1:1:1)."""
+
+    def _make_skewed_labels(self, n=600, minority_frac=0.05, seed=0):
+        rng = np.random.default_rng(seed)
+        n_minority = max(int(n * minority_frac), 5)
+        y = pd.Series([0] * (n - n_minority) + [1] * n_minority)
+        X = pd.DataFrame(rng.normal(size=(len(y), 6)), columns=[f"f{i}" for i in range(6)])
+        return X, y
+
+    def test_default_auto_resamples_to_1to1(self):
+        X, y = self._make_skewed_labels()
+        X_res, y_res = BaseSignalModel._resample(X, y, random_state=1)
+        counts = pd.Series(y_res).value_counts()
+        # SMOTETomek's Tomek-link cleanup can trim a few majority-class
+        # rows, but 'auto' still drives the classes to near-parity.
+        assert counts.min() / counts.max() > 0.85
+
+    def test_capped_ratio_keeps_minority_below_majority(self):
+        X, y = self._make_skewed_labels()
+        X_res, y_res = BaseSignalModel._resample(X, y, random_state=1, max_sampling_ratio=0.3)
+        counts = pd.Series(y_res).value_counts()
+        # Capped: minority class should land near 0.3x the majority count,
+        # well short of 'auto''s ~1:1 parity — bounds the post-resample
+        # matrix size directly.
+        assert counts.min() / counts.max() < 0.6
+
+    def test_max_sampling_ratio_plumbed_through_init_and_train_full(self):
+        X, y, returns = _make_classification_data(n=400, seed=2)
+        # Force one minority class by relabeling a small slice as 'sell'-only.
+        model = BaseSignalModel(horizon_days=5, optuna_trials=1, random_state=3, max_sampling_ratio=0.4)
+        assert model.max_sampling_ratio == 0.4
+        split = int(len(X) * 0.7)
+        diag = model.train_full(
+            X.iloc[:split], y.iloc[:split], X.iloc[split:], y.iloc[split:],
+            returns_train=returns.iloc[:split], returns_val=returns.iloc[split:],
+        )
+        assert diag["class_ratio_after"]
+        assert model._training_samples > 0
+
+
 class TestBaseSignalModel:
     def test_predict_signals_probabilities_sum_to_one(self, trained_base_model):
         """Prompt requirement: buy+hold+sell probabilities sum to 1.0."""

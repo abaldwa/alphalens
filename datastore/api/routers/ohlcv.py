@@ -99,6 +99,36 @@ async def get_ohlcv_bulk(
     return Response(content=df.to_json(orient="records"), media_type="application/json")
 
 
+@router.get("/index/{index_name}")
+async def get_index_ohlcv(
+    index_name: str,
+    from_date: date_type = Query(..., alias="from", description="Inclusive start date (YYYY-MM-DD)"),
+    to_date: date_type = Query(..., alias="to", description="Inclusive end date (YYYY-MM-DD)"),
+) -> Response:
+    """
+    Real NSE index OHLC (index_ohlcv table, ingestion/scrapers/nse_indices.py)
+    for one tracked index name over [from, to] — e.g. "Nifty 500" for
+    ML17a's real benchmark equity curve in backtest/engine.py, or any of
+    config/sector_index_map.py's tracked sector indices.
+
+    Registered before `/{ticker}` (same route-ordering discipline as
+    `/_meta/tickers` and `/_bulk` above) so "index" is never swallowed as a
+    ticker value.
+
+    Returns a flat JSON array of {date, index_name, open, high, low, close,
+    volume} records (pandas .to_json(), same convention as `/_bulk`).
+    """
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from must be <= to")
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        df = conn.execute(
+            "SELECT CAST(date AS VARCHAR) AS date, index_name, open, high, low, close, volume "
+            "FROM index_ohlcv WHERE index_name = ? AND date >= ? AND date <= ? ORDER BY date",
+            [index_name, from_date, to_date],
+        ).df()
+    return Response(content=df.to_json(orient="records"), media_type="application/json")
+
+
 @router.get("/{ticker}", response_model=OHLCVResponse)
 async def get_ohlcv(
     ticker: str,

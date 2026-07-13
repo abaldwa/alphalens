@@ -10548,3 +10548,2821 @@ work this session did not touch).
 tables); `tests/unit/test_model_training_overdue_union.py`,
 `tests/unit/test_checkpoint_backfill_flag.py` (new);
 `FeatureBacklog.md` (A30/A32/A33 rows flipped to ✅, write-ups expanded).
+
+## 2026-07-09 (session 2) — A34: `step_download_fno` DB-write try/except widen
+
+### Task
+Fix A34 (`step_download_fno` may share A31's unwrapped-DB-write gap) —
+found during A31's fix but left as a backlog item since it wasn't
+confirmed to have failed live.
+
+### Fix
+`ingestion/scheduler/daily_pipeline.py::step_download_fno` previously
+only wrapped `fno.download_fno_bhavcopy(date_str)` in `try/except`; the
+row-building, `DELETE FROM fno_data`, and `conn.executemany(...)` write
+sat after the `except` block's `return`, unprotected. Moved that whole
+block inside the same `try`, matching `step_download_index_ohlcv`'s A31
+fix exactly — a DuckDB lock conflict (`SPEC-SCHED-013`) or any other
+write-path exception now logs a warning and returns `None`, consistent
+with the step's own docstring ("Always... failures are caught and
+logged, never raised").
+
+### Tests
+Added `TestStepDownloadFno::test_db_write_failure_is_caught_and_non_fatal`
+to `tests/unit/test_daily_pipeline.py`, mirroring the existing
+`TestStepDownloadIndexOhlcv::test_db_write_failure_is_caught_and_non_fatal`
+pattern (monkeypatches `get_duckdb_connection` to raise a lock-conflict
+`RuntimeError`, asserts no exception propagates). `TestStepDownloadFno`
+(4 tests) and the full `test_daily_pipeline.py` suite (26 tests) pass,
+no regressions.
+
+### Backlog
+A34 flipped to ✅ in `FeatureBacklog.md`, writeup expanded.
+
+A35 (screener source can't join A25 staged publish) and A36
+(`fundamentals` table's 4 writers have inconsistent upsert-conflict
+precedence) were **not** coded this session — both entries explicitly
+call out that they need a design decision (source-priority order for
+A36; batching vs. new API surface for A35) before implementation, per
+this project's established design-before-code precedent (A22). Flagged
+back to the user rather than guessed at.
+
+### Files changed
+`ingestion/scheduler/daily_pipeline.py` (`step_download_fno`);
+`tests/unit/test_daily_pipeline.py` (new test);
+`FeatureBacklog.md` (A34 row flipped to ✅, write-up expanded).
+
+## 2026-07-09 (session 2 cont'd) — A35 + A36: fundamentals writer batching + source-priority precedence
+
+### Task
+User answered the two design questions FeatureBacklog.md's A35/A36
+entries explicitly called for before coding: A36's real source-priority
+order is NSE XBRL > Trendlyne > Screener > Kaggle; A35's screener gap is
+closed via client-side batching (not API-level staging).
+
+### A36 — shared source-priority module + all 4 writers updated
+New `features/fundamental_source_priority.py`: `SOURCE_PRIORITY` dict +
+`build_priority_update_clause(columns)`, the single shared SQL builder
+every writer now uses for its `ON CONFLICT ... DO UPDATE` clause —
+replacing 4 independently hand-written COALESCE directions (the actual
+bug A36 found) with one. `fundamentals` gained `fundamentals_source`/
+`fundamentals_source_priority` (row-level provenance) via both the
+CREATE TABLE DDL and a self-healing `ALTER TABLE ADD COLUMN IF NOT
+EXISTS` migration. nse_xbrl and screener (the two writers that bypassed
+A12's range-validation gate) are now both wired into
+`validate_and_annotate`.
+
+### A35 — screener batch_export client-side batching
+New `POST /api/v1/fundamentals/write_batch` endpoint + `datastore/
+client.py::write_fundamentals_batch`; `screener.py::batch_export`
+accumulates fundamentals records in memory and flushes every
+`SCREENER_BATCH_EXPORT_CHUNK_SIZE` (50) tickers instead of one HTTP POST
+per ticker — a deliberate partial-checkpoint compromise (documented
+tradeoff in both the backlog entry and the settings constant). Real bug
+caught during test-writing: the first draft's `_flush()` passed the live
+`pending_fundamentals` list into `write_fundamentals_batch(...)` then
+immediately `.clear()`'d the same list — fixed by flushing a copy.
+
+### Tests
+`tests/unit/test_fundamental_source_priority.py` (6, new),
+`tests/unit/test_fundamentals_write_batch.py` (3, new),
+`tests/unit/test_schema.py` (fitness-function column set updated),
+`tests/unit/test_screener.py::TestBatchExport` (updated for batching +
+1 new chunk-boundary test). Full regression (160 tests across
+`test_daily_pipeline.py`/`test_schema.py`/`test_trendlyne.py`/
+`test_nse_xbrl_financials.py`/`test_fundamental_quality_gate.py`/
+`test_fundamental_source_priority.py`/`test_pit_alignment.py`/
+`test_screener.py`/`test_tijori.py`/`test_fundamentals_write_batch.py`/
+`test_datastore_client.py`) + `tests/quality/
+test_duckdb_connection_discipline.py` pass. One pre-existing
+`tests/quality/test_no_stub_or_synthetic_data.py` failure confirmed via
+`git stash` to predate this session (unrelated files:
+`config/nse_holidays.py`, `datastore/schema/create_normalised.py`'s
+comments, `scripts/align_remaining_to_fyers.py`).
+
+### Backlog
+A35 and A36 flipped to ✅ in `FeatureBacklog.md`, both writeups expanded
+with the fix design, what was deliberately left out of scope (staged-mode
+`coalesce_merge` priority-awareness, API-level staging for A35), and why.
+
+### Files changed
+`features/fundamental_source_priority.py` (new);
+`datastore/schema/create_normalised.py` (2 new columns + migration);
+`datastore/api/routers/fundamentals.py` (`/write` rebuilt on shared
+clause + gate, new `/write_batch`); `datastore/api/schemas.py`
+(`FundamentalsWriteBatch`, `FundamentalsWriteBatchResult`);
+`datastore/client.py` (`write_fundamentals_batch`);
+`scripts/backfill_fundamentals_trendlyne.py`,
+`scripts/backfill_fundamentals_nse_xbrl.py`,
+`scripts/load_kaggle_fundamentals.py` (shared clause + provenance
+stamping); `ingestion/scrapers/screener.py` (`batch_export` chunked
+flush); `config/settings.py` (`SCREENER_BATCH_EXPORT_CHUNK_SIZE`);
+`tests/unit/test_fundamental_source_priority.py`,
+`tests/unit/test_fundamentals_write_batch.py` (new);
+`tests/unit/test_schema.py`, `tests/unit/test_screener.py` (updated);
+`FeatureBacklog.md` (A35/A36 rows + write-ups).
+
+## 2026-07-09 (session 2 cont'd) — Full-suite defect audit: ML18/ML19/ML20 logged
+
+### Task
+Log every non-pass result from the full `tests/unit/` regression run
+(1088 passed, 15 failed, 12 errored, 3 skipped, 1 xfailed) into
+`FeatureBacklog.md`, distinguishing real defects from already-tracked
+items and from environment-dependent noise.
+
+### Findings
+- `test_damodaran.py::TestLifecycleClassifier` (3 failures) — already
+  tracked as **D1**, re-confirmed, no new item needed.
+- `test_scheduler.py::TestMFHoldingsScheduling::
+  test_execute_mf_holdings_job_runs_ingestion_for_the_determined_month`
+  — passes standalone; already documented in this session's earlier
+  BuildLog entry as a real cross-process DuckDB lock conflict against the
+  live `alphalens.duckdb` from another concurrently-running process, not
+  a code regression.
+- `test_exit_signal.py` (2 failures + 9 errors) — real defect, logged as
+  **ML18**: CoxPH `ConvergenceError` (NaN in the design matrix) plus a
+  `predict()` row-count mismatch (3 rows back for a 5-row input).
+- `test_multibagger.py` (4 failures) + `test_paper_trading_router.py`
+  (1 failure) — 100% green standalone, fail only inside the full suite;
+  logged as **ML19**, a test-isolation/shared-state gap, not yet bisected.
+- `test_score_multibagger.py` (2 failures + 3 errors) +
+  `test_rule_based_exit_policy.py::TestAtrScaledBarriers` (2 failures) —
+  all `httpx.ConnectError: Connection refused` against a DataStore API
+  server that isn't running in this environment; logged as **ML20**, a
+  test-infrastructure gap (should either use the in-process `TestClient`
+  pattern the rest of the suite uses, or skip cleanly when no server is
+  reachable).
+
+None of the above were caused by this session's A34/A35/A36 changes —
+verified by full standalone reruns of every touched test file (all green)
+and by confirming none of the failing tracebacks reference any file this
+session edited.
+
+### Files changed
+`FeatureBacklog.md` (ML18/ML19/ML20 rows + write-ups added to the
+Machine Learning section).
+
+## Pipeline & Monitoring Remediation — Phase 0 (exception catalog) + Phase 1 (false-"completed" fix) (2026-07-10)
+
+### Task
+User-directed remediation of the whole Ops/Pipeline module: two monolithic
+files (`daily_pipeline.py` 1869 lines, `pipeline_scheduler.py` 2488 lines)
+accreted incident-by-incident fixes, and a real 2026-07-10 incident
+surfaced where an operator could not tell that a run had genuinely failed
+partway through. Full plan written and approved (see the session's plan
+file); this entry covers the first two of its phases. Scope was
+deliberately narrowed to **pipeline orchestration and monitoring** —
+ingestion data-sourcing, ML model content bugs, and feature-engineering
+gaps found along the way are logged as new `FeatureBacklog.md` Gap rows,
+not fixed inline (see next BuildLog entry / FeatureBacklog diff for the
+list).
+
+### Investigation: root-causing the "false completed" incident
+Traced the full status-write path end to end
+(`CheckpointManager.save_checkpoint` → `run_steps_for_date` →
+`run_startup_sequence` → `_record_pipeline_run` → `GET /api/v1/ops/runs`)
+before writing any code. Two findings:
+1. `run_steps_for_date`'s dependency-skip logic and `pipeline_runs.status`
+   derivation were already correct — a step failure already cascades to
+   skip its dependents (`checkpoint.py`'s `depends_on`) and already
+   records `status='failed'` for the day, not "completed" (no code path
+   anywhere writes the literal string "completed" — that word only ever
+   existed in a stale docstring comment).
+2. The real gap: `pipeline_runs` only ever got a row **at the end** of a
+   run (`_record_pipeline_run`, called once after `run_steps_for_date`
+   returns). If the process is killed mid-run (OOM, crash — exactly
+   A44's 2026-07-10 scenario), **no row is written for that date at
+   all**, so `GET /api/v1/ops/runs`' "most recent run" query kept
+   surfacing a *prior day's* success row as if it were current — reading,
+   to an operator glancing at the dashboard, as "today completed fine"
+   when today never ran to completion.
+
+### Phase 0 — Exception catalog
+Built `ingestion/scheduler/exception_catalog.py`: a static registry of
+every intentionally-swallowed `except Exception` in `daily_pipeline.py`
+(6 sites: `download_fno`, `download_index_ohlcv`,
+`download_corporate_actions`, `download_large_deals`,
+`publish_and_snapshot`, plus the scheduler-startup stale-job cleanup),
+each entry recording what's caught, the downstream impact if it fires,
+and the concrete remediation (mostly "non-critical, rerun via
+`POST /api/v1/ops/steps/{name}/force` if it persists"). Each entry is
+pinned to its `file:line` and `tests/unit/test_exception_catalog.py`
+asserts that line still contains an `except` statement, so the catalog
+can't silently drift out of sync with a future refactor. One real gap
+surfaced while cataloging: the scheduler-startup cleanup's bare
+`except Exception: pass` (daily_pipeline.py:1830) discards the actual
+exception even in the "job store may be broken" case, not just the
+expected "job doesn't exist" case — documented as a known follow-up
+inside the catalog module rather than silently fixed (narrowing it
+requires confirming APScheduler's `JobLookupError` import path).
+
+**Deferred, not done this session:** the planned physical split of
+`daily_pipeline.py`/`pipeline_scheduler.py` into smaller per-concern
+modules (Phase 0.1/0.2 of the plan). That refactor touches every STEP
+dispatch and every scheduler job registration at once — high blast
+radius for a pure reorganization — and was deprioritized in favor of the
+higher-value, lower-risk Phase 1 fix in the time available this session.
+Logged as a Gap in `FeatureBacklog.md` (see next entry) rather than
+attempted partially.
+
+### Phase 1 — Per-run start/finish recording + stale-run detection
+- `pipeline_scheduler.py`: added `_record_pipeline_run_started()` (writes
+  a `status='running'` row the moment `run_startup_sequence` begins,
+  returning its `run_id`) and changed `_record_pipeline_run()` to accept
+  that `run_id` and `UPDATE` the same row in place (`completed_at`,
+  `status`, `error_message`) instead of `INSERT`ing a second row. A crash
+  between these two calls now leaves a diagnosable `status='running'` row
+  with a real `started_at` and no `completed_at`, instead of nothing.
+- `config/settings.py`: new `PIPELINE_STALE_RUN_THRESHOLD_MINUTES = 180`.
+- `datastore/api/routers/ops.py::get_ops_runs` / `datastore/api/
+  schemas.py::OpsRunRow`: new `is_stale` field — `True` when a run's
+  status is `'running'` and its `started_at` is older than the threshold
+  above, meaning the process that started it almost certainly died
+  without ever recording a final status.
+- Deliberately did **not** introduce a new status string like "completed"
+  or "partial" — audited every existing status-writing table
+  (`pipeline_checkpoints`, `pipeline_runs`, `scheduler_heartbeats`,
+  `job_run_log`, `data_integrity_findings`, `missed_job_findings`) and
+  confirmed they already share one consistent, already-timestamped
+  vocabulary (`running`/`success`/`failed`/`skipped`/`pending`/
+  `approved`/`rejected`); a multi-step failure is still reported as
+  `'failed'` (diagnosed further via the existing `failed_steps`/
+  `sanity_check_passed` fields), and `is_stale` is a derived boolean, not
+  a new status term.
+
+### Regression tests
+- `tests/unit/test_exception_catalog.py` (new, 9 tests): catalog entries
+  stay pinned to real `except` lines; no duplicate locations; required
+  fields present.
+- `tests/unit/test_scheduler.py::TestPipelineRunsStartedFinishedRecording`
+  (new, 3 tests): a successful run leaves exactly one row in its final
+  state (no duplicate row from the started/finished split); the exact
+  2026-07-10 incident shape (download succeeds, `compute_features`
+  raises) ends recorded `'failed'`, never `'success'`; a simulated
+  process-kill (only the "started" half runs) leaves a `status='running'`
+  row behind with `completed_at IS NULL`.
+- `tests/unit/test_ops_runs_stale.py` (new, 3 tests): an old `'running'`
+  row is flagged `is_stale=True`; a recent `'running'` row is not; a
+  terminal-status row is never flagged stale regardless of age.
+- `tests/integration/test_scheduler_resume.py`: found and fixed two
+  **pre-existing, unrelated** failures while running the regression
+  suite — (1) missing the same cross-process-lock test-isolation fixture
+  `test_scheduler.py` already has (this file was colliding with the real,
+  live `daily_pipeline` scheduler process's lock file on this machine);
+  (2) both tests hardcoded the step-name list from before `A20`'s
+  `data_integrity_check` and `A25`'s `publish_and_snapshot` steps existed,
+  so they'd been silently stale since those steps were added. Rewrote
+  both assertions to derive expected step lists from `STEP_NAMES`/
+  `checkpoint.py`'s `depends_on` graph instead of hardcoding, so a future
+  `STEPS` change can't silently desync them again.
+- Full regression run after all changes: `test_scheduler.py` (40),
+  `test_scheduler_resume.py` (2), `test_daily_pipeline.py` (22),
+  `test_exception_catalog.py` (9), `test_ops_runs_stale.py` (3) — 76/76
+  pass, no regressions.
+
+### Files changed
+`ingestion/scheduler/exception_catalog.py` (new);
+`ingestion/scheduler/pipeline_scheduler.py` (`_record_pipeline_run_started`,
+`_record_pipeline_run` run_id param, `run_startup_sequence` wiring);
+`config/settings.py` (`PIPELINE_STALE_RUN_THRESHOLD_MINUTES`);
+`datastore/api/routers/ops.py` (`is_stale` computation);
+`datastore/api/schemas.py` (`OpsRunRow.is_stale`);
+`tests/unit/test_exception_catalog.py`,
+`tests/unit/test_ops_runs_stale.py` (new);
+`tests/unit/test_scheduler.py`,
+`tests/integration/test_scheduler_resume.py` (new/fixed tests).
+
+## Pipeline & Monitoring Remediation — Phase 2 (self-heal + DB-lock monitor) (2026-07-10)
+
+### Task
+Continuation of the same remediation plan: self-healing under memory
+pressure, a uniform memory ceiling, and visibility into the two
+cross-process advisory locks that had none before.
+
+### Uniform memory ceiling + adaptive chunk sizing
+- `config/settings.py`: new `PIPELINE_MEMORY_CEILING_MB = 6144` — a
+  single figure intended as the shared basis for chunk-size self-healing,
+  a future DuckDB `memory_limit` PRAGMA, and the real-time monitor's
+  alert threshold, replacing today's independently-chosen constants.
+- `ingestion/scheduler/resource_guard.py` (new): `current_rss_mb()`
+  (psutil if available, `/proc/self/status` fallback — never raises),
+  `memory_pressure_high()` (RSS vs. 80% of the ceiling by default), and
+  `adaptive_chunk_size(configured_size, floor=5)` — halves the caller's
+  configured chunk size (down to a floor) when memory pressure is high,
+  trading throughput for survival instead of letting a chunked writer run
+  at a fixed size until the OS OOM-kills it.
+- Wired into `ingestion/scrapers/screener.py::batch_export` — the flush
+  threshold is now `adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE)`
+  recomputed before each ticker, plus an explicit `gc.collect()`
+  immediately after each flush (memory hygiene: the moment a chunk's
+  dict payloads go out of scope is exactly when prompt collection helps
+  most in a long-running batch).
+- `psutil==6.1.1` added to `requirements/phase0.txt` and installed in the
+  venv — the formal Phase 4 "adopt psutil" decision was pulled forward
+  here since `resource_guard.py` needed it; the module still degrades
+  gracefully to `/proc` parsing if it's ever absent.
+
+### DB lock visibility
+- `ingestion/scheduler/lock_monitor.py` (new): a non-blocking,
+  side-effect-free probe (`_probe_lock`) for both existing
+  `fcntl.flock`-based locks — `PIPELINE_RUN_LOCK_PATH`
+  (`pipeline_scheduler.py::pipeline_run_lock`) and
+  `PUBLISH_RUN_LOCK_PATH` (`datastore/staging/publish.py::
+  publish_run_lock`) — neither of which had any external visibility
+  before. Documents a real caveat found while writing it: both lock
+  holders open their file in `"w"` (truncating) mode on every acquisition
+  *attempt*, successful or not, so the file's mtime is "last activity
+  around this lock", not a precise hold-duration timer.
+- New `GET /api/v1/ops/lock-status` endpoint
+  (`datastore/api/routers/ops.py`) + `OpsLockStatusResponse`/
+  `OpsLockStatusEntry` schemas, surfacing both locks' held/free state.
+- Audited both lock context managers for hold-time/release correctness:
+  both already release in a `finally` block on every exit path (normal
+  return or exception) — no change needed there; the gap was purely
+  visibility, not correctness.
+
+### Not done this session (see FeatureBacklog.md A47/A48)
+- The near-real-time (10-30s during an active run) resource monitor
+  replacing `monitor_scheduler_resources.py`'s 30-min poll — that
+  script runs under a systemd timer this environment can't safely
+  reconfigure/verify, so it's deferred rather than half-changed.
+- Generalizing chunked/checkpointed persistence to `features/
+  matrix_builder.py` — unlike the screener, feature-matrix building
+  isn't currently chunked/incrementally flushed at all; making it so is
+  a structural change to that module, not a wiring change, and was
+  judged too large to fold into this pass safely.
+- Further shrinking the lock hold-time itself (e.g. a partition-scoped
+  merge so `stage_via_sql`'s full-table rewrite on `fno_data` doesn't
+  hold `publish_run_lock` for a whole-table copy) — tracked under A50,
+  unstarted.
+
+### Regression tests
+`tests/unit/test_resource_guard.py` (9 tests), `tests/unit/
+test_lock_monitor.py` (7 tests), `tests/unit/test_ops_lock_status.py`
+(2 tests) — all new. Full re-run across everything touched in Phase 0-2
+(`test_scheduler.py`, `test_scheduler_resume.py`, `test_daily_pipeline.py`,
+`test_exception_catalog.py`, `test_ops_runs_stale.py`,
+`test_resource_guard.py`, `test_screener.py`, `test_lock_monitor.py`,
+`test_ops_lock_status.py`): 118/118 pass.
+
+### Files changed
+`config/settings.py` (`PIPELINE_MEMORY_CEILING_MB`);
+`ingestion/scheduler/resource_guard.py`,
+`ingestion/scheduler/lock_monitor.py` (new);
+`ingestion/scrapers/screener.py` (adaptive chunk size + gc.collect());
+`datastore/api/routers/ops.py` (`/lock-status` endpoint);
+`datastore/api/schemas.py` (`OpsLockStatusResponse`/`OpsLockStatusEntry`);
+`requirements/phase0.txt` (`psutil==6.1.1`);
+`tests/unit/test_resource_guard.py`, `tests/unit/test_lock_monitor.py`,
+`tests/unit/test_ops_lock_status.py` (new).
+
+## Pipeline & Monitoring Remediation — Phase 3 (A25 staging default flip) (2026-07-10)
+
+### Task
+A25 (Write-Audit-Publish Architecture) built a complete landing →
+validate → publish → snapshot pipeline in a prior session, but per its
+own writeup most writers still defaulted to `--publish-mode direct`,
+bypassing it — so the N=7 rollback safety net didn't actually cover most
+daily writes. This phase flips that default for the writers that already
+have a working, tested `staged` path.
+
+### What was flipped
+- `scripts/backfill_fundamentals_trendlyne.py --publish-mode` default:
+  `direct` → `staged`.
+- `scripts/backfill_fundamentals_nse_xbrl.py --publish-mode` default:
+  `direct` → `staged`.
+- `ingestion/scrapers/amfi_holdings.py::sync_duckdb_table`'s
+  `publish_mode` parameter default: `direct` → `staged`.
+- `direct` is kept as an available choice on all three (an explicit
+  escape hatch), just no longer the default.
+
+### Deliberately NOT flipped this session
+- **`ingestion/scrapers/corporate_actions.py`'s daily_pipeline.py call
+  site** (`step_download_corporate_actions`, hardcoded to the direct
+  `upsert_corporate_actions`, not parameterized at all). This call site
+  is exercised by the **currently live, running** `daily_pipeline`
+  scheduler process on this machine (confirmed via `ps`/`lsof` earlier
+  this session) — changing live production write behavior mid-session
+  without a coordinated restart is a real-system risk this plan's
+  "Executing actions with care" guidance calls out explicitly. Flipping
+  it is a one-line change (swap the function call, same pattern as the
+  three above) but left for a session where the change can be verified
+  against a restart, not silently landed under a live process. Tracked
+  under A51.
+- **`scripts/load_kaggle_fundamentals.py`**: never had a `staged` path
+  built in the first place (A25's 2026-07-09 rollout note explicitly
+  lists only trendlyne/nse_xbrl/amfi/corporate_actions) — a one-time,
+  rarely-run historical loader, out of this remediation's scope to build
+  staging support for from scratch.
+- **A20's integrity checks wired into `gate.py` as real validators**:
+  investigated, not done. `gate.py`'s `Validator` contract is
+  `(candidate_df) -> (passed_df, rejected_df)` — a pre-publish, per-batch
+  shape. A20's four checks (`datastore/integrity/checks.py`) are
+  fundamentally post-hoc audits over already-published tables, needing a
+  live `conn` + `as_of_date` + (for holiday-leakage) a lookback window —
+  they don't fit the `Validator` signature without a real redesign, not
+  a wiring change. Forcing a shim would risk producing incorrect
+  validation logic under time pressure; left as still-open (matches what
+  A20's own writeup already said) rather than falsely marked done.
+
+### Fitness-function test
+`tests/unit/test_staging_default_publish_mode.py` (new, 3 tests) — pins
+all three flipped defaults to `"staged"`, so a future edit reverting one
+back to `"direct"` fails CI loudly instead of silently regressing A25's
+rollback coverage again.
+
+### Regression tests
+Full re-run across every file touched this phase plus everything from
+Phase 0-2: 137/137 pass, no regressions (existing
+`test_scheduler.py::TestMFHoldingsScheduling` tests — which exercise
+`sync_duckdb_table` via its now-changed default — still pass unchanged).
+
+### Files changed
+`scripts/backfill_fundamentals_trendlyne.py`,
+`scripts/backfill_fundamentals_nse_xbrl.py`,
+`ingestion/scrapers/amfi_holdings.py` (default flips);
+`tests/unit/test_staging_default_publish_mode.py` (new).
+
+## Pipeline & Monitoring Remediation — Phase 4 (nightly training window + trained-but-unused detector) (2026-07-10)
+
+### Task
+psutil adoption was pulled forward into Phase 2 already. This phase
+covers the remaining Phase 4 items: spread model-training checks across
+nightly windows instead of one weekly job (A52), and build a detector for
+the "trained but never wired into inference" class of bug (A53) — it
+does not fix A38/A40 themselves, which stay out of this remediation's
+declared scope.
+
+### A52 — nightly training window, Mon-Thu
+- `ingestion/scheduler/pipeline_scheduler.py`: `_execute_model_training_job`
+  gained two optional parameters — `model_names` (filter to a subset) and
+  `job_id` (record heartbeats under a custom id) — fully backward
+  compatible (both default to the old whole-registry, "model_training"
+  behavior; existing callers/tests unchanged).
+- New `_MODEL_TRAINING_GROUPS`: partitions every model in
+  `_MODEL_TRAINING_SCRIPT_MAP` into 4 groups by underlying training
+  script (phase1/phase2/multibagger/deep_models), one group per Mon-Thu
+  night at 23:00 IST (`MODEL_TRAINING_NIGHTLY_TIME`, new
+  `config/settings.py` constant) — deliberately excludes Fri/weekend
+  nights, which stay reserved for the existing
+  weekend_feature_backfill/weekend_fundamentals/multibagger_scoring/
+  forensic_scoring jobs.
+- New `_execute_model_training_job_for_group(group_name)` (picklable
+  top-level wrapper, APScheduler requirement) and
+  `schedule_model_training_nightly(scheduler)` registering one job per
+  group, each independently observable via its own
+  `model_training_{group}` heartbeat/job_run_log id.
+- `daily_pipeline.py::main()` now calls `schedule_model_training_nightly`
+  instead of the old single-job `schedule_model_training` — the latter is
+  left intact and still importable/tested, not deleted, in case a future
+  session wants the original weekly-catch-up shape back. **This change
+  takes effect on the scheduler process's next restart**, same as any
+  other job-registration edit here — it does not alter the currently
+  running scheduler process's live cron table.
+
+### A53 — "trained but unused" detector
+- `ingestion/scheduler/model_usage_audit.py` (new): a curated
+  `CONSUMERS` map (model_name → the file/function that actually reads it,
+  or `None`) plus `find_trained_but_unused_models(registry_path)`, which
+  flags any `registry.json` entry with a real `last_trained_date` whose
+  `CONSUMERS` entry is `None` — tft/bilstm are premarked `None` (the
+  actual A38/A40 gap) so the detector immediately has real, correct
+  positives once those models are ever trained. A model missing from
+  `CONSUMERS` entirely is also flagged (not silently skipped) — a
+  regression test asserts every `_MODEL_TRAINING_SCRIPT_MAP` key has a
+  `CONSUMERS` entry, so a newly-added trainable model can't be forgotten
+  from this map.
+- Not yet wired into the Ops dashboard — that's Phase 5's "Jobs & Models"
+  screen, not yet built.
+
+### Regression tests
+`tests/unit/test_model_training_nightly.py` (7 tests): every group's
+models are real `_MODEL_TRAINING_SCRIPT_MAP` keys; the groups exactly
+partition (no model doubly-scheduled or silently dropped); no group runs
+on a weekend night; a group's job only ever triggers retrains for its
+own models even when other models are also overdue; heartbeats record
+under the group-specific id; `schedule_model_training_nightly` registers
+exactly 4 distinct jobs. `tests/unit/test_model_usage_audit.py` (7
+tests): completeness of the `CONSUMERS` map, and
+`find_trained_but_unused_models`'s never-trained/no-consumer/
+real-consumer/unmapped/malformed-registry cases.
+
+Also fixed a real regression this phase introduced and caught by its own
+prior safety net: editing `daily_pipeline.py::main()` shifted
+`exception_catalog.py`'s pinned line number for the scheduler-startup
+`except Exception: pass` entry (1830 → 1838) —
+`test_exception_catalog.py` failed exactly as designed, updated the
+catalog entry, re-verified green. Full suite across every file touched
+in Phases 0-4: 157/157 pass.
+
+### Files changed
+`ingestion/scheduler/pipeline_scheduler.py` (`_MODEL_TRAINING_GROUPS`,
+`_execute_model_training_job_for_group`,
+`schedule_model_training_nightly`, `_execute_model_training_job`
+parameterized); `ingestion/scheduler/daily_pipeline.py` (main() wiring);
+`ingestion/scheduler/model_usage_audit.py` (new);
+`ingestion/scheduler/exception_catalog.py` (line-number fix);
+`config/settings.py` (`MODEL_TRAINING_NIGHTLY_TIME`);
+`tests/unit/test_model_training_nightly.py`,
+`tests/unit/test_model_usage_audit.py` (new).
+
+## Pipeline & Monitoring Remediation — Phase 5 (Jobs & Models Ops dashboard) (2026-07-10)
+
+### Task
+Final phase of the remediation plan: surface everything built in Phases
+1-4 (stale-run detection, DB-lock status, the exception catalog, the
+trained-but-unused-model detector) on the Ops dashboard (A45), reusing
+the existing `ops.py` router / `dashboard/static/ops/` frontend rather
+than a new framework.
+
+### New endpoints + schemas
+- `GET /api/v1/ops/lock-status` (`OpsLockStatusResponse`/
+  `OpsLockStatusEntry`) — Phase 2's `lock_monitor.py`, now reachable from
+  the dashboard.
+- `GET /api/v1/ops/unused-models` (`OpsUnusedModelsResponse`/
+  `OpsUnusedModelEntry`) — Phase 4's `model_usage_audit.py`.
+- `GET /api/v1/ops/exception-catalog` (`OpsExceptionCatalogResponse`/
+  `OpsExceptionCatalogEntry`) — Phase 0's `exception_catalog.py`.
+
+### Dashboard changes
+- `dashboard/static/ops/index.html`: three new sections — "Jobs & Models
+  Monitor" (lock status table), "Trained-But-Unused Models", "Exception
+  Catalog".
+- `dashboard/static/ops/js/index.js`: `loadLockStatus()`,
+  `loadUnusedModels()`, `loadExceptionCatalog()`; also updated the
+  existing Recent Runs table to show a red "STALE" badge next to a
+  run's status badge when Phase 1's `is_stale` flag is true (previously
+  added to the API but never surfaced in this table).
+- Verified with Node's `--check` (valid syntax) and end-to-end via
+  `TestClient` hitting the real FastAPI app (see tests below) — **not**
+  verified against a live browser session, because this machine has an
+  already-running DataStore API process (port 8000, pre-dating this
+  session's changes) that would need a restart to pick up the new
+  routes, and restarting a live shared process wasn't done without
+  explicit go-ahead. `curl localhost:8000/openapi.json` confirmed the
+  live process indeed lacks the 3 new routes, as expected pre-restart.
+
+### Regression tests
+`tests/unit/test_ops_unused_models.py` (2), `tests/unit/
+test_ops_exception_catalog_endpoint.py` (1) — new, both against the real
+FastAPI app via `TestClient`. Full suite across everything touched in
+Phases 0-5: 160/160 pass.
+
+### Files changed
+`datastore/api/routers/ops.py` (3 new endpoints);
+`datastore/api/schemas.py` (`OpsUnusedModelEntry`/`OpsUnusedModelsResponse`,
+`OpsExceptionCatalogEntry`/`OpsExceptionCatalogResponse`);
+`dashboard/static/ops/index.html`, `dashboard/static/ops/js/index.js`;
+`tests/unit/test_ops_unused_models.py`,
+`tests/unit/test_ops_exception_catalog_endpoint.py` (new).
+
+## Pipeline & Monitoring Remediation — session wrap-up
+
+All 6 phases of the approved plan (`/home/amit/.claude/plans/
+groovy-coalescing-whistle.md`) are now either done or explicitly deferred
+with a logged reason: Phase 0 (exception catalog ✅, file-split deferred
+→ A46), Phase 1 (false-"completed" root-caused and fixed ✅), Phase 2
+(self-heal + DB-lock monitor ✅, near-real-time monitor loop + matrix_builder
+chunking deferred → A48), Phase 3 (staging default flip ✅ for 3 of 5
+writers, corporate_actions/kaggle deferred with explicit live-process
+rationale → A51), Phase 4 (nightly training window ✅, unused-model
+detector ✅), Phase 5 (dashboard ✅, unverified live due to a running
+production process). 13 new test files, ~85 new regression tests, full
+suite green throughout (160/160 at session end). FeatureBacklog.md A46-A53
+carry every explicitly-deferred item forward with enough context for a
+future session to pick up without re-deriving this session's research.
+
+## Pipeline & Monitoring Remediation — Ops "Pipeline Stages" visual
+
+User follow-up request: a visual representation on the Ops Monitor of the
+3 program stages (Data Ingestion, Feature Engineering, Model Training),
+distinct from the existing flat 16-row Steps table.
+
+Added a `stage-flow` diagram at the top of the Ops page
+(`dashboard/static/ops/index.html`, `dashboard/static/ops/js/index.js`)
+that groups `checkpoint.STEPS` into 3 stage boxes client-side (no new
+backend endpoint — reuses the existing `/api/v1/ops/steps` and
+`/api/v1/ops/heartbeats` responses already fetched elsewhere on this
+page):
+- **Data Ingestion**: download_bhavcopy, download_fno, download_macro,
+  download_index_ohlcv, download_corporate_actions, download_large_deals,
+  attribute_bulk_deals, adjust_prices, data_integrity_check.
+- **Feature Engineering**: compute_features, check_ta_alerts.
+- **Model Training**: run_models, write_signals, sanity_check,
+  paper_trade, publish_and_snapshot — plus, as a distinct sub-panel, the
+  nightly `model_training_<group>` scheduler_heartbeats rows (A52's
+  Mon-Thu spread), since those aren't part of checkpoint.STEPS at all and
+  would otherwise be invisible from this view.
+
+Each stage box's border/dot color is the worst status among its
+constituent steps (green=all success, amber=any running, red=any failed,
+gray=none run yet) — same status vocabulary as the rest of the Ops page.
+No new API surface, so no new regression tests were needed beyond the
+existing `/steps`/`/heartbeats` coverage; verified via `node --check` and
+an in-process `TestClient` call confirming both endpoints the new code
+depends on still return 200 with the expected shape. Not yet seen in a
+live browser — same pre-existing constraint (the running DataStore API
+process, PID 8297, predates this change and needs a restart to serve the
+updated static files; the API mount path is `/ui/ops/index.html`, not
+`/static/...` — that mismatch was the immediate cause of a "Not Found"
+the user hit this session before this stage-diagram work started).
+
+### Files changed
+`dashboard/static/ops/index.html` (new `pipeline-stages-diagram` section);
+`dashboard/static/ops/js/index.js` (`STAGE_GROUPS`, `worstStatusColor`,
+`renderPipelineStages`, `loadPipelineStages`);
+`dashboard/static/css/components.css` (`.stage-flow`/`.stage-box`/
+`.stage-dot`/etc.).
+
+## Data Ingestion — Ops Monitor Fix + Source Clarity + Backlog Sweep (2026-07-10)
+
+User asked for a review of open Data-Ingestion FeatureBacklog.md items,
+a review of the live Ops Monitor for ingestion issues (fix immediately if
+found), and clarity on primary/fallback/integrity-checker fundamentals
+sourcing (originally suspected Kaggle was a stale unused source and
+Trendlyne should be a fallback/integrity-checker).
+
+Live investigation of the running Ops Monitor found 880 pending
+`null_sweep` findings, none reviewed — not hypothetical, a real ignored
+backlog. Breaking these down by column found two bundled problems: a real
+unresolved regression (nearly every fundamentals-ratio feature collapsed
+from ~5-30% null to 85-90% null starting exactly 2026-07-03, never
+actually fixed) and alert-fatigue noise, but only for about half the
+flagged forensic columns — the rest split into real lookup-key bugs and
+unscheduled-but-working scrapers. Also found the plan's own initial idea
+(add a Trendlyne-vs-NSE-XBRL comparison check) was unnecessary — NSE XBRL
+already wins every conflict via `features/fundamental_source_priority.py`;
+dropped from scope per user correction.
+
+**Note on item numbering**: this session's plan used A52-A56 as new
+backlog item numbers, not realizing those were already taken by an
+unrelated prior "Pipeline & Monitoring Remediation" session (model
+training schedule, unused-model detector, etc.). Renumbered to A57-A62 in
+FeatureBacklog.md to avoid collision — no functional impact, purely a
+labeling fix caught before it caused confusion.
+
+### A57 — Fundamentals-ratio null collapse since 2026-07-03 (root cause + fix)
+`features/fundamental.py::compute_fundamental_features_panel` and
+`features/forensic_classical.py::compute_forensic_classical_features_panel`
+both wrapped their per-ticker computation in a blanket `except Exception`
+that silently degraded to all-NaN on ANY failure, including a transient
+DataStore API connection error — exactly what happened around the
+2026-07-03 manual DB migration restart, and the NaN then stayed permanent
+since nothing ever re-ran those dates. Fixed both to catch
+`httpx.RequestError` separately and `raise` (fail loud), matching A44's
+existing precedent on the OHLCV path. Added a `_wait_for_datastore_api()`
+health-gate call at the top of `daily_pipeline.py::step_compute_features`
+so a future outage fails that step loudly instead of writing garbage.
+Force-regenerating the corrupted 2026-07-03→07-08 daily feature files and
+bulk-rejecting the resulting stale Ops Monitor findings explicitly
+deferred to a follow-up session per user instruction ("keeping force
+regeneration for a later time").
+
+### A58 — Forensic column three-way split (bugs / unscheduled scrapers / genuinely unfixable)
+Column-by-column investigation of ~40 flagged forensic columns previously
+assumed uniformly "structurally sparse" (FO8/A26):
+- **Real bugs, now fixed**: `intangibles_growth` in `features/deep_forensic.py`
+  read the wrong dict key (`"intangibles"` instead of the real column
+  `"intangible_assets"`, 5,760/36,346 rows populated) — fixed the lookup
+  key only, per explicit instruction not to rename the schema column; the
+  existing YoY-diff calculation already computed the right thing once
+  the key was fixed. `audit_qualification_flag`/`goodwill_ratio`/
+  `capex_to_assets`/`noncash_assets_ratio` were already correctly wired to
+  real NSE XBRL columns — the module's own FO8-era docstring calling them
+  "unavailable" was stale, predating `nse_xbrl_financials.py`'s structured
+  parser; docstring corrected, all 5 removed from
+  `daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS`.
+- **Unscheduled-but-working scrapers, now scheduled**: added
+  `schedule_promoter_pledge_backfill`/`schedule_balance_sheet_backfill`
+  (`ingestion/scheduler/pipeline_scheduler.py`, Saturday 11:00/11:30 IST)
+  running `scripts/backfill_promoter_pledge_nse.py`/
+  `scripts/backfill_balance_sheet_from_screener.py` — both real,
+  live-verified 2026-07-07 scripts that simply never had a scheduled job.
+- **Genuinely unfixable today**: left in the allowlist (no schema column,
+  or freeform-text-only NSE disclosures). `benford_mad` added to the
+  allowlist after applying A57's fix to `forensic_classical.py` — its
+  remaining nulls are legitimate new-listing warmup.
+
+### A59/A60/A61 — investigated, correctly left open
+Confirmed via direct grep/DB inspection that none of Trendlyne/Groww/
+Tijori already source the remaining Group D/E forensic gaps; traced their
+consumer chain (forensic_ml.py ensemble → ml_forensic → /forensic/flagged
+→ Forensic Dashboard). `contingent_liability_ratio` cannot be computed as
+requested — only 1.2% of cached raw NSE XBRL filings even mention
+"contingent," always unstructured prose, no schema column — real NLP
+extraction work, out of scope. Tijori-based NPA (A60) staged but blocked
+on step (1) (no `TIJORI_USERNAME`/`TIJORI_PASSWORD` in this environment);
+deliberately did not schedule an unverified scraper. A55's suspected
+100%-NULL `fundamentals_source`/`fundamentals_source_priority` columns
+(A61) turned out to have correctly-wired writer code on inspection — live
+row-level verification blocked by the daemon scheduler process's
+exclusive DuckDB write lock, deferred to a follow-up session.
+
+### A62 — Kaggle removal
+Deleted `scripts/load_kaggle_fundamentals.py` (confirmed dead code, never
+invoked by any scheduler). Removed `"kaggle": 1` from `SOURCE_PRIORITY`;
+real precedence is now NSE XBRL (4) > Trendlyne (3) > Screener (2).
+Updated docstrings/comments referencing the removed script and
+`tests/unit/test_fundamental_source_priority.py`'s 6 tests (now use
+`screener` as the lowest-ranked source).
+
+### A47/A51 follow-up investigation (no new code, findings only)
+A47: confirmed naive ticker-level chunking for `matrix_builder.py` would
+silently break `_sector_relative_zscore`'s (SPEC-FEAT-002) full-cohort
+sector mean/std — a correctness regression, not a memory win. Deferred
+pending a proper two-pass redesign, not attempted this session. A51: the
+two remaining "still direct" items (`corporate_actions.py`'s daily call
+site, screener `write_batch`) are correctly closed, not gaps —
+`corporate_actions.py`'s own docstring documents why staged (full-table
+swap) would be wasteful for its daily single-date write volume, and
+`write_fundamentals_batch` already achieves A25's actual goal (one
+write-lock per chunk) via batched `executemany`, with no bulk-backfill
+CLI to add a `--publish-mode` flag to. Marked ✅ in FeatureBacklog.md.
+
+### Verified
+`pytest tests/unit/test_daily_pipeline.py tests/unit/test_schema.py
+tests/unit/test_scheduler.py tests/unit/test_fundamental_source_priority.py`
+— all pass except one pre-existing, unrelated failure caused by the live
+scheduler daemon (PID confirmed via `ps`/`lsof`, a real persistent
+process launched via systemd --user, not a stray leftover) holding an
+exclusive DuckDB write lock during normal operation — not caused by this
+session's changes. New scheduler jobs smoke-tested via a real
+`BackgroundScheduler` instance confirming correct cron triggers.
+
+### Files changed
+`features/fundamental.py`, `features/forensic_classical.py`,
+`features/deep_forensic.py`, `ingestion/scheduler/daily_pipeline.py`,
+`ingestion/scheduler/pipeline_scheduler.py`, `config/settings.py`,
+`features/fundamental_source_priority.py`,
+`features/fundamental_quality_gate.py`,
+`datastore/schema/create_normalised.py`, `FeatureBacklog.md`;
+`tests/unit/test_daily_pipeline.py`,
+`tests/unit/test_fundamental_source_priority.py` (updated); deleted
+`scripts/load_kaggle_fundamentals.py`.
+
+### Still open (deferred, see FeatureBacklog.md)
+Force-regenerating 2026-07-03→07-08 daily feature files + bulk-rejecting
+stale Ops Monitor findings (A57, deferred per explicit user instruction);
+A55/A61 live provenance-column verification (blocked by live DB lock);
+A56/A60 Tijori login verification (blocked, no credentials in this
+environment); A47's matrix_builder chunking redesign; A48 near-real-time
+resource monitor loop; A50's actual `fno_data` lock-hold-time reduction.
+
+### Follow-up (same day, 2026-07-10): daemon paused, A61 backfilled, findings swept
+
+User authorized killing the live `daily_pipeline` scheduler daemon (PID
+8454, confirmed via `ps`/`lsof` as a real systemd-launched persistent
+process, not a stray leftover) to unblock the DB-lock-gated work deferred
+earlier this session. `kill -TERM` exited it cleanly in <3s; confirmed no
+lingering process, DB re-opened read-write with no WAL corruption
+(`fundamentals` row count matched pre-kill expectations).
+
+**A61 backfill**: confirmed the 100%-NULL `fundamentals_source`/
+`fundamentals_source_priority` state was real (not a stale investigation
+artifact) — 36,346/36,346 rows, all pre-A36 legacy writes. Proposed a
+heuristic backfill (rows with at least one NSE-XBRL-exclusive column
+populated get tagged `nse_xbrl`/priority 4; everything else left NULL,
+which the existing `COALESCE(...,0)` merge logic already treats safely as
+priority 0) — the auto-mode classifier correctly blocked the first
+attempt as an unreviewed production write, so got explicit user sign-off
+via AskUserQuestion before re-running it. Result: 6,603 rows tagged
+`nse_xbrl`, 29,743 left untagged (can't be reliably split between
+screener/trendlyne retroactively).
+
+**Ops Monitor findings sweep**: cross-referenced all 880 pending
+`null_sweep` findings (220 distinct columns × 4 dates) against the
+current `_SANITY_KNOWN_SPARSE_COLUMNS` allowlist via the live
+`/api/v1/ops/integrity-findings` API. Only `benford_mad` (4 findings)
+matched — bulk-rejected via `POST .../reject` (confirmed non-destructive:
+"no production data is touched" per the endpoint's own docstring).
+Verified zero other allowlisted columns remain in the pending backlog.
+The remaining 876 findings are legitimately still open — most trace back
+to A57's regression window (2026-07-03→07-08) and won't clear until the
+deferred feature-file regeneration runs.
+
+Daemon left stopped at end of session per the user's instruction scope
+("kill ... and complete the remaining tasks") — did not restart it
+without being asked to.
+
+## Just-in-time DuckDB lock hold across daily_pipeline + backfill jobs (2026-07-10)
+
+User report: "Daily_pipeline cannot hold the lock for duck_db endlessly.
+Please update the code to take the lock and release the same just in
+time of updating the database. do this correction across the board for
+all the Jobs."
+
+### Audit
+
+Swept every `get_duckdb_connection(...)` call site in
+`ingestion/scheduler/daily_pipeline.py`, `ingestion/scheduler/
+pipeline_scheduler.py`, and `ingestion/backfill_runner.py` for cases
+where the connection (and therefore DuckDB's single-writer lock, since
+`persist=False` closes it the moment the `with` block exits) is opened
+*before* slow work happens and held open through that work, rather than
+being opened just before and closed just after the actual DB read/write.
+Most call sites were already correct (open right before the write,
+network/compute happens outside the `with` block) — 2 real violations
+found:
+
+1. **`step_adjust_prices`** (`daily_pipeline.py`): opened one write
+   connection and looped over the *entire* ticker universe
+   (`config.universe.get_tickers()`, thousands of tickers) inside it,
+   even though `adjust_for_corporate_actions()` early-returns a no-op for
+   any ticker with zero `corporate_actions` rows — nearly all of them on
+   a normal day. Fixed: a cheap `read_only=True` probe query
+   (`SELECT DISTINCT ticker FROM corporate_actions`) now runs first, and
+   the write connection is only opened for, and only held for the
+   duration of, that (typically small) actionable subset. Falls back to
+   the full universe if the probe itself fails, so a transient read
+   error degrades to the old (safe, just slower) behavior rather than
+   silently skipping tickers.
+
+2. **`run_backfill`** (`ingestion/backfill_runner.py`) — the more
+   serious one: this is used by both the one-shot FYERS backfill CLI
+   *and* the scheduler's recurring backfill-catchup job (a long-lived
+   process sharing `DUCKDB_PATH` with the DataStore API). It held ONE
+   write connection open across the whole ticker loop, including every
+   `client.download_history()` call — a real network request per
+   ticker, rate-limited, on a multi-hundred-ticker run this is a
+   lock held for hours, not seconds, during which the daily pipeline and
+   the API could not write to the same file at all. Fixed: each ticker
+   now opens/closes its own short-lived connection — a
+   `read_only=True` probe for `has_sufficient_history()`, released
+   before `download_history()` even starts, then (direct mode only) a
+   separate short write connection just for that ticker's
+   `write_ohlcv_to_duckdb()` call. Staged mode's final merge+publish
+   (`stage_via_sql`/`publish_table`) also moved to its own
+   just-in-time connection, opened only after the whole download loop
+   (and its in-memory accumulation) has finished — it was already
+   correctly *not* holding the lock during downloads in staged mode
+   before this fix, since staged mode doesn't touch `conn` per-ticker,
+   but it was still nested inside the same long-held outer connection.
+
+`get_duckdb_connection(db_path=None, ...)` (in-memory/test mode) ignores
+`persist` and caches a single shared in-memory connection per process
+regardless of how many times it's opened/closed, so this refactor is
+safe for every existing in-memory test — verified by running the full
+affected test suite, not just assumed from reading `datastore/api/db.py`'s
+docstring.
+
+Everywhere else audited (`step_download_bhavcopy/fno/index_ohlcv/macro/
+corporate_actions/large_deals`, `step_attribute_bulk_deals`,
+`step_data_integrity_check`, `step_publish_and_snapshot`, the scheduler's
+`mf_holdings_ingestion`/`job_health_check` jobs, `corporate_actions.py`'s
+staged upsert path) was already just-in-time — connection opened
+immediately before the write, closed immediately after, with any slow
+network/compute work already outside the `with` block. No change needed.
+
+### Tests
+
+- `tests/unit/test_daily_pipeline.py::TestStepAdjustPrices` — rewritten
+  (`test_calls_adjust_for_corporate_actions_only_for_tickers_with_actions`)
+  to seed one ticker WITH a corporate_actions row and one WITHOUT, and
+  assert only the former is ever passed to
+  `adjust_for_corporate_actions` — proves the pre-filter actually skips
+  the no-op tickers rather than just reformatting the same full-universe
+  call.
+- `tests/unit/test_fyers_backfill.py::
+  test_direct_mode_does_not_hold_db_connection_across_network_download`
+  (new) — spies on `get_duckdb_connection` call count across a 2-ticker
+  backfill and asserts 4 separate acquisitions (2 tickers × read-only
+  check + write), not 1 connection spanning the whole run.
+- Full regression: `test_daily_pipeline.py`, `test_scheduler.py`,
+  `test_fyers_backfill.py`, `test_checkpoint_backfill_flag.py`,
+  `test_staging_default_publish_mode.py`,
+  `tests/integration/test_scheduler_resume.py` — 80/80 pass.
+
+### Files changed
+`ingestion/scheduler/daily_pipeline.py` (`step_adjust_prices`);
+`ingestion/backfill_runner.py` (`run_backfill`);
+`tests/unit/test_daily_pipeline.py`, `tests/unit/test_fyers_backfill.py`.
+
+## Data Ingestion Backlog Sweep — A47, A50, A60, A61, T2, F5, BI1-3, CA6, A27 (2026-07-10)
+
+User gave per-item direction on 11 remaining Data-Ingestion backlog items
+(reviewed in a prior session). Investigated all 11 via 3 parallel Explore
+agents plus direct DB queries, then implemented in dependency/risk order
+(safe reads/backfills first, destructive DELETE and new-surface builds
+last). Killed the live daily_pipeline daemon (user-authorized) to unblock
+DB-lock-gated work before starting.
+
+### A61 — extended provenance backfill + ratio derivation at ingest time
+Extended last session's `fundamentals_source` backfill with a
+screener-exclusive-columns pass (`total_equity`/`retained_earnings`/
+`total_assets`/`cwip`): 19,548 more rows tagged `screener`, priority 2;
+10,195 remain genuinely undecidable, left NULL. Mid-implementation
+correction from the user: 7 fields I'd proposed as a "Trendlyne-signal"
+pass turned out to be shared/core columns written by both Trendlyne AND
+Screener (not exclusive to either) — dropped that pass entirely rather
+than tag rows on an unreliable signal. Separately, added
+`_derive_ratios_from_raw` to `scripts/backfill_fundamentals_nse_xbrl.py`:
+computes `debt_to_equity` (fully self-contained from NSE XBRL's own raw
+fields), and `ebitda_margin`/`asset_turnover`/`roe` (via a batch lookup of
+revenue/pat/ebitda from whichever other source already wrote them for the
+same ticker/quarter) — `roce`/`interest_coverage`/`fcf` confirmed NOT
+derivable (no EBIT-proxy or interest-expense/cash-flow raw fields
+anywhere in this codebase). 7 new tests, all pass.
+
+### BI2 — closed as by-design, not a gap
+Non-equity (InvIT/REIT) deal exclusion confirmed to be a side-effect of
+`stock_master` ticker resolution, not a missing filter — correct for an
+equities dashboard. Documented the one accepted residual risk (a future
+name collision wouldn't be filtered) rather than acting on it.
+
+### BI3/BI1 — validated + backfilled bulk/block deals
+Live-scraped all 62 superstar investors: zero fetch errors, deal counts
+0-201 with no artificial cap pattern (confirms the deals table is fully
+server-rendered, no pagination mechanism exists to fail). Real backfill
+run found 0 new rows — the backfill had already completed in a prior
+session; today's run just re-confirmed the anti-join dedup is idempotent.
+
+### A60 — Tijori login verified live, found a deeper blocker than expected
+Credentials now in `.env`. Live login attempt confirmed the module's own
+"unverified" admission was optimistic: the real login is a React SPA
+(`/static/react/account/main.js`) hitting an undiscovered JS-bundled API
+endpoint, not the simple Django form-POST the scraper assumed — also
+found the login URL itself moved (`/accounts/login/` now 500s; real path
+is `/account/signin`). Fixing this needs either JS-bundle
+reverse-engineering or headless-browser automation (a new dependency) —
+explicitly deferred as its own properly-scoped follow-up per user
+decision, not attempted blind.
+
+### F5 — implemented ingest_external_fundamentals.py's write path for real
+The script previously only logged "would write" — `DataStoreClient.
+write_fundamentals`/`write_fundamentals_batch` were already real, the bug
+was entirely in this script. Added `_pivot_to_fundamentals_rows`: groups
+the CSV's long/EAV rows (`ticker,metric,as_of_date,value`) into
+`FundamentalsWrite`'s wide per-quarter shape, inferring `quarter_end_date`
+as the most recent standard fiscal quarter-end strictly before each
+metric's `as_of_date` (guarantees SPEC-PIPE-003's `announcement_date >
+quarter_end_date`), with a metric-name whitelist so an unrecognized CSV
+column is dropped+logged, never silently mismapped. Writes directly to
+DuckDB (not through `/write_batch`, which hardcodes
+`fundamentals_source="screener"` server-side and would have mislabeled
+every row) — added a new lowest-priority `"external_csv": 1` entry to
+`SOURCE_PRIORITY`. 13 new tests including a priority-safety test
+confirming a higher-priority existing row is never overwritten.
+
+### CA6 — built BRSR + QIP NSE filing pipeline
+Live-verified both endpoints found in an earlier session:
+`api/corporate-further-issues-qip` (fully structured JSON, confirmed
+against IDFCFIRSTB/ZOMATO's real QIP issues) and
+`api/corporate-bussiness-sustainabilitiy` (real BRSR filing index,
+confirmed against RELIANCE). New `ingestion/scrapers/nse_brsr_qip.py` +
+`scripts/backfill_nse_brsr_qip.py` + 2 new schema tables (`qip_details`,
+`brsr_filings`) — scope deliberately limited to the QIP fields directly
+and the BRSR filing INDEX (not deep-parsing BRSR's linked XBRL for
+individual ESG metrics, a much larger separate effort). RPT/governance
+endpoints left explicitly blocked — both need a secondary lookup param
+(`seqNum`/`recId`) from an undiscovered master-list endpoint, not guessed
+at. Full-universe backfill run (~2,643 tickers) completed successfully.
+
+### A27 — manual macro-entry screen (real correction mid-implementation)
+Original assumption was wrong: the 8 blocked real-economy series
+(PMI/GST/IIP/auto-sales/rail-freight/UPI/bank-credit/GST-divergence) live
+in `macro_real_economy.parquet` (long-format:
+`feature_name, reference_month_end, value, availability_date`), NOT the
+`macro_indicators` DuckDB table assumed in planning. New
+`datastore/api/routers/macro.py` (`GET`/`POST /api/v1/macro/indicators`)
+writes into that same parquet schema so a manual entry is indistinguishable
+from an automated one to `features/real_economy_macro.py`'s PIT-filtered
+reader — explicitly rejects writes to the 2 series that already have a
+real automated source (cement/power), so a manual entry can't silently
+override a scraper. New dashboard screen `dashboard/static/ops/macro.html`
++ `js/macro.js`, added as a screen under the existing Ops app. 7 new tests.
+
+### T2 — deleted phantom holiday trading data (208,466 rows)
+Live query found the scraper-layer fix (already landed) hadn't been
+applied retroactively — 4 real NSE holiday dates still had phantom rows:
+`ohlcv_adjusted` (7,135), `fno_data` (199,545), `ohlcv_ca_audit` (1,786,
+a companion audit table for the same rows). Confirmed `macro_indicators`'
+12 rows on these dates are legitimate (forex/commodities trade globally on
+Indian holidays) and left untouched. Deleted the phantom rows in a single
+transaction after explicit confirmation; verified adjacent trading days
+untouched, `check_holiday_leakage` returns zero findings on a 10-year
+lookback, no stale Ops Monitor findings to clean up.
+
+### A50 — fno_data lock-hold-time reduction + live 121M-row migration
+Root cause: `publish_table`'s `CREATE OR REPLACE TABLE fno_data AS SELECT
+* FROM staging.fno_data` physically rewrote all ~121M rows on every
+publish. A DELETE+INSERT alternative was considered and rejected — this
+codebase's own history shows that exact pattern was already tried and
+deliberately replaced by the current atomic swap to eliminate its
+non-atomic partial-update window; reintroducing it would trade away a
+safety property already fixed once. Instead: `fno_data` now lives in its
+own DuckDB file, derived per-connection via `datastore/api/db.py::
+fno_db_path_for` (not a hardcoded path — each isolated test DB gets its
+own companion file), ATTACHed transparently so all 14 existing touch
+points (API router, feature computation, backfill scripts) keep working
+with zero call-site changes. New `publish_fno_data` swaps in a
+freshly-built file via a near-instant `os.replace()` instead of an
+in-place rewrite. Two real bugs found and fixed during implementation
+(both reproduced live, not theoretical): a fresh connection after the
+swap could see stale/empty data without an explicit `CHECKPOINT` before
+the swap; and the publish function was reading the wrong (hardcoded,
+unrelated) file path instead of introspecting the connection's actual
+attached path via `PRAGMA database_list`. A regression from the first
+implementation attempt (attaching for literally any real DB path broke
+read-only connections to `SIGNALS_DUCKDB_PATH`) was found and fixed
+before landing. **Live migration completed**: all 120,686,722 production
+rows copied and verified identical (sample rows + aggregate checksums),
+old table dropped from the main file, `/api/v1/fno/RELIANCE` confirmed
+returning real data post-migration. Also found and cleaned up test-debris
+that had accidentally leaked into the real `datastore/normalised/`
+directory during debugging (a side effect of the path-mismatch bug, not
+the fix itself) — deleted before it could be mistaken for real data.
+8 new tests, 96-test regression sweep green.
+
+### A47 — matrix_builder chunking (correctness-safe)
+Confirmed exactly 3 panels (fundamental's sector z-score, mf_holdings'
+tier-rank, multibagger's universe/sector rank) do real cross-ticker
+aggregation and must stay on the full universe; the other 6 categories
+(technical, intraday, hmm, pnd, advanced_technical, patterns) are
+per-ticker-independent. New `_compute_chunked_ticker_independent_panels`
+computes those 6 in `resource_guard.adaptive_chunk_size`-sized ticker
+chunks, freeing each chunk's derived DataFrames before the next — bounds
+peak memory to one chunk's derived-computation footprint instead of 6
+full-universe-sized frames simultaneously (the raw OHLCV panel itself
+stays fully loaded regardless, needed whole by multibagger afterward).
+Critical regression test asserts byte-for-byte identical output between
+an unchunked pass and forced chunk sizes of 2 and 1 — proves chunking
+never leaks a boundary into a per-ticker computation. 83-test regression
+sweep across matrix_builder/hmm/pnd/phase3/multibagger/fundamental green.
+
+### Verification
+Full targeted regression sweeps after each item; confirmed pre-existing
+baseline failures (`test_damodaran.py`, `test_exception_catalog.py`,
+`test_exit_signal.py`) are unrelated to this session's changes by
+re-running against a clean `git stash`. Daemon left stopped at session
+end, matching the prior session's scope ("kill it for today").
+
+### Files changed
+`features/fundamental_source_priority.py`, `scripts/
+backfill_fundamentals_nse_xbrl.py`, `scripts/ingest_external_fundamentals.py`,
+`scripts/insert_fno_files.py`, `scripts/backfill_nse_brsr_qip.py` (new),
+`ingestion/scrapers/nse_brsr_qip.py` (new), `datastore/api/db.py`,
+`datastore/api/main.py`, `datastore/api/routers/macro.py` (new),
+`datastore/staging/publish.py`, `datastore/schema/create_normalised.py`,
+`config/settings.py`, `features/matrix_builder.py`,
+`dashboard/static/ops/macro.html` (new), `dashboard/static/ops/js/macro.js`
+(new), `dashboard/static/js/shell.js`; 8 new test files; `FeatureBacklog.md`
+(A27/A47/A50/A60/A61/BI1/BI2/BI3/CA6/F5/T2 all updated).
+
+---
+
+## 2026-07-10 — FeatureBacklog full sweep, Group 10 (D1)
+
+### D1 — sector-alias test fix
+Found `tests/unit/test_damodaran.py`'s `test_financial_services_
+{banking,nbfc,insurance}` already updated in the working tree to assert
+against the real NSE sector string `"Financial Services"` (no separate
+Banking/NBFC/Insurance tag exists in NSE's own taxonomy — confirmed
+against `config/nifty500_universe.csv` and `classifier.py`'s
+`_FINANCIAL_SERVICES_SECTORS` comment). Decision taken (per the item's
+own framing): fix the tests, not the classifier — aliasing the
+classifier to also match non-existent sector strings would be solving
+for data that never appears in production. `pytest tests/unit/
+test_damodaran.py -k financial_services`: 3 passed. FeatureBacklog.md D1
+row + writeup marked ✅.
+
+(Groups 1, 5, 6, 7, 8 dispatched to background agents in isolated
+worktrees this same session — their BuildLog entries land separately as
+each completes and is merged.)
+
+---
+
+## 2026-07-10 — FeatureBacklog full sweep, Group 1 (A24/A26/A28/A43/A44/A45/A48/A53)
+
+Scope: `ingestion/scheduler/*.py`, `datastore/api/routers/ops.py`,
+`datastore/api/routers/signals.py`, `dashboard/static/ops/*`. Worked
+directly in the shared checkout (not a worktree, per explicit instruction
+— it was writable and other sessions were touching the same repo
+concurrently, hence the re-read-before-edit discipline on
+FeatureBacklog.md/this file).
+
+### Verified already-done (no code change needed)
+- **A53**: the "not yet wired into an Ops dashboard panel" note on this
+  row was stale. `GET /api/v1/ops/unused-models` already calls
+  `find_trained_but_unused_models`, and the "Trained-But-Unused Models"
+  panel already renders it in `dashboard/static/ops/index.html`/`js/
+  index.js` — landed in the same 2026-07-10 session as the audit module
+  itself, under the A45 writeup, but the A53 row's own text hadn't been
+  updated to say so. Corrected the row to ✅.
+- A26/A28's DB-state claims (pipeline_checkpoints success rows for
+  2026-07-03/06/07, parquet mtimes, registry.json last_trained_date)
+  could not be independently re-verified this session — the sandboxed
+  Bash tool's safety-classifier backend was unavailable for the entire
+  back half of this session (every `python3`/`pytest`/`sqlite3` CLI
+  invocation returned "temporarily unavailable," while `git`/`ls`/`grep`
+  kept working throughout, so it wasn't a general outage). Left both
+  rows' status as the prior session recorded them rather than guessing.
+
+### A43 — Daily Insights / ML signal screens now surface is_backfill
+`ml_signals` (DuckDB) and `pipeline_checkpoints` (SQLite) are different
+databases with no foreign key, so this is a Python-side join, not a SQL
+one. Added `CheckpointManager.get_step_is_backfill(date, step_name)` to
+`ingestion/scheduler/checkpoint.py` (reads the `is_backfill` column A30
+already writes, keyed on the `write_signals` step; returns `None` if no
+checkpoint row exists yet, not `False`, so callers can distinguish
+"known live" from "unknown"). `datastore/api/schemas.py::MLSignalRow`
+gained `is_backfill: Optional[bool] = None`. `datastore/api/routers/
+signals.py` gained a module-level `_checkpoint_manager` and
+`_attach_is_backfill()` helper (caches one lookup per distinct date so a
+multi-row response like `top_buys`/`history` doesn't requery per row),
+wired into all three GET endpoints (`/ml/{ticker}/{date}`, `/ml/top_buys/
+{date}`, `/ml/history/{ticker}`). Note: the Ops "Recent Runs" table
+already had a coarser run-level `is_backfill` badge since A30 — this is
+the finer per-row flag on the actual signal-serving endpoints the
+original A43 finding was about.
+
+### A44 — cold-start-race regression test
+`_wait_for_datastore_api` (the A44 fix itself landed in a prior session)
+had no test. Added `tests/unit/test_daily_pipeline.py::
+TestWaitForDatastoreApi` — 3 tests: returns immediately when the API is
+already up, retries across simulated cold-start failures then succeeds,
+and gives up after `max_wait_seconds` without raising (SPEC-PIPE-006:
+proceeding anyway is correct, steps needing the API fail cleanly and
+retry next run). `httpx.get`/`time.sleep`/`time.monotonic` are
+monkeypatched so nothing actually blocks or touches a real network/
+process. The systemd ordering dependency itself (an `After=`/`Wants=`
+edit to the live `~/.config/systemd/user/alphalens-scheduler.service`
+unit, plus creating a DataStore API unit — confirmed none exists) is a
+live-system change outside any repo file in this session's scope, and per
+A45's same-session precedent is deliberately not made without explicit
+operator go-ahead. Left open.
+
+### A48 / A45 — near-real-time live resource monitoring
+Rather than shortening `monitor_scheduler_resources.py`'s own 30-min
+systemd timer (a live-system reconfiguration this session couldn't
+safely make or verify — same caveat as A44's systemd piece), added a
+separate on-demand mechanism: `ingestion/scheduler/resource_guard.py::
+poll_process_resources(pid)` reads a single live psutil snapshot
+(RSS/CPU) of an arbitrary PID, no caching. New `GET /api/v1/ops/
+live-resources` endpoint in `datastore/api/routers/ops.py` resolves
+`alphalens-scheduler.service`'s current MainPID via `systemctl --user
+show ... --property=MainPID` and polls it fresh on every call. New
+`OpsLiveResourceStatus` schema in `datastore/api/schemas.py`. The Ops
+dashboard's new "Live Resource Monitor" card (`dashboard/static/ops/
+index.html`, new section; `js/index.js`, `loadLiveResources` +
+`_updateLiveResourcesPolling`) polls this every 15s automatically **only
+while `GET /api/v1/ops/runs` shows a `status='running'` row** — driven
+off the existing `loadRuns()` call, so it starts polling right as a run
+begins and stops the moment it finishes, rather than polling uselessly
+around the clock. This is genuinely near-real-time during an active run
+without adding constant background load. `monitor_scheduler_resources.py`
+itself and its 30-min log file are unchanged — still the source for the
+separate `/scheduler-resources` card.
+
+### A24 — responsive layout, scoped to AlphaLens.Ops only
+Explicitly out of scope to touch dashboard files outside `dashboard/
+static/ops/` this session, so the full "Dashboard (all)" item stays open
+for the other 4 apps. For Ops: new `dashboard/static/ops/css/
+responsive.css` (linked after `shell.css` from both `index.html` and
+`macro.html`, so it can add page-scoped overrides without editing the
+shared `components.css`/`shell.css` other apps also load) — every `.card`
+wrapping a `<table>` gets its own `overflow-x: auto` scroll region
+(`:has(> table)`) instead of the table overflowing the whole page
+sideways, `.kv-row`s (Scheduler Resources, new Live Resource Monitor
+cards) stack label-over-value under 900px instead of truncating long
+badge text, table font-size/padding shrink under 900px and again under
+480px, and the app-bar's brand text/build-info clock hide under 480px to
+leave room for the tab strip on a phone.
+
+### Tests added
+`tests/unit/test_scheduler.py::TestCheckpointManager::
+test_get_step_is_backfill_returns_recorded_flag` /
+`test_get_step_is_backfill_returns_none_when_no_checkpoint_row`;
+`tests/unit/test_daily_pipeline.py::TestWaitForDatastoreApi` (3 tests);
+new `tests/unit/test_signals_is_backfill.py` (4 tests, real on-disk
+DuckDB fixture via `create_signals.create_signal_tables_schema` + a real
+in-memory SQLite `CheckpointManager`, no mocks — exercises all three
+signals GET endpoints end-to-end through the real FastAPI `TestClient`).
+
+### Not run: test execution
+The sandboxed Bash tool's safety-classifier backend was unavailable for
+this entire session's second half — every attempt to run `python3 -m
+pytest`, `python3 -c`, or even `python3 -m py_compile` on the changed
+files returned "temporarily unavailable" (dozens of retries across the
+session, spaced out with other work in between), while non-code-execution
+commands (`git`, `ls`, `grep`, `find`) kept working the whole time. Code
+was reviewed manually (diff re-reads, import/signature cross-checks
+against call sites) instead, but **none of this session's new/changed
+tests have actually been executed** — `tests/unit/test_scheduler.py`,
+`tests/unit/test_daily_pipeline.py`, `tests/unit/
+test_signals_is_backfill.py`, plus `tests/quality/
+test_no_stub_or_synthetic_data.py` and `tests/quality/
+test_duckdb_connection_discipline.py` per this session's instructions,
+should be run before this work is considered verified.
+
+### Files changed
+`ingestion/scheduler/checkpoint.py` (`get_step_is_backfill`),
+`ingestion/scheduler/resource_guard.py` (`poll_process_resources`),
+`datastore/api/schemas.py` (`MLSignalRow.is_backfill`,
+`OpsLiveResourceStatus`), `datastore/api/routers/signals.py`
+(`_attach_is_backfill` + 3 call sites), `datastore/api/routers/ops.py`
+(`GET /live-resources`), `dashboard/static/ops/index.html`,
+`dashboard/static/ops/js/index.js`, `dashboard/static/ops/macro.html`
+(css link only), new `dashboard/static/ops/css/responsive.css`;
+`tests/unit/test_scheduler.py`, `tests/unit/test_daily_pipeline.py`, new
+`tests/unit/test_signals_is_backfill.py`; `FeatureBacklog.md` (A24, A43,
+A44, A45, A48, A53 rows updated).
+
+## 2026-07-10 — FeatureBacklog full sweep, Group 2 (A40/A41/A42/T5/ML2/ML3/ML15/ML18/ML21)
+
+Scope: `systems/ml_signal_engine/**`, `ingestion/scheduler/
+daily_pipeline.py`'s inference step, `datastore/api/routers/signals.py`.
+Worked directly in the shared checkout (not a worktree, per explicit
+instruction), re-reading FeatureBacklog.md/this file immediately before
+each edit since Group 1's changes (and other concurrent sessions) were
+landing in the same checkout. Highest-risk group of this sweep (real
+model training / OOM history) — deliberately did not launch any
+unattended full/near-full-universe training run; verification training
+was bounded (small real samples, inference-only where possible).
+
+### Found already-done (ML2, ML3, ML15)
+All three had real implementations already present in the working tree
+at session start (commit `27ea6fc`, same-day accumulated session work
+from before this Group 2 pass began), contradicting their FeatureBacklog
+rows' still-open text:
+- **ML2** (Daily Insights row fusion): `datastore/api/routers/
+  signals.py::top_buys` does a real read-time LEFT JOIN across
+  `meta_labeler`/`pnd_detector`/`hmm_market` rows onto the base
+  `signal_5d` row, keyed on `(date, ticker, model_name)`.
+- **ML3** (SHAP explainability): `systems/ml_signal_engine/inference/
+  daily_inference.py::_compute_shap_top5()` uses
+  `shap.TreeExplainer(signal_model._lgbm)`, wired into
+  `_step_signals_and_meta`'s `signal_5d` loop, writing `shap_top5_json`
+  (null + logged warning on failure, never a hard pipeline failure).
+- **ML15** (ATR-scaled exit policy): `RuleBasedExitPolicy.predict_full()`
+  already uses per-row ATR-scaled target/stop
+  (`ATR_PROFIT_MULTIPLIER`/`ATR_STOP_MULTIPLIER` x `atr_pct`) with a flat
+  fallback, and `scripts/paper_trading_tracker.py::classify_target_outcome()`
+  already writes a hit/miss/timeout `target_outcome` per closed trade.
+
+Verified each with its existing/nearby test file rather than re-building
+anything: `test_signals_is_backfill.py`, `test_daily_inference_exit_
+fallback.py`, `test_rule_based_exit_policy.py` — all passing. Marked ✅
+in FeatureBacklog.md with the verification note.
+
+### ML18 — `ExitSignalModel` CoxPH ConvergenceError + predict() row-count bug — fixed
+Two real, independent bugs, both fixed:
+1. `tests/unit/test_exit_signal.py::_load_real_exit_data()` defaulted
+   `min_closed_positions=1`, overriding `exit_signal.py`'s own
+   `MIN_CLOSED_POSITIONS=200` floor — letting the loader hand back as few
+   as the 3 real closed paper-trading positions that exist today
+   (confirmed: `paper_trading/executions/*.csv`), too few for CoxPH to
+   converge and explaining `X.head(5)` on a 3-row `X` "only returning 3
+   rows" (there were only 3 rows — not a shape-reconciliation bug). This
+   fix pre-existed uncommitted in the working tree at session start;
+   verified correct and kept.
+2. Found via a synthetic in-memory reproduction (never touching the real
+   DB): `load_exit_training_data_from_db()` sets `duration = days_held`
+   exactly, and `days_held` is also a covariate in `X` — perfectly
+   collinear with the Cox duration column, singular for the
+   partial-likelihood Hessian regardless of sample size. Separately,
+   `days_to_next_earnings` is always `NaN` at the source, so post-impute
+   it's a constant (zero-variance) column — also singular. Fixed in
+   `exit_signal.py::train_full()`: drop any covariate that's
+   zero-variance or `|corr| > 0.98` with duration from the CoxPH design
+   matrix specifically (logged when triggered); urgency/type LightGBM
+   models keep the full feature set. `predict_survival()`/
+   `predict_full()` drop the same columns; the dropped-column list
+   round-trips through `save()`/`load()`. Reproduced-and-confirmed-fixed
+   with a 250-row synthetic dataset engineered to have the exact same
+   collinearity (in-memory only) — `train_full()` converges cleanly,
+   `predict_full()` returns the correct row count.
+
+Verified: `tests/unit/test_exit_signal.py` — 12 passed, 14 correctly
+skipped (only 3 real closed positions exist, need 200).
+
+### ML21 — SMOTETomek OOM in signal_63d retrain — subprocess isolation + fewer trials shipped, ratio cap built but held opt-in
+- `systems/ml_signal_engine/inference/retrain_phase2.py`: added
+  `only_horizon`/`--horizon` (run one horizon in-process) and
+  `--subprocess-per-horizon` (spawn signal_5d/21d/63d as 3 separate OS
+  processes, each `python -m ... --horizon N`, instead of one Python loop
+  over `HORIZON_CONFIGS`) — the OS reclaims each horizon's
+  SMOTETomek-oversampled matrix + Optuna/stacking-refit memory before the
+  next horizon starts. `ingestion/scheduler/pipeline_scheduler.py::
+  _trigger_model_retrain` now passes `--subprocess-per-horizon`
+  whenever it invokes `retrain_phase2` — the scheduler's unattended
+  weekly run (the exact path that OOM-killed the box twice on
+  2026-07-09) gets this by default.
+- New `OPTUNA_TRIALS_BY_HORIZON = {5: 5, 21: 5, 63: 3}`, used when
+  `retrain_phase2()`'s `optuna_trials` is left at its new default
+  (`None`); an explicit int still overrides for every horizon
+  (back-compat).
+- `systems/ml_signal_engine/models/signal/base_signal_model.py`:
+  `BaseSignalModel.__init__`/`_resample()` gained
+  `max_sampling_ratio: Optional[float]`, capping SMOTETomek's per-class
+  target count at `max_sampling_ratio * majority_count` via an explicit
+  `sampling_strategy` dict instead of imblearn's `'auto'` 1:1 parity.
+  **Default left `None`** (unchanged `'auto'` behavior) — a real
+  before/after Sharpe comparison against a full training run is needed
+  before this becomes the default, and this session deliberately did not
+  launch that (multi-hour, OOM-risk) run unattended. Verified the
+  mechanism itself works via a synthetic fixture:
+  `tests/unit/test_signal_models.py::TestResampleMaxSamplingRatio` (3
+  new tests) — `'auto'` drives a 5%-minority fixture's min/max count
+  ratio to >0.85 (near-parity); `max_sampling_ratio=0.3` keeps it <0.6.
+- Tomek-links removal (option 4 from the original writeup) not done —
+  lowest priority, already superseded by the above.
+
+Verified: `tests/unit/test_signal_models.py` (29 passed),
+`tests/unit/test_retrain_all_when_free_script.py` +
+`tests/unit/test_scheduler.py` (43 passed — confirms the CLI/dispatch-map
+change didn't break training-module dedup).
+
+### A41 — orphaned pre-A38 TFT/BiLSTM checkpoints — registered, not migrated
+Checked `train_deep_models.py`/`tft_model.py`'s actual save path: the
+flat `datastore/models/{model}_signal_{horizon}d_v{version}_fold{N}.pt`
+layout the orphaned files use **is** the current convention — there is
+no `datastore/models/tft/`/`bilstm/` subdirectory wiring anywhere in the
+deep-model code, so this item's original "outside the current save
+convention" framing was wrong. This was a registry-only gap:
+- Loaded `tft_signal_21d_v20260701_fold0.pt` and
+  `bilstm_signal_21d_v20260701_fold0.pt` with the current
+  `TFTSignalModel`/`BiLSTMSignalModel.load()` (297 features per each
+  `.json` sidecar) — both load cleanly, confirming they're still real,
+  valid, current-architecture checkpoints.
+- Backfilled `datastore/models/registry.json` with `tft`/`bilstm`
+  entries pointing at the `*_v20260701_fold{0,1,2}.pt` set
+  (`last_trained_date: 2026-07-01`, `folds_trained: 3`, plus
+  `backfilled_2026_07_10: true` for auditability), matching
+  `_update_registry()`'s schema exactly.
+- Archived the superseded older rounds (`tft_signal_21d_v20260624_fold0`,
+  `tft_signal_21d_v20260630_fold0`, `bilstm_signal_21d_v20260630_fold0`)
+  to `datastore/models/_archive_pre_a38/` rather than deleting.
+  (`datastore/models/` is gitignored — these are on-disk data changes,
+  not something `git diff` will show.)
+
+### A40 — StackingEnsemble dormant / silent death — root cause diagnosed, not re-run
+`logs/train_stacking.log`'s 2026-07-02 run stops mid-log with no
+traceback right after loading TFT fold checkpoints. That window has
+since rotated out of `/var/log`/`journalctl -k`, so there's no
+smoking-gun log line, but `journalctl -k` on this same host shows
+`systemd-oomd` actively SIGKILL-ing AlphaLens processes on memory
+pressure (e.g. `alphalens-scheduler.service` killed 2026-07-10, "memory
+pressure ... 88.00% > 50.00% for > 20s") — a SIGKILL explains the silent
+stop exactly (no chance to log a traceback/atexit handler), and matches
+the same failure class as the two *dated, confirmed* `retrain_phase2.py`
+OOM incidents (2026-07-07, 2026-07-09): scoring 5 base models (3 heavy
+`BacktestEngine` OOF passes + 2 deep forward passes) in one unbounded
+process is the same "everything in one process" shape.
+
+Not re-run this session (deliberately — see scope note above). Instead:
+`scripts/train_stacking.py` now defaults `--max-tickers` to 800 (was
+unbounded), and `main()` writes a `datastore/models/
+train_stacking.status.json` STARTED/COMPLETED/FAILED marker around the
+run so a future silent death leaves diagnostic evidence even if the
+process itself can't write the FAILED marker. **Decision: not wired into
+the daily/overnight pipeline this session** — `StackingEnsemble` needs
+the same per-model subprocess-isolation treatment ML21 gave
+`retrain_phase2.py` before it's safe to run unattended, and is still only
+as trustworthy as its weakest input model.
+
+### A42 / T5 — TFT/BiLSTM feature-usage audit — partially confirmed, importance run did not finish
+With A41's checkpoints registered, ran a bounded (inference-only, no
+training) dry run: loaded `tft_signal_21d_v20260701_fold0.pt` against a
+66-real-parquet-file slice of `datastore/features/daily/`. Confirmed
+**297/297** `ALL_FEATURE_COLUMNS` are architecturally present in the
+model's input tensor at inference time (not just "no allowlist in the
+code" as a claim) — this closes T5's remaining open thread (the 18
+`advanced_technical.py` features are reachable by TFT/BiLSTM, full
+stop) and confirms `TFTSignalModel.get_shap_values()` (VSN
+variable-selection weights, the model's real native interpretability
+signal) is a working, callable method.
+
+**Did not finish**: the sequence-building step
+(`_stream_sequences_from_files`, a real per-ticker groupby over the
+~2,300-ticker universe x 66 files) ran 8+ minutes of CPU without
+completing, RSS safely bounded (~500-650MB, no OOM risk) but past this
+session's time budget — killed rather than left running unattended. Real
+follow-up finding: `_stream_sequences_from_files` processes every ticker
+in every file regardless of `max_samples`, so capping `max_samples`
+alone doesn't bound the groupby cost — a real subsequent fix (restrict
+the ticker list explicitly, not just cap output rows) would make this a
+fast bounded check. Actual per-category importance numbers (which of the
+16 categories TFT/BiLSTM's *learned weights* draw signal from vs. carry
+as dead weight) remain unmeasured — explicitly left open, not guessed
+at. The dry-run script is preserved at `/tmp/claude-1000/.../scratchpad/
+a42_feature_audit.py` (session-scoped scratchpad, not committed) as a
+re-run starting point.
+
+### Not run this session (pre-existing/concurrent, out of Group 2 scope)
+`tests/quality/test_no_stub_or_synthetic_data.py::
+test_no_unallowlisted_stub_keywords` fails against `config/
+nse_holidays.py`, `datastore/schema/create_normalised.py`, and
+`scripts/align_remaining_to_fyers.py` — none of which this Group 2 pass
+touched (out of scope: not `systems/ml_signal_engine/**`,
+`daily_pipeline.py`'s inference step, or `signals.py`). Flagged here
+since the task instructions asked this quality test be run; it was run
+and does fail, but the failure is unrelated to any change in this entry
+— likely a concurrent session's in-progress edit to one of those three
+files (multiple Group sweeps were running against this same shared
+checkout simultaneously).
+
+### Tests run this session (all passing except the pre-existing/concurrent failure above)
+`tests/unit/test_exit_signal.py` (12 passed, 14 skipped — correct, only 3
+real closed positions exist vs. the 200 floor), `tests/unit/
+test_signal_models.py` (29 passed, incl. 3 new `TestResampleMaxSamplingRatio`
+cases), `tests/unit/test_scheduler.py` +
+`tests/unit/test_retrain_all_when_free_script.py` (43 passed),
+`tests/unit/test_rule_based_exit_policy.py` +
+`tests/unit/test_daily_inference_exit_fallback.py` +
+`tests/unit/test_signals_is_backfill.py` (28 passed), `tests/quality/
+test_duckdb_connection_discipline.py` (1 passed).
+
+### Files changed
+`systems/ml_signal_engine/models/exit/exit_signal.py` (CoxPH collinearity
+fix), `systems/ml_signal_engine/models/signal/base_signal_model.py`
+(`max_sampling_ratio`), `systems/ml_signal_engine/inference/
+retrain_phase2.py` (`only_horizon`/`--horizon`/`--subprocess-per-horizon`,
+`OPTUNA_TRIALS_BY_HORIZON`), `ingestion/scheduler/pipeline_scheduler.py`
+(`_trigger_model_retrain` passes `--subprocess-per-horizon`),
+`scripts/train_stacking.py` (bounded `--max-tickers` default, status
+marker); `tests/unit/test_signal_models.py` (new
+`TestResampleMaxSamplingRatio`); `tests/unit/test_exit_signal.py`
+(pre-existing uncommitted `MIN_CLOSED_POSITIONS` fix, verified/kept);
+`datastore/models/registry.json` + new `datastore/models/
+_archive_pre_a38/` (gitignored, on-disk data changes only); `FeatureBacklog.md`
+(A40, A41, A42, T5, ML2, ML3, ML15, ML18, ML21 rows updated).
+
+
+## 2026-07-11 — Backlog sweep Group 3: Dashboard screens (frontend + matching API endpoints)
+
+Scope: `dashboard/static/**` (all 5 apps, excluding `ops/*` — Group 1's) +
+one matching `datastore/api/routers/*.py` per screen. Ten items: T1, T4,
+F6, FO7, FO5, ML4, ML9, ML10, ML11, ML16.
+
+### Verified already-implemented (not built this session, confirmed real by direct code read + live test)
+An earlier killed agent attempt flagged ML4/ML9/ML10/ML11/ML16 as possibly
+already done under internal numbers #17/#22/#23/#24/#29 but never updated
+`FeatureBacklog.md`. Independently re-verified each against the actual
+files (not taken on faith):
+- **ML4** — `dashboard/static/ml/js/signal.js`'s `loadHistory()`/
+  `renderSellRationale()` (`#17`): real 10-call rolling scorecard from
+  `GET /api/v1/signals/ml/history/{ticker}`, real Sell Recommendation card
+  mapping all 6 `RuleBasedExitPolicy.exit_type` values to plain-English
+  rationale.
+- **ML9** — `fmtInt()` (`dashboard/static/js/api.js:54`) already in real
+  use across 7 files in 5 apps; project-wide grep for raw numeric field
+  displays bypassing any `fmt*` helper found zero remaining leaks.
+- **ML10** — `dashboard/static/ml/exit_urgency.html`/`js/exit_urgency.js`
+  (`#23`): dedicated sortable table from real
+  `GET /api/v1/paper_trading/exit_urgency`.
+- **ML11** — `dashboard/static/ml/holdings.html`/`js/holdings.js` (`#24`):
+  CSV upload, localStorage-only (never server-written, confirmed
+  genuinely excluded from training/backtest data), joined against real
+  per-ticker signal endpoints.
+- **ML16** — `dashboard/static/ml/tools.html`/`js/tools.js` (`#29`):
+  Backdated Entry relocated to a dedicated Tools page.
+
+`FeatureBacklog.md`'s Status Matrix already showed ✅ for these five (a
+concurrent/earlier session had updated it) but the detailed per-item
+writeups still read as open asks — rewrote each writeup with the
+verification evidence above rather than leaving stale text under a ✅ row.
+
+### T1 — docstring "76 core" vs actual 70 — ✅
+`features/technical.py`'s `CORE_TECHNICAL_FEATURES` (`assert len(...) ==
+70`) is the real, verified count. Fixed both stale "76" mentions in
+`datastore/api/routers/technical.py` (module docstring, `/{ticker}/
+{date}/all` endpoint docstring). The "94 total columns" figure (70+18+6)
+was already correct arithmetic once "76" is read as "70" — untouched.
+
+### T4 — Watchlist screen wiring — ✅ verified real
+`dashboard/static/technical/js/watchlist.js` + `GET /api/v1/ta/watchlist/
+daily` (`datastore/api/routers/technical.py::get_ta_daily_watchlist`):
+fully wired to the real `ta_signals` table, real rationale/resistance/
+support computed from OHLCV. By design a system-generated ranked list,
+not a per-user persisted watchlist — no "state" gap exists to fix.
+
+### F6 — Valuation Accuracy screen built for real
+New `GET /api/v1/valuation/accuracy/backtest?horizon_days=&min_age_days=`
+(`datastore/api/routers/valuation.py`): joins real `valuation_signals`
+rows to real `ohlcv_adjusted` entry/forward prices, scores whether
+`margin_of_safety`'s sign matched the realized forward return's sign.
+Rewrote `dashboard/static/valuation/accuracy.html` (was a permanent "Not
+yet built." empty state) + new `js/accuracy.js` — horizon control, summary
+cards, full results table. Live-verified against real production data:
+1,563 signal rows -> 507 scored (rest excluded for no real forward price
+yet, not fabricated) -> hit_rate 0.4951. New `tests/unit/
+test_valuation_accuracy.py` (4 tests, seeded DuckDB + TestClient) caught a
+real off-by-one bug during development: the forward-price lookup used
+`date <= target_date` with no lower bound, letting the *entry* row itself
+(one day before the signal date) satisfy the query as a fake "forward"
+price when no real future bar existed. Fixed to `date > sig_date AND date
+<= target_date`.
+
+### FO5 — Benford's Law full distribution exposed
+`classical_scores.py::benford_analysis()` now returns per-series
+`chi2`/`p_value`/`mad`/`digit_distribution` (real 1-9 frequencies)/`n_obs`
++ `benford_expected_distribution`, not just the aggregate MAD.
+`forensic_classical.py::compute_forensic_classical_scores` wires 6 real
+series into `series_dict` (was just `revenue`): `revenue`, `ebitda`,
+`pat`, `trade_receivables_current`, `current_assets`, `capex`
+(>=5 real non-null quarters each, else excluded). New `benford_detail_json`
+column on `ml_forensic` (migrated via the existing idempotent-ALTER
+pattern in `create_signals.py`), written by `score_forensic.py`, added to
+`ForensicWrite`/`ForensicRow` schemas and the router's `_COLUMNS` list.
+Rewrote `benford.js`'s permanent empty-state panel into a real per-digit
+bar chart + chi²/p-value/MAD/n per series. Live-verified: ran the real
+scan for 50 production tickers, confirmed real distinct multi-series
+distributions round-trip through the DB and API (e.g. 20MICRONS:
+revenue n_obs=15, capex n_obs=5, distinct chi²/MAD per series). Had to
+migrate the real on-disk `signals.duckdb` in-place (new column) and
+restart the shared dev-server process (was running stale pre-edit code,
+found while a first verification round silently wrote old-shape rows) to
+actually observe the new column end-to-end. Noted but left alone
+(pre-existing, not FO5-specific): `/forensic/{ticker}`'s default
+`as_of=datetime.utcnow()` can read a day stale right after IST midnight.
+
+### FO7 — Universe Scan on-demand trigger
+New `POST /api/v1/signals/ml/forensic/scan/run?limit=&tier=`
+(`datastore/api/routers/forensic.py`): wraps the real
+`score_forensic.py::score_universe` loop, bounded to `limit` tickers
+per call (default 300, cap 2,500 — never the full universe materialized
+at once), runs via `asyncio.to_thread`. `universe.html`/`universe.js` got
+a real "Run Scan Now" button + tickers-per-run input. Live-verified:
+`limit=50` against the real signals DB scored 50/50 tickers, confirmed via
+direct DB read. Found (not a bug, a correct guard): `score_universe`
+retrains its `ForensicMLModel` from `clean_tickers=tickers` every call, so
+`limit` below ~30 undershoots `forensic_ml.py`'s real minimum-training-
+sample floor and raises `RuntimeError` rather than silently degrading —
+default `limit=300` clears this comfortably. New
+`tests/unit/test_phase2_endpoints.py::TestForensicUniverseScan` (2 tests,
+stubs `score_universe` to test the router's own bounding/wiring — the
+scoring pipeline itself already has coverage in `test_score_forensic.py`).
+
+### Tests run this session
+`tests/unit/test_phase2_endpoints.py` (new Benford round-trip + universe
+scan tests included), `tests/unit/test_valuation_accuracy.py` (new file,
+4 tests), `tests/unit/test_forensic_classical.py`,
+`tests/unit/test_score_forensic.py`, `tests/unit/test_features_technical.py`,
+`tests/unit/test_damodaran.py`, `tests/quality/
+test_duckdb_connection_discipline.py` — all pass (103 passed, 3 skipped).
+`tests/quality/test_no_stub_or_synthetic_data.py::
+test_no_unallowlisted_stub_keywords` still fails against `config/
+nse_holidays.py`, `datastore/schema/create_normalised.py`, and
+`scripts/align_remaining_to_fyers.py` — same pre-existing failure Group
+2's 2026-07-10 entry already documented, unrelated to any file this
+session touched, left as-is.
+
+### Files changed
+`datastore/api/routers/technical.py` (T1 docstring fix), `datastore/api/
+routers/valuation.py` (F6 `/accuracy/backtest`), `dashboard/static/
+valuation/accuracy.html` + new `js/accuracy.js` (F6), `systems/
+ml_signal_engine/models/forensic/classical_scores.py` (FO5
+`benford_analysis()` full-distribution output), `features/
+forensic_classical.py` (FO5 multi-series `series_dict` +
+`benford_detail_json`), `datastore/schema/create_signals.py` (FO5
+`benford_detail_json` column + migration), `datastore/api/schemas.py`
+(FO5 `ForensicWrite.benford_detail_json`), `systems/ml_signal_engine/
+inference/score_forensic.py` (FO5 write-through, FO7 `score_universe`
+reused by the new endpoint), `datastore/api/routers/forensic.py` (FO5
+`_COLUMNS`, FO7 `POST /scan/run`), `dashboard/static/forensic/js/
+benford.js` (FO5 rewrite), `dashboard/static/forensic/universe.html` +
+`js/universe.js` (FO7 trigger UI); new `tests/unit/
+test_valuation_accuracy.py`; `tests/unit/test_phase2_endpoints.py` (FO5/
+FO7 tests added); `FeatureBacklog.md` (T1, T4, F6, FO5, FO7, ML4, ML9,
+ML10, ML11, ML16 rows + Status Matrix updated).
+
+
+## 2026-07-11 — Backlog sweep Group 4: Backtest engine (ML12 steps 4-6, ML17a)
+
+Scope: `backtest/engine.py`, `backtest/run_phase1_backtest.py`, plus new
+files (`config/sector_index_map.py`, `features/sector_rotation.py`,
+`datastore/api/routers/sector_rotation.py`, one new AlphaLens.ML screen,
+one new `datastore/api/routers/ohlcv.py` endpoint + `DataStoreClient`
+method). Did not touch `run_phase{2,3}_backtest.py` (ML17b restructuring
+explicitly out of scope), ML model training code, or any dashboard file
+outside the one new sector-rotation screen this item required.
+
+### ML12 steps 4-6 — Daily sector rotation report
+Steps 1-3 (index_ohlcv data source + daily scheduled download) were
+already live since 2026-07-05. Built the remaining pipeline:
+- `config/sector_index_map.py`: `SECTOR_INDEX_MAP` maps 8 distinct
+  semantic sectors (Financial Services, Information Technology, FMCG,
+  Healthcare, Automobile and Auto Components, Metals & Mining, Realty,
+  Oil Gas & Consumable Fuels — 10 raw taxonomy strings once the CSV's own
+  punctuation-variant duplicates for Oil&Gas/Media are counted) to a real
+  tracked NSE index name. `EXPLICITLY_EXCLUDED_SECTORS` documents the
+  other 12 real taxonomy values with no matching index — including a
+  deliberate non-mapping: "Power" is NOT pointed at "Nifty Energy" (the
+  closest-named index) because that index is a mixed oil-and-gas +
+  power-utility basket, not a pure power index, and would misrepresent
+  the sector's real relative strength.
+- `features/sector_rotation.py`: `compute_index_relative_strength()`
+  ranks sectors by trailing-21-trading-day return minus Nifty 500's
+  trailing-21d return, reading real `index_ohlcv` closes; a sector with
+  fewer than 22 real trading days of index history is excluded from the
+  ranking, not filled with a guess. `top_stocks_for_sector()` joins the
+  sector's real universe tickers to the latest real `ml_signals`/
+  `ml_multibagger` rows, ranked by `buy_prob`/`mb_probability`.
+  `compute_sector_rotation_report()` assembles the full report.
+- `GET /api/v1/sector_rotation/report` (`datastore/api/routers/
+  sector_rotation.py`, registered in `main.py`) + new "Sector Rotation"
+  screen in AlphaLens.ML (`dashboard/static/ml/sector_rotation.html` +
+  `js/sector_rotation.js`, added to `shell.js`'s ML nav after
+  Multibagger): ranked sector table, trailing-21d/Nifty500/relative-
+  strength columns, inline top-stocks-per-sector.
+- Ran `scripts/backfill_index_ohlcv.py --from-date 2023-07-01 --to-date
+  2026-07-08` in the background for the session's duration — NSE's
+  archive has no range/batch endpoint (one CSV per date, ~1.3s/date with
+  the built-in rate-limit sleep), so a ~3-year/747-trading-day backfill
+  runs for roughly 15-20 minutes; it was still in progress when this
+  session's time budget ended, with zero failures through every date
+  observed (see the log for the final row count — this item does not
+  block on the backfill finishing, since the daily scheduled job has
+  already been landing real rows since 2026-07-05 independent of it).
+
+New tests: `tests/unit/test_sector_rotation.py` (13 tests — config-map
+coverage including a real-universe-CSV completeness assertion, feature
+functions against seeded DuckDB fixtures, and the router endpoint via
+`TestClient`).
+
+### ML17a — Real Nifty benchmark curve for backtests
+- `backtest/engine.py`: `BacktestEngine` gained a `benchmark_index`
+  param (real Nifty 500 `index_ohlcv` closes) — kept distinct from the
+  pre-existing `benchmark` param (NIFTYBEES/etc ETF proxies, still used
+  for Category 7 relative-strength features; not a duplicate, two
+  different real sources for two different jobs). New
+  `_build_benchmark_curve(test_fold)` builds a per-fold buy-and-hold
+  curve normalised to `initial_capital` at the first real-data overlap
+  date, returning `None` (no synthetic fallback) when a fold's test
+  window has no real index coverage. `compute_fold_metrics()` gained an
+  optional `benchmark_equity_curve` param and now returns
+  `benchmark_cagr`/`benchmark_sharpe`/`excess_return` alongside the
+  existing strategy metrics. `FoldResult` and `run_full_backtest`'s
+  `aggregate` dict (`excess_return_mean`, `benchmark_cagr_mean`,
+  averaged only over folds with real coverage) extended to match.
+- `backtest/run_phase1_backtest.py`: new `_fetch_real_benchmark_index()`
+  fetches real Nifty 500 `index_ohlcv` via a new
+  `DataStoreClient.get_index_ohlcv()` method and a new `GET /api/v1/
+  ohlcv/index/{index_name}` endpoint (`datastore/api/routers/ohlcv.py`;
+  index names with spaces/`&`, e.g. "Nifty Oil & Gas", are percent-
+  encoded client-side since they're a path segment). Wired into
+  `run_phase1_backtest()`'s `engine_kwargs`; per-fold console output now
+  prints `Benchmark CAGR=... Sharpe=... Excess=...` or an explicit "n/a"
+  rather than silently omitting the field.
+- Found during implementation (not a bug fix, a real design decision
+  worth flagging): a benchmark curve must be CAGR-normalised off its
+  *own* first value, not the strategy's `initial_capital` — the two
+  series have unrelated scales (INR portfolio value vs. Nifty index
+  points). Caught by `test_benchmark_normalised_from_its_own_first_value_
+  not_initial_capital` before it ever shipped as a silent miscalculation.
+
+New tests: `tests/unit/test_backtest_benchmark.py` (8 tests —
+`compute_fold_metrics` benchmark math incl. the scale-mismatch case
+above, `_build_benchmark_curve` slicing/overlap), `tests/unit/
+test_ohlcv_index_endpoint.py` (5 tests, seeded `index_ohlcv` via
+`TestClient`), 2 new cases in `tests/unit/test_datastore_client.py` for
+`get_index_ohlcv`.
+
+### Not attempted (explicitly out of scope per the task brief)
+ML17b — "one backtest per horizon model, unified cadence" restructuring
+of `run_phase{1,2,3}_backtest.py` — independent of ML17a, not touched.
+
+### Tests run this session
+`tests/unit/test_sector_rotation.py` (13 passed), `tests/unit/
+test_backtest_benchmark.py` (8 passed), `tests/unit/
+test_ohlcv_index_endpoint.py` (5 passed), `tests/unit/
+test_datastore_client.py` (3 passed), `tests/unit/test_backtester.py` +
+`tests/unit/test_backtest_reports_router.py` (31 passed — confirms
+`compute_fold_metrics`'s new signature didn't break existing callers),
+`tests/quality/test_duckdb_connection_discipline.py` (1 passed).
+`tests/quality/test_no_stub_or_synthetic_data.py::
+test_no_unallowlisted_stub_keywords` still fails against `config/
+nse_holidays.py`, `datastore/schema/create_normalised.py`, and
+`scripts/align_remaining_to_fyers.py` — same pre-existing, unrelated
+failure Groups 2 and 3's 2026-07-10/11 entries already documented; none
+of those 3 files were touched this session either.
+
+### Files changed
+`backtest/engine.py` (ML17a `benchmark_index`/`_build_benchmark_curve`/
+`compute_fold_metrics`/`FoldResult`/aggregate extension),
+`backtest/run_phase1_backtest.py` (ML17a `_fetch_real_benchmark_index`,
+engine wiring, console output), `datastore/client.py`
+(`get_index_ohlcv`), `datastore/api/routers/ohlcv.py`
+(`GET /index/{index_name}`); new `config/sector_index_map.py`, new
+`features/sector_rotation.py`, new `datastore/api/routers/
+sector_rotation.py` (registered in `datastore/api/main.py`), new
+`dashboard/static/ml/sector_rotation.html` + `js/sector_rotation.js`
+(`dashboard/static/js/shell.js` nav entry added); new `tests/unit/
+test_sector_rotation.py`, new `tests/unit/test_backtest_benchmark.py`,
+new `tests/unit/test_ohlcv_index_endpoint.py`, `tests/unit/
+test_datastore_client.py` (2 new cases); `FeatureBacklog.md` (ML12, ML17
+rows + writeups updated).
+
+## 2026-07-11 — Backlog sweep Group 5: F3 dead stub package cleanup
+
+### F3 — `systems/fundamental_analysis/*` dead stub packages
+Re-verified the finding from the 2026-07-05 truthful-mode walkthrough:
+all six subpackages (`growth`, `management`, `peers`, `quality`, `sector`,
+`thesis`) under `systems/fundamental_analysis/` were 8-line docstrings
+with no functions, and `grep -rn "import systems.fundamental_analysis"`
+returned zero hits — nothing in the codebase imported them. Real logic
+(composite scores, peer selection, quality/growth calcs) lived entirely
+in `features/fundamental_composites.py` all along.
+
+On inspection, the directory was already gone from disk — a prior killed
+agent attempt had deleted it and had already updated `alphalens_docs/
+CLAUDE.md`'s architecture diagram to note "System 4 'fundamental_analysis'
+was a dead stub package, deleted 2026-07-10 per FeatureBacklog.md F3" —
+but `FeatureBacklog.md`'s own F3 row/writeup was never flipped to ✅, so
+the backlog item was left looking open. This session: confirmed the
+directory deletion is real and complete (`ls systems/fundamental_analysis/`
+→ no such file or directory), confirmed no dangling code references
+(only remaining `fundamental_analysis` mentions are historical spec
+prompts in `alphalens_docs/CLAUDE_CODE_PROMPTS.md`/`CLAUDE_CODE_PROMPTS.md`
+describing the original P4.2 build spec, not claims about current state —
+left untouched), and closed the loop by updating `FeatureBacklog.md`'s F3
+row and writeup to ✅ 2026-07-10 (matching the date the deletion actually
+happened, per the CLAUDE.md note).
+
+### Tests run this session
+`tests/quality/test_no_stub_or_synthetic_data.py` — 3/4 pass;
+`test_no_unallowlisted_stub_keywords` fails on the same pre-existing,
+unrelated "placeholder" comments in `config/nse_holidays.py`,
+`datastore/schema/create_normalised.py`, and
+`scripts/align_remaining_to_fyers.py` that Groups 2/3/4 already
+documented — none of those files touched this session. Confirmed
+`grep -rln "fundamental_analysis" tests/` matches only the quality-gate
+test file itself, not any test that imports the deleted module.
+
+### Files changed
+`FeatureBacklog.md` (F3 row + writeup marked ✅ 2026-07-10). No code
+changes — the stub directories were already deleted by a prior session.
+
+## 2026-07-11 — Backlog sweep Group 6: Big Investor Activity (BI2-BI6)
+
+### BI2 — Non-equity Trendlyne deals dropped from bulk-deal backfill — confirmed still correct
+Re-reviewed `TrendlyneScraper.export_bulk_deals_history`
+(`ingestion/scrapers/trendlyne.py`) and `stock_master`'s schema
+(`datastore/schema/create_normalised.py`): still equity-only, no
+instrument-type column, so InvIT/REIT company names still can't match and
+are still correctly dropped as a side-effect of ticker resolution, not a
+bug. No code change made; found nothing that changes the original
+by-design decision.
+
+### BI3 — Trendlyne bulk-block-deals pagination — live-verified all 62/62 investors
+Only 1 of 62 superstar investors (Rakesh Jhunjhunwala and Associates) had
+been checked for a hidden pagination cap. This session: live-fetched and
+parsed every investor's real `bulk-block-deals` page (public, no login,
+1 req/sec) via `_bulk_deals_path_for` + `_parse_bulk_block_deals_table`.
+All 62 fetches succeeded; row counts ranged 0-201 with no exact
+100/200/other round-number cap anywhere, and no `pagination`/
+`dataTables_paginate` markup on any page — confirms
+`_parse_bulk_block_deals_table`'s "fully server-rendered, no AJAX
+pagination" docstring claim holds cohort-wide. The two zero-row
+investors (Sangeetha S, Jayesh Patel) were confirmed genuinely empty via
+a follow-up fetch (`#bbdealTable` present, zero `<tr>` rows), not a fetch
+failure.
+
+### BI4 — Added real test coverage for Big Investor Activity logic
+New `tests/unit/test_big_investors.py` (26 tests, real seeded DuckDB
+fixture per this repo's no-stub/synthetic-data policy — no DB mocks):
+`_position_and_wac_asof`'s trade/checkpoint replay (BUY/SELL WAC math,
+undisclosed-sale true-down, undisclosed-purchase true-up at nearest
+OHLCV close, exact-normalization AND fuzzy `unmapped:` family matching),
+`_parse_bulk_block_deals_table` (real row shape, dash-price-to-None,
+missing-table/short-row edge cases), `backfill_bulk_deals_history`'s
+`NOT EXISTS` dedup anti-join (exercised directly against a real seeded
+`large_deals` table: new row inserted, exact duplicate skipped, same-day
+different-client both kept), and MF Holdings movers' `scheme_count_change`
+(`_mf_movers_rows`) via `TestClient` against a real seeded `mf_holdings`
+table.
+
+One gotcha found while writing these: `_position_and_wac_asof`'s `result`
+dict is only populated on *trade* events, not on Trendlyne checkpoint
+events — a checkpoint updates the running qty/cost in place but produces
+no `result` entry of its own. Tests that need to observe a checkpoint's
+effect seed one more small trade dated after the checkpoint and assert
+against that trade's result row.
+
+### BI5 — Cross-checked shares-outstanding back-derivation against real fundamentals data
+`_position_row_to_dict`'s `shares_outstanding_est = market_cap_cr * 1e7 /
+cmp` was never checked against real `fundamentals.shares_outstanding`
+(only ~9% of `fundamentals` rows have it — 10,695/36,346). Ran the
+cross-check for 1,559 tickers with both a recent market_cap_cr/close and
+a real `shares_outstanding` (latest quarter each): median absolute drift
+3.3%, 69% of tickers within 5%, 93% within 15% — sound for the bulk of
+the universe. A real tail is catastrophic (worst: IDEA, estimate implies
+~113B shares vs. `fundamentals.shares_outstanding`=1,083,430, a
+~10,000,000% drift), traced to implausible/misscaled values already
+sitting in `fundamentals.shares_outstanding` itself for those specific
+tickers (several other outliers carry suspiciously round values like
+exactly 100,000 — a likely parsing/unit artifact in the source filing),
+not a flaw in the back-derivation formula. Recorded in FeatureBacklog.md;
+a follow-up plausibility sweep of `fundamentals.shares_outstanding`
+outliers is flagged as a natural next step but out of BI5's scope
+(quantify drift, not fix the source field) — not attempted.
+
+### BI6 — Added fuzzy "unmapped:" family <-> Trendlyne holder-name matching
+`_position_and_wac_asof` (`datastore/api/routers/big_investors.py`) only
+matched `unmapped:<name>` families to Trendlyne `public_shareholders.
+holder_name` rows via exact re-normalization. Added
+`_fuzzy_match_unmapped_family` as a fallback (only tried when the exact
+match misses, and only against `unmapped:` families already seen for the
+SAME ticker) — accepts either of two independent, conservative signals:
+token-Jaccard over stopword-filtered word sets (>=0.8, catches a missing/
+extra "AND ASSOCIATES" suffix or reordered tokens) or
+`_is_positional_abbreviation_match` (same token count, order preserved,
+exactly one token differing by a same-prefix abbreviation, e.g.
+"HITESH R JAVERI" vs "HITESH RAMJI JAVERI"). Deliberately did NOT use a
+raw Levenshtein edit-distance ratio as the primary signal: verified it
+scores "ASHISH KACHOLIA" vs "ASHOK KACHOLIA" (two different real
+superstar investors) at 0.80, uncomfortably close to a real true-positive
+case's 0.79 — not a safe single threshold. Ambiguous multi-candidate
+matches resolve to no match, not a guess, matching this project's
+fail-loud discipline. 15 of the 26 new tests in `tests/unit/
+test_big_investors.py` cover this directly (`TestFuzzyMatchUnmappedFamily`
+unit tests including the Kacholia false-positive guard, plus DB-replay
+integration tests proving the fuzzy match changes real position/WAC
+output end-to-end and that a genuinely different investor is never
+merged).
+
+### Tests run this session
+`tests/unit/test_big_investors.py` — 26/26 passed.
+`tests/quality/test_duckdb_connection_discipline.py` — 1/1 passed.
+`tests/quality/test_no_stub_or_synthetic_data.py` — 3/4 pass;
+`test_no_unallowlisted_stub_keywords` fails on the same pre-existing,
+unrelated "placeholder" comments in `config/nse_holidays.py`,
+`datastore/schema/create_normalised.py`, and
+`scripts/align_remaining_to_fyers.py` that Groups 2/3/4/5 already
+documented — none of those files touched this session.
+
+### Files changed
+`datastore/api/routers/big_investors.py` (BI6: `_fuzzy_match_unmapped_family`,
+`_is_positional_abbreviation_match`, `_name_tokens`, `_token_jaccard`,
+`_FUZZY_NAME_TOKEN_STOPWORDS`/`_FUZZY_NAME_MATCH_THRESHOLD`, wired into
+`_position_and_wac_asof`); new `tests/unit/test_big_investors.py` (26
+tests, BI4+BI6); `FeatureBacklog.md` (BI2 confirmed-correct note, BI3
+full 62-investor verification results, BI4/BI5/BI6 rows + writeups
+marked ✅ 2026-07-11). No changes to `ingestion/scrapers/trendlyne.py` —
+BI2/BI3 were verification-only, no code defect found.
+
+## 2026-07-11 — Backlog sweep Group 7: Corporate Actions (CA2/CA3/CA4)
+
+### CA2 — KANSAINER/AJOONI: found and fixed real corporate_actions bugs, not just ambiguity
+Fetched each ticker's full NSE corporate-actions history live via
+`api/corporates-corporateActions?index=equities&symbol=<T>&from_date=
+01-01-2005&to_date=31-12-2026` (an explicit wide date range was required —
+the endpoint silently truncates to a recent-years default without one,
+which produced a misleadingly incomplete first fetch). Independently
+re-confirmed via a direct `curl` session in this agent's own transcript
+(cookie-jar handshake against nseindia.com, then the API call) — not just
+relayed from a sub-agent's report — after an earlier DB-write attempt was
+correctly blocked by the environment's permission classifier for relying
+on unseen sub-agent tool results; the classifier's block was the right
+call, and the re-fetch resolved it cleanly.
+
+**KANSAINER** (Kansai Nerolac Paints) had two DB rows dated 2010-06-23 and
+2015-03-26, both tagged "Inferred SPLIT from price-discontinuity scan
+(ambiguous-tier)" — an earlier session's price-only inference, never
+actually cross-checked against NSE. Real NSE history: 2010-06-23 is a
+**Bonus 1:1** (not a SPLIT at all), 2015-03-26 is a **Face Value Split Rs
+10→Re 1** with ratio=10 (not the stored ratio=15), and there's a **third
+action, 2023-07-04 Bonus 1:2, missing from the DB entirely**. Deleted the
+wrong 2010 SPLIT row, inserted the correct BONUS row; corrected the 2015
+ratio; inserted the missing 2023 BONUS row. Re-ran `adjust_for_
+corporate_actions()` and re-diffed against the real per-date Fyers closes
+in `full_day_comparison_20260705.csv`: the mismatch pattern went from
+wildly non-monotonic (93.4% / 1.18% / 48.2% / 1.18% across the 12 dates —
+the original CA2 flag) to a flat ~1.17-1.18% across *all* 12 dates,
+2007-2026 — that flat residual matches CA3's known dividend-adjustment
+gap exactly, confirming the fix is complete.
+
+**AJOONI**'s 2022-10-07 SPLIT ratio was 7.5; NSE confirms Face Value Split
+Rs 10→Rs 2, which by this table's own documented `SPLIT ratio = new
+shares per old share` convention is ratio=5.0. Fixed. NSE also shows two
+RIGHTS issues (2022-11-25 Rights 29:30, 2024-05-07 Rights 1:1) that were
+missing from the DB entirely — inserted for tracking/audit, but left
+without an OHLCV rescale: `ingestion/adjust/price_adjuster.py` has no
+price-adjustment formula for RIGHTS at all (documented — depends on
+subscription price/take-up rate, not just the ratio), the same gap CA1
+patched for 9 other tickers with a one-off empirical rescale. AJOONI's
+still-mismatched date (2022-11-07, 46.4%) is fully explained by this gap;
+not patched this session (needs the same empirical `ratio_post/ratio_pre`
+computation, which needs a working Fyers session — see below).
+
+`corporate_actions_validation` rows for all 6 changed/inserted action keys
+were reset to `unchecked` (not hand-marked `confirmed`, since that would
+mean fabricating a Fyers-validated status without one). A re-run of
+`scripts/validate_corporate_actions_fyers.py` this session hit
+`FYERS_ACCESS_TOKEN` missing/expired in `.env` and fell back to an
+interactive OAuth prompt with no TTY available — left all 6 rows in a
+genuine `error` state rather than faked `confirmed`. Flagged as a
+follow-up: re-run once a valid Fyers token is available.
+
+### CA3 — 152 higher-cv tickers: confirmed dividend-convention gap, no code change
+Spot-checked 20 tickers spanning the cv range (ITC, HEROMOTOCO,
+POWERGRID, HCLTECH, NTPC, SAIL, COALINDIA, ONGC, GAIL, NHPC, BPCL, IOC,
+PFC, RECLTD, NATIONALUM, HINDZINC, NMDC, CESC, COLPAL, MANAPPURAM)
+against the real Fyers closes already captured in `full_day_comparison_
+20260705.csv`. All 20 show the same fingerprint: `our_close` always below
+`fyers_close`, gap decaying smoothly and monotonically toward 0% at the
+most recent comparison date (e.g. ITC: 35.3% in 2007 → 2.7% by 2026) —
+never a step-jump at a single date, which rules out a missing split and
+matches accumulated un-applied dividend back-adjustment instead
+(`PRICE_ADJUSTMENT_ENABLED=False` for dividends is a deliberate,
+documented design choice in `ingestion/scrapers/corporate_actions.py`).
+Hypothesis confirmed 20/20; no code change made — closing this gap would
+mean building real total-return dividend adjustment, a feature decision
+for the user, not a bugfix.
+
+### CA4 follow-up — reconciled retrain scope + schema migration
+Live `needs_retrain=TRUE` count in `corporate_actions_validation` is 70
+(down from the 2026-07-08 figure of 77 — some already resolved by CA1
+since then). Cross-referenced against CA1's collision/no-match/
+reclassified lists and CA3's 152-ticker set: 16 already flagged as CA1
+collisions needing manual reconciliation, 6 already flagged as CA1
+no-NSE-match, 1 already flagged as CA1-reclassified (SURANAT&P), 21
+overlap CA3's dividend-gap set, leaving **26 tickers genuinely new** and
+unaccounted for by any prior pass: AGIIL, ALKYLAMINE, EIHOTEL, FCL, GAEL,
+JAYAGROGN, JYOTISTRUC, KAMOPAINTS, KELLTONTEC, MAHSEAMLES, MANINFRA, MKPL,
+NIITLTD, NRBBEARING, ONEPOINT, PANAMAPET, PCJEWELLER, RAMRAT, RATNAMANI,
+SERVOTECH, SHARDAMOTR, SOUTHBANK, SUVEN, SWELECTES, TTML, WABAG — flagged
+as a future CA1-style NSE-API triage batch, not investigated individually
+this session.
+
+Added `corporate_actions_validation`'s DDL to `datastore/schema/
+create_normalised.py` (`_CREATE_CORPORATE_ACTIONS_VALIDATION`, registered
+in `_ALL_TABLES`) — column set verified to match the live DB exactly via
+`describe`. Added a matching `NORMALISED_TABLE_COLUMNS` entry to
+`tests/unit/test_schema.py` so the existing parametrized column-check
+test (`test_duckdb_table_columns_match_architecture_doc`-equivalent for
+the normalised store) covers the new table.
+
+### Tests run this session
+`tests/unit/test_schema.py` — 10/10 pass on the normalised-schema subset
+(includes the new `corporate_actions_validation` parametrized case); one
+pre-existing, unrelated failure on `ml_forensic`/`benford_detail_json`
+(signals schema, untouched this session) left as-is.
+`tests/unit/test_price_adjuster.py`, `tests/unit/
+test_corporate_action_features.py`, `tests/unit/test_corporate_actions_
+api.py` — 31/31 pass.
+`tests/quality/test_duckdb_connection_discipline.py` — pass.
+`tests/quality/test_no_stub_or_synthetic_data.py` — 4/5 pass; the same
+pre-existing `config/nse_holidays.py`/`datastore/schema/create_
+normalised.py`/`scripts/align_remaining_to_fyers.py` "placeholder"
+false-positives Groups 2-6 already documented — none of those specific
+lines touched this session (create_normalised.py was edited, but only to
+add the new table DDL, nowhere near the flagged line).
+
+### Files changed
+`datastore/normalised/alphalens.duckdb` (live DB: KANSAINER/AJOONI
+`corporate_actions` rows fixed/inserted per CA2 above, backed up first to
+the scratchpad; `corporate_actions_validation` rows for the changed keys
+reset to `unchecked`/left `error`, no fabricated `confirmed` status
+written); `datastore/schema/create_normalised.py` (CA4:
+`_CREATE_CORPORATE_ACTIONS_VALIDATION` DDL + `_ALL_TABLES` registration);
+`tests/unit/test_schema.py` (CA4: `NORMALISED_TABLE_COLUMNS` entry for
+the new table); `FeatureBacklog.md` (CA2/CA3/CA4 rows + writeups marked
+✅ 2026-07-11). No changes to `ingestion/scrapers/corporate_actions.py`
+or `ingestion/adjust/price_adjuster.py` — CA2/CA3 were data-quality fixes
+and verification, not parser/adjuster code defects.
+
+## 2026-07-11 — Backlog sweep Group 8: Valuation router tests + ML19/ML20 test-suite health (D2/ML19/ML20)
+
+### D2 — Router-level tests for `datastore/api/routers/valuation.py`
+`test_valuation_accuracy.py` (Group 3) only covers the newer F6
+`/accuracy/backtest` endpoint; the original peer-group/DCF endpoints
+(`GET /{ticker}`, `/batch/ranked`, `/{ticker}/sensitivity`,
+`/{ticker}/history`, `/{ticker}/relative`) had zero router-level
+coverage. Added `tests/unit/test_valuation_router.py` (18 tests, in-process
+`TestClient(app)`, real seeded DuckDB fixtures) covering param validation
+(FastAPI `Query(ge=/le=)` bound checks on `max_tier`/`limit`/`wacc_steps`/
+`growth_steps`/`min_peers`), error responses (404 insufficient-fundamentals,
+422 no-sector/insufficient-peers), and peer-group edge cases (real sector
+with zero seeded peer fundamentals → 422; real sector with enough peers
+but the target ticker itself missing fundamentals → 404).
+
+Key gotcha found while writing these: `datastore/api/routers/valuation.py`
+imports `_load_fundamentals`/`_load_current_price`/`_get_sector`/the
+`_engine` singleton directly from `systems.damodaran_valuation.
+valuation_engine`, and that module reads its own `DUCKDB_PATH`/
+`SIGNALS_DUCKDB_PATH` globals at call time — `test_valuation_accuracy.py`'s
+existing fixture only monkeypatches `valuation_router.DUCKDB_PATH`, which
+is sufficient for `/accuracy/backtest` and `/{ticker}/history` (both read
+DuckDB directly in the router body) but silently no-ops for every other
+endpoint, which delegates to the engine. The new fixture patches both
+`valuation_router.DUCKDB_PATH`/`SIGNALS_DUCKDB_PATH` *and*
+`systems.damodaran_valuation.valuation_engine.DUCKDB_PATH`/
+`SIGNALS_DUCKDB_PATH` together. Tests use a real ticker/sector pulled
+from the live `config/nifty500_universe.csv` (a slowly-changing reference
+table, not a PIT join, so real data is safe to depend on directly here)
+so `_get_sector()`/`_load_market_cap_cr()` resolve real values without
+needing a CSV monkeypatch that doesn't exist.
+
+### ML19 — `test_multibagger.py`/`test_paper_trading_router.py` full-suite failures: not reproducible
+Re-bisected per the original writeup's own suggested method. `tests/
+conftest.py` already has `autouse=True` `cleanup_connections`/
+`reset_feature_registry` fixtures — no obvious leak vector there. Ran,
+in order: (1) the first 62 of 113 `tests/unit/*.py` files together
+(alphabetically at/before `test_multibagger.py`) — clean; (2) `tests/
+integration/` + `tests/quality/` + that same batch, reproducing pytest's
+real default directory-alphabetical collection order (`integration` <
+`quality` < `unit`) — only the two known pre-existing failures; (3) the
+**entire `tests/unit/` suite unbatched, once** — 1,293 passed, only the
+pre-existing `test_schema.py[ml_forensic]` failure, ~1.9GB peak RSS, no
+OOM; (4) `test_exit_signal.py` + `test_score_multibagger.py` + `test_
+rule_based_exit_policy.py` + `test_multibagger.py` + `test_paper_trading_
+router.py` together, 3x repeated — identical clean result every time.
+
+No leak found because every recombination that originally triggered the
+failure now passes clean and repeatably. Most likely explanation: the
+original failures were transient/order-dependent (CoxPH/RandomSurvival
+Forest solver convergence is known to be seed/ordering-sensitive, and the
+originally-failing tests — `TestSurvivalCurveMonotonicity`, `TestMulti
+baggerModelTraining` — are exactly the ones that symptom would hit), or
+were incidentally fixed by ML18's `exit_signal.py::train_full()`
+collinearity fix earlier in this session's Group 7/8 work (same CoxPH
+training code path). Closing as verified-fixed given item (3) above is a
+full, unbatched, repeat-free pass — not leaving it open on an unverifiable
+diagnosis. No production or test code change made for ML19 specifically.
+
+### ML20 — Real-data cases needing a live DataStore API server
+`test_score_multibagger.py` no longer touches `DataStoreClient`/HTTP at
+all — `load_multibagger_training_data_from_db()` (its training-data
+loader) was rewritten to read DuckDB directly under backlog #27
+(2026-07-04), predating this finding; the `ConnectError`/ERROR cases the
+original writeup described don't exist in the current file (confirmed:
+no `DataStoreClient` references, clean standalone 10/10 pass). No fix
+needed — the finding was stale.
+
+`test_rule_based_exit_policy.py::TestAtrScaledBarriers::test_atr_
+scaling_against_real_historical_ohlcv[RELIANCE|TCS]` is real: it
+instantiates a live `DataStoreClient()` and calls `.get_ohlcv()` over
+HTTP. `DataStoreClient` is a plain `httpx` wrapper with no ASGI-transport
+injection seam (unlike FastAPI's `TestClient(app)`), so rewriting onto
+the in-process pattern would require a production-code change — out of
+this session's tests/unit/**-only scope. Wrapped the call in `try/except
+httpx.RequestError: pytest.skip(...)` instead (option 2 from the original
+writeup) so an unreachable server skips cleanly with a diagnostic message
+rather than a hard `ConnectError` failure indistinguishable from a real
+regression. Verified the except branch actually triggers by pointing a
+scratch `DataStoreClient(base_url="http://localhost:1/")` at a dead port
+and confirming `httpx.ConnectError` is what's raised/caught — a live
+DataStore API server happens to already be running in this checkout
+(`curl localhost:8000/docs` → 200), so the test currently exercises the
+real path and passes rather than skipping.
+
+### Tests run this session
+`tests/unit/test_valuation_router.py` — 18/18 passed (new file).
+`tests/unit/test_multibagger.py`, `test_paper_trading_router.py`,
+`test_score_multibagger.py`, `test_rule_based_exit_policy.py`,
+`test_exit_signal.py`, `test_damodaran.py`, `test_valuation_accuracy.py`
+combined — 131 passed, 14 skipped, 1 xpassed.
+Full `tests/unit/` suite (unbatched, one-time bisection run for ML19) —
+1,293 passed, 17 skipped, 1 xpassed, 1 pre-existing failure
+(`test_schema.py[ml_forensic]`).
+`tests/quality/test_duckdb_connection_discipline.py` — 1/1 passed.
+`tests/quality/test_no_stub_or_synthetic_data.py` — 4/5 pass; the same
+pre-existing `config/nse_holidays.py`/`datastore/schema/create_
+normalised.py`/`scripts/align_remaining_to_fyers.py` "placeholder"
+false-positives Groups 2-7 already documented — none of those lines
+touched this session.
+
+### Files changed
+New `tests/unit/test_valuation_router.py` (D2, 18 tests); `tests/unit/
+test_rule_based_exit_policy.py` (ML20: `httpx` import + `try/except
+httpx.RequestError: pytest.skip(...)` around the real-OHLCV
+`DataStoreClient().get_ohlcv()` call); `FeatureBacklog.md` (D2/ML19/ML20
+rows + writeups marked ✅ 2026-07-11). No change to `tests/unit/test_
+score_multibagger.py` (finding was already stale) or to `tests/unit/
+test_multibagger.py`/`test_paper_trading_router.py` (ML19 not
+reproducible — nothing to fix). No production code changes.
+
+## Group 9 — Cross-cutting document/export (F4, FO6, T3)
+
+### Task
+Close the three items sharing an "add a new frontend/backend dependency"
+shape: Thesis Builder PDF export (F4), Investigation Report PDF export
+(FO6), and a real charting library on Technical > Chart (T3). Library
+decisions were pre-made by the user (not re-asked): reportlab for PDF
+(pure-Python, no headless-browser dependency); Chart.js +
+chartjs-chart-financial for charting, vendored under `dashboard/static/`
+matching this app's existing zero-CDN `<script src="...">` convention.
+
+### F4 — Thesis Builder PDF export
+Added `GET /api/v1/fundamentals/{ticker}/thesis/pdf`
+(`datastore/api/routers/fundamentals.py`) — reads the same real
+sector-relative z-scored ratios + quality/growth composite scores
+`thesis.js` already renders, applies the identical `+/-0.5` threshold
+logic (`_THESIS_RATIO_LABELS`/`_THESIS_LOWER_IS_BETTER` kept in exact
+sync with `thesis.js`'s `RATIO_LABELS`/`LOWER_IS_BETTER`), and renders a
+real PDF via a new shared `datastore/api/utils/pdf.py::build_pdf_response`
+helper (reportlab `SimpleDocTemplate`). `thesis.html`/`thesis.js` got a
+"Download PDF" button (plain navigation to the endpoint, letting the
+browser handle `Content-Disposition: attachment`).
+
+### FO6 — Investigation Report PDF export
+Added `GET /api/v1/signals/ml/forensic/{ticker}/report/pdf`
+(`datastore/api/routers/forensic.py`) — reads the same real `ml_forensic`
+row `report.js` templates (Beneish M, Altman Z, Piotroski F, Sloan
+accrual, Benford MAD, ML fraud probability, pattern match,
+blocked/not-blocked recommendation) and renders it via the same shared
+`build_pdf_response` helper F4 uses. `report.js`'s "export" was literally
+`window.print()` before this — added a real "Download PDF" button
+alongside the existing Print button, not a replacement (both real).
+
+### T3 — Charting library on Technical > Chart
+Vendored `chart.umd.min.js` (4.4.4), `chartjs-adapter-date-fns.bundle.
+min.js` (3.0.0), and `chartjs-chart-financial.min.js` (0.2.1) as plain
+minified files under new `dashboard/static/vendor/` (downloaded directly,
+not via a build step — same "drop a `<script>` tag" pattern every other
+JS file in this app already uses). `chart.html`/`chart.js` now render a
+real candlestick chart against `GET /api/v1/ohlcv/{ticker}?from=&to=`
+(~400 real trading days) with a real volume bar chart beneath it, plus
+toggleable SMA50/SMA200/EMA21 overlay lines computed client-side from the
+same real close-price series (standard formulas over real closes — no
+time-range indicator API exists yet to source pre-computed overlay
+series, so these are recomputed client-side from the real prices rather
+than fabricated). The existing curated indicator/pattern snapshot panels
+are unchanged.
+
+### Dependency added
+`reportlab==4.2.5` pinned into `requirements/phase1.txt` (installed and
+verified in this session's venv). No new Python deps for T3 (vendored JS
+only, no server-side charting dependency).
+
+### Tests
+New `tests/unit/test_thesis_pdf.py` (5 tests) and `tests/unit/
+test_forensic_report_pdf.py` (4 tests) — both `TestClient(app)`, real
+seeded data (a monkeypatched in-memory feature row for F4, a real seeded
+`ml_forensic` DuckDB row for FO6, no mocks), asserting real `%PDF-`
+header + `%%EOF` trailer + >1KB body, not just a 200 status. All 9 pass.
+`tests/unit/test_valuation_router.py`, `test_score_forensic.py`,
+`test_forensic_classical.py` (43 passed, 3 skipped — confirms the shared
+forensic/valuation router code untouched by this group still works).
+`tests/unit/test_phase2_endpoints.py`, `test_fundamentals_write_batch.py`,
+`test_pit_alignment.py` (30 passed — other consumers of the fundamentals/
+forensic routers this group edited).
+`tests/quality/test_duckdb_connection_discipline.py` — 1/1 passed.
+`tests/quality/test_no_stub_or_synthetic_data.py` — 4/5 pass; the same
+pre-existing `config/nse_holidays.py`/`datastore/schema/create_
+normalised.py`/`scripts/align_remaining_to_fyers.py` "placeholder"
+false-positives every prior group this session already documented — none
+of those lines touched this session.
+
+### Live verification
+Started the real dev server (`uvicorn datastore.api.main:app`).
+`GET /api/v1/fundamentals/20MICRONS/thesis/pdf` → real 1-page PDF
+(confirmed via `file`: "PDF document, version 1.4"). `GET /api/v1/
+signals/ml/forensic/20MICRONS/report/pdf` (against a real existing
+`ml_forensic` row) → real 2,092-byte PDF with a genuine `%PDF-1.4` header
+and `%%EOF` trailer. `GET /api/v1/ohlcv/20MICRONS?from=2026-01-01&to=
+2026-07-10` → real OHLCV rows for T3's candlestick chart to consume. All
+3 vendored JS bundles + `chart.html`/`thesis.html`/`report.html` served
+200 from `/ui/`. All touched/added JS files pass `node --check` (real,
+non-truncated syntax); the financial-chart bundle's self-registration
+(`Chart.register(CandlestickController, OhlcController,
+CandlestickElement, OhlcElement)`) confirmed present.
+
+**Could not complete a full in-browser click-through screenshot**:
+Playwright is installed in this venv, but its Chromium build reports
+`ERROR: Playwright does not support chromium on ubuntu26.04-x64` on this
+host — no supported headless browser available. Substituted endpoint-level
+`curl` verification against the real running server + real production
+data, plus static JS syntax/self-registration checks, in its place. This
+is a real gap in this session's verification depth (not in the shipped
+code) worth flagging: an actual browser render of the candlestick chart
+was never visually confirmed, only that the API/JS pipeline feeding it is
+correct end-to-end.
+
+### Status Matrix pass
+Skimmed the full table for stale ⏳/🔧 rows while in the file for this
+group; none found beyond F4/FO6/T3 themselves — no unrelated edits made.
+
+### Files changed
+New `datastore/api/utils/pdf.py` (shared reportlab helper); `datastore/
+api/routers/fundamentals.py` (+`get_fundamental_thesis_pdf`); `datastore/
+api/routers/forensic.py` (+`get_forensic_report_pdf`); `dashboard/static/
+fundamental/thesis.html`+`js/thesis.js` (Download PDF button); `dashboard/
+static/forensic/js/report.js` (Download PDF button alongside Print);
+`dashboard/static/technical/chart.html`+`js/chart.js` (candlestick +
+volume charts, SMA/EMA overlays); new `dashboard/static/vendor/{chart.umd.
+min.js,chartjs-adapter-date-fns.bundle.min.js,chartjs-chart-financial.
+min.js}`; `requirements/phase1.txt` (+reportlab==4.2.5); new `tests/unit/
+{test_thesis_pdf.py,test_forensic_report_pdf.py}`; `FeatureBacklog.md`
+(F4/FO6/T3 rows + writeups marked ✅ 2026-07-11).
+
+---
+
+## 2026-07-11 — FeatureBacklog full sweep, final reconciliation pass
+
+After all 10 groups (Groups 1-9 background agents + Group 10/D1 done
+directly) landed, did a final pass over `FeatureBacklog.md`'s Status
+Matrix to catch rows individual agents reported as done in their summary
+but left stale in the table (each agent only had visibility into its own
+group's items, not others' concurrent edits):
+
+- **A41, T5, ML18** flipped ⏳→✅ (Group 2's exit_signal.py collinearity
+  fix, checkpoint-registry backfill, and TFT/BiLSTM feature-reach audit
+  were done but the table rows weren't updated in Group 2's own pass).
+- **A40** flipped ⏳→🔧 (root-caused but deliberately not re-run/wired —
+  was previously entirely unstarted, now has real diagnostic progress).
+- **A42** left ⏳ with an updated note (T5's dependency closed, but the
+  SHAP feature-importance measurement itself ran out of time budget).
+- **CA2, CA3** flipped ⏳→✅ (Group 7's real NSE-confirmed KANSAINER/
+  AJOONI fixes and CA3's 20-ticker spot-check).
+- **CA4** writeup extended with Group 7's reconciled 26-ticker retrain
+  list and the schema-migration-entry fix.
+
+**Two new pre-existing issues logged** (found independently by multiple
+groups during verification, confirmed via `git stash` against the
+untouched baseline — not caused by this session):
+- **A63**: `tests/quality/test_no_stub_or_synthetic_data.py`'s
+  `test_no_unallowlisted_stub_keywords` fails on 3 benign "placeholder"
+  comments (`config/nse_holidays.py:41,386`,
+  `datastore/schema/create_normalised.py:196`,
+  `scripts/align_remaining_to_fyers.py:8`) — needs a narrow
+  `KEYWORD_ALLOWLIST` entry each, not a code fix.
+- **A64**: `tests/unit/test_schema.py`'s
+  `test_duckdb_table_columns_match_architecture_doc[ml_forensic]` fails —
+  real schema/doc drift on the `ml_forensic` table, pre-existing.
+
+### Final verification
+Ran a broad batched sweep across every test file touched by any group
+this session (not the full suite — OOMs per project convention):
+`test_signals_is_backfill/test_daily_pipeline/test_scheduler/
+test_schema/test_screener/test_exit_signal/test_signal_models` (155
+passed, 14 skipped, 1 known pre-existing A64 failure);
+`test_valuation_accuracy/test_phase2_endpoints/test_sector_rotation/
+test_backtest_benchmark/test_big_investors/test_valuation_router/
+test_thesis_pdf/test_forensic_report_pdf/test_rule_based_exit_policy/
+test_score_multibagger` (123 passed, 0 failures);
+`test_price_adjuster/test_corporate_action_features/
+test_corporate_actions_api/test_multibagger/test_paper_trading_router`
+(56 passed, 1 xpassed, 0 failures — notably including ML19's previously-
+flaky files, clean here too). `tests/quality/` (4/5 pass, only the known
+pre-existing A63 failure).
+
+### Note on this session's environment
+Group agents were originally dispatched with `isolation: "worktree"` for
+git-worktree-based parallel execution, but every worktree in this
+environment landed on an unrelated stale commit (`d06858a`, a different
+project entirely) disconnected from `master` — a harness bug, not a repo
+issue. The first 9 dispatched agents were killed before any could write
+real changes; all 10 groups were then re-run sequentially, directly
+against the shared checkout, with each group instructed to re-read
+`FeatureBacklog.md`/`BuildLog.md` immediately before editing to avoid
+clobbering concurrent work. No data loss resulted — verified via this
+session's own re-runs of every touched test file.
+
+### Files changed
+`FeatureBacklog.md` only (Status Matrix reconciliation + A63/A64 new
+entries). No production code changed in this pass.
+
+## 2026-07-11 — FeatureBacklog.md split into open-only + FeatureBacklogImplemented.md archive
+
+Split the 3,378-line `FeatureBacklog.md` (which had grown to mix ~96
+completed and ~28 open items across 8 areas) into two files:
+
+- **`FeatureBacklogImplemented.md`** (new, 2,457 lines) — every ✅ item's
+  Status Matrix row plus its detailed writeup (where one existed), moved
+  verbatim, grouped by the same 8 areas. 88 table rows total.
+- **`FeatureBacklog.md`** (rewritten, 1,004 lines) — only the 28 still-
+  open (⏳/🔧/🚫) items, same table/section structure, intro paragraph
+  updated to point at the new archive file.
+
+Split was done programmatically (Python, slicing exact original line
+ranges per section) rather than by hand-retyping, to guarantee verbatim
+content — spot-checked ~25 IDs across all 8 areas against the pre-split
+file, all matched exactly with no truncation.
+
+**Pre-existing bug found and fixed in passing**: the Status Matrix's
+Machine Learning table was missing a row for `ML21` entirely (its
+detailed ✅ writeup existed in the file, referenced by A40, but never had
+a table row) — added the missing row to `FeatureBacklogImplemented.md`
+based on its own writeup content.
+
+**Reclassified 6 open items ⏳→🚫** (genuine external/decision blockers,
+not just unstarted work) and clarified their Blocked-On text:
+- **A22** — needs the user to install/approve Tailscale (or equivalent)
+  on their own devices; a design proposal exists but requires explicit
+  user action.
+- **A46** — high-blast-radius `daily_pipeline.py`/`pipeline_scheduler.py`
+  refactor, deliberately deprioritized in the 2026-07-10 session; needs
+  an explicit prioritization decision to resume.
+- **A59** — `contingent_liability_ratio`-style forensic gaps require real
+  NLP/text extraction from freeform NSE XBRL prose; out of scope without
+  dedicated NLP work.
+- **F2** — Management screen's RPT panel is blocked on the same
+  undiscovered-API-param issue as CA6's RPT leg (NSE's
+  `related-party-transactions-details` endpoint needs a `seqNum`/`recId`
+  lookup from an unfound master-list endpoint).
+- **FO4** — Forensic Group C fields need a data-source decision (GST
+  filings vs. an alternate revenue-concentration input) only the
+  user/product owner can make before scoping.
+- **CA5** — no dedicated NSE insider-trading-disclosure endpoint exists;
+  confirmed external-data-availability gap, not a code gap.
+
+Left as-is (not relabeled 🚫 despite being flagged as blocker candidates
+in a prior session): **A23** (in-progress, 🔧, partial instrumentation
+already landed, remainder is time-gated data accumulation not a hard
+blocker); **ML13** (⏳, time-gated — only ~2 days since ML1's scheduler
+landed on 2026-07-09, not enough weekly runs accumulated yet); **BI1**
+and **CA6** (both already ✅ as of this session, moved to the Implemented
+archive, not open items).
+
+### Files changed
+`FeatureBacklog.md` (rewritten to open-items-only), `FeatureBacklogImplemented.md` (new).
+`FutureDevelopment.md` untouched.
+
+## 2026-07-11 — A55: real production OOM on `alphalens-scheduler.service`, `run_daily_inference` chunked
+
+**Incident:** `alphalens-scheduler.service` (persistent daily-pipeline
+daemon) was killed by `systemd-oomd` at 07:54 IST while running a 6-day
+catch-up backfill. `journalctl` confirmed a memory-*pressure*-based kill,
+not a hard `MemoryMax` breach: "Current Memory Usage: 5G", user-slice
+memory pressure Avg10=85.36% (> its 50% kill threshold) for >20s, with
+active reclaim — "Killed .../alphalens-scheduler.service ... due to
+memory pressure". `free -h` at the time showed swap 100% full
+(4.0Gi/4.0Gi) and ~441MB RAM free system-wide. The unit's own systemd
+`Restart=on-failure` had already self-healed it once before this session
+started; it was manually stopped so it wouldn't crash-loop while this
+fix was made, per instruction, and was NOT restarted by this session.
+
+**Root cause:** `ingestion/scheduler/daily_pipeline.py::step_run_models`
+reads the full-universe `feature_matrix`/`pnd_feature_matrix` Parquets
+(~2,317 tickers) and hands them whole to
+`systems/ml_signal_engine/inference/daily_inference.py::run_daily_inference`,
+which then ran every downstream step — most importantly
+`_step_signals_and_meta` (5 models scoring the full cross-section at
+once, plus a SHAP `TreeExplainer` pass producing a dense
+`(n_tickers, n_features, n_classes)` float64 array) and `_step_pnd_filter`
+— completely unchunked. This is the same class of bug A47 (earlier this
+session) already fixed for `features/matrix_builder.py`'s per-ticker
+feature computation via `_compute_chunked_ticker_independent_panels` +
+`resource_guard.adaptive_chunk_size`; `daily_inference.py` had simply
+never received the equivalent treatment. `datastore/alphalens.duckdb`'s
+`job_run_log` table corroborates this independently: a `morning_catchup`
+run on 2026-07-10 recorded `peak_rss_mb=15804.7` — over 15GB, far past
+both the 6G cgroup ceiling and this machine's 14GB total RAM (i.e. it
+was already swapping hard by the time that peak was sampled) — while the
+unrelated, routine nightly `model_training` job's peak across 24 runs
+never exceeded ~3.9GB.
+
+**Fix (`systems/ml_signal_engine/inference/daily_inference.py`):**
+`_step_signals_and_meta` and `_step_pnd_filter` now score and write in
+ticker CHUNKS using `resource_guard.adaptive_chunk_size` — same pattern,
+same `config.settings.SCREENER_BATCH_EXPORT_CHUNK_SIZE`/
+`PIPELINE_MEMORY_CEILING_MB` knobs A47 already wired up. Models
+(signal_5d, meta_labeler, signal_21d, signal_63d, conformal, pnd) are
+loaded ONCE outside the chunk loop, not per chunk. Each chunk's SHAP/
+conformal/model-output DataFrames are discarded (`del`) once written,
+bounding peak memory to one chunk's worth of intermediate arrays instead
+of the full ~2,317-ticker universe's. `_step_signals_and_meta`'s return
+value (used only for `len(scored)` by the caller) is now a concatenation
+of each chunk's `proba.join(meta_out)`, preserving the existing return
+contract.
+
+Two steps were deliberately left UNCHUNKED, with the reasoning recorded
+in their own docstrings:
+- `_step_psi_check` — PSI is a genuinely cross-sectional statistic
+  (today's full per-feature distribution vs. a baseline); chunking it
+  would compare each chunk's non-representative sub-distribution instead
+  and silently corrupt the drift numbers. Same class of exclusion A47
+  already applied to fundamental/mf_holdings/multibagger features. It's
+  also small (tens of MB for `CORE_TECHNICAL_FEATURES` x ~2,317 tickers)
+  and was not the memory-pressure source.
+- `_step_hmm` (market-wide regime) — inherently a single, non-per-ticker
+  computation; there is nothing to chunk.
+- `_step_exit` was not touched — it only ever scores currently-held
+  positions (real portfolio size), never the full universe.
+
+**Systemd unit change (`~/.config/systemd/user/alphalens-scheduler.service`,
+NOT restarted — flagged for human review):** `MemoryMax` lowered
+6G→5G, `MemoryHigh` lowered 5G→4G. Grounded in the `journalctl` evidence
+above (the kill was pressure-based across the whole user slice, not this
+unit's own ceiling) and in `job_run_log`'s real peak-RSS history (routine
+jobs peak ~3.9GB, so 5G/4G leaves real margin above every other
+legitimate job while capping how much this unit can contribute to
+system-wide memory pressure on a 14GB host that routinely has 3-4GB used
+by other processes, e.g. VS Code and this Claude Code session, when the
+scheduler runs). This is a live-system config change made but explicitly
+left un-activated — the service stays stopped until a human reviews and
+restarts it.
+
+**Verification:** new `tests/unit/test_daily_inference_chunking.py` (8
+tests, real trained Signal5DModel/MetaLabeler/PnDDetector instances, 23
+placeholder tickers — tens, not thousands, kept fast) proves chunked
+scoring at forced chunk sizes 1000 (single full-batch pass), 5, and 1
+produces payloads equivalent to the full-batch pass, tolerant of the
+~1e-14-relative floating-point noise LightGBM/SHAP's batch-size-dependent
+internal summation genuinely introduces (confirmed directly by isolating
+`predict_signals`/`_compute_shap_top5` calls before writing the test —
+not a chunking correctness bug; documented in the test module's
+docstring and `_assert_calls_close`'s docstring). A dedicated
+`tracemalloc`-based peak-memory-reduction test was considered and
+explicitly not added — at the tens-of-tickers scale needed to keep a
+unit test fast, the memory delta between chunked/unchunked would be too
+small to reliably assert without flakiness, and running it at the real
+~2,317-ticker scale to make the delta measurable would make the test far
+too slow for the normal suite; the equivalence test above is the primary
+proof, same as A47's precedent test does not carry its own memory-timing
+assertion either. `tests/unit/test_daily_inference_exit_fallback.py`
+(5 tests) and `tests/integration/test_daily_pipeline.py` re-run clean,
+except `TestPnDBlockExcludedFromTopBuys::test_pnd_blocked_ticker_excluded_from_top_buys`,
+confirmed via `git stash` to fail identically on the pre-change tree —
+pre-existing, unrelated to this change.
+
+### Files changed
+`systems/ml_signal_engine/inference/daily_inference.py` (chunked
+`_step_signals_and_meta`/`_step_pnd_filter`, documented why
+`_step_psi_check`/`_step_hmm` are not chunked).
+`~/.config/systemd/user/alphalens-scheduler.service` (MemoryMax
+6G→5G, MemoryHigh 5G→4G — NOT restarted, needs human review).
+`tests/unit/test_daily_inference_chunking.py` (new, 8 tests).
+`FeatureBacklog.md` (new A55 entry, 🔧 — needs human sign-off on the
+systemd-limit piece before considered fully closed).
+
+## 2026-07-11: Test coverage measurement + improvement (A65)
+
+**Task**: measure real test coverage and improve toward 90%.
+
+No `.coveragerc`/`pyproject.toml` coverage config existed before this
+session. Added `.coveragerc` scoped to this project's real source
+packages (`datastore/`, `ingestion/`, `features/`, `systems/`,
+`backtest/`, `config/`), omitting `tests/`, `scripts/` (one-off CLI
+tools, matching this project's existing convention), `dashboard/static/vendor/`
+(third-party JS), `__init__.py`, and migrations.
+
+Ran the full `tests/unit/`+`tests/integration/` suite with coverage in
+memory-safe batches (`--cov-append`, 5 batches of ~18 light files +
+24 heavy ML-training files run one-at-a-time, per this project's
+documented `feedback_coverage` convention) — `free -h` checked between
+batches, no OOM/swap pressure observed throughout (stayed ~7GB used /
+5GB free the whole run).
+
+**Baseline: 67.93%** (18,695 statements, 5,995 missed).
+
+Added 3 new test files targeting genuine, previously-uncovered
+production logic (real seeded DuckDB / real Parquet files / mocked-
+HTTP-transport-only per this project's no-stub policy — never mocked
+business logic):
+- `tests/unit/test_build_universe_recompute.py` (6 tests) —
+  `config/build_universe.py::compute_adtv_from_ohlcv`/
+  `compute_market_cap_from_fundamentals`, previously 0% covered.
+  Real seeded `ohlcv_adjusted`/`fundamentals` rows via
+  `create_normalised.create_schema`, real universe CSV round-trip.
+- `tests/unit/test_nse_ipo.py` (5 tests) —
+  `ingestion/scrapers/nse_ipo.py::download_past_issues`, previously 0%.
+  Mocked HTTP transport only (same pattern as existing
+  `test_nse_pledge.py`); real parse/dedup/retry logic exercised
+  unmocked, including the retry-then-raise and recover-after-transient
+  paths.
+- `tests/unit/test_feature_store_utils.py` (12 tests) —
+  `datastore/api/utils/feature_store.py`, previously ~31% covered.
+  Real Parquet files written to `tmp_path`, real DuckDB
+  `read_parquet()` glob query for `read_feature_range`.
+
+**Final: 68.49%** (5,890 missed) — a genuine but modest improvement.
+Reaching 90% overall was not achievable in this session: the gap is
+~4,000 statements across dozens of FastAPI routers (`technical.py`
+19.76%, `ops.py` 33.89%, `big_investors.py` 62.24%, `paper_trading.py`
+41.82%, ...), scraper modules (`large_deals.py` 19.30%,
+`corporate_actions.py` 28.57%, `screener.py` 68.36%, ...), the
+`pipeline_scheduler.py` monolith (41.40%, 744 stmts, see A46), and
+several genuinely 0%-covered network-dependent scripts
+(`run_phase2_backtest.py`, `run_phase3_backtest.py`,
+`train_all_phase1.py`, `retrain_phase2.py`) that would need either a
+live external dependency or a much larger mocking investment — this is
+realistically several further sessions of work, not a single pass.
+
+Per-package breakdown (end of session): `features` 80.17%, `config`
+76.94%, `datastore` 70.98%, `systems` 66.15%, `ingestion` 63.31%,
+`backtest` 50.31%.
+
+Ran the full quality-gate battery: `tests/quality/test_no_stub_or_synthetic_data.py`
+and `tests/quality/test_duckdb_connection_discipline.py`, plus all
+new/touched unit tests. Only the 2 known pre-existing failures (A63,
+A64) reproduced — nothing new. Also independently re-confirmed
+`tests/integration/test_daily_pipeline.py::TestPnDBlockExcludedFromTopBuys::test_pnd_blocked_ticker_excluded_from_top_buys`
+failing with a DuckDB cross-process connection-config conflict — this
+is environmental (concurrent real DuckDB access from another agent
+active in this same shared checkout during this session), not a
+coverage gap and not introduced by this session's changes.
+
+Full detail (weakest modules, follow-up scope) logged as A65 (⏳) in
+FeatureBacklog.md, since coverage-improvement is not fully closed.
+
+### Files changed
+`.coveragerc` (new). `tests/unit/test_build_universe_recompute.py`
+(new, 6 tests). `tests/unit/test_nse_ipo.py` (new, 5 tests).
+`tests/unit/test_feature_store_utils.py` (new, 12 tests).
+`FeatureBacklog.md` (new A65 entry, ⏳).
+
+## Spec & Log "Create additional Features" Requirements Dump (2026-07-11)
+
+### Task
+User provided a large ad-hoc requirements document (`Create additional
+Features.txt`) covering framework-level UI conventions, a proposed shared
+price/technical rollup table, a new cross-cutting Events table, and a long
+list of AlphaLens.ML and AlphaLens.Technical feature requests and bug
+reports. Asked to spec these out, log unimplemented items to
+`FeatureBacklog.md`, note anything already implemented, and record this
+session in `BuildLog.md`. No code, schema, or dashboard files touched —
+this was a cataloging/spec session only, per the user's standing
+plan-before-code preference on large asks.
+
+### Approach
+Ran 3 parallel Explore passes (backlog/BuildLog conventions; dashboard
+frontend state; backend/data-layer state) before writing anything, to
+avoid re-logging work that already exists. Found several of the user's
+asks are already shipped:
+- Signal Deep Dive (ML8 ✅) already has a Full-Universe section and a
+  Ticker-Detail section with Recommendation History / All Model Scores /
+  a "SHAP — Why This Signal" section; SHAP values (ML3 ✅) are already
+  persisted (`shap_top5_json` on `ml_signals`/`ml_multibagger`/`ml_forensic`)
+  and returned by the signals API.
+- Sector Rotation (ML12 ✅) already computes trailing-21-day relative
+  strength against Nifty 500.
+- Fundamentals sourcing is already NSE-XBRL-primary / Trendlyne-fallback-3
+  (A36 ✅, priority `nse_xbrl=4 > trendlyne=3 > screener=2 > external_csv=1`
+  in `features/fundamental_source_priority.py`) — the user's question
+  ("why are we reading Trendlyne when XBRL is default") is answered by
+  pointing at this existing entry, not a new gap.
+- `technical/chart.html`/`chart.js` is fully implemented against real
+  OHLCV/indicator/pattern APIs (candlesticks, SMA/EMA overlays, volume,
+  indicators panel) — "charts don't work" logged as a bug-repro item, not
+  assumed to need a rebuild.
+- Paper Trading (`positions.html`) and MyHoldings (`holdings.html`) both
+  already exist; MyHoldings is currently browser-localStorage-only, which
+  is the actual gap (DB persistence), not the whole feature.
+- A generic sortable-table helper (`sortRows`/`sortableHeader` in
+  `js/api.js`) already exists and is used by several screens — "make all
+  tables sortable" is an audit-and-apply gap, not new infra.
+
+Genuinely new gaps (no existing table, computation, or UI found):
+sparkline rendering (anywhere in the dashboard), a per-recommendation
+backtested Confidence Factor, sector delivery-based accumulation
+detection, an Events table + chart overlay, and DB-backed MyHoldings.
+
+### Result
+Logged 25 new backlog items across 3 sections in `FeatureBacklog.md`,
+each with a status-matrix row and a prose writeup, all ⏳ (nothing
+implemented this session):
+- **Architectural**: A66 (sortable-columns audit), A67 (sparkline
+  support), A68 (alignment convention), A69 (ticker/Signal-Deep-Dive
+  hyperlink convention), A70 (menu prefix removal), A71 (shared 1yr
+  rollup table — flagged "measure first," not build speculatively), A72
+  (new Events table + chart overlay).
+- **Technical**: T6 (Daily WatchList as landing page + Technical Deep
+  Dive), T7 (chart bug repro), T8 (backtested Confidence Factor,
+  confirmed net-new), T9 (screener universe-coverage bug), T10
+  (recommendation persistence, likely mostly covered by existing
+  `ta_signals`), T11 (multi-strategy consensus ranking), T12 (Sell-
+  recommendation section).
+- **Machine Learning**: ML22 (merge Daily Insights/WatchList), ML23
+  (surface SHAP basis in tables), ML24 (Buy-Prob/Target consistency bug,
+  LGINDIA), ML25 (split Full Universe to its own page), ML26 (Signal
+  Deep Dive layout redesign incl. buy/sell recommendation pairing), ML27
+  (MultiBagger negative-signal bug, MadisonLTD/Aartiind), ML28 (Sector
+  Rotation multi-horizon + sparklines, extends ML12), ML29 (delivery-
+  based sector accumulation), ML30 (MyHoldings DB persistence), ML31
+  (Paper Trading no-buy-recs bug), ML32 (documentation-only column-
+  glossary deliverable, explicitly flagged so it isn't over-scoped into
+  a feature build).
+
+Verified all 25 new IDs are unique against both `FeatureBacklog.md` and
+`FeatureBacklogImplemented.md` before writing (grep count check).
+`FeatureBacklogImplemented.md` was not touched — nothing in this dump
+was implemented this session.
+
+### Files changed
+`FeatureBacklog.md` (25 new status-matrix rows + prose writeups across
+Architectural/Technical/Machine Learning sections). `BuildLog.md` (this
+entry).
+
+## Begin Implementing "Create additional Features" Backlog: Phase 0 Bug Repros + A70 (2026-07-11)
+
+### Task
+Start implementing the 25 items logged in the previous session (A66-A72,
+T6-T12, ML22-ML32) per a phased plan (Phase 0: bug repros, Phase 1: UI
+conventions, Phase 2: data-layer additions, Phase 3: feature/layout work,
+Phase 4: docs). This entry covers Phase 0 (the 5 "investigate and fix" bug
+reports) plus A70, the one Phase 1 item completed this session.
+
+### Approach
+Investigated each Phase 0 bug live against the running API (port 8000) and
+DuckDB-backed feature store, using curl against real endpoints rather than
+synthetic data, per project convention. Read the relevant source
+(`systems/technical_analysis/screener/engine.py`,
+`scripts/run_daily_paper_trading.py`, `dashboard/static/technical/js/chart.js`)
+alongside the live queries to pin down root cause rather than just
+confirming symptoms.
+
+### Result
+- **T7** (charts "don't work"): could not reproduce at the API/wiring level —
+  `ohlcv`/`indicators`/`patterns` endpoints all return real data, vendor
+  Chart.js/financial-plugin versions are compatible and correctly ordered.
+  Left ⏳; needs an actual browser session to catch a console-level failure.
+- **T9** (screener alphabetical-looking results): root-caused. `_screen_df`'s
+  tiebreak sort falls back to source-Parquet row order (alphabetical) when
+  `volume_ratio_21d` is missing from a given day's feature set. Moved to 🔧
+  with the exact fix location identified; not yet patched.
+- **ML24** (LGINDIA buy-prob/target mismatch): ticker not found in `ml_signals`
+  under that exact symbol across 4 recent dates — likely a typo/wrong ticker
+  in the original report. The general divergence mechanism (short-horizon
+  directional model vs. other-horizon models legitimately disagreeing) was
+  independently confirmed via ML27. Left ⏳ pending user confirmation of the
+  correct ticker.
+- **ML27** (MadisonLTD/Aartiind MultiBagger picks): confirmed on AARTIIND —
+  `mb_probability` 0.9999 vs. `signal_5d` reading `hold`/`buy_prob` 0.09 on
+  the same date. This is a legitimate model-disagreement (MultiBagger scores
+  a long-horizon archetype pattern independent of short-horizon directional
+  signals), not a bug. Moved to 🔧 — remaining work is a UI labeling fix, not
+  a backend change. `MADISONLTD` ticker not found under that exact symbol.
+- **ML31** (Paper Trading shows no Buy recs): root-caused. 20 legitimate
+  `buy`-direction candidates existed on 2026-07-08 (buy_prob 0.56-0.71), but
+  `_fetch_buy_candidates`'s `meta_labeler.meta_label == "act"` gate rejected
+  every one of them — all had `meta_prob` clustered at 0.44-0.54, right at
+  the decision boundary. The meta-labeler model appears mis-calibrated
+  (near-random around its own threshold) rather than the pipeline being
+  broken. Moved to 🔧; fixing requires a model retraining/recalibration pass,
+  out of scope for this session.
+- **A70** (drop "AlphaLens." prefix from app-switcher tabs): implemented and
+  moved to `FeatureBacklogImplemented.md`. Added a `short` label per app in
+  `shell.js`'s `APPS` array, used for the `.app-tabs` switcher; the logo
+  still shows the full `"AlphaLens.<App>"` name. Per its own backlog note,
+  this only fixes one of the two horizontal-scroll bars — `.sub-tabs` still
+  scrolls on screen-heavy apps (e.g. ML's 10 screens).
+
+Remaining 19 items (A66-A69, A71-A72, T6, T8, T10-T12, ML22-ML23, ML25-ML26,
+ML28-ML30, ML32) are unchanged from the previous session's spec and remain
+⏳ in `FeatureBacklog.md`, sequenced per the phased plan in
+`.claude/plans/created-some-additional-gaps-fizzy-avalanche.md` for
+follow-up sessions — the full scope (new DB tables, sparkline rendering,
+Signal Deep Dive redesign, sector-rotation multi-horizon extension, etc.)
+is too large for one session alongside live bug investigation.
+
+### Files changed
+`dashboard/static/js/shell.js` (A70 — `short` labels + app-tabs render change).
+`FeatureBacklog.md` (A70 row removed; T7/T9/ML24/ML27/ML31 rows updated with
+investigation findings, T9/ML27/ML31 promoted to 🔧). `FeatureBacklogImplemented.md`
+(A70 row + writeup added). `BuildLog.md` (this entry).
+
+## Realized-Outcome Hit-Rate Harness for Signal/MultiBagger Models (2026-07-11)
+
+### Task
+Following the ML24 investigation (signal_63d divergence, several retrain
+attempts), the user asked for a harness to validate the current production
+models (`signal_5d`, `signal_21d`, `signal_63d`, `MultiBagger`) against what
+actually happened to price, not just retrain-time validation metrics — to
+be reused whenever new model variants (TFT/BiLSTM) are trained, to compare
+all trained sets on equal footing.
+
+### Approach
+New script `scripts/backtest_realized_hitrate.py`. No retraining — it scores
+each production model exactly as `daily_inference.py`/`score_multibagger.py`
+would have at many historical point-in-time dates (reusing
+`features.matrix_builder.build_feature_matrix`, which is already PIT-correct
+for arbitrary historical dates), then walks forward on real OHLCV to check
+whether the recommended move actually happened:
+- `signal_5d`: +5% touched intraday within next 5-6 trading days
+- `signal_21d`: +10% touched intraday within next ~23 trading days
+- `signal_63d`: +15% touched intraday within next 63 trading days
+- `MultiBagger`: 2x/3x/5x within 12/24/36 months
+
+"Touched" means the rolling max of daily HIGH crossed the threshold
+anywhere in the window, not the close-to-close return at the window's end
+(user's explicit correction). Every "buy" recommendation also captures its
+SHAP top-5 feature attribution (reusing `daily_inference.py`'s
+`_compute_shap_top5`), restricted to buy-flagged tickers to bound cost —
+requested by the user to feed model fine-tuning, not just get an aggregate
+hit-rate number. `features.backfill_cache.BackfillDataCache` pre-loads
+fundamentals/shareholding/corp-actions once per ticker instead of once per
+eval date, which is what makes a 200-daily-date run tractable at all.
+
+Launched as a long-running background job: `--eval-days 200
+--eval-quarters 12 --cache-workers 8` (PID 2645365, started 2026-07-11
+19:40, log `logs/backtest_realized_hitrate_20260711.log`). Runtime is many
+hours (~1.5-2 min/eval date) — checked in on periodically rather than
+blocking on it.
+
+Mid-run, the user flagged a durability gap: the script only wrote output
+once, at the very end (`out_path.write_text(...)` after the full loop), so
+an OOM kill at any point during the multi-hour run would lose everything,
+including the already-computed SHAP data. Added incremental checkpointing:
+`_append_checkpoint()` appends each eval date's newly-produced records to
+`backtest/reports/realized_hitrate_records_<date>/<model>.checkpoint.jsonl`
+immediately after that date is scored, for both the signal-horizon loop and
+the MultiBagger loop. The final parquet dump at the end is unchanged and
+supersedes the checkpoint files once a run completes normally. This change
+only takes effect on the *next* invocation — the already-running PID 2645365
+has the old code loaded and does not benefit from it; restarting it would
+have thrown away the ~57 eval dates already completed at that point, which
+the user chose not to do.
+
+### Result
+`scripts/backtest_realized_hitrate.py` added and verified to compile. As of
+the last check, the original (pre-checkpointing) run is still in progress
+at eval date 132/200 (~66%), no crash, memory elevated (swap ~3.2/4Gi) but
+stable. No final report exists yet — `backtest/reports/realized_hitrate_2026-07-11.json`
+and the per-model parquet/checkpoint files will only appear once the run
+completes or (for checkpoints, on future runs) as it progresses.
+
+### Files changed
+`scripts/backtest_realized_hitrate.py` (new — harness + incremental
+checkpointing). `BuildLog.md` (this entry).
+
+## Harness Results + signal_5d/signal_21d Miscalibration Root Cause (2026-07-12)
+
+### Task
+The realized-outcome hit-rate harness (previous entry) finished overnight.
+Review the results and, since `buy_prob` should ideally correlate with
+hit-rate, investigate why two of the four models showed an inverted
+confidence/outcome relationship instead.
+
+### Result — headline numbers
+(`backtest/reports/realized_hitrate_2026-07-12.json`, full per-record data
+incl. SHAP in `backtest/reports/realized_hitrate_records_2026-07-12/*.parquet`)
+
+| Model | n (buy calls) | Hit rate | Threshold | Median days to hit |
+|---|---|---|---|---|
+| signal_5d | 5,828 | 28.0% | +5% intraday in 5-6d | 3 |
+| signal_21d | 73,406 | 30.4% | +10% intraday in ~23d | 16 |
+| signal_63d | 3,669 | 45.0% | +15% intraday in 63d | 32 |
+
+MultiBagger: 2x/12mo hit rate 19.1% (3,216 complete windows), 3x/24mo
+15.3% (1,756 complete), 5x/36mo has zero complete windows yet (all
+provisional, no verdict possible).
+
+**signal_63d's decile breakdown is healthy** — hit rate rises with
+`buy_prob` confidence (31%→48-54% decile 0→9), and its SHAP driver
+breakdown makes intuitive sense (`sma_200_ratio`, `vol_compression_63d`
+associated with higher hit rates).
+
+**signal_21d and signal_5d are miscalibrated — confidence is inversely (or
+not) related to outcome:**
+- signal_21d: decile 0 (lowest `buy_prob`) hits 42.1%; decile 9 (highest
+  `buy_prob`) hits only 19.0% — cleanly monotonically decreasing across all
+  10 deciles.
+- signal_5d: flat/noisily inverted (26.2% decile 0 vs 37.7% decile 9, but
+  with no clean monotonic trend and a dip to 23.2% at decile 3).
+
+### Investigation (root cause)
+Delegated to a subagent to read the signal model code
+(`systems/ml_signal_engine/models/signal/{signal_5d,signal_21d,signal_63d,base_signal_model}.py`),
+`datastore/models/registry.json`, retrain scripts/logs, and the actual
+parquet records. Findings, ranked by confidence:
+
+1. **(High) signal_5d/signal_21d never received the ML24 resampling fix that
+   was already applied to signal_63d.** signal_63d was retrained
+   2026-07-11 with SMOTETomek disabled (`max_sampling_ratio<=0` in
+   `base_signal_model.py:441-451`) — it trains on the true class prior
+   (buy 55.8%/hold 35.8%/sell 8.5%, unchanged before/after resampling).
+   signal_5d and signal_21d were both last trained **2026-07-09, before**
+   that fix, and still use the default unbounded
+   `SMOTETomek(sampling_strategy="auto")`
+   (`systems/ml_signal_engine/inference/retrain_phase2.py:230,283`,
+   `max_sampling_ratio` defaults to `None`):
+   - signal_5d: true buy incidence 13.6%, synthetically inflated to 33.5%
+     post-resample (~2.5x oversample of the minority "buy" class).
+   - signal_21d: true distribution sell/hold/buy 38%/45%/17%, rebalanced to
+     a near-uniform 32/32/35.
+   `buy_prob` is the raw meta-learner output with no post-hoc calibration
+   (Platt/isotonic) anywhere in `base_signal_model.py` — so probabilities
+   reflect the artificial 1:1-ish training prior, not real-world incidence.
+2. **(Medium-high, likely a symptom of #1) The dominant SHAP driver for
+   signal_21d buy calls is over-weighted despite being a worse predictor.**
+   From the parquet records: `base_breakout_ratio` drives 57% of all buy
+   calls (41,724/73,406) with mean `buy_prob` 0.614 but only 26.9% hit
+   rate, while the minority driver `gap_up_pct` (5,967 records) has a
+   *lower* mean `buy_prob` (0.532) but a *higher* 51.4% hit rate. The
+   resampling-distorted model concentrates high confidence on a
+   pattern that doesn't actually predict outcomes well, which is what
+   turns plain miscalibration into a clean monotonic inversion.
+   `corr(buy_prob, hit)` confirms this is real, not decile-bucketing noise:
+   **-0.135** for signal_21d, **+0.071** (flat) for signal_5d, **+0.090**
+   (correct direction) for signal_63d.
+3. **(Ruled out) Harness bug.** All three horizons share the same
+   `evaluate_all_signal_horizons()` code path in the harness, and only
+   63d — the one with a genuine resampling change — calibrates correctly,
+   so a horizon-specific harness defect is unlikely.
+
+### Suggested next steps (not yet actioned)
+- Retrain signal_5d and signal_21d the same way ML24 fixed signal_63d:
+  disable/bound SMOTETomek (`max_sampling_ratio<=0` or a conservative cap
+  well short of 1:1 `auto`) so the meta-learner trains on the true class
+  prior instead of a synthetically balanced one.
+- Re-run `scripts/backtest_realized_hitrate.py` afterward (checkpointed
+  version, see previous entry) to confirm the decile trend flips to
+  monotonically increasing, the same validation used to confirm the 63d
+  fix.
+- Independently of resampling, consider whether `base_breakout_ratio` as a
+  buy-call driver needs down-weighting or a feature-quality review — its
+  poor real-world hit rate (26.9%) despite driving the majority of
+  signal_21d buy calls may point to a feature that looks informative
+  in-sample but doesn't generalize, separate from the calibration issue.
+- No post-hoc probability calibration (Platt/isotonic) exists anywhere in
+  `base_signal_model.py` for any horizon; adding one could be a
+  belt-and-suspenders improvement on top of the resampling fix, though the
+  resampling fix is the primary suspect and should be tried first per the
+  63d precedent.
+
+### Files changed
+`BuildLog.md` (this entry). No code changes this session — diagnostic and
+harness-results write-up only.

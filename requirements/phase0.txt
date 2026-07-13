@@ -35,3 +35,10 @@ tqdm==4.68.3
 fyers-apiv3==3.1.13
 pytest==9.0.3
 pytest-cov==6.0.0
+# Pipeline & Monitoring Remediation Phase 2/4 (2026-07-10): accurate
+# per-process RSS for ingestion/scheduler/resource_guard.py and the
+# real-time Ops resource monitor, replacing monitor_scheduler_resources.py's
+# deliberately hand-rolled /proc/meminfo parsing. resource_guard.py falls
+# back to /proc parsing if psutil isn't installed, so this is additive,
+# not a hard runtime break.
+psutil==6.1.1

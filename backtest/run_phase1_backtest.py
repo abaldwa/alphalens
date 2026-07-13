@@ -144,6 +144,37 @@ def _fetch_real_benchmark(api_base_url: Optional[str] = None) -> pd.DataFrame:
     return benchmark.sort_values("date").reset_index(drop=True)
 
 
+def _fetch_real_benchmark_index(api_base_url: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """
+    ML17a: real Nifty 500 index level (index_ohlcv table,
+    ingestion/scrapers/nse_indices.py — NSE's own published index, not an
+    ETF-price proxy) for BacktestEngine's buy-and-hold benchmark equity
+    curve (benchmark_cagr/benchmark_sharpe/excess_return per fold).
+
+    Returns
+    -------
+    pd.DataFrame or None
+        Columns: date, close. None if index_ohlcv has no "Nifty 500" rows
+        yet (e.g. before ML12 step 3's daily download_index_ohlcv step /
+        scripts/backfill_index_ohlcv.py have populated real history) — no
+        synthetic fallback; BacktestEngine.run_full_backtest() simply
+        leaves every fold's benchmark_* fields as None in that case (see
+        compute_fold_metrics's docstring).
+    """
+    client = DataStoreClient(base_url=api_base_url) if api_base_url else DataStoreClient()
+    to_dt = now_ist()
+    from_dt = to_dt - timedelta(days=365 * REAL_DATA_LOOKBACK_YEARS)
+    df = client.get_index_ohlcv("Nifty 500", from_dt, to_dt)
+    if df.empty:
+        logger.warning(
+            "No real Nifty 500 index_ohlcv history available — ML17a benchmark_cagr/"
+            "benchmark_sharpe/excess_return will be None for every fold. Run "
+            "scripts/backfill_index_ohlcv.py to backfill."
+        )
+        return None
+    return df[["date", "close"]].sort_values("date").reset_index(drop=True)
+
+
 def _fetch_historical_tickers(api_base_url: Optional[str] = None) -> set:
     """Every ticker ohlcv_adjusted has ever seen (GET /api/v1/ohlcv/_meta/tickers) — for check_04_survivorship."""
     client = DataStoreClient(base_url=api_base_url) if api_base_url else DataStoreClient()
@@ -163,10 +194,12 @@ def run_phase1_backtest(
     ohlcv = _fetch_real_universe(max_real_tickers, min_history_days, api_base_url)
     sector_map = _real_sector_map()
     benchmark = _fetch_real_benchmark(api_base_url)
+    benchmark_index = _fetch_real_benchmark_index(api_base_url)
     universe_tickers = set(get_tickers())
     historical_tickers = _fetch_historical_tickers(api_base_url)
     engine_kwargs = {
         "benchmark": benchmark, "universe_tickers": universe_tickers, "historical_tickers": historical_tickers,
+        "benchmark_index": benchmark_index,
     }
 
     pnd_X, pnd_y = load_pnd_training_data_from_db()
@@ -203,11 +236,18 @@ def run_phase1_backtest(
 
     print("\n=== Per-Fold Metrics ===")
     for f in results.fold_results:
+        bm_str = (
+            f" | Benchmark CAGR={f.benchmark_cagr:.2%} Sharpe={f.benchmark_sharpe:.2f} "
+            f"Excess={f.excess_return:.2%}"
+            if f.benchmark_cagr is not None
+            else " | Benchmark: n/a (no real index_ohlcv coverage for this fold)"
+        )
         print(
             f"  Fold {f.fold_index}: train [{f.train_start.date()} -> {f.train_end.date()}] "
             f"test [{f.test_start.date()} -> {f.test_end.date()}] "
             f"CAGR={f.cagr:.2%} Sharpe={f.sharpe:.2f} MaxDD={f.max_drawdown:.2%} "
             f"WinRate={f.win_rate:.2%} ProfitFactor={f.profit_factor:.2f} Trades={f.n_trades}"
+            f"{bm_str}"
         )
 
     print("\n=== Aggregate Metrics ===")

@@ -26,7 +26,7 @@ features.matrix_builder.ALL_FEATURE_COLUMNS.
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -58,6 +58,7 @@ def load_ohlcv_from_db(
     db_path: Optional[Path] = None,
     lookback_days: int = 1260,
     max_tickers: Optional[int] = None,
+    tickers: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
     Load real OHLCV from ohlcv_adjusted for all active tickers.
@@ -70,8 +71,18 @@ def load_ohlcv_from_db(
         Number of calendar days of history to pull (counting back from the
         most recent date in the table). Default 1260 (~5 years).
     max_tickers : int, optional
-        If set, limit to the `max_tickers` most liquid tickers (by row count
-        in the window). Useful for quick smoke-runs.
+        If set AND `tickers` is not given, limit to the `max_tickers` most
+        liquid tickers (by row count in the window). Useful for quick
+        smoke-runs. Ignored if `tickers` is provided.
+    tickers : list of str, optional
+        ML24 (2026-07-11): explicit ticker allowlist (e.g. top-N by market
+        cap, see retrain_phase2.py's --top-market-cap) — used INSTEAD of
+        `max_tickers`'s row-count heuristic, which selects the longest-listed/
+        most-complete-history tickers rather than an economically meaningful
+        sample (flagged as a real problem: training only ever saw the same
+        800 tickers by data completeness, not the tickers that actually
+        matter for production recommendations). Still subject to the
+        `_MIN_HISTORY_DAYS` eligibility filter below.
 
     Returns
     -------
@@ -100,6 +111,13 @@ def load_ohlcv_from_db(
         benchmark_syms = list(BENCHMARK_TICKERS.values())
         placeholders = ", ".join(f"'{s}'" for s in benchmark_syms)
 
+        ticker_filter_sql = ""
+        params = [cutoff]
+        if tickers is not None:
+            ticker_placeholders = ", ".join("?" * len(tickers))
+            ticker_filter_sql = f"AND ticker IN ({ticker_placeholders})"
+            params += list(tickers)
+
         df = conn.execute(
             f"""
             SELECT date, ticker, open, high, low, close, volume,
@@ -107,9 +125,10 @@ def load_ohlcv_from_db(
             FROM ohlcv_adjusted
             WHERE date >= ?
               AND ticker NOT IN ({placeholders})
+              {ticker_filter_sql}
             ORDER BY ticker, date
             """,
-            [cutoff],
+            params,
         ).df()
 
     df["date"] = pd.to_datetime(df["date"])
@@ -119,7 +138,13 @@ def load_ohlcv_from_db(
     eligible = counts[counts >= _MIN_HISTORY_DAYS].index
     df = df[df["ticker"].isin(eligible)].reset_index(drop=True)
 
-    if max_tickers is not None and df["ticker"].nunique() > max_tickers:
+    if tickers is not None:
+        logger.info(
+            "load_ohlcv_from_db: explicit ticker allowlist given (%d requested), "
+            "%d met the history-eligibility bar and are in the final frame",
+            len(tickers), df["ticker"].nunique(),
+        )
+    elif max_tickers is not None and df["ticker"].nunique() > max_tickers:
         top = (
             df.groupby("ticker")["date"].count()
             .nlargest(max_tickers)

@@ -36,7 +36,10 @@ def _insert_contract(
 ):
     import duckdb
 
+    from datastore.api.db import _attach_fno_db
+
     conn = duckdb.connect(str(db_path))
+    _attach_fno_db(conn, str(db_path), read_only=False)
     conn.execute(
         "INSERT INTO fno_data (trade_date, ticker, instrument, expiry, strike, option_type, "
         "oi, oi_change, volume, settle_price, close_price, underlying_price) "

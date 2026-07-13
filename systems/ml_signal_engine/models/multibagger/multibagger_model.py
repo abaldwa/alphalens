@@ -75,6 +75,7 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from sklearn.dummy import DummyClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sksurv.ensemble import RandomSurvivalForest
@@ -149,12 +150,26 @@ def build_binary_labels(
     pnd_scores: Optional[pd.Series] = None,
     window_years: int = LABEL_WINDOW_YEARS,
     pnd_threshold: float = PND_FLAG_THRESHOLD,
+    return_multiplier: float = 2.0,
 ) -> pd.DataFrame:
     """
     Build prompt's literal label: binary 1 if a stock-date snapshot's
-    forward max return over `window_years` reaches 2x (+100%), else 0.
-    P&D-flagged episodes are excluded from positive labels (downgraded to
-    0) — see module docstring's P&D-exclusion reconciliation.
+    forward max return over `window_years` reaches `return_multiplier`
+    (e.g. 2.0 -> +100%/2x, default — matches the original "2x within 3
+    years" spec unchanged), else 0. P&D-flagged episodes are excluded
+    from positive labels (downgraded to 0) — see module docstring's
+    P&D-exclusion reconciliation.
+
+    [2026-07-12 defect fix]: `return_multiplier` used to be silently
+    dead — this function hardcoded a 1.0 (100%/2x) return threshold
+    regardless of any caller-supplied multiplier, and
+    load_multibagger_training_data_from_db's own `min_return_multiplier`
+    parameter was documented as "accepted for signature compatibility
+    but has no effect." Found and fixed while building the 3x/24mo and
+    5x/36mo multibagger variants (systems/ml_signal_engine_gainer/) —
+    default value (2.0) preserves existing production behavior exactly;
+    only a caller now passing a different multiplier gets what the
+    signature already promised.
 
     Parameters
     ----------
@@ -170,16 +185,19 @@ def build_binary_labels(
         logged as a warning).
     window_years : int
     pnd_threshold : float
+    return_multiplier : float
+        Target multiple, e.g. 2.0 for 2x (default, unchanged behavior),
+        3.0 for 3x, 5.0 for 5x.
 
     Returns
     -------
     pd.DataFrame
         Columns: date, ticker, label (0/1), max_return, event (0/1, same
         as label — kept distinct for clarity at survival-model call
-        sites), duration_months (months until the 2x level was first
-        reached, or `window_years * 12` if never reached / right-censored
-        — see SPEC-MODEL-001's >= 756 trading day minimum for this to be
-        meaningful).
+        sites), duration_months (months until the target multiple was
+        first reached, or `window_years * 12` if never reached /
+        right-censored — see SPEC-MODEL-001's >= 756 trading day minimum
+        for this to be meaningful).
 
     Spec References
     ----------------
@@ -196,7 +214,10 @@ def build_binary_labels(
     """
     if pnd_scores is None:
         logger.warning("build_binary_labels: no pnd_scores supplied — P&D exclusion is skipped")
+    if return_multiplier <= 1.0:
+        raise ValueError("return_multiplier must be > 1.0 (e.g. 2.0 for 2x)")
 
+    target_return = return_multiplier - 1.0
     window_days = int(window_years * 252)
     df = prices.sort_values(["ticker", "date"]).reset_index(drop=True)
 
@@ -211,8 +232,8 @@ def build_binary_labels(
                 continue
             fwd_returns = fwd / close[i] - 1.0
             max_return = float(np.nanmax(fwd_returns))
-            hit_idx = np.argmax(fwd_returns >= 1.0) if (fwd_returns >= 1.0).any() else None
-            label = int(max_return >= 1.0)
+            hit_idx = np.argmax(fwd_returns >= target_return) if (fwd_returns >= target_return).any() else None
+            label = int(max_return >= target_return)
             duration_months = (
                 float(hit_idx) / 252.0 * 12.0 if hit_idx is not None else min(len(fwd), window_days) / 252.0 * 12.0
             )
@@ -308,9 +329,22 @@ class MultibaggerModel(ISurvivalModel):
         self._ranker.fit(X, y, group=groups)
 
         raw_scores = self._ranker.predict(X).reshape(-1, 1)
-        self._calibrator = LogisticRegression(random_state=self.random_state)
         if y.nunique() < 2:
+            # [2026-07-12 defect fix] LogisticRegression.fit() raises ValueError
+            # ("needs samples of at least 2 classes") on single-class y — this branch
+            # used to log "calibrator will be degenerate" and then crash instead of
+            # actually producing a degenerate output, contradicting its own warning.
+            # Found via a small-ticker-sample training run (systems/ml_signal_engine_gainer/
+            # evaluate_gainer_multibagger.py) where a stock-level fold's train split
+            # happened to contain only positive-labeled rows. DummyClassifier
+            # ("constant" strategy) is a real sklearn classifier with a matching
+            # predict_proba interface, so every downstream caller of predict()/
+            # predict_full() keeps working, just with the degenerate (constant)
+            # probability the original warning already promised.
             logger.warning("Only one class present — calibrator will be degenerate (constant probability)")
+            self._calibrator = DummyClassifier(strategy="constant", constant=y.iloc[0])
+        else:
+            self._calibrator = LogisticRegression(random_state=self.random_state)
         self._calibrator.fit(raw_scores, y)
 
     def predict(self, X: pd.DataFrame) -> pd.Series:
@@ -319,7 +353,16 @@ class MultibaggerModel(ISurvivalModel):
             raise RuntimeError("predict called before train()/train_full()")
         X_imputed = self._impute_transform(X[self._feature_names])
         raw_scores = self._ranker.predict(X_imputed).reshape(-1, 1)
-        proba = self._calibrator.predict_proba(raw_scores)[:, 1]
+        proba_matrix = self._calibrator.predict_proba(raw_scores)
+        if proba_matrix.shape[1] < 2:
+            # [2026-07-12 defect fix] the degenerate single-class calibrator
+            # (see _fit_ranker_and_calibrator) only has one column in its
+            # classes_ — predict_proba(...)[:, 1] would IndexError. Its one
+            # column IS the probability of the only class seen during training;
+            # that class is 1 (positive) iff self._calibrator.classes_[0] == 1.
+            proba = proba_matrix[:, 0] if bool(self._calibrator.classes_[0]) else 1.0 - proba_matrix[:, 0]
+        else:
+            proba = proba_matrix[:, 1]
         return pd.Series(proba, index=X.index).clip(0, 1)
 
     def save(self, path: str) -> None:
@@ -695,11 +738,11 @@ def load_multibagger_training_data_from_db(
         implementation). Positive (event=1) rows are always kept regardless
         of how much forward runway they had. Default 756 (~3 years).
     min_return_multiplier : float
-        Return threshold for a "positive" label. Default 2.0 (2x / 100%). NOTE:
-        `build_binary_labels()` (which now does the actual labeling) hardcodes
-        the 2x/100% threshold per the build prompt's literal "2x within 3
-        years" spec — this parameter is accepted for signature compatibility
-        but has no effect unless build_binary_labels is later parameterized.
+        Return threshold for a "positive" label. Default 2.0 (2x / 100%,
+        unchanged default behavior). [2026-07-12 defect fix] Now actually
+        threaded into build_binary_labels(return_multiplier=...) — this
+        parameter used to be accepted for signature compatibility only
+        and had no effect; see build_binary_labels' own docstring.
     snapshot_stride_days : int
         Keep every Nth trading day per ticker as a labeled snapshot. Default 5.
     tickers : list[str], optional
@@ -799,6 +842,7 @@ def load_multibagger_training_data_from_db(
     prices = ohlcv[["date", "ticker", "close"]].copy()
     labels = build_binary_labels(
         prices, pnd_scores=pnd_score_series, window_years=LABEL_WINDOW_YEARS,
+        return_multiplier=min_return_multiplier,
     )
     if labels.empty:
         raise RuntimeError(

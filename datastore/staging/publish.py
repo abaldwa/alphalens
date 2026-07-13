@@ -68,6 +68,70 @@ def publish_run_lock() -> Iterator[bool]:
         lock_file.close()
 
 
+def publish_fno_data(conn, drop_staging: bool = True) -> int:
+    """
+    A50 (2026-07-10): atomic file-swap publish for fno_data specifically —
+    fno_data lives in its own DuckDB file (config.settings.FNO_DATA_DB_PATH,
+    ATTACHed transparently by datastore/api/db.py's connection helper) so
+    a publish can build the new version in a THROWAWAY file and swap it in
+    via a near-instant `os.replace()`, instead of `publish_table`'s
+    `CREATE OR REPLACE TABLE fno_data AS SELECT * FROM staging.fno_data` —
+    which physically rewrites all ~121M rows in place, holding an
+    exclusive lock on the file for however long that rewrite takes even
+    when only one trade_date's ~50k rows actually changed.
+
+    Must be called while holding publish_run_lock() and using the same
+    connection that already has `staging.fno_data` populated (via
+    datastore/staging/gate.py::stage_via_sql) and fno_db ATTACHed — same
+    calling convention as publish_table.
+
+    Returns the number of rows now in the production fno_data table.
+    """
+    import os
+    import uuid
+    from pathlib import Path
+
+    # Read the ACTUAL attached fno_db file path from this connection, not a
+    # hardcoded setting — datastore/api/db.py::_attach_fno_db derives this
+    # per-connection from whatever main db_path is in use (fno_db_path_for),
+    # which is NOT always config.settings.FNO_DATA_DB_PATH (e.g. every
+    # isolated tmp_path test DB has its own companion file at a different
+    # path). Using the hardcoded setting here was a real bug this session —
+    # it silently swapped the wrong file while the connection's own attach
+    # kept pointing at the correct one, making every read through THIS
+    # connection look fine while a fresh connection saw stale/empty data.
+    db_list = {row[1]: row[2] for row in conn.execute("PRAGMA database_list").fetchall()}
+    FNO_DATA_DB_PATH = Path(db_list["fno_db"])
+
+    tmp_path = FNO_DATA_DB_PATH.parent / f".fno_data.new.{uuid.uuid4().hex}.duckdb"
+    conn.execute(f"ATTACH '{tmp_path}' AS fno_new")
+    try:
+        conn.execute("CREATE TABLE fno_new.fno_data AS SELECT * FROM staging.fno_data")
+        row_count = conn.execute("SELECT COUNT(*) FROM fno_new.fno_data").fetchone()[0]
+        # Without this, a fresh connection opened AFTER the os.replace() below
+        # can see a stale/empty file — DuckDB doesn't guarantee the new
+        # table's pages are flushed to disk until checkpointed or the
+        # database is closed/detached; a plain DETACH was confirmed live
+        # (this session) to NOT force that flush on its own.
+        conn.execute("CHECKPOINT fno_new")
+    finally:
+        conn.execute("DETACH fno_new")
+
+    # The old fno_db handle must be released before the swap, or the OS
+    # rename would leave this connection's already-open file descriptor
+    # pointing at the (now unlinked) old inode until it reconnects.
+    conn.execute("DETACH fno_db")
+    os.replace(tmp_path, FNO_DATA_DB_PATH)
+    conn.execute(f"ATTACH IF NOT EXISTS '{FNO_DATA_DB_PATH}' AS fno_db")
+    conn.execute("SET search_path = 'main,fno_db'")
+    conn.execute("CHECKPOINT fno_db")
+
+    logger.info("publish_fno_data: fno_data now has %d rows (atomic file swap)", row_count)
+    if drop_staging:
+        drop_staging_table(conn, "fno_data")
+    return row_count
+
+
 def publish_table(conn, table_name: str, drop_staging: bool = True) -> int:
     """
     Atomically promote staging.<table_name> to the production table

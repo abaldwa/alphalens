@@ -1,0 +1,161 @@
+"""
+ingestion/scheduler/exception_catalog.py
+
+Phase: Pipeline & Monitoring Remediation, Phase 0.3
+Owner: Platform / Scheduler
+Consumers: datastore/api/routers/ops.py (Ops dashboard "Exceptions" panel)
+
+Catalog of every intentionally-swallowed exception path in the daily
+pipeline (SPEC-PIPE-006's "mark unavailable, non-critical" philosophy).
+Each of `daily_pipeline.py`'s `except Exception: ...log-and-continue`
+blocks is deliberate, but until now there was no single place that told
+an operator, for a given step, what breaks downstream if it actually
+fires and what to do about it. This module is that place.
+
+This catalog is a static registry, not a log parser: it documents the
+*design* of each catch site (impact + remediation), keyed by
+`module:line` so an entry is tied to the exact code it describes and
+goes stale (rather than silently drifting) if that line moves without
+the catalog being updated — `test_exception_catalog.py` asserts every
+`file:line` still points at an `except` statement.
+"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ExceptionCatalogEntry:
+    step_name: str
+    location: str  # "module.py:line"
+    caught: str  # what kind of failure this except block catches
+    impact: str  # what breaks downstream if this fires
+    remediation: str  # concrete operator action
+    severity: str  # "info" | "warning" | "critical"
+
+
+CATALOG: list[ExceptionCatalogEntry] = [
+    ExceptionCatalogEntry(
+        step_name="download_fno",
+        location="ingestion/scheduler/daily_pipeline.py:281",
+        caught="F&O bhavcopy fetch or fno_data DuckDB write failure "
+        "(scraper outage or cross-process DuckDB lock conflict, A34).",
+        impact="fno_data has no new rows for the date. No downstream step "
+        "hard-depends on download_fno, so features/models/signals are "
+        "unaffected; only F&O-derived analytics for this date are missing.",
+        remediation="Non-critical by design — no action required unless "
+        "fno_data has been missing for the ticker/date for multiple "
+        "consecutive days, in which case rerun via "
+        "POST /api/v1/ops/steps/download_fno/force for the affected date.",
+        severity="warning",
+    ),
+    ExceptionCatalogEntry(
+        step_name="download_index_ohlcv",
+        location="ingestion/scheduler/daily_pipeline.py:344",
+        caught="NSE indices-close archive fetch or index_ohlcv write "
+        "failure (A31).",
+        impact="index_ohlcv missing for the date — sector-rotation report "
+        "and backtest benchmark curve for this date are stale/incomplete. "
+        "Not on the critical path for signal generation.",
+        remediation="Non-critical — rerun via "
+        "POST /api/v1/ops/steps/download_index_ohlcv/force if needed for "
+        "a specific historical date.",
+        severity="info",
+    ),
+    ExceptionCatalogEntry(
+        step_name="download_corporate_actions",
+        location="ingestion/scheduler/daily_pipeline.py:621",
+        caught="NSE corporate-action filings fetch or upsert failure.",
+        impact="corporate_actions has no new rows for the date. "
+        "step_adjust_prices sees a stale ledger — a corporate action "
+        "effective this date won't be applied until this step succeeds "
+        "on a later run (adjust_prices re-processes full history each "
+        "time it runs, so this self-heals once the source recovers).",
+        remediation="Non-critical short-term. If missing for the same "
+        "ticker across multiple days near a known ex-date, rerun via "
+        "POST /api/v1/ops/steps/download_corporate_actions/force, then "
+        "re-run adjust_prices for the affected dates.",
+        severity="warning",
+    ),
+    ExceptionCatalogEntry(
+        step_name="download_large_deals",
+        location="ingestion/scheduler/daily_pipeline.py:671",
+        caught="Combined NSE+BSE bulk/block deal fetch or persist "
+        "failure (each of the 4 underlying sources is independently "
+        "caught inside download_large_deals() itself; this is the "
+        "outer wrap + DB write).",
+        impact="large_deals has no new rows for the date; "
+        "step_attribute_bulk_deals (hard-depends on this step) is "
+        "skipped for the date via checkpoint.py's dependency logic — "
+        "bulk_deal_positions attribution silently has a gap for that day.",
+        remediation="Non-critical for same-day signal generation. Rerun "
+        "via POST /api/v1/ops/steps/download_large_deals/force, then "
+        "force-run attribute_bulk_deals for the same date once large_deals "
+        "is backfilled.",
+        severity="warning",
+    ),
+    ExceptionCatalogEntry(
+        step_name="attribute_bulk_deals",
+        location="ingestion/scheduler/daily_pipeline.py:711",
+        caught="Wash-trade netting / investor_family attribution failure "
+        "over that date's own large_deals rows.",
+        impact="bulk_deal_positions missing for the date. Purely a "
+        "downstream analytics table — no other STEP depends on it.",
+        remediation="Non-critical — rerun via "
+        "POST /api/v1/ops/steps/attribute_bulk_deals/force once the "
+        "underlying cause (usually a large_deals data-shape issue) is "
+        "understood.",
+        severity="info",
+    ),
+    ExceptionCatalogEntry(
+        step_name="publish_and_snapshot",
+        location="ingestion/scheduler/daily_pipeline.py:1422",
+        caught="N=7 rollback snapshot (fno_data, ohlcv_adjusted) write or "
+        "prune failure. Runs last, after every other writer for the date.",
+        impact="No new rollback snapshot exists for this date — "
+        "scripts/restore_snapshot.py cannot roll back to this date's "
+        "state if a later bug corrupts fno_data/ohlcv_adjusted. Does NOT "
+        "affect the correctness of today's data, only the safety net for "
+        "future days.",
+        remediation="If this fires for more than 1-2 consecutive days, "
+        "treat as critical — the rollback safety net is degrading. Check "
+        "disk space under config.settings.SNAPSHOT_DIR and rerun via "
+        "POST /api/v1/ops/steps/publish_and_snapshot/force.",
+        severity="warning",
+    ),
+    ExceptionCatalogEntry(
+        step_name="main (scheduler startup)",
+        location="ingestion/scheduler/daily_pipeline.py:1898",
+        caught="scheduler.remove_job('backfill_catchup') raising "
+        "JobLookupError when the stale persisted job doesn't exist (the "
+        "common case after the first cleanup run).",
+        impact="None if the job doesn't exist (expected steady state). "
+        "If remove_job fails for a different reason (job store "
+        "corruption), the stale backfill_catchup job keeps firing "
+        "silently forever, since this is a bare except with no logging "
+        "of the actual exception.",
+        remediation="Not currently actionable — the exception's own "
+        "message is discarded. See CATALOG's `known_gap` note below: this "
+        "one should log the exception type/message even when it's "
+        "expected-and-ignored, so a persistent job-store issue isn't "
+        "invisible.",
+        severity="info",
+    ),
+]
+
+# Known gap surfaced while building this catalog (2026-07-10 remediation
+# session): the `main (scheduler startup)` entry above catches too
+# broadly (bare `except Exception: pass`) to distinguish "job didn't
+# exist" (expected) from "job store is broken" (should alert). Logged as
+# a FeatureBacklog.md follow-up rather than silently fixed here, since
+# narrowing this catch requires confirming APScheduler's exact
+# JobLookupError import path is stable across the pinned version.
+
+
+def entries_for_step(step_name: str) -> list[ExceptionCatalogEntry]:
+    """Return all catalog entries for a given pipeline step name."""
+    return [entry for entry in CATALOG if entry.step_name == step_name]
+
+
+def all_entries() -> list[ExceptionCatalogEntry]:
+    """Return the full exception catalog."""
+    return list(CATALOG)

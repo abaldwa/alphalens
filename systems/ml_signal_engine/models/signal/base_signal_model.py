@@ -111,6 +111,7 @@ class BaseSignalModel(IClassificationModel):
         stop_multiplier: float = 1.0,
         optuna_trials: int = DEFAULT_OPTUNA_TRIALS,
         random_state: int = 42,
+        max_sampling_ratio: Optional[float] = None,
     ) -> None:
         if horizon_days <= 0:
             raise ValueError("horizon_days must be positive")
@@ -119,16 +120,24 @@ class BaseSignalModel(IClassificationModel):
         self.stop_multiplier = stop_multiplier
         self.optuna_trials = optuna_trials
         self.random_state = random_state
+        # ML21 (2026-07-10): optional cap on SMOTETomek's minority:majority
+        # ratio (e.g. 0.5 = minority classes resampled to at most half the
+        # majority class's count, not 1:1 'auto'). None preserves the
+        # existing unbounded 'auto' behavior — this is opt-in, not a
+        # default change, pending the before/after Sharpe comparison
+        # FeatureBacklog.md's ML21 asks for before adoption.
+        self.max_sampling_ratio = max_sampling_ratio
 
         self._feature_names: Optional[List[str]] = None
         self._imputer: Optional[SimpleImputer] = None
         self._lgbm_params: Dict[str, Any] = {
             "n_estimators": 200, "max_depth": 5, "learning_rate": 0.05,
-            "random_state": random_state, "verbose": -1,
+            "random_state": random_state, "verbose": -1, "n_jobs": 2,
         }
         self._lgbm = None
         self._catboost = None
         self._xgboost = None
+        self._present_classes: Optional[List[int]] = None
         self._meta: Optional[LogisticRegression] = None
         self._q10_model = None
         self._q50_model = None
@@ -144,18 +153,19 @@ class BaseSignalModel(IClassificationModel):
         lgbm_params = {**self._lgbm_params, **(params or {})}
         lgbm = lgb.LGBMClassifier(**lgbm_params)
         cat = catboost.CatBoostClassifier(
-            iterations=200, depth=5, learning_rate=0.05, random_state=self.random_state, verbose=False
+            iterations=200, depth=5, learning_rate=0.05, random_state=self.random_state, verbose=False,
+            thread_count=2,
         )
         xgboost_model = xgb.XGBClassifier(
             n_estimators=200, max_depth=5, learning_rate=0.05,
-            random_state=self.random_state, eval_metric="mlogloss",
+            random_state=self.random_state, eval_metric="mlogloss", n_jobs=2,
         )
         return lgbm, cat, xgboost_model
 
     def _oof_stacked_features(
         self, X: pd.DataFrame, y_encoded: np.ndarray, lgbm_params: Optional[Dict] = None
     ) -> np.ndarray:
-        """Out-of-fold 3-class probabilities from each base learner, stacked (n, 9)."""
+        """Out-of-fold probabilities from each base learner, stacked (n, 3*n_present_classes)."""
         lgbm, cat, xgboost_model = self._make_base_models(lgbm_params)
         n_splits = min(N_STACKING_FOLDS, int(np.min(np.bincount(y_encoded))))
         n_splits = max(n_splits, 2)
@@ -168,7 +178,25 @@ class BaseSignalModel(IClassificationModel):
         return np.hstack(oof)
 
     def _fit_base_and_meta(self, X: pd.DataFrame, y: pd.Series, lgbm_params: Optional[Dict] = None) -> None:
-        y_encoded = y.map({c: i for i, c in enumerate(CLASS_ORDER)}).to_numpy()
+        # [2026-07-12 defect fix] dense (0-based, contiguous) encoding of only the
+        # CLASS_ORDER values actually PRESENT in this fold — XGBoost's sklearn
+        # wrapper hard-requires 0-based contiguous labels at fit time (verified:
+        # it raises "Invalid classes inferred..." even with objective=
+        # "multi:softprob", num_class=3 set explicitly), so the old fixed
+        # 3-slot CLASS_ORDER offset (-1->0, 0->1, 1->2) crashes whenever a
+        # fold is missing one class — e.g. a calendar-year fold with zero
+        # triple-barrier sell hits in a strong bull market. Found while
+        # training systems/ml_signal_engine_gainer/'s one-sided (HOLD/BUY-only)
+        # gainer signal models, which hit this deterministically; applied
+        # here too since production could hit the same fold composition.
+        # self._present_classes records which CLASS_ORDER values were
+        # actually seen (in CLASS_ORDER order) so predict_proba() can expand
+        # back to the full, stable sell/hold/buy column contract every
+        # downstream caller (_apply_thresholds, predict_signals, threshold
+        # tuning) depends on.
+        self._present_classes = [c for c in CLASS_ORDER if c in set(y.unique())]
+        dense_map = {c: i for i, c in enumerate(self._present_classes)}
+        y_encoded = y.map(dense_map).to_numpy()
 
         stacked = self._oof_stacked_features(X, y_encoded, lgbm_params)
         # multi_class param intentionally omitted: scikit-learn >= 1.5 deprecates the explicit
@@ -251,9 +279,16 @@ class BaseSignalModel(IClassificationModel):
             CLASS_ORDER) — meta-learner's calibrated probabilities.
         """
         stacked = self._base_stacked_proba(X[self._feature_names])
-        proba = self._meta.predict_proba(stacked)
+        proba_narrow = self._meta.predict_proba(stacked)
+        # Expand from "only the classes present at fit time" back to the fixed
+        # sell/hold/buy contract (see _fit_base_and_meta's defect-fix comment) —
+        # any CLASS_ORDER value never observed during training gets 0 probability.
+        full = np.zeros((len(X), len(CLASS_ORDER)))
+        present_classes = self._present_classes or CLASS_ORDER
+        for dense_idx, class_value in enumerate(present_classes):
+            full[:, CLASS_ORDER.index(class_value)] = proba_narrow[:, dense_idx]
         cols = [CLASS_NAMES[c] for c in CLASS_ORDER]
-        return pd.DataFrame(proba, columns=cols, index=X.index)
+        return pd.DataFrame(full, columns=cols, index=X.index)
 
     def save(self, path: str) -> None:
         if self._lgbm is None:
@@ -266,6 +301,7 @@ class BaseSignalModel(IClassificationModel):
             "stop_multiplier": self.stop_multiplier, "random_state": self.random_state,
             "best_lgbm_params": self._best_lgbm_params, "trained_at": self._trained_at,
             "training_samples": self._training_samples, "class_distribution": self._class_distribution,
+            "present_classes": self._present_classes,
         }
         joblib.dump(payload, path)
 
@@ -306,6 +342,7 @@ class BaseSignalModel(IClassificationModel):
         self._trained_at = payload["trained_at"]
         self._training_samples = payload["training_samples"]
         self._class_distribution = payload["class_distribution"]
+        self._present_classes = payload.get("present_classes") or list(CLASS_ORDER)
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -389,7 +426,7 @@ class BaseSignalModel(IClassificationModel):
         X_val_imputed = self._impute_transform(X_val_raw)
 
         ratio_before = y_train_clean.value_counts(normalize=True).to_dict()
-        X_res, y_res = self._resample(X_train_imputed, y_train_clean)
+        X_res, y_res = self._resample(X_train_imputed, y_train_clean, max_sampling_ratio=self.max_sampling_ratio)
         ratio_after = pd.Series(y_res).value_counts(normalize=True).to_dict()
 
         best_params = self._optuna_search(X_res, y_res, X_val_imputed, y_val_clean)
@@ -417,13 +454,39 @@ class BaseSignalModel(IClassificationModel):
         }
 
     @staticmethod
-    def _resample(X: pd.DataFrame, y: pd.Series, random_state: int = 42) -> tuple:
-        """SPEC-MODEL-004: SMOTETomek on training data only."""
+    def _resample(
+        X: pd.DataFrame, y: pd.Series, random_state: int = 42, max_sampling_ratio: Optional[float] = None,
+    ) -> tuple:
+        """SPEC-MODEL-004: SMOTETomek on training data only.
+
+        max_sampling_ratio (ML21, 2026-07-10): when set, caps each minority
+        class's post-resample count at `max_sampling_ratio * majority_count`
+        instead of imblearn's default 'auto' (1:1 with the majority class).
+        This directly bounds the oversample-driven matrix blowup that caused
+        the 2026-07-09 signal_63d OOM (49.5% buy / 42.2% hold / 8.3% sell —
+        'auto' multiplies the 8.3% class up to the 49.5% class's count).
+        None (default) preserves the original 'auto' behavior unchanged.
+        max_sampling_ratio <= 0 (ML24, 2026-07-11) disables SMOTETomek
+        entirely — the classifier trains on the true, unresampled class
+        prior (same target distribution the quantile heads already see).
+        """
         counts = y.value_counts()
         if len(counts) < 2 or counts.min() < 2:
             logger.warning("Training fold has <2 samples in some class — skipping SMOTETomek")
             return X, y
-        smote_tomek = SMOTETomek(random_state=random_state)
+        if max_sampling_ratio is not None and max_sampling_ratio <= 0:
+            logger.info("max_sampling_ratio<=0 — skipping SMOTETomek, training on true class prior")
+            return X, y
+        sampling_strategy = "auto"
+        if max_sampling_ratio is not None:
+            majority_count = int(counts.max())
+            target = max(int(majority_count * max_sampling_ratio), int(counts.min()))
+            sampling_strategy = {
+                cls: max(target, int(cnt)) for cls, cnt in counts.items() if cnt < majority_count
+            }
+            if not sampling_strategy:
+                sampling_strategy = "auto"
+        smote_tomek = SMOTETomek(random_state=random_state, sampling_strategy=sampling_strategy)
         return smote_tomek.fit_resample(X, y)
 
     def _optuna_search(self, X_train: pd.DataFrame, y_train, X_val: pd.DataFrame, y_val: pd.Series) -> Dict[str, Any]:
@@ -444,6 +507,7 @@ class BaseSignalModel(IClassificationModel):
                 "num_leaves": trial.suggest_int("num_leaves", 15, 63),
                 "random_state": self.random_state,
                 "verbose": -1,
+                "n_jobs": 2,
             }
             model = lgb.LGBMClassifier(**params)
             model.fit(X_train, y_train_encoded)
@@ -467,7 +531,7 @@ class BaseSignalModel(IClassificationModel):
         for alpha, attr in ((0.10, "_q10_model"), (0.50, "_q50_model"), (0.90, "_q90_model")):
             model = lgb.LGBMRegressor(
                 objective="quantile", alpha=alpha, n_estimators=200, max_depth=5,
-                learning_rate=0.05, random_state=self.random_state, verbose=-1,
+                learning_rate=0.05, random_state=self.random_state, verbose=-1, n_jobs=2,
             )
             model.fit(X_valid, y_valid)
             setattr(self, attr, model)

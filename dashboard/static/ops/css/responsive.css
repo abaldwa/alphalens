@@ -1,0 +1,69 @@
+/* dashboard/static/ops/css/responsive.css — A24 (scoped to AlphaLens.Ops
+   pages only, per this session's restriction against touching dashboard
+   files outside dashboard/static/ops/).
+
+   The shared shell.css already stacks .grid-2/3/4/5 to a single column
+   under 900px, but Ops' own screens (index.html, macro.html) are almost
+   entirely wide <table> elements rendered straight into a .card by
+   index.js/macro.js (e.g. renderRunsTable, renderStepsTable,
+   renderPipelineStages) with no horizontal-scroll wrapper, so on a
+   phone/tablet viewport those tables previously overflowed the .page
+   container and broke the whole-page layout (horizontal page scroll,
+   clipped sub-tabs) instead of scrolling internally. Loaded after
+   components.css/shell.css so these rules can add page-scoped overrides
+   without editing the shared stylesheets other apps also use. */
+
+/* Any card whose direct child is a data table gets its own horizontal
+   scroll region — the page itself never scrolls sideways. */
+.card:has(> table) {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 900px) {
+  .page {
+    padding: 14px 12px;
+  }
+
+  .sec-head {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  table {
+    font-size: 12px;
+  }
+
+  table th,
+  table td {
+    padding: 6px 8px;
+    white-space: nowrap;
+  }
+
+  /* Key/value cards (Scheduler Resources, Live Resource Monitor) stack
+     their label above the value instead of squeezing both onto one row,
+     which previously truncated long badge text on narrow screens. */
+  .kv-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .kv-key {
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-logo span:not(.dot) {
+    display: none; /* icon-only brand mark leaves room for the tab strip */
+  }
+
+  .app-meta {
+    display: none; /* clock/build info is the least essential app-bar content on a phone */
+  }
+
+  table {
+    font-size: 11px;
+  }
+}

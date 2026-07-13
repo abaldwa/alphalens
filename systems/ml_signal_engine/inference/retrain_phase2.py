@@ -75,7 +75,19 @@ TRADING_DAYS_PER_YEAR = 252
 # (no cross-sectional rank/z-score across the universe — those live in
 # features/multibagger.py, not used here), so the universe can be processed
 # in ticker batches and concatenated without changing any feature value.
-DEFAULT_TICKER_CHUNK_SIZE = 400
+DEFAULT_TICKER_CHUNK_SIZE = 150
+
+# 2026-07-09 OOM incident: even with DEFAULT_TICKER_CHUNK_SIZE bounding peak
+# memory during panel/feature *building*, the full ~2300-ticker universe's
+# assembled training matrix (post-SMOTETomek oversampling, feeding 3
+# Optuna-tuned stacking-ensemble models per horizon) still grew unbounded and
+# got OOM-killed twice on this ~15GB box. Capping the universe itself (not
+# just the build-time chunk size) is what actually bounded memory — a
+# max_tickers=800 run completed cleanly end-to-end. Full-universe (None) is
+# still selectable via --max-tickers, but is no longer the unattended
+# scheduler default (see schedule_model_training in pipeline_scheduler.py,
+# which invokes this module's main() with no args).
+DEFAULT_MAX_TICKERS = 800
 
 
 def _ticker_chunks(tickers: List[str], chunk_size: int) -> List[List[str]]:
@@ -103,6 +115,13 @@ HORIZON_CONFIGS = (
     (21, Signal21DModel, "signal_21d", 3.0, 3.0),
     (63, Signal63DModel, "signal_63d", 5.0, 5.0),
 )
+
+# ML21 (2026-07-10): signal_63d's label distribution is the most skewed of
+# the 3 horizons (49.5% buy / 42.2% hold / 8.3% sell in the 2026-07-09
+# incident run) so its SMOTETomek oversample grows the most before Optuna
+# HPO even starts. Fewer trials for 63d specifically shaves the repeated-fit
+# multiplier without touching 5d/21d's tuning quality.
+OPTUNA_TRIALS_BY_HORIZON = {5: 5, 21: 5, 63: 3}
 
 
 def _compute_phase2_panel(
@@ -185,10 +204,10 @@ def _strategy_sharpe(direction: pd.Series, realized_return: pd.Series, horizon_d
 
 def _train_and_evaluate(
     cls, feature_cols: list, train_df: pd.DataFrame, val_df: pd.DataFrame, horizon_days: int,
-    optuna_trials: int, seed: int,
+    optuna_trials: int, seed: int, max_sampling_ratio: float = None,
 ) -> Tuple[object, float, Dict]:
     """Train one signal model on `feature_cols`, return (model, validation Sharpe, train_full diagnostics)."""
-    model = cls(optuna_trials=optuna_trials, random_state=seed)
+    model = cls(optuna_trials=optuna_trials, random_state=seed, max_sampling_ratio=max_sampling_ratio)
     diag = model.train_full(
         train_df[feature_cols], train_df["_label"],
         val_df[feature_cols], val_df["_label"],
@@ -202,11 +221,14 @@ def _train_and_evaluate(
 def retrain_phase2(
     lookback_days: int = 1260,
     max_tickers: int = None,
-    optuna_trials: int = 5,
+    optuna_trials: int = None,
     save: bool = True,
     seed: int = 42,
     client: DataStoreClient = None,
     ticker_chunk_size: int = DEFAULT_TICKER_CHUNK_SIZE,
+    only_horizon: int = None,
+    max_sampling_ratio: float = None,
+    use_training_universe: bool = True,
 ) -> Dict:
     """
     Retrain Signal5D/Signal21D and train Signal63D with the full Phase 2
@@ -218,9 +240,29 @@ def retrain_phase2(
         Real OHLCV history window (ohlcv_adjusted), passed to
         train_all_phase1.load_ohlcv_from_db().
     max_tickers : int, optional
-        Cap universe size for a quick run.
-    optuna_trials : int
-        Per-model, per-feature-set Optuna trial count.
+        Cap universe size for a quick run. Ignored when use_training_universe
+        is True (default) — the curated list's own size (ADTV-floor-bound,
+        currently 530 tickers) governs instead. Only takes effect when
+        use_training_universe=False, as a fallback/debug path.
+    use_training_universe : bool
+        ML24 (2026-07-11): if True (default), train on
+        config.training_universe.load_current_training_universe() — the
+        versioned, ADTV-ranked (>= Rs 40cr/day) ticker list — instead of
+        max_tickers' arbitrary row-count-based selection. This replaced the
+        original max_tickers=800 approach after it was found to select
+        tickers by data completeness (most rows in the lookback window),
+        not anything economically meaningful; see FeatureBacklog.md ML24.
+    optuna_trials : int, optional
+        Per-model, per-feature-set Optuna trial count. If None (default),
+        uses OPTUNA_TRIALS_BY_HORIZON (fewer trials for signal_63d, whose
+        label distribution is the most skewed — see ML21). Pass an int to
+        force the same trial count for every horizon (legacy behavior).
+    only_horizon : int, optional
+        Restrict this run to a single horizon (5/21/63). Used by main()'s
+        --subprocess-per-horizon mode (ML21) to run each horizon as an
+        isolated OS process so SMOTETomek's oversampled matrix for one
+        horizon can never accumulate against another's in the same
+        process's RSS.
     save : bool
         If True (default), persist each Phase 2 model to
         datastore/models/<name>/ + registry.json, under the SAME names
@@ -237,6 +279,18 @@ def retrain_phase2(
         bounding peak memory instead of materializing all ~2300 tickers'
         feature columns at once (2026-07-07 OOM incident: this script alone
         peaked at 9.4GB RSS on a ~15GB box and got kernel-OOM-killed).
+    max_sampling_ratio : float, optional
+        ML21 (2026-07-10)/ML24 (2026-07-11) — caps SMOTETomek's minority
+        oversampling: e.g. 0.5 resamples a rare class to at most half the
+        majority class's count instead of unbounded 1:1 parity. None
+        (default) preserves the existing unbounded 'auto' behavior. Added
+        specifically for signal_63d, whose true pre-resample distribution
+        (buy 49.5%, hold 42.2%, sell 8.3% per the 2026-07-09 retrain log)
+        is inverted by unbounded SMOTETomek: the rare 'sell' class gets
+        synthetically amplified ~4.2x while the natural 'buy' majority is
+        undersampled, producing a worst-in-class buy-F1 of 0.28 and a
+        buy_prob output that no longer tracks q50_return's sign
+        (ML24 diagnostic, scripts/diagnose_signal_quantile_agreement.py).
 
     Returns
     -------
@@ -265,7 +319,14 @@ def retrain_phase2(
         f"Phase1={len(CORE_TECHNICAL_FEATURES)} features, Phase2={len(PHASE2_FEATURES)} features"
     )
 
-    ohlcv = load_ohlcv_from_db(lookback_days=lookback_days, max_tickers=max_tickers)
+    if use_training_universe:
+        from config.training_universe import load_current_training_universe
+
+        curated_tickers = load_current_training_universe()
+        logger.info(f"Training on curated ADTV-ranked universe: {len(curated_tickers)} tickers")
+        ohlcv = load_ohlcv_from_db(lookback_days=lookback_days, tickers=curated_tickers)
+    else:
+        ohlcv = load_ohlcv_from_db(lookback_days=lookback_days, max_tickers=max_tickers)
     if ohlcv.empty:
         raise RuntimeError(
             "No OHLCV data found in ohlcv_adjusted. There is no synthetic-data fallback — "
@@ -280,7 +341,14 @@ def retrain_phase2(
     registry: Dict = {}
     comparison: Dict[str, Dict] = {}
 
-    for horizon_days, cls, name, profit_mult, stop_mult in HORIZON_CONFIGS:
+    horizon_configs = HORIZON_CONFIGS
+    if only_horizon is not None:
+        horizon_configs = tuple(h for h in HORIZON_CONFIGS if h[0] == only_horizon)
+        if not horizon_configs:
+            raise ValueError(f"only_horizon={only_horizon} is not one of {[h[0] for h in HORIZON_CONFIGS]}")
+
+    for horizon_days, cls, name, profit_mult, stop_mult in horizon_configs:
+        trials = optuna_trials if optuna_trials is not None else OPTUNA_TRIALS_BY_HORIZON[horizon_days]
         combined = _build_training_dataset_chunked(
             ohlcv, tickers, horizon_days, profit_mult, stop_mult, benchmark, chunk_size=ticker_chunk_size
         )
@@ -296,10 +364,12 @@ def retrain_phase2(
             train_df, val_df = validator.get_train_validation_split(train_fold, val_fraction=0.2)
 
         _, phase1_sharpe, _ = _train_and_evaluate(
-            cls, CORE_TECHNICAL_FEATURES, train_df, val_df, horizon_days, optuna_trials, seed
+            cls, CORE_TECHNICAL_FEATURES, train_df, val_df, horizon_days, trials, seed,
+            max_sampling_ratio=max_sampling_ratio,
         )
         model, phase2_sharpe, diag = _train_and_evaluate(
-            cls, PHASE2_FEATURES, train_df, val_df, horizon_days, optuna_trials, seed
+            cls, PHASE2_FEATURES, train_df, val_df, horizon_days, trials, seed,
+            max_sampling_ratio=max_sampling_ratio,
         )
 
         improved_or_neutral = phase2_sharpe >= phase1_sharpe - 1e-9
@@ -361,10 +431,89 @@ def main() -> None:
         help=f"Tickers processed per batch during panel/feature building (default {DEFAULT_TICKER_CHUNK_SIZE}); "
              "lower this on memory-constrained boxes (see 2026-07-07 OOM incident note on retrain_phase2()).",
     )
+    parser.add_argument(
+        "--max-tickers", type=int, default=DEFAULT_MAX_TICKERS,
+        help=f"Cap universe size fed into training (default {DEFAULT_MAX_TICKERS}); pass --full-universe to "
+             "train on all tickers instead (see 2026-07-09 OOM incident note above DEFAULT_MAX_TICKERS).",
+    )
+    parser.add_argument(
+        "--full-universe", action="store_true",
+        help="Override --max-tickers and train on the entire universe (higher OOM risk on memory-constrained boxes). "
+             "Also disables --use-training-universe (mutually exclusive with the curated list).",
+    )
+    parser.add_argument(
+        "--no-training-universe", action="store_true",
+        help="ML24 (2026-07-11): opt OUT of the curated ADTV-ranked training universe (default ON) and fall back "
+             "to --max-tickers' row-count-based selection instead. Use only for debugging/comparison runs.",
+    )
+    parser.add_argument(
+        "--horizon", type=int, choices=[5, 21, 63], default=None,
+        help="Internal: run only this horizon in-process (used by --subprocess-per-horizon's child invocations).",
+    )
+    parser.add_argument(
+        "--max-sampling-ratio", type=float, default=None,
+        help="ML21/ML24: cap SMOTETomek's minority-oversampling ratio (e.g. 0.5). None (default) preserves "
+             "unbounded 'auto' behavior. See retrain_phase2()'s docstring for the signal_63d rationale.",
+    )
+    parser.add_argument(
+        "--optuna-trials", type=int, default=None,
+        help="ML24 (2026-07-11): override OPTUNA_TRIALS_BY_HORIZON's per-horizon default "
+             "(signal_63d defaults to just 3, a likely source of Sharpe instability across reruns).",
+    )
+    parser.add_argument(
+        "--subprocess-per-horizon", action="store_true",
+        help="ML21 (2026-07-10): run signal_5d/21d/63d each as a separate OS subprocess instead of one Python "
+             "loop, so SMOTETomek's oversampled matrix + Optuna/stacking-ensemble refit for one horizon cannot "
+             "accumulate against another's in the same process's RSS — the OS reclaims all memory when each "
+             "child exits, regardless of any lingering Python references. Recommended for unattended/scheduler "
+             "runs on memory-constrained boxes; see FeatureBacklog.md ML21.",
+    )
     args = parser.parse_args()
 
-    max_tickers, trials = (15, 3) if args.quick else (None, 5)
-    result = retrain_phase2(max_tickers=max_tickers, optuna_trials=trials, ticker_chunk_size=args.chunk_size)
+    use_training_universe = not (args.no_training_universe or args.full_universe or args.quick)
+
+    if args.quick:
+        max_tickers, trials = 15, 3
+    elif args.full_universe:
+        max_tickers, trials = None, None
+    else:
+        max_tickers, trials = args.max_tickers, None
+
+    if args.optuna_trials is not None:
+        trials = args.optuna_trials
+
+    if args.subprocess_per_horizon:
+        import subprocess
+        import sys
+
+        base_cmd = [sys.executable, "-m", "systems.ml_signal_engine.inference.retrain_phase2",
+                    "--chunk-size", str(args.chunk_size)]
+        if args.max_sampling_ratio is not None:
+            base_cmd += ["--max-sampling-ratio", str(args.max_sampling_ratio)]
+        if not use_training_universe:
+            base_cmd.append("--no-training-universe")
+        if args.quick:
+            base_cmd.append("--quick")
+        elif args.full_universe:
+            base_cmd.append("--full-universe")
+        else:
+            base_cmd += ["--max-tickers", str(args.max_tickers)]
+
+        for horizon_days, _cls, name, _pm, _sm in HORIZON_CONFIGS:
+            cmd = base_cmd + ["--horizon", str(horizon_days)]
+            logging.info(f"Launching isolated subprocess for {name} (horizon={horizon_days}d): {' '.join(cmd)}")
+            proc = subprocess.run(cmd)
+            if proc.returncode != 0:
+                logging.error(f"{name} subprocess exited with code {proc.returncode} — see its own output above.")
+                sys.exit(proc.returncode)
+        print("\nAll horizons trained via isolated subprocesses. See each subprocess's own stdout above for results.")
+        return
+
+    result = retrain_phase2(
+        max_tickers=max_tickers, optuna_trials=trials, ticker_chunk_size=args.chunk_size,
+        only_horizon=args.horizon, max_sampling_ratio=args.max_sampling_ratio,
+        use_training_universe=use_training_universe,
+    )
     print(f"\nModels saved: {list(result['registry'].keys())}")
     print("\n=== Phase 1 vs Phase 2 Sharpe ===")
     for name, comp in result["comparison"].items():

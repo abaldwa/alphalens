@@ -124,6 +124,7 @@ def score_universe(
                         "dechow_f": classical["dechow_f_score"],
                         "sloan_accrual": classical["sloan_accrual"],
                         "benford_mad": classical["benford_mad"],
+                        "benford_detail_json": classical.get("benford_detail_json"),
                         "forensic_composite": _none_if_nan(row["forensic_composite"]),
                         "forensic_flag": bool(row["blocked"]),
                         "forensic_flag_label": row["flag"],

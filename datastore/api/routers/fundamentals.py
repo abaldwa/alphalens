@@ -46,9 +46,12 @@ from datastore.api.schemas import (
     FundamentalsResponse,
     FundamentalsRow,
     FundamentalsWrite,
+    FundamentalsWriteBatch,
+    FundamentalsWriteBatchResult,
     FundamentalsWriteResult,
 )
 from datastore.api.utils.feature_store import read_feature_day, read_feature_row, resolve_date
+from datastore.api.utils.pdf import build_pdf_response
 from features.fundamental import RATIO_FEATURES, STALENESS_FEATURES
 from features.fundamental_composites import (
     SCREENER_PRESETS,
@@ -58,6 +61,8 @@ from features.fundamental_composites import (
     quality_score,
     select_peers,
 )
+from features.fundamental_quality_gate import validate_and_annotate
+from features.fundamental_source_priority import SOURCE_PRIORITY, build_priority_update_clause
 from features.governance import GOVERNANCE_FEATURES
 
 logger = logging.getLogger(__name__)
@@ -88,6 +93,14 @@ _COLUMNS = [
     "current_tax_assets", "borrowings_current", "borrowings_noncurrent",
     "deferred_tax_liabilities", "provisions_current", "provisions_noncurrent",
     "equity_share_capital", "other_equity", "non_controlling_interest", "non_current_liabilities",
+    # [AS BUILT, A36 fix 2026-07-09] quality_flag/quality_flag_reason (see
+    # features/fundamental_quality_gate.py) and provenance (see
+    # features/fundamental_source_priority.py) were previously never
+    # written by this endpoint — screener.py bypassed A12's range-
+    # validation gate entirely, unlike trendlyne/kaggle. Both now wired in
+    # below.
+    "quality_flag", "quality_flag_reason",
+    "fundamentals_source", "fundamentals_source_priority",
 ]
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -181,6 +194,14 @@ async def get_fundamental_screener(
         row["ticker"] for _, row in panel.iterrows()
         if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
     ]
+    # ML24 (2026-07-11): ranked/recommended screener output only — direct
+    # ticker lookups (get_fundamental_ratios above) are intentionally
+    # unaffected, per product decision (fundamentals aren't liquidity-
+    # dependent, users can still research any stock directly).
+    from config.training_universe import filter_recommendable
+
+    matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
+    matched = matched_df["ticker"].tolist()
     return FAScreenerResponse(preset=preset, date=resolved_date, tickers=matched)
 
 
@@ -291,6 +312,64 @@ async def get_fundamental_scores(ticker: str) -> FAScoresResponse:
     )
 
 
+# F4 — mirrors dashboard/static/fundamental/js/thesis.js's RATIO_LABELS /
+# LOWER_IS_BETTER exactly, so the PDF's Strengths/Risks match the on-screen
+# Thesis Builder sentence-for-sentence (same real z-score threshold, no
+# generative text either place).
+_THESIS_RATIO_LABELS = {
+    "roe": "ROE", "roce": "ROCE", "net_margin": "Net margin",
+    "revenue_growth_yoy": "Revenue growth (YoY)", "eps_growth_yoy": "EPS growth (YoY)",
+    "debt_to_equity": "Debt/Equity",
+}
+_THESIS_LOWER_IS_BETTER = {"debt_to_equity", "pe_ratio"}
+
+
+@router.get("/{ticker}/thesis/pdf")
+async def get_fundamental_thesis_pdf(ticker: str):
+    """
+    F4 — server-side PDF export of the Thesis Builder screen: same real
+    Strengths/Risks sentences as thesis.js (real sector-relative z-scores
+    crossing the +/-0.5 threshold, no generative text), rendered as an
+    actual PDF document via reportlab rather than a screenshot/print.
+    """
+    if not ticker:
+        raise HTTPException(status_code=400, detail="Ticker cannot be empty")
+    ticker = ticker.upper()
+
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        raise HTTPException(status_code=404, detail="No feature data available at all")
+    row = read_feature_row(ticker, resolved_date)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No ratio data for {ticker} yet")
+
+    ratios = {c: (None if c not in row or pd.isna(row[c]) else float(row[c])) for c in RATIO_FEATURES}
+    quality = quality_score(ratios)
+    growth = growth_score(ratios)
+
+    strengths, risks = [], []
+    for key, label in _THESIS_RATIO_LABELS.items():
+        raw = ratios.get(key)
+        if raw is None:
+            continue
+        z = -raw if key in _THESIS_LOWER_IS_BETTER else raw
+        if z > 0.5:
+            strengths.append(f"{label} is {z:.1f} sector-std above peers")
+        elif z < -0.5:
+            risks.append(f"{label} is {abs(z):.1f} sector-std below peers")
+
+    subtitle = (
+        f"Quality {quality:.0f}" if quality is not None else "Quality —"
+    ) + " | " + (f"Growth {growth:.0f}" if growth is not None else "Growth —") + f" | as of {resolved_date}"
+
+    return build_pdf_response(
+        filename=f"{ticker}_thesis.pdf",
+        title=f"Investment Thesis — {ticker}",
+        subtitle=subtitle,
+        sections=[("Strengths", strengths), ("Risks", risks)],
+    )
+
+
 @router.get("/{ticker}", response_model=FundamentalsResponse)
 async def get_fundamentals(
     ticker: str,
@@ -355,6 +434,63 @@ async def get_fundamentals(
     return FundamentalsResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))
 
 
+_NON_DATA_COLS = ("ticker", "fiscal_year", "quarter", "fundamentals_source", "fundamentals_source_priority")
+_UPDATE_COLS = [c for c in _COLUMNS if c not in _NON_DATA_COLS]
+# [AS BUILT, A36 fix 2026-07-09] Shared priority-aware merge clause
+# (features/fundamental_source_priority.py) — replaces the hand-written
+# `COALESCE(excluded.col, fundamentals.col)` (new-value-wins-when-both-
+# present) this endpoint used through P2.6. Still additive (a NULL in
+# the incoming payload never blanks an existing value — same tijori.py/
+# screener.py two-writer contract the old comment documented), but a
+# REAL conflict (both sides non-NULL) is now resolved by
+# nse_xbrl > trendlyne > screener > kaggle priority, not "whichever
+# source's write happened to run last" — see A36 in FeatureBacklog.md.
+_UPDATE_CLAUSE = build_priority_update_clause(_UPDATE_COLS)
+_INSERT_SQL = f"""
+    INSERT INTO fundamentals ({_SELECT_COLS}) VALUES ({", ".join("?" for _ in _COLUMNS)})
+    ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET {_UPDATE_CLAUSE}
+"""
+
+
+def _validate_and_check_pit(record: FundamentalsWrite) -> None:
+    if record.announcement_date.date() <= record.quarter_end_date.date():
+        raise HTTPException(
+            status_code=400,
+            detail=f"SPEC-PIPE-003 violation for {record.ticker} FY{record.fiscal_year}Q{record.quarter}: "
+                   "announcement_date must be after quarter_end_date",
+        )
+
+
+def _build_fundamentals_row(record: FundamentalsWrite, source: str) -> list:
+    """
+    Shared row-builder for both /write and /write_batch — SPEC-PIPE-003
+    check + A12/A36's range-validation gate + provenance stamping, in one
+    place so the two endpoints can't drift (the exact class of bug A36
+    itself found across the 4 backfill scripts).
+    """
+    # [AS BUILT, A36 fix 2026-07-09] Run through the same range-validation
+    # gate trendlyne/kaggle already used (features/fundamental_quality_gate.py)
+    # — this endpoint previously bypassed it entirely, one of the two A36
+    # findings.
+    write_cols = [c for c in _COLUMNS if c not in
+                  ("ticker", "fiscal_year", "quarter", "quarter_end_date", "announcement_date",
+                   "fundamentals_source", "fundamentals_source_priority")]
+    payload = {c: getattr(record, c) for c in write_cols if hasattr(record, c)}
+    payload.update({
+        "ticker": record.ticker,
+        "fiscal_year": record.fiscal_year,
+        "quarter": record.quarter,
+    })
+    annotated = validate_and_annotate(payload)
+
+    row = dict(annotated)
+    row["quarter_end_date"] = record.quarter_end_date.date()
+    row["announcement_date"] = record.announcement_date.date()
+    row["fundamentals_source"] = source
+    row["fundamentals_source_priority"] = SOURCE_PRIORITY[source]
+    return [row[col] for col in _COLUMNS]
+
+
 @router.post("/write", response_model=FundamentalsWriteResult)
 async def write_fundamentals(record: FundamentalsWrite) -> FundamentalsWriteResult:
     """
@@ -368,38 +504,47 @@ async def write_fundamentals(record: FundamentalsWrite) -> FundamentalsWriteResu
         failure — results cannot be announced before the quarter they
         cover has even ended).
     """
-    if record.announcement_date.date() <= record.quarter_end_date.date():
-        raise HTTPException(
-            status_code=400,
-            detail="SPEC-PIPE-003 violation: announcement_date must be after quarter_end_date",
-        )
-
-    values = [getattr(record, col) if col not in ("quarter_end_date", "announcement_date")
-              else getattr(record, col).date() for col in _COLUMNS]
-    placeholders = ", ".join("?" for _ in _COLUMNS)
-    update_cols = [c for c in _COLUMNS if c not in ("ticker", "fiscal_year", "quarter")]
-    # [AS BUILT, P2.6] COALESCE, not a blind overwrite: as of P2.6, fundamentals
-    # has TWO independent writers for the same (ticker, fiscal_year, quarter) row
-    # — screener.py (revenue/ebitda/... + depreciation) and tijori.py
-    # (sector_specific_metric_1-6 only, every other field NULL in its own
-    # FundamentalsWrite payload). A plain `col = excluded.col` upsert would let
-    # whichever scraper runs second silently null out the other's columns on
-    # every write. COALESCE(excluded.col, fundamentals.col) makes each write
-    # additive: a NULL in the incoming payload leaves the existing stored value
-    # untouched; a real (non-NULL) value still always wins and overwrites
-    # (e.g. screener.py re-filing a restated quarter's revenue).
-    update_clause = ", ".join(f"{c} = COALESCE(excluded.{c}, fundamentals.{c})" for c in update_cols)
+    _validate_and_check_pit(record)
+    values = _build_fundamentals_row(record, "screener")
 
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
-        conn.execute(
-            f"""
-            INSERT INTO fundamentals ({_SELECT_COLS}) VALUES ({placeholders})
-            ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET {update_clause}
-            """,
-            values,
-        )
+        conn.execute(_INSERT_SQL, values)
 
     logger.info(f"fundamentals.write: {record.ticker} FY{record.fiscal_year}Q{record.quarter}")
     return FundamentalsWriteResult(
         ticker=record.ticker, fiscal_year=record.fiscal_year, quarter=record.quarter, written=True
     )
+
+
+@router.post("/write_batch", response_model=FundamentalsWriteBatchResult)
+async def write_fundamentals_batch(body: FundamentalsWriteBatch) -> FundamentalsWriteBatchResult:
+    """
+    [AS BUILT, A35 fix 2026-07-09] Upsert many quarterly fundamentals rows
+    in ONE request/ONE DuckDB write-lock acquisition — closes the A35 gap
+    (screener's per-ticker HTTP POST design couldn't join A25's
+    staged/batch-publish pattern the way the other 4 fundamentals sources
+    did). See ingestion/scrapers/screener.py::batch_export, which
+    accumulates records in memory across a chunk of tickers and calls this
+    once per chunk instead of once per ticker.
+
+    One bad row (e.g. a SPEC-PIPE-003 violation) is isolated and counted
+    in `failed`, never aborting the rest of the batch — same per-ticker
+    isolation batch_export already had, now at row-validation granularity
+    instead of at the HTTP-call granularity.
+    """
+    all_values = []
+    failed = 0
+    for record in body.records:
+        try:
+            _validate_and_check_pit(record)
+            all_values.append(_build_fundamentals_row(record, "screener"))
+        except HTTPException as exc:
+            logger.warning(f"fundamentals.write_batch: skipping {record.ticker} — {exc.detail}")
+            failed += 1
+
+    if all_values:
+        with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
+            conn.executemany(_INSERT_SQL, all_values)
+
+    logger.info(f"fundamentals.write_batch: {len(all_values)} written, {failed} failed of {len(body.records)}")
+    return FundamentalsWriteBatchResult(written=len(all_values), failed=failed)

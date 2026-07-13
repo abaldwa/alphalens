@@ -118,6 +118,27 @@ _INSERT_PIPELINE_RUN = """
     VALUES (?, ?, ?, ?, ?, ?)
 """
 
+# Phase 1 (Pipeline & Monitoring Remediation, 2026-07-10): a "running" row
+# is inserted the moment a run starts, and later UPDATEd (by run_id, not
+# re-INSERTed) once it finishes. Previously pipeline_runs only ever got a
+# row at the END of a run (_record_pipeline_run) — if the process was
+# killed mid-run (e.g. OOM), NO row was ever written for that date, and
+# GET /api/v1/ops/runs would keep showing the last N *prior* rows as "most
+# recent", which reads to an operator as "today completed fine" when in
+# fact today never ran at all. Writing 'running' up front means a crash
+# leaves a diagnosable row (status='running', started_at in the past,
+# never completed) instead of silence.
+_INSERT_PIPELINE_RUN_STARTED = """
+    INSERT INTO pipeline_runs (date, started_at, completed_at, status, stocks_processed, error_message)
+    VALUES (?, ?, NULL, 'running', 0, NULL)
+"""
+
+_UPDATE_PIPELINE_RUN_FINISHED = """
+    UPDATE pipeline_runs
+    SET completed_at = ?, status = ?, error_message = ?
+    WHERE run_id = ?
+"""
+
 # SPEC-SCHED-013: upsert — one row per job_id, overwritten on every
 # invocation attempt. last_success_at only advances on a real success
 # (COALESCE keeps the previous value on a failed/skipped attempt) so
@@ -382,11 +403,57 @@ def run_backfill(
     return succeeded
 
 
+def _record_pipeline_run_started(
+    run_date: date_type,
+    started_at: datetime,
+    db_path: Optional[Path] = None,
+) -> int:
+    """
+    Insert the 'running' row for a pipeline_runs invocation as it begins.
+
+    Phase 1 (Pipeline & Monitoring Remediation): called at the top of
+    run_startup_sequence, before run_steps_for_date executes anything, so
+    that a process kill mid-run (OOM, crash) still leaves a row behind —
+    status='running', completed_at=NULL — instead of no row at all. The
+    returned run_id is passed to _record_pipeline_run so the same row is
+    UPDATEd in place on completion rather than a second row being INSERTed.
+
+    Parameters
+    ----------
+    run_date : date
+    started_at : datetime
+    db_path : Path, optional
+        Defaults to config.settings.PIPELINE_LOG_DB_PATH.
+
+    Returns
+    -------
+    int
+        The new row's run_id (SQLite ROWID / AUTOINCREMENT value).
+
+    Raises
+    ------
+    None
+    """
+    if db_path is None:
+        from config.settings import PIPELINE_LOG_DB_PATH
+
+        db_path = PIPELINE_LOG_DB_PATH
+
+    with get_sqlite_connection(db_path) as conn:
+        cursor = conn.execute(
+            _INSERT_PIPELINE_RUN_STARTED,
+            (run_date.isoformat(), started_at.isoformat()),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
 def _record_pipeline_run(
     run_date: date_type,
     success: bool,
     started_at: datetime,
     db_path: Optional[Path] = None,
+    run_id: Optional[int] = None,
 ) -> None:
     """
     Write the whole-day summary row to pipeline_runs (SPEC-SCHED-005).
@@ -408,6 +475,13 @@ def _record_pipeline_run(
     db_path : Path, optional
         Defaults to config.settings.PIPELINE_LOG_DB_PATH (same file
         pipeline_checkpoints lives in).
+    run_id : int, optional
+        Phase 1: if provided (the id returned by
+        _record_pipeline_run_started), UPDATEs that row's completed_at/
+        status in place instead of INSERTing a new row — this is the
+        normal path as of the Pipeline & Monitoring Remediation session.
+        None is accepted only for backward compatibility with any direct
+        caller that hasn't been updated to the started/finished pair.
 
     Returns
     -------
@@ -430,18 +504,25 @@ def _record_pipeline_run(
 
         db_path = PIPELINE_LOG_DB_PATH
 
+    status = "success" if success else "failed"
     with get_sqlite_connection(db_path) as conn:
-        conn.execute(
-            _INSERT_PIPELINE_RUN,
-            (
-                run_date.isoformat(),
-                started_at.isoformat(),
-                now_ist().isoformat(),
-                "success" if success else "failed",
-                0,  # stocks_processed: not threaded through StepRunner's fire-and-forget contract yet
-                None,
-            ),
-        )
+        if run_id is not None:
+            conn.execute(
+                _UPDATE_PIPELINE_RUN_FINISHED,
+                (now_ist().isoformat(), status, None, run_id),
+            )
+        else:
+            conn.execute(
+                _INSERT_PIPELINE_RUN,
+                (
+                    run_date.isoformat(),
+                    started_at.isoformat(),
+                    now_ist().isoformat(),
+                    status,
+                    0,  # stocks_processed: not threaded through StepRunner's fire-and-forget contract yet
+                    None,
+                ),
+            )
         conn.commit()
 
 
@@ -664,8 +745,9 @@ def run_startup_sequence(
             return True
 
     started_at = now
+    run_id = _record_pipeline_run_started(today, started_at, db_path)
     ok = run_steps_for_date(today, step_runner, checkpoint_manager, is_backfill=False)
-    _record_pipeline_run(today, ok, started_at, db_path)
+    _record_pipeline_run(today, ok, started_at, db_path, run_id=run_id)
     return ok
 
 
@@ -1322,7 +1404,7 @@ def schedule_mf_holdings_ingestion(
 # Model training job (SPEC-SCHED-007) — weekday, after daily pipeline
 # ---------------------------------------------------------------------------
 
-def _execute_model_training_job() -> None:
+def _execute_model_training_job(model_names: Optional[List[str]] = None, job_id: str = "model_training") -> None:
     """
     Check whether any model is overdue for retraining (SPEC-SCHED-007) and,
     if so, trigger training. This job fires on weekday evenings (~20:00 IST),
@@ -1336,6 +1418,21 @@ def _execute_model_training_job() -> None:
     (SPEC-MODEL-005): a model is overdue if
     `days_since_last_train > training_interval_days × RETRAIN_OVERDUE_MULTIPLIER`.
     If no model is overdue, the job completes immediately (fast no-op).
+
+    Parameters
+    ----------
+    model_names : list of str, optional
+        Pipeline & Monitoring Remediation Phase 4 (A52): if given, only
+        these models are considered — used by
+        schedule_model_training_nightly's per-group jobs to spread
+        training across different nights of the week instead of one
+        weekly job checking (and potentially training) everything
+        back-to-back. None (default) checks every known model, the
+        original single-job behavior (still used by schedule_model_training).
+    job_id : str
+        Which heartbeat/job_run_log id to record under — lets each
+        nightly group be independently observable on the Ops dashboard
+        instead of all sharing "model_training".
 
     Top-level function (not a closure/lambda) — APScheduler SQLAlchemyJobStore
     picklability requirement, same as _execute_daily_job.
@@ -1357,10 +1454,10 @@ def _execute_model_training_job() -> None:
     try:
         registry_path = Path(MODELS_DIR) / "registry.json"
         if not registry_path.exists():
-            logger.info("model_training: registry.json not found — no trained models yet, skipping")
+            logger.info(f"{job_id}: registry.json not found — no trained models yet, skipping")
             duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
             _record_heartbeat(
-                "model_training", "skipped", "registry.json not found",
+                job_id, "skipped", "registry.json not found",
                 duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
             )
             return
@@ -1379,6 +1476,8 @@ def _execute_model_training_job() -> None:
         known_models = set(registry.keys()) | {
             name for name, script in _MODEL_TRAINING_SCRIPT_MAP.items() if script is not None
         }
+        if model_names is not None:
+            known_models &= set(model_names)
 
         today = now_ist().date()
         overdue_models = []
@@ -1397,15 +1496,15 @@ def _execute_model_training_job() -> None:
                 overdue_models.append((model_name, f"{days_since}d since last train, threshold {threshold:.0f}d"))
 
         if not overdue_models:
-            logger.info("model_training: no models overdue — skipping")
+            logger.info(f"{job_id}: no models overdue — skipping")
             duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
             _record_heartbeat(
-                "model_training", "skipped", "no models overdue",
+                job_id, "skipped", "no models overdue",
                 duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
             )
             return
 
-        logger.info(f"model_training: {len(overdue_models)} model(s) overdue: {overdue_models}")
+        logger.info(f"{job_id}: {len(overdue_models)} model(s) overdue: {overdue_models}")
         # 2026-07-05: several overdue model names share the same underlying
         # training script (train_all_phase1.py trains hmm_market +
         # pnd_detector + signal_5d + signal_21d + meta_labeler +
@@ -1431,15 +1530,15 @@ def _execute_model_training_job() -> None:
 
         duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
         _record_heartbeat(
-            "model_training", "success",
+            job_id, "success",
             duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
         )
 
     except Exception as exc:
-        logger.error(f"model_training job raised an unexpected exception: {exc}", exc_info=True)
+        logger.error(f"{job_id} job raised an unexpected exception: {exc}", exc_info=True)
         duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
         _record_heartbeat(
-            "model_training", "failed", str(exc),
+            job_id, "failed", str(exc),
             duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
         )
 
@@ -1559,9 +1658,20 @@ def _trigger_model_retrain(model_name: str) -> None:
         )
         return
 
+    extra_args = []
+    if module == "systems.ml_signal_engine.inference.retrain_phase2":
+        # ML21 (2026-07-10): the scheduler's unattended retrain is exactly the
+        # unbounded, 3-horizons-in-one-process run that OOM-killed the box
+        # twice on 2026-07-09. --subprocess-per-horizon runs signal_5d/21d/63d
+        # as 3 isolated OS processes so the OS reclaims each horizon's
+        # SMOTETomek-oversampled matrix + Optuna/stacking refit memory before
+        # the next horizon starts, instead of it accumulating in one process's
+        # RSS for the whole run.
+        extra_args = ["--subprocess-per-horizon"]
+
     try:
         result = subprocess.run(
-            [sys.executable, "-m", module],
+            [sys.executable, "-m", module, *extra_args],
             cwd=str(_REPO_ROOT),
             capture_output=False,
             timeout=3600 * 8,  # 8-hour hard cap per model (within 23-hour window)
@@ -1614,6 +1724,104 @@ def schedule_model_training(
         coalesce=True,
     )
     logger.info(f"Model training check scheduled: {schedule_time} IST ({MODEL_TRAINING_DAY_OF_WEEK})")
+
+
+# Pipeline & Monitoring Remediation Phase 4 (A52, 2026-07-10): spread model
+# training across nightly 11pm-6am windows through the week instead of one
+# big Saturday job checking (and potentially training) every model
+# back-to-back. Each group maps to one of _MODEL_TRAINING_SCRIPT_MAP's
+# distinct underlying scripts, so a given night's job only ever triggers
+# ONE training subprocess even if several of its models are overdue —
+# same dedup-by-script behavior _execute_model_training_job already had,
+# just partitioned by night instead of collapsed into one weekly run.
+# Mon-Thu chosen deliberately: weekday nights, well clear of the 18:00
+# daily pipeline (11pm is 5 hours after it finishes) and clear of the
+# next weekday's own 18:00 run the following evening; Friday/weekend
+# nights are left free for the existing weekend_feature_backfill/
+# weekend_fundamentals/multibagger_scoring/forensic_scoring jobs
+# (schedule_weekend_feature_backfill etc.) so nothing new contends with
+# those on the one genuinely free multi-day window.
+_MODEL_TRAINING_GROUPS: dict = {
+    "phase1": {
+        "day_of_week": "mon",
+        "models": [
+            "hmm_market", "pnd_detector", "signal_5d",
+            "signal_21d", "meta_labeler", "conformal_signal5d",
+        ],
+    },
+    "phase2": {"day_of_week": "tue", "models": ["signal_63d"]},
+    "multibagger": {"day_of_week": "wed", "models": ["multibagger"]},
+    "deep_models": {"day_of_week": "thu", "models": ["tft", "bilstm"]},
+}
+
+
+def _execute_model_training_job_for_group(group_name: str) -> None:
+    """
+    Top-level, picklable wrapper: checks/trains only `group_name`'s models
+    (_MODEL_TRAINING_GROUPS[group_name]) under its own job_id
+    ("model_training_{group_name}") so each night's run is independently
+    observable in scheduler_heartbeats/job_run_log/the Ops dashboard,
+    rather than all sharing the single "model_training" id.
+
+    Parameters
+    ----------
+    group_name : str
+        Must be a key in _MODEL_TRAINING_GROUPS.
+
+    Raises
+    ------
+    None — delegates to _execute_model_training_job, which already never
+    raises (SPEC-SCHED-013).
+    """
+    group = _MODEL_TRAINING_GROUPS.get(group_name)
+    if group is None:
+        logger.error(f"_execute_model_training_job_for_group: unknown group '{group_name}' — skipping")
+        return
+    _execute_model_training_job(model_names=group["models"], job_id=f"model_training_{group_name}")
+
+
+def schedule_model_training_nightly(
+    scheduler: BackgroundScheduler,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register one nightly cron job per _MODEL_TRAINING_GROUPS entry,
+    spreading model-training checks across Mon-Thu nights instead of one
+    weekly Saturday job (A52) — an alternative to schedule_model_training,
+    not layered on top of it (a caller should register one or the other,
+    not both, to avoid double-training the same model in the same week).
+
+    Parameters
+    ----------
+    scheduler : BackgroundScheduler
+    schedule_time : str, optional
+        "HH:MM", defaults to config.settings.MODEL_TRAINING_NIGHTLY_TIME
+        (23:00 IST) — applied to every group; only the day_of_week
+        differs per group.
+
+    Spec References
+    ----------------
+    SPEC-SCHED-007, SPEC-MODEL-008.
+    """
+    if schedule_time is None:
+        from config.settings import MODEL_TRAINING_NIGHTLY_TIME
+        schedule_time = MODEL_TRAINING_NIGHTLY_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    for group_name, group in _MODEL_TRAINING_GROUPS.items():
+        scheduler.add_job(
+            _execute_model_training_job_for_group,
+            CronTrigger(hour=hour, minute=minute, day_of_week=group["day_of_week"], timezone="Asia/Kolkata"),
+            id=f"model_training_{group_name}",
+            args=[group_name],
+            replace_existing=True,
+            misfire_grace_time=86400,
+            coalesce=True,
+        )
+        logger.info(
+            f"Model training check scheduled: '{group_name}' ({group['models']}) at "
+            f"{schedule_time} IST ({group['day_of_week']})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1978,6 +2186,169 @@ def schedule_weekend_fundamentals(
         coalesce=True,
     )
     logger.info(f"Weekend fundamentals backfill scheduled: {schedule_time} IST (saturday)")
+
+
+def _execute_promoter_pledge_backfill_job() -> None:
+    """
+    Saturday promoter-pledge catch-up (NSE SAST Reg 31(4) disclosures).
+
+    Runs scripts/backfill_promoter_pledge_nse.py so newly-disclosed
+    pledge/encumbrance events are picked up on a recurring cadence instead
+    of only whenever someone remembers to run the script by hand (A54,
+    2026-07-10) — see that script's module docstring for the real,
+    live-verified (2026-07-07) NSE endpoint it reads.
+
+    Non-critical: a failure here does NOT block the following week's
+    pipeline.
+
+    Top-level + picklable.
+    """
+    import subprocess
+    import sys
+
+    _t0 = _job_timer_start()
+    try:
+        logger.info("promoter_pledge_backfill: starting")
+        result = subprocess.run(
+            [sys.executable, "scripts/backfill_promoter_pledge_nse.py"],
+            capture_output=False,
+            timeout=3600 * 4,  # 4-hour cap — per-ticker HTTP loop over the full universe
+        )
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        if result.returncode != 0:
+            logger.error(f"promoter_pledge_backfill: script exited with code {result.returncode}")
+            _record_heartbeat(
+                "promoter_pledge_backfill", "failed", f"exit code {result.returncode}",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+        else:
+            logger.info("promoter_pledge_backfill: completed successfully")
+            _record_heartbeat(
+                "promoter_pledge_backfill", "success",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+    except subprocess.TimeoutExpired:
+        logger.error("promoter_pledge_backfill: exceeded 4-hour timeout")
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        _record_heartbeat(
+            "promoter_pledge_backfill", "failed", "timeout after 4h",
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+    except Exception as exc:
+        logger.error(f"promoter_pledge_backfill job raised an unexpected exception: {exc}", exc_info=True)
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        _record_heartbeat(
+            "promoter_pledge_backfill", "failed", str(exc),
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+
+
+def schedule_promoter_pledge_backfill(
+    scheduler: BackgroundScheduler,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register the Saturday promoter-pledge backfill job (A54).
+
+    Fires at PROMOTER_PLEDGE_BACKFILL_SCHEDULE_TIME (default 11:00 IST,
+    Saturday) — after weekend_fundamentals (10:30) has refreshed the base
+    shareholding rows this backfill enriches.
+    """
+    if schedule_time is None:
+        from config.settings import PROMOTER_PLEDGE_BACKFILL_SCHEDULE_TIME
+        schedule_time = PROMOTER_PLEDGE_BACKFILL_SCHEDULE_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    scheduler.add_job(
+        _execute_promoter_pledge_backfill_job,
+        CronTrigger(hour=hour, minute=minute, day_of_week="sat", timezone="Asia/Kolkata"),
+        id="promoter_pledge_backfill",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"Promoter pledge backfill scheduled: {schedule_time} IST (saturday)")
+
+
+def _execute_balance_sheet_backfill_job() -> None:
+    """
+    Saturday balance-sheet catch-up (Screener.in cached pages).
+
+    Runs scripts/backfill_balance_sheet_from_screener.py so
+    total_assets/cwip (and their consumers cwip_ratio/asset_inflation_flag)
+    get refreshed on a recurring cadence instead of only whenever someone
+    remembers to run the script by hand (A54, 2026-07-10).
+
+    Non-critical: a failure here does NOT block the following week's
+    pipeline.
+
+    Top-level + picklable.
+    """
+    import subprocess
+    import sys
+
+    _t0 = _job_timer_start()
+    try:
+        logger.info("balance_sheet_backfill: starting")
+        result = subprocess.run(
+            [sys.executable, "scripts/backfill_balance_sheet_from_screener.py"],
+            capture_output=False,
+            timeout=3600 * 2,  # 2-hour cap — reads from the existing local cache, no network
+        )
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        if result.returncode != 0:
+            logger.error(f"balance_sheet_backfill: script exited with code {result.returncode}")
+            _record_heartbeat(
+                "balance_sheet_backfill", "failed", f"exit code {result.returncode}",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+        else:
+            logger.info("balance_sheet_backfill: completed successfully")
+            _record_heartbeat(
+                "balance_sheet_backfill", "success",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+    except subprocess.TimeoutExpired:
+        logger.error("balance_sheet_backfill: exceeded 2-hour timeout")
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        _record_heartbeat(
+            "balance_sheet_backfill", "failed", "timeout after 2h",
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+    except Exception as exc:
+        logger.error(f"balance_sheet_backfill job raised an unexpected exception: {exc}", exc_info=True)
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        _record_heartbeat(
+            "balance_sheet_backfill", "failed", str(exc),
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+
+
+def schedule_balance_sheet_backfill(
+    scheduler: BackgroundScheduler,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register the Saturday balance-sheet backfill job (A54).
+
+    Fires at BALANCE_SHEET_BACKFILL_SCHEDULE_TIME (default 11:30 IST,
+    Saturday) — after promoter_pledge_backfill (11:00) and before
+    model_training (12:00).
+    """
+    if schedule_time is None:
+        from config.settings import BALANCE_SHEET_BACKFILL_SCHEDULE_TIME
+        schedule_time = BALANCE_SHEET_BACKFILL_SCHEDULE_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    scheduler.add_job(
+        _execute_balance_sheet_backfill_job,
+        CronTrigger(hour=hour, minute=minute, day_of_week="sat", timezone="Asia/Kolkata"),
+        id="balance_sheet_backfill",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"Balance sheet backfill scheduled: {schedule_time} IST (saturday)")
 
 
 # ---------------------------------------------------------------------------

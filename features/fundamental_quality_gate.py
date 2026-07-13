@@ -3,7 +3,7 @@ features/fundamental_quality_gate.py
 
 Phase: Data Layer / Ingestion (backlog #12, AF-5)
 Owner: Platform / Features
-Consumers: scripts/backfill_fundamentals_trendlyne.py, scripts/load_kaggle_fundamentals.py
+Consumers: scripts/backfill_fundamentals_trendlyne.py, scripts/backfill_fundamentals_nse_xbrl.py
 
 Why this exists
 ----------------

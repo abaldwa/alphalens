@@ -52,28 +52,39 @@ apiGet("/api/v1/watchlist/daily", { n_per_horizon: 10 })
 
     document.getElementById("mb-notes").textContent = r.multibagger.length ? `Top ${r.multibagger.length} by multibagger probability` : "";
     const mbContainer = document.getElementById("watchlist-mb");
-    if (!r.multibagger.length) {
-      mbContainer.innerHTML = `<div class="empty">No multibagger scoring data yet</div>`;
-      return;
-    }
-    const cols = ["ticker", "mb_probability", "mb_tier", "mb_archetype", "survival_6m", "survival_12m", "survival_18m", "survival_24m", "survival_36m"];
-    const labels = ["Ticker", "MB Prob", "Deterministic Probability Band", "Archetype", "6m", "12m", "18m", "24m", "36m"];
-    const mbTable = el("table", {}, [
-      el("thead", {}, [el("tr", {}, labels.map((l) => el("th", {}, [l])))]),
-      el("tbody", {}, r.multibagger.map((t) => el("tr", {}, cols.map((cc) => {
-        if (cc === "ticker") return el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${t.ticker}` }, [t.ticker])]);
-        if (cc === "mb_probability") return el("td", { class: "mono" }, [fmtPct(t[cc])]);
-        if (cc === "mb_tier") return el("td", {}, [el("span", { class: "badge b-purple" }, [mbTierLabel(t[cc])])]);
-        if (cc.startsWith("survival")) return el("td", { class: "mono" }, [fmtPct(t[cc])]);
-        return el("td", {}, [t[cc] || "—"]);
-      })))),
-    ]);
-    mbContainer.innerHTML = "";
-    mbContainer.appendChild(el("div", { class: "card" }, [mbTable]));
+    renderMultibaggerTable("watchlist-mb", r.multibagger);
+
+    document.getElementById("mb-lowliq-notes").textContent = r.low_liquidity_multibagger.length
+      ? `${r.low_liquidity_multibagger.length} picks below the Rs20cr/day ADTV recommendation floor — shown separately, not filtered into the main list above`
+      : "";
+    renderMultibaggerTable("watchlist-mb-lowliq", r.low_liquidity_multibagger);
   })
   .catch((e) => {
     showError("watchlist-5d", e);
     showError("watchlist-21d", e);
     showError("watchlist-63d", e);
     showError("watchlist-mb", e);
+    showError("watchlist-mb-lowliq", e);
   });
+
+function renderMultibaggerTable(containerId, rows) {
+  const mbContainer = document.getElementById(containerId);
+  if (!rows.length) {
+    mbContainer.innerHTML = `<div class="empty">No multibagger scoring data yet</div>`;
+    return;
+  }
+  const cols = ["ticker", "mb_probability", "mb_tier", "mb_archetype", "survival_6m", "survival_12m", "survival_18m", "survival_24m", "survival_36m"];
+  const labels = ["Ticker", "MB Prob", "Deterministic Probability Band", "Archetype", "6m", "12m", "18m", "24m", "36m"];
+  const mbTable = el("table", {}, [
+    el("thead", {}, [el("tr", {}, labels.map((l) => el("th", {}, [l])))]),
+    el("tbody", {}, rows.map((t) => el("tr", {}, cols.map((cc) => {
+      if (cc === "ticker") return el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${t.ticker}` }, [t.ticker])]);
+      if (cc === "mb_probability") return el("td", { class: "mono" }, [fmtPct(t[cc])]);
+      if (cc === "mb_tier") return el("td", {}, [el("span", { class: "badge b-purple" }, [mbTierLabel(t[cc])])]);
+      if (cc.startsWith("survival")) return el("td", { class: "mono" }, [fmtPct(t[cc])]);
+      return el("td", {}, [t[cc] || "—"]);
+    })))),
+  ]);
+  mbContainer.innerHTML = "";
+  mbContainer.appendChild(el("div", { class: "card" }, [mbTable]));
+}

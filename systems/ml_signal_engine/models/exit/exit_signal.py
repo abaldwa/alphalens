@@ -91,6 +91,11 @@ class ExitSignalModel(ISurvivalModel):
         self._imputer: Optional[SimpleImputer] = None
         self._trained_at = None
         self._training_samples: Optional[int] = None
+        # ML18 (2026-07-10): covariates dropped from the CoxPH design matrix
+        # specifically (zero-variance or collinear-with-duration) — the
+        # urgency/type models keep the full feature set; predict_survival/
+        # predict_full must drop the same columns before calling into cph.
+        self._cox_dropped_cols: List[str] = []
 
     # ===== NaN handling (same pattern as base_signal_model.py / meta_labeler.py) =====
     def _impute_fit(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -212,8 +217,47 @@ class ExitSignalModel(ISurvivalModel):
         self._type_model = lgb.LGBMClassifier(**self._type_params)
         self._type_model.fit(X_imputed, type_clean)
 
-        cox_df = X_imputed.copy()
-        cox_df["_duration"] = duration_clean.to_numpy()
+        # ML18 (2026-07-10): CoxPHFitter's "delta contains nan value(s)"
+        # ConvergenceError traced to two real design-matrix issues, not a
+        # missing-value gap (SimpleImputer with keep_empty_features=True
+        # already leaves no raw NaNs by this point):
+        #   1. load_exit_training_data_from_db() sets duration=days_held
+        #      exactly, and days_held is also a covariate in X — a
+        #      covariate perfectly collinear with the duration column is
+        #      singular for the Cox partial-likelihood Hessian regardless
+        #      of sample size.
+        #   2. days_to_next_earnings is currently always NaN at the
+        #      source (joined at scoring time, not backfillable from
+        #      historical paper-trading logs) so after imputation it is a
+        #      constant (zero-variance) column — also singular.
+        # Fix: drop any covariate that is (a) constant/zero-variance or
+        # (b) essentially collinear with the duration column (|corr| >
+        # 0.98) from the Cox fit specifically — the urgency/type models
+        # above still see the full feature set, since neither has a
+        # collinearity requirement.
+        cox_features = X_imputed.copy()
+        duration_arr = duration_clean.to_numpy()
+        dropped_cox_cols = []
+        for col in list(cox_features.columns):
+            col_values = cox_features[col].to_numpy(dtype=float)
+            if np.nanstd(col_values) < 1e-12:
+                dropped_cox_cols.append(col)
+                continue
+            with np.errstate(invalid="ignore"):
+                corr = np.corrcoef(col_values, duration_arr)[0, 1]
+            if np.isfinite(corr) and abs(corr) > 0.98:
+                dropped_cox_cols.append(col)
+        if dropped_cox_cols:
+            logger.warning(
+                f"ExitSignalModel.train_full: dropping {dropped_cox_cols} from the CoxPH "
+                "design matrix (zero-variance or |corr| with duration > 0.98) to avoid a "
+                "singular Hessian / ConvergenceError — still used by the urgency/type models."
+            )
+            cox_features = cox_features.drop(columns=dropped_cox_cols)
+        self._cox_dropped_cols = dropped_cox_cols
+
+        cox_df = cox_features.copy()
+        cox_df["_duration"] = duration_arr
         cox_df["_event"] = event_clean.to_numpy()
         self._cph = CoxPHFitter(penalizer=self.cox_penalizer)
         self._cph.fit(cox_df, duration_col="_duration", event_col="_event")
@@ -254,6 +298,8 @@ class ExitSignalModel(ISurvivalModel):
         if self._cph is None:
             raise RuntimeError("predict_survival called before train_full()")
         X_imputed = self._impute_transform(X[self._feature_names])
+        if self._cox_dropped_cols:
+            X_imputed = X_imputed.drop(columns=self._cox_dropped_cols)
         times = list(range(1, time_horizon_days + 1))
         sf = self._cph.predict_survival_function(X_imputed, times=times)
         sf = sf.T
@@ -270,6 +316,7 @@ class ExitSignalModel(ISurvivalModel):
                 "feature_names": self._feature_names, "imputer": self._imputer,
                 "random_state": self.random_state, "cox_penalizer": self.cox_penalizer,
                 "trained_at": self._trained_at, "training_samples": self._training_samples,
+                "cox_dropped_cols": self._cox_dropped_cols,
             },
             path,
         )
@@ -285,6 +332,7 @@ class ExitSignalModel(ISurvivalModel):
         self.cox_penalizer = payload["cox_penalizer"]
         self._trained_at = payload["trained_at"]
         self._training_samples = payload["training_samples"]
+        self._cox_dropped_cols = payload.get("cox_dropped_cols", [])
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -336,7 +384,8 @@ class ExitSignalModel(ISurvivalModel):
         urgency = pd.Series(self._urgency_model.predict(X_imputed), index=X.index).clip(0, 100)
         exit_type = pd.Series(self._type_model.predict(X_imputed), index=X.index).astype(str)
 
-        survival = self._cph.predict_survival_function(X_imputed, times=list(SURVIVAL_HORIZONS))
+        X_for_cox = X_imputed.drop(columns=self._cox_dropped_cols) if self._cox_dropped_cols else X_imputed
+        survival = self._cph.predict_survival_function(X_for_cox, times=list(SURVIVAL_HORIZONS))
         survival = survival.T
         survival.index = X.index
 

@@ -178,6 +178,59 @@ class DataStoreClient:
             df["date"] = pd.to_datetime(df["date"])
         return df
 
+    def get_index_ohlcv(self, index_name: str, from_date: datetime, to_date: datetime) -> "pd.DataFrame":
+        """
+        Fetch real NSE index OHLC (index_ohlcv table,
+        ingestion/scrapers/nse_indices.py) for one tracked index name over
+        [from_date, to_date] — e.g. index_name="Nifty 500" for ML17a's real
+        benchmark equity curve (backtest/engine.py).
+
+        Parameters
+        ----------
+        index_name : str
+            Must match ingestion/scrapers/nse_indices.py's TRACKED_INDICES
+            exactly (e.g. "Nifty 500", "Nifty IT").
+        from_date, to_date : datetime
+            Inclusive date range.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: date (datetime64), index_name, open, high, low, close,
+            volume. Empty DataFrame with those columns if no data.
+
+        Raises
+        ------
+        httpx.HTTPStatusError, httpx.RequestError
+        """
+        import json
+        from urllib.parse import quote
+
+        import pandas as pd
+
+        params: Dict[str, Any] = {
+            "from": from_date.date().isoformat(),
+            "to": to_date.date().isoformat(),
+        }
+        # index_name can contain spaces/"&" (e.g. "Nifty Oil & Gas") — must
+        # be percent-encoded since it's embedded directly in the URL path,
+        # not passed as a query param.
+        url = f"{self._base_url}/api/v1/ohlcv/index/{quote(index_name, safe='')}"
+        with httpx.Client(timeout=60.0) as hclient:
+            response = hclient.get(url, params=params)
+        response.raise_for_status()
+
+        payload = json.loads(response.text)
+        columns = ["date", "index_name", "open", "high", "low", "close", "volume"]
+        if not payload:
+            return pd.DataFrame(columns=columns)
+
+        df = pd.DataFrame(payload)
+        if df.empty:
+            return pd.DataFrame(columns=columns)
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+
     def get_universe_tickers(self, min_rows: int = 0) -> Dict[str, Any]:
         """
         Distinct tickers present in ohlcv_adjusted, with row counts.
@@ -407,6 +460,41 @@ class DataStoreClient:
             If the request could not be sent.
         """
         return self._post("/api/v1/fundamentals/write", record)
+
+    def write_fundamentals_batch(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Upsert many quarterly fundamentals rows in ONE request via
+        POST /api/v1/fundamentals/write_batch — A35's "client-side
+        batching" fix (see FeatureBacklog.md's A35 entry): lets a batch
+        scraper like ingestion/scrapers/screener.py::batch_export
+        accumulate records in memory and do one bulk upsert instead of one
+        HTTP POST + one DuckDB write-lock acquisition per ticker.
+
+        Parameters
+        ----------
+        records : list of dict
+            Each must match datastore.api.schemas.FundamentalsWrite's
+            fields, same shape as write_fundamentals's single-row payload.
+
+        Returns
+        -------
+        dict
+            Write confirmation from the API (count written).
+
+        Spec References
+        ----------------
+        SPEC-DS-004, SPEC-PIPE-003 (CRITICAL) — same as write_fundamentals;
+        batching is purely a transport/transaction optimization, not a
+        semantics change.
+
+        Raises
+        ------
+        httpx.HTTPStatusError
+            If the API returns a non-2xx response.
+        httpx.RequestError
+            If the request could not be sent.
+        """
+        return self._post("/api/v1/fundamentals/write_batch", {"records": records})
 
     def get_shareholding_history(
         self,

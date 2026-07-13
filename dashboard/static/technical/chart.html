@@ -22,6 +22,22 @@
     <div class="sec-head"><span class="sec-title">Price</span><span class="sec-sub" id="ind-date"></span></div>
     <div id="price-card"><div class="empty">Enter a ticker to load</div></div>
   </div>
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-title" style="font-size:14px">Candlestick (T3)</span>
+      <span class="sec-sub">
+        <label style="font-weight:400"><input type="checkbox" id="ov-sma50" checked> SMA50</label>
+        <label style="font-weight:400;margin-left:8px"><input type="checkbox" id="ov-sma200" checked> SMA200</label>
+        <label style="font-weight:400;margin-left:8px"><input type="checkbox" id="ov-ema21" checked> EMA21</label>
+      </span>
+    </div>
+    <div class="card" id="candle-card">
+      <canvas id="candle-canvas" height="110"></canvas>
+    </div>
+    <div class="card" style="margin-top:8px">
+      <canvas id="volume-canvas" height="40"></canvas>
+    </div>
+  </div>
   <div class="grid grid-2">
     <div class="sec">
       <div class="sec-head"><span class="sec-title" style="font-size:14px">Indicators</span></div>
@@ -33,6 +49,9 @@
     </div>
   </div>
 </div>
+<script src="../vendor/chart.umd.min.js"></script>
+<script src="../vendor/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="../vendor/chartjs-chart-financial.min.js"></script>
 <script src="../js/api.js"></script>
 <script src="../js/ticker_picker.js"></script>
 <script src="../js/shell.js"></script>

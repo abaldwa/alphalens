@@ -115,11 +115,27 @@ def _fetch_ohlcv_panel(
             panel["delivery_pct"] = np.nan
         return panel
 
-    # Fallback: per-ticker (for tests or callers that pass no bulk panel)
+    # Fallback: per-ticker (for tests or callers that pass no bulk panel).
+    # 2026-07-10 incident: when the DataStore API is down, this loop used to
+    # plough through all ~2,300 tickers one exception at a time, and on a
+    # laptop restart (API not up yet) that ran the process's RSS up to 5+ GB
+    # before it finally gave up. A connection error (as opposed to a per-
+    # ticker data problem) means the whole API is unreachable, not that this
+    # one ticker lacks data — so stop after the first one instead of
+    # burning through the rest of the universe the same way.
+    import httpx
+
     frames = []
     for ticker in tickers:
         try:
             rows = client.get_ohlcv(ticker, from_date, to_date)
+        except httpx.RequestError as exc:
+            logger.error(
+                f"OHLCV fetch failed for {ticker} with a connection error ({exc}) — "
+                "the DataStore API is very likely unreachable; aborting the per-ticker "
+                "fallback instead of retrying it for every remaining ticker"
+            )
+            break
         except Exception as exc:
             logger.warning(f"OHLCV fetch failed for {ticker}: {exc}")
             continue
@@ -209,6 +225,102 @@ def _validate_feature_matrix(matrix: pd.DataFrame) -> None:
         bad = vals[(vals < lo) | (vals > hi)]
         if not bad.empty:
             logger.warning(f"{len(bad)}/{len(vals)} '{col}' values outside [{lo}, {hi}]")
+
+
+def _compute_chunked_ticker_independent_panels(
+    universe_panel: pd.DataFrame,
+    benchmark_wide: Optional[pd.DataFrame],
+    tickers: List[str],
+    target_date: pd.Timestamp,
+    compute_hmm: bool,
+    hmm_workers: int,
+) -> "tuple":
+    """
+    A47 (2026-07-10): computes technical/intraday/hmm/pnd/adv_tech/patterns
+    in ticker chunks instead of one full-universe pass, bounding peak
+    memory to one chunk's derived DataFrames at a time instead of holding
+    6 full-universe-sized derived DataFrames simultaneously alongside
+    `universe_panel` itself.
+
+    Deliberately does NOT include fundamental/mf_holdings/multibagger —
+    those do real cross-ticker aggregation (sector-relative z-score,
+    tier-percentile rank, universe/sector-relative rank respectively) that
+    would be silently corrupted by seeing only one chunk's sub-cohort
+    instead of the true full-universe cohort. This function only chunks
+    categories confirmed per-ticker-independent (no groupby/rank/zscore
+    across the ticker dimension) — see FeatureBacklog.md A47 for the full
+    per-category audit.
+
+    `universe_panel` itself is NOT chunked/discarded per-chunk — it's
+    already one full-universe DataFrame from a single bulk OHLCV fetch,
+    and `compute_multibagger_features` (called by the caller, after this
+    function returns) needs the full-universe panel for its own
+    cross-sectional ranks regardless. Only the DERIVED per-chunk
+    DataFrames (technical/intraday/hmm/pnd/adv_tech/patterns) are
+    bounded and freed between chunks — this is still a real reduction in
+    peak memory vs. holding all 6 full-universe-sized derived frames at
+    once, without touching the raw OHLCV panel's own footprint.
+
+    Returns
+    -------
+    tuple of 6 pd.DataFrame
+        (today_technical, today_intraday, today_hmm, today_pnd,
+        today_adv_tech, today_patterns), each ['ticker'] + that
+        category's feature columns, concatenated across all chunks.
+    """
+    import gc
+
+    from config.settings import PIPELINE_MEMORY_CEILING_MB, SCREENER_BATCH_EXPORT_CHUNK_SIZE
+    from ingestion.scheduler.resource_guard import adaptive_chunk_size
+
+    technical_chunks, intraday_chunks, hmm_chunks, pnd_chunks = [], [], [], []
+    adv_tech_chunks, patterns_chunks = [], []
+
+    i = 0
+    while i < len(tickers):
+        chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
+        chunk_tickers = tickers[i : i + chunk_size]
+        i += chunk_size
+
+        chunk_panel = universe_panel[universe_panel["ticker"].isin(set(chunk_tickers))]
+        if chunk_panel.empty:
+            continue
+
+        technical = compute_technical_features(chunk_panel, benchmark_wide)
+        intraday = compute_intraday_features(chunk_panel)
+        hmm = (
+            compute_hmm_regime_features(chunk_panel, n_workers=hmm_workers)
+            if compute_hmm
+            else pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
+        )
+        pnd = compute_pnd_features(chunk_panel)
+        adv_tech = compute_advanced_technical_features(chunk_panel)
+        pat_scores = compute_pattern_scores(chunk_panel)
+
+        technical_chunks.append(_extract_target_date_panel(technical, target_date, CORE_TECHNICAL_FEATURES))
+        intraday_chunks.append(_extract_target_date_panel(intraday, target_date, INTRADAY_FEATURES))
+        hmm_chunks.append(_extract_target_date_panel(hmm, target_date, HMM_REGIME_FEATURES))
+        pnd_chunks.append(_extract_target_date_panel(pnd, target_date, PND_FEATURES))
+        adv_tech_chunks.append(adv_tech[adv_tech["date"] == target_date].drop(columns=["date"]))
+        patterns_chunks.append(pat_scores[pat_scores["date"] == target_date].drop(columns=["date"]))
+
+        del chunk_panel, technical, intraday, hmm, pnd, adv_tech, pat_scores
+        gc.collect()
+
+    def _concat(frames: List[pd.DataFrame], cols: List[str]) -> pd.DataFrame:
+        non_empty = [f for f in frames if not f.empty]
+        if not non_empty:
+            return pd.DataFrame(columns=["ticker"] + cols)
+        return pd.concat(non_empty, ignore_index=True)
+
+    return (
+        _concat(technical_chunks, CORE_TECHNICAL_FEATURES),
+        _concat(intraday_chunks, INTRADAY_FEATURES),
+        _concat(hmm_chunks, HMM_REGIME_FEATURES),
+        _concat(pnd_chunks, PND_FEATURES),
+        _concat(adv_tech_chunks, ADVANCED_TECHNICAL_FEATURES),
+        _concat(patterns_chunks, PATTERN_FEATURES),
+    )
 
 
 def _save_feature_matrix(matrix: pd.DataFrame, target_date: pd.Timestamp) -> Path:
@@ -332,18 +444,11 @@ def build_feature_matrix(
             "all-NaN feature matrix."
         )
     else:
-        technical = compute_technical_features(universe_panel, benchmark_wide)
-        intraday = compute_intraday_features(universe_panel)
-        hmm = (
-            compute_hmm_regime_features(universe_panel, n_workers=hmm_workers)
-            if compute_hmm
-            else pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
+        today_technical, today_intraday, today_hmm, today_pnd, today_adv_tech, today_patterns = (
+            _compute_chunked_ticker_independent_panels(
+                universe_panel, benchmark_wide, tickers, target_date, compute_hmm, hmm_workers,
+            )
         )
-        pnd = compute_pnd_features(universe_panel)
-    today_technical = _extract_target_date_panel(technical, target_date, CORE_TECHNICAL_FEATURES)
-    today_intraday = _extract_target_date_panel(intraday, target_date, INTRADAY_FEATURES)
-    today_hmm = _extract_target_date_panel(hmm, target_date, HMM_REGIME_FEATURES)
-    today_pnd = _extract_target_date_panel(pnd, target_date, PND_FEATURES)
 
     calendar_row = compute_calendar_features(target_date)
 
@@ -407,15 +512,9 @@ def build_feature_matrix(
     else:
         today_multibagger = pd.DataFrame(columns=["ticker"] + MULTIBAGGER_FEATURES)
 
-    # ── Phase 3: advanced technical + pattern + real-economy macro + deep forensic ──
-    if not universe_panel.empty:
-        adv_tech = compute_advanced_technical_features(universe_panel)
-        today_adv_tech = adv_tech[adv_tech["date"] == target_date].drop(columns=["date"])
-        pat_scores = compute_pattern_scores(universe_panel)
-        today_patterns = pat_scores[pat_scores["date"] == target_date].drop(columns=["date"])
-    else:
-        today_adv_tech = pd.DataFrame(columns=["ticker"] + ADVANCED_TECHNICAL_FEATURES)
-        today_patterns = pd.DataFrame(columns=["ticker"] + PATTERN_FEATURES)
+    # ── Phase 3: real-economy macro + deep forensic ──
+    # (today_adv_tech/today_patterns already computed above, chunked
+    # alongside technical/intraday/hmm/pnd — A47.)
 
     real_economy = compute_real_economy_macro_panel(target_date, tickers)
     deep_forensic = compute_deep_forensic_features_panel(

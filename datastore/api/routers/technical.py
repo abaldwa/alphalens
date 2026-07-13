@@ -6,7 +6,7 @@ Specs: SPEC-TA-004, SPEC-TA-005, SPEC-TA-006
 Owner: Platform / DataStore
 Consumers: dashboard/static/technical/{chart,compare,overview,screener,alerts}.html
 
-features/technical.py (76 core indicators), features/advanced_technical.py
+features/technical.py (70 core indicators), features/advanced_technical.py
 (18 advanced), and features/pattern_scores.py (6 chart-pattern probability
 scores) write 94 real, daily-computed columns into the same Parquet store.
 
@@ -125,9 +125,19 @@ async def run_screener_template(
     SPEC-TA-005: GET /api/v1/ta/screener/run/{template_name}
     """
     try:
-        results = _screener.screen(template_name, date=date, limit=limit)
+        # ML24 (2026-07-11): over-fetch by a buffer so the ADTV recommendation
+        # floor doesn't shrink the effective result count below what the
+        # caller asked for.
+        results = _screener.screen(template_name, date=date, limit=limit * 5)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if results:
+        from config.training_universe import filter_recommendable
+
+        results_df = pd.DataFrame({"ticker": [r.ticker for r in results]})
+        recommendable_tickers = set(filter_recommendable(results_df)["ticker"])
+        results = [r for r in results if r.ticker in recommendable_tickers][:limit]
 
     rows = [
         TAScreenerRow(
@@ -272,6 +282,8 @@ async def get_alerts_today(
                     return TAAlertResponse(count=0)
                 target_date = str(row[0])
 
+            # ML24 (2026-07-11): over-fetch by a buffer, ADTV-gate below, then trim.
+            buffer_limit = limit * 5
             if category:
                 df = conn.execute(
                     """
@@ -282,7 +294,7 @@ async def get_alerts_today(
                     ORDER BY category, ticker
                     LIMIT ?
                     """,
-                    [target_date, category, limit],
+                    [target_date, category, buffer_limit],
                 ).fetchdf()
             else:
                 df = conn.execute(
@@ -294,12 +306,18 @@ async def get_alerts_today(
                     ORDER BY category, ticker
                     LIMIT ?
                     """,
-                    [target_date, limit],
+                    [target_date, buffer_limit],
                 ).fetchdf()
     except Exception as exc:
         logger.warning("alerts/today DB query failed: %s", exc)
         return TAAlertResponse(count=0)
 
+    if df.empty:
+        return TAAlertResponse(as_of_date=target_date, count=0)
+
+    from config.training_universe import filter_recommendable
+
+    df = filter_recommendable(df).head(limit)
     if df.empty:
         return TAAlertResponse(as_of_date=target_date, count=0)
 
@@ -432,7 +450,8 @@ async def get_ta_daily_watchlist(
                 ORDER BY score DESC
                 LIMIT ?
                 """,
-                [target_date, limit],
+                # ML24 (2026-07-11): over-fetch, ADTV-gate below, then trim.
+                [target_date, limit * 5],
             ).fetchdf()
     except Exception as exc:
         logger.warning("watchlist/daily TA query failed: %s", exc)
@@ -442,6 +461,12 @@ async def get_ta_daily_watchlist(
         return TAWatchlistResponse(date=target_date, count=0)
 
     universe = load_universe_raw()
+    from config.training_universe import filter_recommendable
+
+    df = filter_recommendable(df, universe=universe).head(limit)
+    if df.empty:
+        return TAWatchlistResponse(date=target_date, count=0)
+
     name_map = dict(zip(universe["ticker"], universe["company_name"].fillna("")))
     sector_map = dict(zip(universe["ticker"], universe["sector"].fillna("")))
 
@@ -702,7 +727,7 @@ async def get_ta_indicators(
     ticker: str,
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the latest available day"),
 ) -> TAIndicatorsResponse:
-    """All 76 core + 18 advanced technical indicator values for one ticker/day."""
+    """All 70 core + 18 advanced technical indicator values for one ticker/day."""
     resolved_date = resolve_date(date)
     if resolved_date is None:
         return TAIndicatorsResponse(ticker=ticker, available=False)

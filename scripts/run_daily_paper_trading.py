@@ -220,7 +220,17 @@ def _fetch_buy_candidates(
 
     if not approved:
         return pd.DataFrame(columns=CANDIDATE_COLUMNS)
-    return pd.DataFrame(approved).set_index("ticker").head(max(n_positions * 3, n_positions))
+
+    # ML24 (2026-07-11): new BUY candidates only — gates recommendation
+    # surfacing, not existing open positions (those are left alone even if
+    # a held ticker later falls below the ADTV floor).
+    from config.training_universe import filter_recommendable
+
+    approved_df = pd.DataFrame(approved)
+    approved_df = filter_recommendable(approved_df)
+    if approved_df.empty:
+        return pd.DataFrame(columns=CANDIDATE_COLUMNS)
+    return approved_df.set_index("ticker").head(max(n_positions * 3, n_positions))
 
 
 def _fetch_horizon_watchlist(

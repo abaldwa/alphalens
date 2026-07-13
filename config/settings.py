@@ -112,9 +112,25 @@ SIGNALS_DIR = DATASTORE_DIR / "signals"
 MODELS_DIR = DATASTORE_DIR / "models"
 OUTPUTS_DIR = DATASTORE_DIR / "outputs"
 LOGS_DIR = DATASTORE_DIR / "logs"
+# ML24 (2026-07-11): versioned weekly ADTV-ranked training-universe lists
+# (config/training_universe.py) — one dated JSON per refresh, so a given
+# model's training run can be traced back to the exact ticker list used.
+TRAINING_UNIVERSE_DIR = MODELS_DIR / "training_universe"
 
 # Store 2: Normalised (DuckDB analytical + SQLite transactional) — SPEC-DS-007
 DUCKDB_PATH = NORMALISED_DIR / "alphalens.duckdb"
+# A50 (2026-07-10): fno_data (121M rows) lives in its OWN DuckDB file,
+# ATTACHed transparently by datastore/api/db.py::get_duckdb_connection
+# whenever a caller connects to DUCKDB_PATH (via `SET search_path`, so
+# every existing unqualified `FROM fno_data`/`INSERT INTO fno_data`/
+# `DELETE FROM fno_data` continues to work unchanged — see that module's
+# docstring). This lets datastore/staging/publish.py publish a brand-new
+# fno_data.duckdb file and atomically os.replace() it into place instead of
+# rewriting all 121M rows in-place via `CREATE OR REPLACE TABLE fno_data
+# AS SELECT * FROM staging.fno_data` on every publish — the prior approach
+# held the DuckDB write lock for however long a 121M-row physical rewrite
+# takes, even when only one trade_date's ~50k rows actually changed.
+FNO_DATA_DB_PATH = NORMALISED_DIR / "fno_data.duckdb"
 PIPELINE_LOG_DB_PATH = NORMALISED_DIR / "pipeline_log.db"
 SCHEDULER_DB_PATH = NORMALISED_DIR / "scheduler.db"
 # 2026-07-05: cross-process advisory lock (fcntl.flock) so run_steps_for_date
@@ -178,6 +194,25 @@ DAILY_PIPELINE_SCHEDULE_TIME = "18:00"  # HH:MM, Asia/Kolkata, mon-fri
 # gap-backfill portion. See schedule_morning_catchup's docstring.
 MORNING_CATCHUP_SCHEDULE_TIME = "07:30"  # HH:MM, Asia/Kolkata, mon-fri
 DEFAULT_RETRY_DELAY_SECONDS = 60
+# Pipeline & Monitoring Remediation Phase 1 (2026-07-10): a pipeline_runs
+# row inserted with status='running' (at the start of
+# pipeline_scheduler.py::run_startup_sequence) and never updated to a
+# terminal status within this many minutes is treated as a crashed run
+# (e.g. OOM-killed process) by GET /api/v1/ops/runs's `is_stale` flag,
+# rather than silently continuing to look like "in progress". Set well
+# above the pipeline's own expected run time (typically well under an
+# hour) so a genuinely still-running pipeline is never flagged stale.
+PIPELINE_STALE_RUN_THRESHOLD_MINUTES = 180
+# Pipeline & Monitoring Remediation Phase 2 (2026-07-10): single, uniform
+# memory ceiling shared by ingestion/scheduler/resource_guard.py's
+# adaptive chunk-sizing (self-heal, triggers at 80% of this by default),
+# and intended as the same figure a future DuckDB `memory_limit` PRAGMA
+# and the real-time Ops resource monitor's alert threshold should read
+# from — replacing today's scattered, independently-chosen constants
+# (chunk sizes, worker counts) that don't share a common basis. Sized
+# conservatively below this machine's typical available RAM; adjust if
+# the laptop's real headroom is measured to be meaningfully different.
+PIPELINE_MEMORY_CEILING_MB = 6144
 RETRAIN_OVERDUE_MULTIPLIER = 1.5  # days_since_retrain > interval * this => overdue
 # 2026-07-07: retrain cadence for all registry-tracked models (hmm_market,
 # pnd_detector, signal_5d/21d/63d, meta_labeler, conformal_signal5d,
@@ -206,6 +241,12 @@ PIPELINE_WINDOW_HOURS = 23       # Updated: 23-hour window (was 15 h)
 # Checks RETRAIN_OVERDUE_MULTIPLIER x DEFAULT_TRAINING_INTERVAL_DAYS.
 MODEL_TRAINING_SCHEDULE_TIME = "12:00"     # HH:MM, Asia/Kolkata, saturday
 MODEL_TRAINING_DAY_OF_WEEK = "sat"
+# Pipeline & Monitoring Remediation Phase 4 (A52, 2026-07-10):
+# pipeline_scheduler.py::schedule_model_training_nightly's alternative to
+# the single weekly Saturday job above — spreads training across Mon-Thu
+# 11pm-ish nights (_MODEL_TRAINING_GROUPS), well clear of the 18:00 daily
+# pipeline's own window.
+MODEL_TRAINING_NIGHTLY_TIME = "23:00"      # HH:MM, Asia/Kolkata
 # Weekend jobs fire Saturday morning — markets are closed, full CPU available.
 WEEKEND_FEATURE_BACKFILL_TIME = "09:00"   # HH:MM, Asia/Kolkata, saturday
 WEEKEND_FUNDAMENTALS_TIME = "10:30"       # HH:MM, Asia/Kolkata, saturday
@@ -242,6 +283,18 @@ FORENSIC_SCORING_SCHEDULE_TIME = "10:00"     # HH:MM, Asia/Kolkata, sunday
 # 05:00 Saturday — a single early run covers the entire weekend, rather than
 # duplicating it into two slots.
 NSE_XBRL_FUNDAMENTALS_SCHEDULE_TIME = "05:00"  # HH:MM, Asia/Kolkata, saturday
+# A54 (2026-07-10): scripts/backfill_promoter_pledge_nse.py and
+# scripts/backfill_balance_sheet_from_screener.py are real, live-verified
+# (2026-07-07) backfills that were simply never scheduled — 71% of
+# shareholding.promoter_pledge rows were NULL purely because of that, not
+# because the underlying NSE/Screener sources are actually unavailable.
+# Both are per-ticker HTTP loops over the full universe (not bulk
+# endpoints), so scheduled Saturday alongside weekend_fundamentals — after
+# nse_xbrl_fundamentals/weekend_feature_backfill/weekend_fundamentals have
+# refreshed the base fundamentals/shareholding rows these two enrich, and
+# before model_training (12:00 Saturday).
+PROMOTER_PLEDGE_BACKFILL_SCHEDULE_TIME = "11:00"    # HH:MM, Asia/Kolkata, saturday
+BALANCE_SHEET_BACKFILL_SCHEDULE_TIME = "11:30"      # HH:MM, Asia/Kolkata, saturday
 
 # ---------------------------------------------------------------------------
 # Observability — SPEC-OBS-001 through SPEC-OBS-005
@@ -336,6 +389,17 @@ BACKFILL_YEARS = 5
 # ---------------------------------------------------------------------------
 SCREENER_RAW_DIR = RAW_DIR / "screener"
 SCREENER_RATE_LIMIT_SLEEP_SECONDS = 1.0
+# [AS BUILT, A35 fix 2026-07-09] batch_export() accumulates fundamentals
+# records in memory and flushes via one write_fundamentals_batch() call
+# every N tickers, instead of one HTTP POST per ticker (see
+# ingestion/scrapers/screener.py::batch_export and FeatureBacklog.md's
+# A35 entry). N=50 is a deliberate partial-checkpoint compromise per A35's
+# own tradeoff note: a crash mid-run loses at most one chunk's worth of
+# already-fetched-but-unflushed tickers, not the "each ticker lands the
+# moment it's fetched" durability of the old per-row-POST design, but also
+# not "lose the entire multi-hour run" if it were one single end-of-run
+# flush.
+SCREENER_BATCH_EXPORT_CHUNK_SIZE = 50
 # Conservative PIT defaults when Screener.in doesn't expose the real
 # disclosure date directly (SPEC-PIPE-003): NSE listing rules give
 # companies up to 45 days after quarter-end to announce results, and BSE
@@ -380,6 +444,15 @@ GROWW_RATE_LIMIT_SLEEP_SECONDS = 0.5
 # SPEC-PIPE-002: backward adjustment; raw NSE prices preserved in raw_* columns.
 # Set False to disable all adjustment (raw == adjusted); True for full CA adjustment.
 PRICE_ADJUSTMENT_ENABLED = True
+
+# ---------------------------------------------------------------------------
+# 2026-07-09: was put on hold at user request (alongside 800-ticker cap on
+# the model_training job) while investigating that day's memory issues.
+# Reinstated 2026-07-11 at user request. The 800-ticker model_training cap
+# (DEFAULT_MAX_TICKERS in retrain_phase2.py) was NOT part of this
+# reinstatement — left as-is since it wasn't asked for.
+# ---------------------------------------------------------------------------
+MORNING_CATCHUP_ENABLED = True
 
 # ---------------------------------------------------------------------------
 # Corporate actions ingestion — NSE corporate action filings

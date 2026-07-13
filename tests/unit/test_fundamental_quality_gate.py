@@ -161,8 +161,27 @@ class TestIntegrationWriteBatchPopulatesFlags:
         return conn
 
     def test_write_batch_flags_bad_row_in_real_table(self):
+        """A62 (2026-07-10): previously exercised via scripts/
+        load_kaggle_fundamentals.py's _write_batch(), removed when Kaggle
+        was deleted as dead code. What this test actually exercises —
+        validate_and_annotate's quality_flag/quality_flag_reason output
+        landing correctly via a real INSERT against the real schema DDL —
+        is unrelated to Kaggle specifically, so it's inlined here directly
+        rather than importing a deleted module."""
         pytest.importorskip("duckdb")
-        from scripts.load_kaggle_fundamentals import _write_batch
+
+        def _write_batch(conn, rows, cols):
+            written = 0
+            for row in rows:
+                annotated = validate_and_annotate(dict(row))
+                columns = list(annotated.keys())
+                placeholders = ", ".join("?" for _ in columns)
+                conn.execute(
+                    f"INSERT INTO fundamentals ({', '.join(columns)}) VALUES ({placeholders})",
+                    [annotated[c] for c in columns],
+                )
+                written += 1
+            return written, []
 
         conn = self._make_conn()
         bad_row = {

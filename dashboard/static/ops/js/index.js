@@ -66,6 +66,93 @@ function loadSchedulerResources() {
     .catch((e) => showError("scheduler-resources-card", e));
 }
 
+// A48: near-real-time complement to loadSchedulerResources' 30-min
+// monitor-log snapshot — GET /api/v1/ops/live-resources reads
+// alphalens-scheduler.service's MainPID via psutil on every call (no
+// caching), so polling this every 15s during an active run shows memory
+// pressure building instead of waiting for the next timer tick. Polling
+// only runs while _liveResourcesPollActive is true (see
+// _updateLiveResourcesPolling below, driven off loadRuns' "running" row).
+let _liveResourcesPollHandle = null;
+let _liveResourcesPollActive = false;
+
+function loadLiveResources() {
+  apiGet("/api/v1/ops/live-resources")
+    .then((r) => {
+      const c = document.getElementById("live-resources-card");
+      if (r.error && r.pid == null) {
+        c.innerHTML = "";
+        c.appendChild(el("div", { class: "card" }, [
+          el("div", { class: "kv-row" }, [
+            el("span", { class: "kv-key" }, ["Status"]),
+            el("span", { style: "font-size:11px;color:var(--red)" }, [r.error]),
+          ]),
+        ]));
+        return;
+      }
+      const rows = [
+        el("div", { class: "kv-row" }, [
+          el("span", { class: "kv-key" }, ["Scheduler PID"]),
+          el("span", { class: "mono" }, [String(r.pid ?? "—")]),
+        ]),
+        el("div", { class: "kv-row" }, [
+          el("span", { class: "kv-key" }, ["RSS"]),
+          el("span", { class: "mono" }, [
+            r.rss_mb != null
+              ? el("span", { class: "badge " + (r.high_pressure ? "b-red" : "b-green") }, [
+                  `${r.rss_mb.toFixed(0)} MB / ${r.memory_ceiling_mb != null ? r.memory_ceiling_mb.toFixed(0) : "—"} MB ceiling`,
+                ])
+              : "—",
+          ]),
+        ]),
+        el("div", { class: "kv-row" }, [
+          el("span", { class: "kv-key" }, ["CPU"]),
+          el("span", { class: "mono" }, [r.cpu_percent != null ? `${r.cpu_percent.toFixed(1)}%` : "—"]),
+        ]),
+        el("div", { class: "kv-row" }, [
+          el("span", { class: "kv-key" }, ["Polled At"]),
+          el("span", { class: "mono", style: "font-size:11px" }, [r.polled_at || "—"]),
+        ]),
+        el("div", { class: "kv-row" }, [
+          el("span", { class: "kv-key" }, ["Polling"]),
+          el("span", { class: "badge " + (_liveResourcesPollActive ? "b-green" : "b-gray") }, [
+            _liveResourcesPollActive ? "live (15s)" : "idle — no run in progress",
+          ]),
+        ]),
+      ];
+      if (r.error) {
+        rows.push(el("div", { class: "kv-row" }, [
+          el("span", { class: "kv-key" }, ["Note"]),
+          el("span", { style: "font-size:11px;color:var(--red)" }, [r.error]),
+        ]));
+      }
+      c.innerHTML = "";
+      c.appendChild(el("div", { class: "card" }, rows));
+    })
+    .catch((e) => showError("live-resources-card", e));
+}
+
+// Called after each loadRuns() resolves: if the most recent run row is
+// still status='running', start (or keep running) a 15s poll of
+// live-resources; otherwise stop polling (it would just report the
+// scheduler's idle baseline, not useful signal) but leave the last
+// reading visible.
+function _updateLiveResourcesPolling(runs) {
+  const hasActiveRun = Array.isArray(runs) && runs.some((r) => r.status === "running");
+  if (hasActiveRun && !_liveResourcesPollActive) {
+    _liveResourcesPollActive = true;
+    loadLiveResources();
+    _liveResourcesPollHandle = window.setInterval(loadLiveResources, 15000);
+  } else if (!hasActiveRun && _liveResourcesPollActive) {
+    _liveResourcesPollActive = false;
+    if (_liveResourcesPollHandle) {
+      window.clearInterval(_liveResourcesPollHandle);
+      _liveResourcesPollHandle = null;
+    }
+    loadLiveResources(); // one final read so the card reflects the settled state
+  }
+}
+
 function loadHeartbeats() {
   apiGet("/api/v1/ops/heartbeats")
     .then((rows) => {
@@ -147,8 +234,92 @@ function loadSteps() {
     .then((r) => {
       document.getElementById("steps-date").textContent = r.date;
       renderStepsTable(r.steps);
+      loadPipelineStages(r.steps);
     })
     .catch((e) => showError("steps-table", e));
+}
+
+// Pipeline & Monitoring Remediation — visual rollup of checkpoint.STEPS
+// into the 3 stages the user asked to see at a glance: Data Ingestion,
+// Feature Engineering, Model Training. "Model Training" here also covers
+// the daily inference/signal-write/publish tail (run_models onward) since
+// that's the same STEPS chain the checkpoint tracks; the separately-
+// scheduled nightly model_training_<group> jobs (A52 — spread across the
+// week, 11pm-6am) are shown as their own sub-rows using scheduler_heartbeats,
+// since checkpoint.STEPS has no entry for them at all.
+const STAGE_GROUPS = [
+  {
+    key: "ingestion", title: "Data Ingestion",
+    steps: ["download_bhavcopy", "download_fno", "download_macro", "download_index_ohlcv",
+      "download_corporate_actions", "download_large_deals", "attribute_bulk_deals",
+      "adjust_prices", "data_integrity_check"],
+  },
+  {
+    key: "features", title: "Feature Engineering",
+    steps: ["compute_features", "check_ta_alerts"],
+  },
+  {
+    key: "models", title: "Model Training",
+    steps: ["run_models", "write_signals", "sanity_check", "paper_trade", "publish_and_snapshot"],
+  },
+];
+
+function worstStatusColor(statuses) {
+  if (statuses.some((s) => s === "failed")) return "st-red";
+  if (statuses.some((s) => s === "running")) return "st-amber";
+  if (statuses.length && statuses.every((s) => s === "success")) return "st-green";
+  return "st-gray";
+}
+
+function renderPipelineStages(steps, nightlyGroups) {
+  const c = document.getElementById("pipeline-stages-diagram");
+  const byName = Object.fromEntries(steps.map((s) => [s.step_name, s]));
+
+  const boxes = STAGE_GROUPS.map((stage, i) => {
+    const stageSteps = stage.steps.map((name) => byName[name]).filter(Boolean);
+    const color = worstStatusColor(stageSteps.map((s) => s.status || "never_run"));
+    const box = el("div", { class: "stage-box " + color }, [
+      el("div", { class: "stage-head" }, [
+        el("div", { class: "stage-title" }, [
+          el("span", { class: "stage-dot " + color }, []), stage.title,
+        ]),
+      ]),
+      el("div", { class: "stage-steps" }, stageSteps.map((s) => {
+        const cls = { success: "b-green", failed: "b-red", running: "b-amber", never_run: "b-gray", skipped: "b-gray" }[s.status] || "b-gray";
+        return el("div", { class: "stage-step-row" }, [
+          el("span", { class: "stage-step-name" }, [s.step_name]),
+          el("span", { class: "badge " + cls }, [s.status || "never_run"]),
+        ]);
+      })),
+      stage.key === "models" && nightlyGroups.length
+        ? el("div", { class: "stage-steps", style: "margin-top:8px;border-top:1px solid var(--bdr);padding-top:8px" }, [
+            el("div", { style: "font-size:10px;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px" }, ["Nightly Training (A52)"]),
+            ...nightlyGroups.map((g) => {
+              const cls = g.is_stale ? "b-amber" : ({ success: "b-green", failed: "b-red", skipped: "b-gray" }[g.last_status] || "b-gray");
+              return el("div", { class: "stage-step-row" }, [
+                el("span", { class: "stage-step-name" }, [g.job_id.replace("model_training_", "")]),
+                el("span", { class: "badge " + cls }, [g.is_stale ? "stale" : (g.last_status || "never_run")]),
+              ]);
+            }),
+          ])
+        : "",
+    ]);
+    const wrapped = [box];
+    if (i < STAGE_GROUPS.length - 1) wrapped.push(el("div", { class: "stage-arrow" }, ["→"]));
+    return wrapped;
+  }).flat();
+
+  c.innerHTML = "";
+  c.appendChild(el("div", { class: "stage-flow" }, boxes));
+}
+
+function loadPipelineStages(steps) {
+  apiGet("/api/v1/ops/heartbeats")
+    .then((heartbeats) => {
+      const nightlyGroups = heartbeats.filter((h) => h.job_id && h.job_id.startsWith("model_training_"));
+      renderPipelineStages(steps, nightlyGroups);
+    })
+    .catch(() => renderPipelineStages(steps, []));
 }
 
 const runsSortState = { key: "run_id", dir: "desc" };
@@ -181,7 +352,12 @@ function renderRunsTable(runs) {
     el("tbody", {}, sorted.map((run) => el("tr", {}, [
       el("td", { class: "mono" }, [String(run.run_id ?? "—")]),
       el("td", { class: "mono" }, [run.date || "—"]),
-      el("td", {}, [el("span", { class: "badge " + (run.status === "success" ? "b-green" : "b-red") }, [run.status || "—"])]),
+      el("td", {}, [
+        el("span", { class: "badge " + (run.status === "success" ? "b-green" : "b-red") }, [run.status || "—"]),
+        run.is_stale
+          ? el("span", { class: "badge b-red", style: "margin-left:4px", title: "status='running' far longer than expected — the process that started this run almost certainly crashed without recording a final status" }, ["STALE"])
+          : "",
+      ]),
       el("td", { style: "font-size:11px" }, [
         run.failed_steps && run.failed_steps.length
           ? el("div", {}, run.failed_steps.map((fs) => el("div", {}, [
@@ -216,6 +392,7 @@ function loadRuns() {
     .then((r) => {
       lastRunsData = r.runs;
       renderRunsTable(r.runs);
+      _updateLiveResourcesPolling(r.runs);
     })
     .catch((e) => showError("runs-table", e));
 }
@@ -359,10 +536,95 @@ function actOnMissedJob(findingId, action, row) {
     });
 }
 
+// Pipeline & Monitoring Remediation Phase 2/5 (A50): live status of the
+// two cross-process fcntl.flock locks — previously invisible; a stuck
+// lock (e.g. an orphaned process) meant a job silently never ran.
+function loadLockStatus() {
+  apiGet("/api/v1/ops/lock-status")
+    .then((r) => {
+      const c = document.getElementById("lock-status-table");
+      const table = el("table", {}, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", {}, ["Lock"]), el("th", {}, ["Status"]), el("th", {}, ["Last Activity"]),
+        ])]),
+        el("tbody", {}, r.locks.map((l) => el("tr", {}, [
+          el("td", { style: "font-weight:600" }, [l.name]),
+          el("td", {}, [
+            l.locked
+              ? el("span", { class: "badge b-amber" }, ["HELD"])
+              : el("span", { class: "badge b-green" }, ["FREE"]),
+          ]),
+          el("td", { class: "mono", style: "font-size:11px" }, [l.last_modified_at ? l.last_modified_at.slice(0, 19).replace("T", " ") : "never"]),
+        ]))),
+      ]);
+      c.innerHTML = "";
+      c.appendChild(el("div", { class: "card" }, [table]));
+    })
+    .catch((e) => showError("lock-status-table", e));
+}
+
+// A53: models with a real last_trained_date that nothing in
+// daily_inference.py (or any other known consumer) actually reads — the
+// class of bug behind A38 (TFT/BiLSTM) and A40 (StackingEnsemble).
+function loadUnusedModels() {
+  apiGet("/api/v1/ops/unused-models")
+    .then((r) => {
+      if (!r.unused || r.unused.length === 0) {
+        renderEmptyState("unused-models-table", { icon: "✓", title: "No trained-but-unused models", detail: "Every trained model in registry.json has a known consumer." });
+        return;
+      }
+      const table = el("table", {}, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", {}, ["Model"]), el("th", {}, ["Last Trained"]),
+        ])]),
+        el("tbody", {}, r.unused.map((m) => el("tr", {}, [
+          el("td", { style: "font-weight:600" }, [
+            el("span", { class: "badge b-amber", style: "margin-right:6px" }, ["UNUSED"]),
+            m.model_name,
+          ]),
+          el("td", { class: "mono" }, [m.last_trained_date || "—"]),
+        ]))),
+      ]);
+      const c = document.getElementById("unused-models-table");
+      c.innerHTML = "";
+      c.appendChild(el("div", { class: "card" }, [table]));
+    })
+    .catch((e) => showError("unused-models-table", e));
+}
+
+// A46: every intentionally-swallowed exception in the daily pipeline,
+// with what breaks downstream if it fires and the concrete remediation —
+// see ingestion/scheduler/exception_catalog.py.
+function loadExceptionCatalog() {
+  apiGet("/api/v1/ops/exception-catalog")
+    .then((r) => {
+      const c = document.getElementById("exception-catalog-table");
+      const sevCls = { critical: "b-red", warning: "b-amber", info: "b-gray" };
+      const table = el("table", {}, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", {}, ["Step"]), el("th", {}, ["Severity"]), el("th", {}, ["Impact"]), el("th", {}, ["Remediation"]),
+        ])]),
+        el("tbody", {}, r.entries.map((e2) => el("tr", {}, [
+          el("td", { style: "font-weight:600" }, [e2.step_name]),
+          el("td", {}, [el("span", { class: "badge " + (sevCls[e2.severity] || "b-gray") }, [e2.severity])]),
+          el("td", { style: "font-size:12px" }, [e2.impact]),
+          el("td", { style: "font-size:12px" }, [e2.remediation]),
+        ]))),
+      ]);
+      c.innerHTML = "";
+      c.appendChild(el("div", { class: "card" }, [table]));
+    })
+    .catch((e) => showError("exception-catalog-table", e));
+}
+
 loadSchedulerResources();
+loadLiveResources();
 loadHeartbeats();
 loadSteps();
 loadRuns();
 loadFreshness();
 loadIntegrityFindings();
 loadMissedJobs();
+loadLockStatus();
+loadUnusedModels();
+loadExceptionCatalog();

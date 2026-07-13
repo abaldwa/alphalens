@@ -155,6 +155,16 @@ def score_universe(
     features = compute_multibagger_features(ohlcv_panel, benchmark_wide, sector_map)
     latest_per_ticker = features.sort_values("date").groupby("ticker").tail(1).set_index("ticker")
 
+    # ML24/ML27 (2026-07-11): same in_training_universe tag as daily_inference.py's
+    # signal models — see config/training_universe.py's module docstring.
+    from config.training_universe import load_current_training_universe
+
+    try:
+        training_universe_set = set(load_current_training_universe())
+    except Exception as exc:
+        logger.warning(f"score_multibagger: could not load training universe, in_training_universe left null today ({exc})")
+        training_universe_set = None
+
     results: Dict[str, bool] = {}
     for ticker in tickers:
         if ticker not in latest_per_ticker.index:
@@ -166,20 +176,21 @@ def score_universe(
             row = scored.iloc[0]
 
             if write:
-                client.write_multibagger_score(
-                    {
-                        "date": run_date.isoformat(),
-                        "ticker": ticker,
-                        "mb_probability": _none_if_nan(row["mb_probability"]),
-                        "mb_tier": row["mb_tier"],
-                        "mb_archetype": row["mb_archetype"],
-                        "survival_6m": _none_if_nan(row["mb_survival_6m"]),
-                        "survival_12m": _none_if_nan(row["mb_survival_12m"]),
-                        "survival_18m": _none_if_nan(row["mb_survival_18m"]),
-                        "survival_24m": _none_if_nan(row["mb_survival_24m"]),
-                        "survival_36m": _none_if_nan(row["mb_survival_36m"]),
-                    }
-                )
+                mb_payload = {
+                    "date": run_date.isoformat(),
+                    "ticker": ticker,
+                    "mb_probability": _none_if_nan(row["mb_probability"]),
+                    "mb_tier": row["mb_tier"],
+                    "mb_archetype": row["mb_archetype"],
+                    "survival_6m": _none_if_nan(row["mb_survival_6m"]),
+                    "survival_12m": _none_if_nan(row["mb_survival_12m"]),
+                    "survival_18m": _none_if_nan(row["mb_survival_18m"]),
+                    "survival_24m": _none_if_nan(row["mb_survival_24m"]),
+                    "survival_36m": _none_if_nan(row["mb_survival_36m"]),
+                }
+                if training_universe_set is not None:
+                    mb_payload["in_training_universe"] = ticker in training_universe_set
+                client.write_multibagger_score(mb_payload)
             results[ticker] = True
         except Exception as exc:
             logger.warning(f"score_multibagger failed for {ticker}: {exc}")

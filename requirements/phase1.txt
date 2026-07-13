@@ -71,3 +71,7 @@ fastapi==0.138.0
 uvicorn==0.32.1
 pydantic==2.9.2
 httpx==0.27.2
+
+# Server-side PDF export (F4 Thesis Builder, FO6 Investigation Report) —
+# pure-Python, no headless-browser/JS dependency, per user library decision.
+reportlab==4.2.5

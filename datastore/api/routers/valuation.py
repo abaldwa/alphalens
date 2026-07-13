@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-from config.settings import SIGNALS_DUCKDB_PATH
+from config.settings import DUCKDB_PATH, SIGNALS_DUCKDB_PATH
 from config.universe import load_universe_raw
 from datastore.api.db import get_duckdb_connection
 from systems.damodaran_valuation.dcf.models import FCFFInputs, FCFFTwoStageModel
@@ -479,4 +479,127 @@ async def get_relative_valuation(
         "current_price": current_price,
         "implied_price": implied_price,
         "coefficients": result.coefficients,
+    }
+
+
+@router.get("/accuracy/backtest")
+async def get_valuation_accuracy(
+    horizon_days: int = Query(
+        default=5, ge=1, le=252,
+        description="Trading-day-ish lookforward horizon (calendar days) used to price realized outcomes.",
+    ),
+    min_age_days: Optional[int] = Query(
+        default=None,
+        description="Only score valuation_signals rows at least this many calendar days old "
+        "(defaults to horizon_days, so every scored row has a real, non-fabricated forward price).",
+    ),
+) -> Dict[str, Any]:
+    """
+    F6 — backtest past `valuation_signals` predictions against realized price outcomes.
+
+    For every (ticker, date) row in `valuation_signals` old enough that
+    `horizon_days` has actually elapsed, joins the entry close price (on or
+    before the signal date) and the realized close price `horizon_days`
+    later (on or before signal date + horizon_days, real `ohlcv_adjusted`
+    rows only — no interpolation/fabrication) and checks whether the sign
+    of `margin_of_safety` (undervalued vs overvalued) matches the sign of
+    the realized forward return. Rows with no realized price yet (too
+    recent, or the ticker has a data gap) are excluded from scoring, not
+    guessed at.
+    """
+    min_age = min_age_days if min_age_days is not None else horizon_days
+    cutoff_date = (date_type.today() - pd.Timedelta(days=min_age)).isoformat()
+
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+            if "valuation_signals" not in tables:
+                return {"count": 0, "scored": 0, "hit_rate": None, "rows": []}
+            sig_rows = conn.execute(
+                """
+                SELECT date, ticker, lifecycle_stage, intrinsic_value,
+                       valuation_gap_pct, margin_of_safety
+                FROM valuation_signals
+                WHERE date <= ?
+                ORDER BY date DESC, ticker
+                """,
+                [cutoff_date],
+            ).fetchall()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"valuation_signals query failed: {exc}")
+
+    if not sig_rows:
+        return {"count": 0, "scored": 0, "hit_rate": None, "rows": []}
+
+    out_rows: List[Dict[str, Any]] = []
+    try:
+        with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=True) as conn:
+            for sig_date, ticker, lifecycle_stage, intrinsic_value, gap_pct, mos in sig_rows:
+                entry_row = conn.execute(
+                    "SELECT close FROM ohlcv_adjusted WHERE ticker = ? AND date <= ? "
+                    "ORDER BY date DESC LIMIT 1",
+                    [ticker, sig_date],
+                ).fetchone()
+                if not entry_row or entry_row[0] is None:
+                    continue
+                entry_price = float(entry_row[0])
+
+                target_date = (pd.to_datetime(sig_date) + pd.Timedelta(days=horizon_days)).date().isoformat()
+                fwd_row = conn.execute(
+                    "SELECT date, close FROM ohlcv_adjusted WHERE ticker = ? AND date > ? AND date <= ? "
+                    "ORDER BY date DESC LIMIT 1",
+                    [ticker, sig_date, target_date],
+                ).fetchone()
+                if not fwd_row or fwd_row[1] is None:
+                    # No real forward-priced bar strictly after the signal date — skip, don't fabricate.
+                    continue
+                realized_date, realized_price = fwd_row
+                realized_price = float(realized_price)
+                realized_return_pct = (realized_price / entry_price - 1.0) * 100.0
+
+                predicted_undervalued = (mos is not None and mos > 0)
+                realized_up = realized_return_pct > 0
+                hit = (predicted_undervalued == realized_up) if mos is not None else None
+
+                out_rows.append({
+                    "ticker": ticker,
+                    "signal_date": str(sig_date),
+                    "lifecycle_stage": lifecycle_stage,
+                    "intrinsic_value": intrinsic_value,
+                    "valuation_gap_pct": gap_pct,
+                    "margin_of_safety": mos,
+                    "predicted_undervalued": predicted_undervalued if mos is not None else None,
+                    "entry_price": entry_price,
+                    "realized_date": str(realized_date),
+                    "realized_price": realized_price,
+                    "realized_return_pct": round(realized_return_pct, 3),
+                    "hit": hit,
+                })
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"ohlcv_adjusted lookup failed: {exc}")
+
+    scored = [r for r in out_rows if r["hit"] is not None]
+    hits = sum(1 for r in scored if r["hit"])
+    hit_rate = (hits / len(scored)) if scored else None
+
+    undervalued_scored = [r for r in scored if r["predicted_undervalued"]]
+    overvalued_scored = [r for r in scored if not r["predicted_undervalued"]]
+    avg_return_undervalued = (
+        sum(r["realized_return_pct"] for r in undervalued_scored) / len(undervalued_scored)
+        if undervalued_scored else None
+    )
+    avg_return_overvalued = (
+        sum(r["realized_return_pct"] for r in overvalued_scored) / len(overvalued_scored)
+        if overvalued_scored else None
+    )
+
+    return {
+        "horizon_days": horizon_days,
+        "count": len(out_rows),
+        "scored": len(scored),
+        "hits": hits,
+        "hit_rate": round(hit_rate, 4) if hit_rate is not None else None,
+        "avg_return_undervalued_pct": round(avg_return_undervalued, 3) if avg_return_undervalued is not None else None,
+        "avg_return_overvalued_pct": round(avg_return_overvalued, 3) if avg_return_overvalued is not None else None,
+        "rows": out_rows,
     }

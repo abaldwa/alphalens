@@ -7,14 +7,23 @@
 <link rel="stylesheet" href="../css/tokens.css">
 <link rel="stylesheet" href="../css/components.css">
 <link rel="stylesheet" href="../css/shell.css">
+<link rel="stylesheet" href="css/responsive.css">
 </head>
 <body>
 <div class="app-bar" id="app-bar"></div>
 <div class="sub-tabs" id="sub-tabs"></div>
 <div class="page">
   <div class="sec">
+    <div class="sec-head"><span class="sec-title">Pipeline Stages</span><span class="sec-sub">Data Ingestion → Feature Engineering → Model Training</span></div>
+    <div id="pipeline-stages-diagram"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
     <div class="sec-head"><span class="sec-title">Scheduler Service &amp; Resources</span></div>
     <div id="scheduler-resources-card"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Live Resource Monitor</span><span class="sec-sub">A48 — near-real-time, polls every 15s while a run is active</span></div>
+    <div id="live-resources-card"><div class="loading">Loading…</div></div>
   </div>
   <div class="sec">
     <div class="sec-head"><span class="sec-title">Recurring Jobs</span></div>
@@ -39,6 +48,18 @@
   <div class="sec">
     <div class="sec-head"><span class="sec-title">Missed Jobs</span><span class="sec-sub">A21 — weekly completeness audit, pending review</span></div>
     <div id="missed-jobs-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Jobs &amp; Models Monitor</span><span class="sec-sub">A45/A47-A53 — Pipeline &amp; Monitoring Remediation</span></div>
+    <div id="lock-status-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Trained-But-Unused Models</span><span class="sec-sub">A53 — the class of bug behind A38/A40</span></div>
+    <div id="unused-models-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Exception Catalog</span><span class="sec-sub">A46 — swallowed exceptions, impact &amp; remediation</span></div>
+    <div id="exception-catalog-table"><div class="loading">Loading…</div></div>
   </div>
 </div>
 <script src="../js/api.js"></script>

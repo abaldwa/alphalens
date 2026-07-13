@@ -1,0 +1,304 @@
+{
+  "signal_5d": {
+    "model": "signal_5d",
+    "n": 5828,
+    "hit_rate": 0.2800274536719286,
+    "threshold": 0.05,
+    "median_days_to_hit": 3.0,
+    "decile_breakdown": [
+      {
+        "decile": 0,
+        "n": 583,
+        "hit_rate": 0.2624356775300172
+      },
+      {
+        "decile": 1,
+        "n": 583,
+        "hit_rate": 0.2624356775300172
+      },
+      {
+        "decile": 2,
+        "n": 583,
+        "hit_rate": 0.28987993138936535
+      },
+      {
+        "decile": 3,
+        "n": 582,
+        "hit_rate": 0.23195876288659795
+      },
+      {
+        "decile": 4,
+        "n": 583,
+        "hit_rate": 0.27958833619210977
+      },
+      {
+        "decile": 5,
+        "n": 583,
+        "hit_rate": 0.27958833619210977
+      },
+      {
+        "decile": 6,
+        "n": 582,
+        "hit_rate": 0.2697594501718213
+      },
+      {
+        "decile": 7,
+        "n": 583,
+        "hit_rate": 0.24871355060034306
+      },
+      {
+        "decile": 8,
+        "n": 583,
+        "hit_rate": 0.29845626072041165
+      },
+      {
+        "decile": 9,
+        "n": 583,
+        "hit_rate": 0.37735849056603776
+      }
+    ],
+    "shap_top_driver_breakdown": [
+      {
+        "top_feature": "trend_consistency_21",
+        "n": 2826,
+        "hit_rate": 0.24876150035385705
+      },
+      {
+        "top_feature": "gap_down_pct",
+        "n": 2463,
+        "hit_rate": 0.28907835972391394
+      },
+      {
+        "top_feature": "gap_up_pct",
+        "n": 510,
+        "hit_rate": 0.4137254901960784
+      },
+      {
+        "top_feature": "ema_ribbon_alignment",
+        "n": 20,
+        "hit_rate": 0.3
+      },
+      {
+        "top_feature": "vol_compression_63d",
+        "n": 6,
+        "hit_rate": 0.0
+      }
+    ]
+  },
+  "signal_21d": {
+    "model": "signal_21d",
+    "n": 73406,
+    "hit_rate": 0.30426668119772227,
+    "threshold": 0.1,
+    "median_days_to_hit": 16.0,
+    "decile_breakdown": [
+      {
+        "decile": 0,
+        "n": 7341,
+        "hit_rate": 0.42146846478681377
+      },
+      {
+        "decile": 1,
+        "n": 7341,
+        "hit_rate": 0.3679335240430459
+      },
+      {
+        "decile": 2,
+        "n": 7340,
+        "hit_rate": 0.3335149863760218
+      },
+      {
+        "decile": 3,
+        "n": 7341,
+        "hit_rate": 0.31671434409481
+      },
+      {
+        "decile": 4,
+        "n": 7340,
+        "hit_rate": 0.3215258855585831
+      },
+      {
+        "decile": 5,
+        "n": 7341,
+        "hit_rate": 0.2979158152840212
+      },
+      {
+        "decile": 6,
+        "n": 7340,
+        "hit_rate": 0.28188010899182564
+      },
+      {
+        "decile": 7,
+        "n": 7341,
+        "hit_rate": 0.2624982972347092
+      },
+      {
+        "decile": 8,
+        "n": 7340,
+        "hit_rate": 0.24877384196185287
+      },
+      {
+        "decile": 9,
+        "n": 7341,
+        "hit_rate": 0.19043727012668574
+      }
+    ],
+    "shap_top_driver_breakdown": [
+      {
+        "top_feature": "base_breakout_ratio",
+        "n": 41724,
+        "hit_rate": 0.2688620458249449
+      },
+      {
+        "top_feature": "atr_14_pct",
+        "n": 23733,
+        "hit_rate": 0.3010575991235832
+      },
+      {
+        "top_feature": "gap_up_pct",
+        "n": 5967,
+        "hit_rate": 0.5138260432378079
+      },
+      {
+        "top_feature": "pct_rank_63d",
+        "n": 1228,
+        "hit_rate": 0.46172638436482083
+      },
+      {
+        "top_feature": "trend_consistency_21",
+        "n": 648,
+        "hit_rate": 0.5169753086419753
+      },
+      {
+        "top_feature": "hist_vol_21",
+        "n": 54,
+        "hit_rate": 0.037037037037037035
+      },
+      {
+        "top_feature": "bb_width_pct",
+        "n": 51,
+        "hit_rate": 0.0392156862745098
+      }
+    ]
+  },
+  "signal_63d": {
+    "model": "signal_63d",
+    "n": 3669,
+    "hit_rate": 0.44998637230853095,
+    "threshold": 0.15,
+    "median_days_to_hit": 32.0,
+    "decile_breakdown": [
+      {
+        "decile": 0,
+        "n": 367,
+        "hit_rate": 0.3079019073569482
+      },
+      {
+        "decile": 1,
+        "n": 367,
+        "hit_rate": 0.35149863760217986
+      },
+      {
+        "decile": 2,
+        "n": 367,
+        "hit_rate": 0.44686648501362397
+      },
+      {
+        "decile": 3,
+        "n": 367,
+        "hit_rate": 0.44141689373297005
+      },
+      {
+        "decile": 4,
+        "n": 367,
+        "hit_rate": 0.45231607629427795
+      },
+      {
+        "decile": 5,
+        "n": 366,
+        "hit_rate": 0.49453551912568305
+      },
+      {
+        "decile": 6,
+        "n": 367,
+        "hit_rate": 0.5422343324250681
+      },
+      {
+        "decile": 7,
+        "n": 367,
+        "hit_rate": 0.49591280653950953
+      },
+      {
+        "decile": 8,
+        "n": 367,
+        "hit_rate": 0.4877384196185286
+      },
+      {
+        "decile": 9,
+        "n": 367,
+        "hit_rate": 0.47956403269754766
+      }
+    ],
+    "shap_top_driver_breakdown": [
+      {
+        "top_feature": "atr_14_pct",
+        "n": 2600,
+        "hit_rate": 0.4003846153846154
+      },
+      {
+        "top_feature": "sma_200_ratio",
+        "n": 342,
+        "hit_rate": 0.6491228070175439
+      },
+      {
+        "top_feature": "dist_from_52w_low",
+        "n": 251,
+        "hit_rate": 0.4701195219123506
+      },
+      {
+        "top_feature": "vol_compression_21d",
+        "n": 178,
+        "hit_rate": 0.5561797752808989
+      },
+      {
+        "top_feature": "sma_50_200_ratio",
+        "n": 154,
+        "hit_rate": 0.6168831168831169
+      },
+      {
+        "top_feature": "base_breakout_ratio",
+        "n": 124,
+        "hit_rate": 0.5
+      },
+      {
+        "top_feature": "vol_compression_63d",
+        "n": 13,
+        "hit_rate": 0.9230769230769231
+      },
+      {
+        "top_feature": "beta_63d",
+        "n": 6,
+        "hit_rate": 0.16666666666666666
+      }
+    ]
+  },
+  "multibagger": {
+    "model": "multibagger",
+    "n": 4764,
+    "12m_2.0x": {
+      "n_complete": 3216,
+      "hit_rate": 0.19092039800995025,
+      "n_provisional": 1548
+    },
+    "24m_3.0x": {
+      "n_complete": 1756,
+      "hit_rate": 0.15261958997722094,
+      "n_provisional": 3008
+    },
+    "36m_5.0x": {
+      "n_complete": 0,
+      "hit_rate": null,
+      "n_provisional": 4764
+    }
+  }
+}

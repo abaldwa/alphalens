@@ -51,5 +51,27 @@ function loadTable() {
     .catch((e) => showError("universe-table", e));
 }
 
+function runScanNow() {
+  const limit = Number(document.getElementById("scan-limit-input").value) || 300;
+  const status = document.getElementById("scan-status");
+  const btn = document.getElementById("run-scan-btn");
+  btn.disabled = true;
+  status.textContent = `Scanning up to ${limit} tickers... (this can take a few minutes for the full universe)`;
+  apiPost(`/api/v1/signals/ml/forensic/scan/run?limit=${limit}`, {})
+    .then((r) => {
+      status.textContent = `Scan done: ${r.succeeded}/${r.scanned} succeeded${r.failed ? `, ${r.failed} failed` : ""}.`;
+      loadSummary();
+      loadTable();
+    })
+    .catch((e) => {
+      status.textContent = `Scan failed: ${e.message || e}`;
+    })
+    .finally(() => {
+      btn.disabled = false;
+    });
+}
+
+document.getElementById("run-scan-btn").addEventListener("click", runScanNow);
+
 loadSummary();
 loadTable();

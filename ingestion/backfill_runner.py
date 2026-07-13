@@ -330,76 +330,95 @@ def run_backfill(
 
     results: Dict[str, int] = {}
     staged_frames = []  # A25 staged mode: accumulated instead of per-ticker upsert
-    # persist=False (SPEC-SCHED-013): this is called from both a one-shot
-    # CLI process (where it's moot) and the scheduler's recurring
-    # backfill-catchup job (a long-lived process sharing DUCKDB_PATH with
-    # the DataStore API) — release the write lock once the whole backfill
-    # loop finishes, not for the scheduler process's entire lifetime.
-    with get_duckdb_connection(resolved_db_path, persist=False) as conn:
-        for ticker in tickers:
-            if has_sufficient_history(conn, ticker, from_date, to_date):
-                logger.info(f"{ticker}: sufficient history already present — skipping")
-                results[ticker] = 0
-                write_resume_checkpoint(checkpoint_path, ticker)
-                continue
 
-            try:
-                df = client.download_history(ticker, from_date, to_date)
-                if publish_mode == "staged":
-                    rows_written = 0 if df.empty else len(df)
-                    if not df.empty:
-                        # Must match ohlcv_adjusted's full column set/order —
-                        # stage_via_sql's merge SQL UNION ALLs this against
-                        # "SELECT * FROM ohlcv_adjusted", which requires equal
-                        # column counts (DuckDB BinderException otherwise).
-                        # delivery_qty/delivery_pct are NULL pre-adjustment,
-                        # same as write_ohlcv_to_duckdb's direct-mode INSERT.
-                        staged_frames.append(
-                            df.assign(
-                                delivery_qty=None,
-                                delivery_pct=None,
-                                adj_factor=1.0,
-                                vol_adj_factor=1.0,
-                            )[[
-                                "date", "ticker", "open", "high", "low", "close",
-                                "volume", "delivery_qty", "delivery_pct",
-                                "adj_factor", "vol_adj_factor",
-                            ]]
-                        )
-                else:
-                    rows_written = write_ohlcv_to_duckdb(conn, ticker, df)
-            except Exception as exc:
-                logger.error(f"{ticker}: backfill failed: {exc}")
-                results[ticker] = 0
-                # Checkpoint deliberately NOT advanced past a failed ticker —
-                # advancing here would make a transient/auth failure look
-                # "completed", causing the next run's resume to wrongly
-                # skip a ticker that still has zero rows in ohlcv_adjusted.
-                continue
+    # 2026-07-10 lock-hold-time remediation: this loop used to hold ONE
+    # get_duckdb_connection open across the entire ticker loop, including
+    # every network-bound client.download_history() call — for a
+    # multi-hundred-ticker FYERS backfill (rate-limited, network-latency
+    # dominated) that pins DuckDB's single-writer lock for the whole run,
+    # starving the daily pipeline and the DataStore API of write access
+    # for as long as the backfill takes (hours, not seconds). Each ticker
+    # now opens/closes its own short-lived connection (persist=False)
+    # scoped to just the has_sufficient_history() read and, for direct
+    # mode, the write_ohlcv_to_duckdb() write — released again the moment
+    # that one DB call finishes, before the next ticker's (slow) network
+    # download even starts.
+    # DuckDB rejects read_only=True for an in-memory (:memory:) database —
+    # only ask for a read-only connection when there's an actual file to
+    # protect against concurrent-writer contention on.
+    _read_only_probe = resolved_db_path is not None
 
-            results[ticker] = rows_written
+    for ticker in tickers:
+        with get_duckdb_connection(resolved_db_path, persist=False, read_only=_read_only_probe) as conn:
+            sufficient = has_sufficient_history(conn, ticker, from_date, to_date)
+        if sufficient:
+            logger.info(f"{ticker}: sufficient history already present — skipping")
+            results[ticker] = 0
             write_resume_checkpoint(checkpoint_path, ticker)
-            logger.info(f"{ticker}: {rows_written} rows written ({len(results)}/{len(tickers)} tickers done)")
+            continue
 
-        if publish_mode == "staged" and staged_frames:
-            import pandas as pd
+        try:
+            df = client.download_history(ticker, from_date, to_date)
+            if publish_mode == "staged":
+                rows_written = 0 if df.empty else len(df)
+                if not df.empty:
+                    # Must match ohlcv_adjusted's full column set/order —
+                    # stage_via_sql's merge SQL UNION ALLs this against
+                    # "SELECT * FROM ohlcv_adjusted", which requires equal
+                    # column counts (DuckDB BinderException otherwise).
+                    # delivery_qty/delivery_pct are NULL pre-adjustment,
+                    # same as write_ohlcv_to_duckdb's direct-mode INSERT.
+                    staged_frames.append(
+                        df.assign(
+                            delivery_qty=None,
+                            delivery_pct=None,
+                            adj_factor=1.0,
+                            vol_adj_factor=1.0,
+                        )[[
+                            "date", "ticker", "open", "high", "low", "close",
+                            "volume", "delivery_qty", "delivery_pct",
+                            "adj_factor", "vol_adj_factor",
+                        ]]
+                    )
+            else:
+                with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+                    rows_written = write_ohlcv_to_duckdb(conn, ticker, df)
+        except Exception as exc:
+            logger.error(f"{ticker}: backfill failed: {exc}")
+            results[ticker] = 0
+            # Checkpoint deliberately NOT advanced past a failed ticker —
+            # advancing here would make a transient/auth failure look
+            # "completed", causing the next run's resume to wrongly
+            # skip a ticker that still has zero rows in ohlcv_adjusted.
+            continue
 
-            from datastore.staging.gate import null_check_validator, stage_via_sql
-            from datastore.staging.publish import publish_run_lock, publish_table
+        results[ticker] = rows_written
+        write_resume_checkpoint(checkpoint_path, ticker)
+        logger.info(f"{ticker}: {rows_written} rows written ({len(results)}/{len(tickers)} tickers done)")
 
-            # ohlcv_adjusted is 7M+ rows — merge entirely inside DuckDB
-            # (stage_via_sql), never materializing the whole production
-            # table in pandas (same fix as scripts/insert_fno_files.py's
-            # staged path — see datastore/staging/gate.py::stage_via_sql's
-            # docstring for the live 8GB+ RSS/swap incident this avoids).
-            new_df = pd.concat(staged_frames, ignore_index=True)
-            new_tickers = list(new_df["ticker"].unique())
-            placeholders = ", ".join("?" * len(new_tickers))
-            merge_sql = (
-                f"SELECT * FROM ohlcv_adjusted WHERE ticker NOT IN ({placeholders}) "
-                "UNION ALL SELECT * FROM _stage_new_batch"
-            )
+    if publish_mode == "staged" and staged_frames:
+        import pandas as pd
 
+        from datastore.staging.gate import null_check_validator, stage_via_sql
+        from datastore.staging.publish import publish_run_lock, publish_table
+
+        # ohlcv_adjusted is 7M+ rows — merge entirely inside DuckDB
+        # (stage_via_sql), never materializing the whole production
+        # table in pandas (same fix as scripts/insert_fno_files.py's
+        # staged path — see datastore/staging/gate.py::stage_via_sql's
+        # docstring for the live 8GB+ RSS/swap incident this avoids).
+        new_df = pd.concat(staged_frames, ignore_index=True)
+        new_tickers = list(new_df["ticker"].unique())
+        placeholders = ", ".join("?" * len(new_tickers))
+        merge_sql = (
+            f"SELECT * FROM ohlcv_adjusted WHERE ticker NOT IN ({placeholders}) "
+            "UNION ALL SELECT * FROM _stage_new_batch"
+        )
+
+        # The merge+publish below is the only part of staged mode that
+        # actually needs a write connection — opened here, just in time,
+        # not held across the download loop above.
+        with get_duckdb_connection(resolved_db_path, persist=False) as conn:
             with publish_run_lock() as acquired:
                 if not acquired:
                     logger.error("Another publish is in progress — staged backfill NOT published.")

@@ -26,6 +26,7 @@ import logging
 import re
 import subprocess
 from datetime import date as date_type
+from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -49,7 +50,14 @@ from datastore.api.schemas import (
     OpsMissedJobFindingsResponse,
     OpsRunRow,
     OpsRunsResponse,
+    OpsExceptionCatalogEntry,
+    OpsExceptionCatalogResponse,
+    OpsLockStatusEntry,
+    OpsLockStatusResponse,
+    OpsLiveResourceStatus,
     OpsSchedulerResourceStatus,
+    OpsUnusedModelEntry,
+    OpsUnusedModelsResponse,
     OpsStepRow,
     OpsStepsResponse,
     SchedulerJobHeartbeat,
@@ -229,10 +237,28 @@ async def get_ops_runs(limit: int = Query(10, ge=1, le=100)) -> OpsRunsResponse:
                 if sanity_row is not None:
                     sanity_check_passed = sanity_row[0] == "success"
 
+            # Phase 1 (Pipeline & Monitoring Remediation): a 'running' row
+            # whose started_at is older than PIPELINE_STALE_RUN_THRESHOLD_MINUTES
+            # almost certainly means the process that started it crashed
+            # (OOM-killed or otherwise) before ever recording a final
+            # status — surface that distinctly rather than letting it read
+            # as "still in progress" indefinitely.
+            is_stale = False
+            if status == "running" and started_at:
+                from config.settings import PIPELINE_STALE_RUN_THRESHOLD_MINUTES
+
+                try:
+                    started_dt = datetime.fromisoformat(started_at)
+                    age_minutes = (now_ist() - started_dt).total_seconds() / 60.0
+                    is_stale = age_minutes > PIPELINE_STALE_RUN_THRESHOLD_MINUTES
+                except ValueError:
+                    pass
+
             runs.append(OpsRunRow(
                 run_id=run_id, date=date, status=status, stocks_processed=stocks_processed,
                 started_at=started_at, completed_at=completed_at, error_message=error_message,
                 is_backfill=is_backfill, failed_steps=failed_steps, sanity_check_passed=sanity_check_passed,
+                is_stale=is_stale,
             ))
     return OpsRunsResponse(runs=runs)
 
@@ -538,6 +564,103 @@ async def get_ops_scheduler_resources() -> OpsSchedulerResourceStatus:
         last_monitor_run_at=last_monitor_run_at,
         last_deferred_step=last_deferred_step,
         error=error,
+    )
+
+
+@router.get("/live-resources", response_model=OpsLiveResourceStatus)
+async def get_ops_live_resources() -> OpsLiveResourceStatus:
+    """A48: near-real-time (uncached, on-demand psutil read) RSS/CPU for
+    alphalens-scheduler.service's MainPID — a 10-30s-pollable complement to
+    /scheduler-resources' 30-min monitor-log snapshot. Meant to be polled
+    by the Ops dashboard only while a pipeline run is active."""
+    from datetime import datetime
+
+    from config.settings import PIPELINE_MEMORY_CEILING_MB
+    from ingestion.scheduler.resource_guard import poll_process_resources
+
+    pid: Optional[int] = None
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", _SCHEDULER_SERVICE_NAME, "--property=MainPID"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        raw_pid = result.stdout.strip().removeprefix("MainPID=")
+        pid = int(raw_pid) if raw_pid.isdigit() and raw_pid != "0" else None
+    except Exception as exc:
+        logger.warning(f"ops.live_resources: could not query systemctl for MainPID: {exc}")
+        return OpsLiveResourceStatus(error=str(exc))
+
+    if pid is None:
+        return OpsLiveResourceStatus(error="alphalens-scheduler.service has no live MainPID")
+
+    reading = poll_process_resources(pid)
+    if "error" in reading:
+        return OpsLiveResourceStatus(pid=pid, error=reading["error"])
+
+    rss_mb = reading["rss_mb"]
+    return OpsLiveResourceStatus(
+        pid=pid,
+        rss_mb=round(rss_mb, 1),
+        cpu_percent=round(reading["cpu_percent"], 1),
+        memory_ceiling_mb=PIPELINE_MEMORY_CEILING_MB,
+        high_pressure=rss_mb >= 0.8 * PIPELINE_MEMORY_CEILING_MB,
+        polled_at=datetime.now().isoformat(timespec="seconds"),
+    )
+
+
+@router.get("/lock-status", response_model=OpsLockStatusResponse)
+async def get_ops_lock_status() -> OpsLockStatusResponse:
+    """Pipeline & Monitoring Remediation Phase 2: live status of both
+    cross-process fcntl.flock locks (pipeline_run_lock, publish_run_lock)
+    — see ingestion/scheduler/lock_monitor.py's module docstring."""
+    from ingestion.scheduler.lock_monitor import all_lock_statuses
+
+    statuses = all_lock_statuses()
+    return OpsLockStatusResponse(
+        locks=[
+            OpsLockStatusEntry(
+                name=s.name, path=s.path, exists=s.exists,
+                locked=s.locked, last_modified_at=s.last_modified_at,
+            )
+            for s in statuses
+        ]
+    )
+
+
+@router.get("/unused-models", response_model=OpsUnusedModelsResponse)
+async def get_ops_unused_models() -> OpsUnusedModelsResponse:
+    """Pipeline & Monitoring Remediation Phase 4/5 (A53): models trained
+    (real last_trained_date in registry.json) but not read by any known
+    consumer — see ingestion/scheduler/model_usage_audit.py."""
+    from pathlib import Path
+
+    from config.settings import MODELS_DIR
+    from ingestion.scheduler.model_usage_audit import find_trained_but_unused_models
+
+    findings = find_trained_but_unused_models(Path(MODELS_DIR) / "registry.json")
+    return OpsUnusedModelsResponse(
+        unused=[
+            OpsUnusedModelEntry(model_name=f.model_name, last_trained_date=f.last_trained_date)
+            for f in findings
+        ]
+    )
+
+
+@router.get("/exception-catalog", response_model=OpsExceptionCatalogResponse)
+async def get_ops_exception_catalog() -> OpsExceptionCatalogResponse:
+    """Pipeline & Monitoring Remediation Phase 0/5: every intentionally-
+    swallowed exception in the daily pipeline, with impact + remediation
+    — see ingestion/scheduler/exception_catalog.py."""
+    from ingestion.scheduler.exception_catalog import all_entries
+
+    return OpsExceptionCatalogResponse(
+        entries=[
+            OpsExceptionCatalogEntry(
+                step_name=e.step_name, location=e.location, caught=e.caught,
+                impact=e.impact, remediation=e.remediation, severity=e.severity,
+            )
+            for e in all_entries()
+        ]
     )
 
 

@@ -172,6 +172,22 @@ class FundamentalsWriteResult(BaseModel):
     written: bool
 
 
+class FundamentalsWriteBatch(BaseModel):
+    """[AS BUILT, A35 fix 2026-07-09] Request body for
+    POST /api/v1/fundamentals/write_batch — many rows upserted in one
+    request/one DuckDB write-lock acquisition, instead of one POST per
+    ticker. See ingestion/scrapers/screener.py::batch_export."""
+
+    records: List[FundamentalsWrite]
+
+
+class FundamentalsWriteBatchResult(BaseModel):
+    """Confirmation response for a POST /fundamentals/write_batch call."""
+
+    written: int
+    failed: int
+
+
 class FundamentalsResponse(BaseModel):
     """Response for GET /api/v1/fundamentals/{ticker} — PIT-filtered, ascending by announcement_date."""
 
@@ -435,10 +451,19 @@ class MLSignalWrite(BaseModel):
     exit_survival_21d: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     exit_survival_63d: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     shap_top5_json: Optional[str] = None
+    in_training_universe: Optional[bool] = None
 
 
 class MLSignalRow(MLSignalWrite):
-    """Same shape as MLSignalWrite, returned by GET /api/v1/signals/ml/* endpoints."""
+    """Same shape as MLSignalWrite, returned by GET /api/v1/signals/ml/* endpoints.
+
+    is_backfill (A43): whether this row's `write_signals` step ran as a
+    catch-up/backfill invocation rather than the same-day live schedule,
+    joined in by the signals router from pipeline_checkpoints (SQLite) —
+    ml_signals itself (DuckDB) has no such column. None if no matching
+    checkpoint row is found (e.g. rows predating A30)."""
+
+    is_backfill: Optional[bool] = None
 
 
 class SignalUniverseRow(BaseModel):
@@ -487,6 +512,7 @@ class MultibaggerWrite(BaseModel):
     survival_36m: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     shap_top5_json: Optional[str] = None
     analogues_json: Optional[str] = None
+    in_training_universe: Optional[bool] = None
 
 
 class MultibaggerRow(MultibaggerWrite):
@@ -515,6 +541,11 @@ class ForensicWrite(BaseModel):
     dechow_f: Optional[float] = None
     sloan_accrual: Optional[float] = None
     benford_mad: Optional[float] = None
+    # FO5 (2026-07-11): JSON-encoded full chi-square/p-value/per-digit
+    # (1-9) observed-frequency distribution per financial series that
+    # benford_analysis() already computes internally — see
+    # features/forensic_classical.py's compute_forensic_classical_scores.
+    benford_detail_json: Optional[str] = None
     forensic_composite: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     forensic_flag: Optional[bool] = None  # "blocked" — composite > FORENSIC_BLOCK_THRESHOLD (60)
     # [AS BUILT, P2.6] forensic_ml.py's 5-level taxonomy (green/yellow/orange/red/black)
@@ -624,6 +655,11 @@ class WatchlistResponse(BaseModel):
     """Phase 1 stub — ml_multibagger (M-08) is not built until Phase 2."""
 
     tickers: List[Dict[str, Any]] = Field(default_factory=list)
+    # ML24/ML27 (2026-07-11): MultiBagger is the one screen that does NOT
+    # exclude sub-recommendation-floor (ADTV < 20cr/day) tickers outright —
+    # they're split into this separate bucket instead, per product decision
+    # (config/training_universe.py's module docstring).
+    low_liquidity_tickers: List[Dict[str, Any]] = Field(default_factory=list)
     implemented: bool = Field(default=False, description="True once Phase 2's multibagger model is wired in")
     notes: str = "Phase 1 stub — multibagger watchlist (M-08) is Phase 2 scope (SPEC-UI-003)."
 
@@ -652,6 +688,7 @@ class DailyWatchlistResponse(BaseModel):
     date: Optional[str] = None
     rows: List[DailyWatchlistRow] = Field(default_factory=list)
     multibagger: List[Dict[str, Any]] = Field(default_factory=list)
+    low_liquidity_multibagger: List[Dict[str, Any]] = Field(default_factory=list)
     count: int = 0
 
 
@@ -1248,6 +1285,16 @@ class OpsRunRow(BaseModel):
         "sanity_check checkpoint succeeded, False if it failed, None if it hasn't run yet for "
         "this date (e.g. a date predating this feature, or the run failed before reaching it).",
     )
+    is_stale: bool = Field(
+        default=False,
+        description="Pipeline & Monitoring Remediation Phase 1: True if this run's status is "
+        "'running' and started_at is older than config.settings.PIPELINE_STALE_RUN_THRESHOLD_MINUTES "
+        "— i.e. the process that started this run almost certainly crashed (OOM-killed or "
+        "otherwise) before ever recording a final status. Distinguishes 'still running right now' "
+        "from 'silently died mid-run', which previously looked identical to an operator glancing "
+        "at the dashboard (a crashed run left no row at all, so the last real row — a prior day's "
+        "success — kept showing as the most recent).",
+    )
 
 
 class OpsRunsResponse(BaseModel):
@@ -1393,6 +1440,106 @@ class OpsSchedulerResourceStatus(BaseModel):
         "step_in_progress()), the step name; else None.",
     )
     error: Optional[str] = None
+
+
+class OpsLiveResourceStatus(BaseModel):
+    """GET /api/v1/ops/live-resources (A48).
+
+    Near-real-time (each call re-reads psutil live, no caching) RSS/CPU for
+    the alphalens-scheduler.service systemd unit's MainPID, as a
+    frontend-polled (10-30s) complement to /scheduler-resources' 30-min
+    monitor-log snapshot. Intended use: the Ops dashboard polls this only
+    while a pipeline run is actually in progress (GET /api/v1/ops/runs shows
+    a 'running' row), so an operator watching an active run sees memory
+    pressure building in near-real-time instead of waiting for the next
+    30-min timer tick.
+    """
+
+    pid: Optional[int] = None
+    rss_mb: Optional[float] = None
+    cpu_percent: Optional[float] = None
+    memory_ceiling_mb: Optional[float] = None
+    high_pressure: bool = Field(
+        default=False, description="True if rss_mb >= 0.8 * memory_ceiling_mb."
+    )
+    polled_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class OpsLockStatusEntry(BaseModel):
+    """One entry in GET /api/v1/ops/lock-status's `locks` list — see
+    ingestion/scheduler/lock_monitor.py::LockStatus."""
+
+    name: str
+    path: str
+    exists: bool
+    locked: bool = Field(
+        default=False,
+        description="True if another process currently holds this fcntl.flock lock.",
+    )
+    last_modified_at: Optional[str] = Field(
+        default=None,
+        description="Lock file's last-modified time (ISO 8601). Both lock holders truncate-open "
+        "the file on every acquisition ATTEMPT (successful or not), so this is 'last activity "
+        "around this lock', not a precise hold-duration timer — see lock_monitor.py's module "
+        "docstring.",
+    )
+
+
+class OpsLockStatusResponse(BaseModel):
+    """GET /api/v1/ops/lock-status.
+
+    Pipeline & Monitoring Remediation Phase 2 (2026-07-10): surfaces
+    pipeline_run_lock (ingestion/scheduler/pipeline_scheduler.py) and
+    publish_run_lock (datastore/staging/publish.py) — previously neither
+    had any external visibility; a stuck/held lock (e.g. from an orphaned
+    process, the class of bug found during the A28 investigation) was
+    invisible until a job silently never ran.
+    """
+
+    locks: List[OpsLockStatusEntry]
+
+
+class OpsUnusedModelEntry(BaseModel):
+    """One entry in GET /api/v1/ops/unused-models — see
+    ingestion/scheduler/model_usage_audit.py::UnusedModelFinding."""
+
+    model_config = {"protected_namespaces": ()}
+
+    model_name: str
+    last_trained_date: Optional[str] = None
+
+
+class OpsExceptionCatalogEntry(BaseModel):
+    """One entry in GET /api/v1/ops/exception-catalog — see
+    ingestion/scheduler/exception_catalog.py::ExceptionCatalogEntry."""
+
+    step_name: str
+    location: str
+    caught: str
+    impact: str
+    remediation: str
+    severity: str
+
+
+class OpsExceptionCatalogResponse(BaseModel):
+    """GET /api/v1/ops/exception-catalog."""
+
+    entries: List[OpsExceptionCatalogEntry]
+
+
+class OpsUnusedModelsResponse(BaseModel):
+    """GET /api/v1/ops/unused-models.
+
+    Pipeline & Monitoring Remediation Phase 4/5 (A53, 2026-07-10): models
+    with a real last_trained_date in registry.json that nothing in
+    daily_inference.py (or any other known consumer) actually reads — the
+    class of bug behind A38 (TFT/BiLSTM trained-but-unwired) and A40
+    (StackingEnsemble fully dormant). Detects the gap; does not fix the
+    underlying models, which stay out of this remediation's scope.
+    """
+
+    unused: List[OpsUnusedModelEntry]
 
 
 # ===== Paper Trading Backdated Entries (SPEC-PT-003 addendum) =====

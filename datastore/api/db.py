@@ -69,12 +69,58 @@ _sqlite_connections: dict = {}
 _sqlite_locks: dict = {}
 
 
+def fno_db_path_for(main_db_path: str) -> Path:
+    """
+    A50 (2026-07-10): derive fno_data's companion file path from whatever
+    main DB path is actually in use — NOT a single hardcoded production
+    path, so every isolated test/tmp_path DB (test_fno_api.py etc.) gets
+    its own correctly-scoped companion file instead of accidentally
+    sharing (or missing) the real production one.
+    """
+    p = Path(main_db_path)
+    return p.parent / f"{p.stem}_fno_data.duckdb"
+
+
+def _attach_fno_db(conn, path_key: str, read_only: bool) -> None:
+    """
+    fno_data lives in its own file (see fno_db_path_for) so it can be
+    published via an atomic file-swap instead of an in-place 121M-row
+    rewrite (see datastore/staging/publish.py::publish_fno_data). ATTACH +
+    search_path makes every existing unqualified `fno_data` reference
+    (SELECT/INSERT/DELETE) resolve transparently against the attached
+    file — live-verified this session (ATTACH ... AS fno_db; SET
+    search_path = 'main,fno_db' makes bare `FROM fno_data`/
+    `INSERT INTO fno_data`/`DELETE FROM fno_data` all work exactly as if
+    the table were still in the main file). Only called for real (non-
+    in-memory) connections — create_normalised.create_schema(in_memory=True)
+    keeps fno_data inline for tests that don't care about this file split.
+    """
+    fno_path = fno_db_path_for(path_key)
+    if read_only and not fno_path.exists():
+        # This connection is to some OTHER DuckDB file entirely (e.g.
+        # SIGNALS_DUCKDB_PATH) that never had a companion fno_data file
+        # created — a real regression found this session: attaching
+        # unconditionally for ANY real path broke every read-only
+        # connection to an unrelated DB, since `ATTACH IF NOT EXISTS ...
+        # (READ_ONLY)` cannot create a missing file. Skip silently; only
+        # a real normalised-schema DB (created via
+        # create_normalised.create_schema()) ever has this companion file.
+        return
+    fno_path.parent.mkdir(parents=True, exist_ok=True)
+    mode = " (READ_ONLY)" if read_only else ""
+    conn.execute(f"ATTACH IF NOT EXISTS '{fno_path}' AS fno_db{mode}")
+    conn.execute("SET search_path = 'main,fno_db'")
+
+
 def _connect_with_retry(path_key: str, read_only: bool):
     """SPEC-SCHED-013: retry-with-backoff on a transient DuckDB lock conflict."""
     last_exc = None
     for attempt in range(DUCKDB_LOCK_RETRY_ATTEMPTS):
         try:
-            return duckdb.connect(path_key, read_only=read_only)
+            conn = duckdb.connect(path_key, read_only=read_only)
+            if path_key != ":memory:":
+                _attach_fno_db(conn, path_key, read_only)
+            return conn
         except duckdb.IOException as exc:
             last_exc = exc
             if "Could not set lock" not in str(exc) or attempt == DUCKDB_LOCK_RETRY_ATTEMPTS - 1:

@@ -409,6 +409,45 @@ class CheckpointManager:
             ).fetchall()
         return {row[0] for row in rows}
 
+    def get_step_is_backfill(self, run_date: date_type, step_name: str) -> Optional[bool]:
+        """
+        Return the `is_backfill` flag recorded for one (date, step_name) row,
+        or None if no checkpoint row exists for that pair yet.
+
+        A30 (see module docstring above `is_backfill` column) records
+        whether a given step ran as part of a catch-up/backfill invocation
+        (run_steps_for_date(..., is_backfill=True)) vs. the normal same-day
+        live schedule. A43 uses this to let the DataStore API's signals
+        router surface a per-row "was this signal computed live or
+        backfilled later" flag on GET /api/v1/signals/ml/* responses,
+        since ml_signals (DuckDB) and pipeline_checkpoints (SQLite) are
+        different databases with no foreign key — this is a Python-side
+        join keyed on (date, step_name='write_signals').
+
+        Parameters
+        ----------
+        run_date : date
+        step_name : str
+
+        Returns
+        -------
+        bool or None
+            True/False if a checkpoint row exists for (run_date, step_name)
+            (any status, most recent by rowid), None if it doesn't exist.
+
+        Raises
+        ------
+        None
+        """
+        with get_sqlite_connection(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT is_backfill FROM pipeline_checkpoints "
+                "WHERE date = ? AND step_name = ? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (run_date.isoformat(), step_name),
+            ).fetchone()
+        return bool(row[0]) if row is not None else None
+
     def load_checkpoint(self, run_date: date_type) -> Optional[str]:
         """
         Return the name of the last successfully completed step for a date.

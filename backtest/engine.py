@@ -86,6 +86,13 @@ class FoldResult:
     profit_factor: float
     n_trades: int
     final_equity: float
+    # ML17a: real Nifty 500 buy-and-hold curve (index_ohlcv, see
+    # BacktestEngine's benchmark_index param / _build_benchmark_curve())
+    # over this same fold's test window. None when no real index_ohlcv
+    # history covers the test window — never a synthetic/guessed value.
+    benchmark_cagr: Optional[float] = None
+    benchmark_sharpe: Optional[float] = None
+    excess_return: Optional[float] = None
 
 
 @dataclass
@@ -121,37 +128,16 @@ class BacktestResults:
                     "cagr": f.cagr, "sharpe": f.sharpe, "max_drawdown": f.max_drawdown,
                     "win_rate": f.win_rate, "profit_factor": f.profit_factor,
                     "n_trades": f.n_trades, "final_equity": f.final_equity,
+                    "benchmark_cagr": f.benchmark_cagr, "benchmark_sharpe": f.benchmark_sharpe,
+                    "excess_return": f.excess_return,
                 }
                 for f in self.fold_results
             ],
         }
 
 
-def compute_fold_metrics(
-    equity_curve: pd.DataFrame, trades_df: pd.DataFrame, initial_capital: float
-) -> Dict[str, float]:
-    """
-    Parameters
-    ----------
-    equity_curve : pd.DataFrame
-        Columns: date, equity (PortfolioSimulator.equity_curve).
-    trades_df : pd.DataFrame
-        Closed trades (PortfolioSimulator.trades_df).
-    initial_capital : float
-
-    Returns
-    -------
-    dict
-        cagr, sharpe, max_drawdown (negative fraction), win_rate,
-        profit_factor, n_trades, final_equity.
-    """
-    if equity_curve.empty:
-        return {
-            "cagr": 0.0, "sharpe": 0.0, "max_drawdown": 0.0, "win_rate": 0.0,
-            "profit_factor": 0.0, "n_trades": 0, "final_equity": initial_capital,
-        }
-
-    equity = equity_curve.sort_values("date")["equity"].to_numpy(dtype=np.float64)
+def _cagr_sharpe_from_equity(equity: np.ndarray, initial_capital: float) -> tuple:
+    """Shared CAGR/Sharpe computation for any equity curve array (strategy or benchmark)."""
     final_equity = float(equity[-1])
     years = max(len(equity) / TRADING_DAYS_PER_YEAR, 1e-9)
     cagr = (final_equity / initial_capital) ** (1 / years) - 1 if initial_capital > 0 and final_equity > 0 else -1.0
@@ -163,6 +149,46 @@ def compute_fold_metrics(
         if len(daily_returns) > 1 and np.std(daily_returns) > 0
         else 0.0
     )
+    return cagr, sharpe
+
+
+def compute_fold_metrics(
+    equity_curve: pd.DataFrame, trades_df: pd.DataFrame, initial_capital: float,
+    benchmark_equity_curve: Optional[pd.DataFrame] = None,
+) -> Dict[str, float]:
+    """
+    Parameters
+    ----------
+    equity_curve : pd.DataFrame
+        Columns: date, equity (PortfolioSimulator.equity_curve).
+    trades_df : pd.DataFrame
+        Closed trades (PortfolioSimulator.trades_df).
+    initial_capital : float
+    benchmark_equity_curve : pd.DataFrame, optional
+        ML17a: real Nifty 500 buy-and-hold curve over the same test window
+        (BacktestEngine._build_benchmark_curve(), columns date/equity, same
+        shape as equity_curve). None (default) leaves benchmark_cagr/
+        benchmark_sharpe/excess_return as None — no synthetic benchmark
+        fallback (CLAUDE.md Absolute Rule 6); a caller that never fetched
+        real index_ohlcv history just gets these fields absent.
+
+    Returns
+    -------
+    dict
+        cagr, sharpe, max_drawdown (negative fraction), win_rate,
+        profit_factor, n_trades, final_equity, benchmark_cagr,
+        benchmark_sharpe, excess_return.
+    """
+    if equity_curve.empty:
+        return {
+            "cagr": 0.0, "sharpe": 0.0, "max_drawdown": 0.0, "win_rate": 0.0,
+            "profit_factor": 0.0, "n_trades": 0, "final_equity": initial_capital,
+            "benchmark_cagr": None, "benchmark_sharpe": None, "excess_return": None,
+        }
+
+    equity = equity_curve.sort_values("date")["equity"].to_numpy(dtype=np.float64)
+    final_equity = float(equity[-1])
+    cagr, sharpe = _cagr_sharpe_from_equity(equity, initial_capital)
 
     running_max = np.maximum.accumulate(equity)
     drawdown = (equity - running_max) / running_max
@@ -177,10 +203,21 @@ def compute_fold_metrics(
     else:
         win_rate, profit_factor, n_trades = 0.0, 0.0, 0
 
+    benchmark_cagr: Optional[float] = None
+    benchmark_sharpe: Optional[float] = None
+    excess_return: Optional[float] = None
+    if benchmark_equity_curve is not None and not benchmark_equity_curve.empty:
+        bm_equity = benchmark_equity_curve.sort_values("date")["equity"].to_numpy(dtype=np.float64)
+        if len(bm_equity) >= 2:
+            benchmark_cagr, benchmark_sharpe = _cagr_sharpe_from_equity(bm_equity, float(bm_equity[0]))
+            excess_return = cagr - benchmark_cagr
+
     return {
         "cagr": cagr, "sharpe": sharpe, "max_drawdown": max_drawdown,
         "win_rate": win_rate, "profit_factor": profit_factor,
         "n_trades": n_trades, "final_equity": final_equity,
+        "benchmark_cagr": benchmark_cagr, "benchmark_sharpe": benchmark_sharpe,
+        "excess_return": excess_return,
     }
 
 
@@ -208,6 +245,7 @@ class BacktestEngine:
         universe_tickers: Optional[set] = None,
         historical_tickers: Optional[set] = None,
         watchlist_tickers: Optional[set] = None,
+        benchmark_index: Optional[pd.DataFrame] = None,
     ) -> None:
         self.ohlcv = ohlcv
         self.pnd_detector = pnd_detector
@@ -233,6 +271,16 @@ class BacktestEngine:
         # signal model ever sees them, same "entry filter stacks before the
         # model" position as the existing P&D pre-filter.
         self.watchlist_tickers = watchlist_tickers
+        # ML17a: real Nifty 500 index_ohlcv series (date, close) — a real
+        # NSE index level, not the NIFTYBEES/etc ETF-price proxy `benchmark`
+        # above uses for Category 7 relative-strength features. Powers
+        # per-fold benchmark_cagr/benchmark_sharpe/excess_return via
+        # _build_benchmark_curve(). None (default) leaves every fold's
+        # benchmark_* fields as None — no synthetic fallback (see
+        # compute_fold_metrics's docstring); callers should pass real
+        # index_ohlcv data via run_phase1_backtest.py's
+        # _fetch_real_benchmark_index() when available.
+        self.benchmark_index = benchmark_index
         # universe_tickers / historical_tickers both default to the ohlcv
         # panel's own ticker set (the degenerate case where there's no
         # meaningful distinction between "currently investable" and "ever
@@ -320,6 +368,41 @@ class BacktestEngine:
         blocked = self.pnd_detector.predict_full(rows)["pnd_block"]
         blocked.index = [k[1] for k in present]
         return blocked.reindex(tickers).fillna(False)
+
+    def _build_benchmark_curve(self, test_fold: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """
+        ML17a: real Nifty 500 buy-and-hold equity curve over this fold's
+        test-set trading days, normalised to self.initial_capital at the
+        first date both the fold and self.benchmark_index have real
+        index_ohlcv coverage for.
+
+        Returns
+        -------
+        pd.DataFrame or None
+            Columns: date, equity. None if self.benchmark_index wasn't
+            supplied, or has no real overlap with this fold's test dates —
+            never a synthetic/interpolated stand-in.
+        """
+        if self.benchmark_index is None or self.benchmark_index.empty:
+            return None
+
+        test_dates = sorted(test_fold["date"].unique())
+        if not test_dates:
+            return None
+
+        bm = self.benchmark_index.sort_values("date")
+        bm_in_range = bm[(bm["date"] >= test_dates[0]) & (bm["date"] <= test_dates[-1])]
+        if bm_in_range.empty:
+            return None
+
+        entry_price = float(bm_in_range["close"].iloc[0])
+        if entry_price <= 0:
+            return None
+
+        shares = self.initial_capital / entry_price
+        curve = bm_in_range[["date", "close"]].copy()
+        curve["equity"] = curve["close"] * shares
+        return curve[["date", "equity"]].reset_index(drop=True)
 
     def _simulate(self, test_fold: pd.DataFrame, signal_model: Any, meta_model: Optional[Any]) -> PortfolioSimulator:
         portfolio = PortfolioSimulator(
@@ -525,7 +608,11 @@ class BacktestEngine:
                 )
 
             portfolio = self._simulate(test_fold, signal_model, meta_model)
-            metrics = compute_fold_metrics(portfolio.equity_curve, portfolio.trades_df, self.initial_capital)
+            benchmark_curve = self._build_benchmark_curve(test_fold)
+            metrics = compute_fold_metrics(
+                portfolio.equity_curve, portfolio.trades_df, self.initial_capital,
+                benchmark_equity_curve=benchmark_curve,
+            )
 
             fold_results.append(
                 FoldResult(
@@ -547,6 +634,13 @@ class BacktestEngine:
             ),
             "total_trades": int(sum(f.n_trades for f in fold_results)),
         }
+        # ML17a: aggregate excess return only over folds where a real
+        # benchmark curve was actually available — never averaged against a
+        # None/missing value.
+        excess_returns = [f.excess_return for f in fold_results if f.excess_return is not None]
+        aggregate["excess_return_mean"] = float(np.mean(excess_returns)) if excess_returns else None
+        benchmark_cagrs = [f.benchmark_cagr for f in fold_results if f.benchmark_cagr is not None]
+        aggregate["benchmark_cagr_mean"] = float(np.mean(benchmark_cagrs)) if benchmark_cagrs else None
         # A plain fold-count mean lets a short, low-trade-count trailing fold
         # (e.g. the current, still-incomplete calendar year) dominate the
         # headline number once its CAGR/Sharpe get annualized off a handful

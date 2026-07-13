@@ -213,6 +213,117 @@ def _position_row_to_dict(row, combined_qty, wac, trendlyne_prior_holder) -> dic
     return d
 
 
+_FUZZY_NAME_TOKEN_STOPWORDS = {"AND", "ASSOCIATES", "FAMILY", "THE", "MR", "MRS"}
+_FUZZY_NAME_MATCH_THRESHOLD = 0.8  # token-Jaccard; see _fuzzy_match_unmapped_family
+
+
+def _name_tokens(normalized_name: str) -> set:
+    """normalize_client_name() output -> a set of meaningful tokens (stopwords/short tokens dropped)."""
+    return {
+        tok for tok in normalized_name.split(" ")
+        if tok and tok not in _FUZZY_NAME_TOKEN_STOPWORDS and len(tok) > 1
+    }
+
+
+def _token_jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _is_positional_abbreviation_match(holder_norm: str, candidate_norm: str) -> bool:
+    """
+    Narrow, order-preserving fallback for the token-Jaccard check below: same
+    number of space-separated tokens (including single-letter initials, which
+    _name_tokens() drops), and every token pair is either identical or one is
+    a same-first-letter PREFIX of the other (an initial standing in for a full
+    middle/given name — "HITESH R JAVERI" vs "HITESH RAMJI JAVERI": token 2 is
+    "R" vs "RAMJI", "RAMJI".startswith("R") and nothing else differs).
+
+    Deliberately does NOT allow a bare initial to match an unrelated token
+    (only a true prefix relationship counts) and requires every OTHER token to
+    match exactly — so a genuinely different name ("ASHISH KACHOLIA" vs
+    "ASHOK KACHOLIA": token 1 "ASHISH" vs "ASHOK" is not a prefix relation
+    either direction) never passes.
+    """
+    a_tokens = holder_norm.split(" ")
+    b_tokens = candidate_norm.split(" ")
+    if len(a_tokens) != len(b_tokens) or a_tokens == b_tokens:
+        return a_tokens == b_tokens
+    diffs = 0
+    for ta, tb in zip(a_tokens, b_tokens):
+        if ta == tb:
+            continue
+        if not ta or not tb:
+            return False
+        if not (ta.startswith(tb) or tb.startswith(ta)):
+            return False
+        diffs += 1
+    # Require at least one token to actually match exactly (an all-abbreviated
+    # name with zero exact anchor tokens is too weak a signal to trust).
+    return 0 < diffs < len(a_tokens)
+
+
+def _fuzzy_match_unmapped_family(holder_norm: str, candidate_family_ids: list) -> Optional[str]:
+    """
+    BI6: find the best "unmapped:<name>" family_id (from candidate_family_ids,
+    already scoped to a single ticker by the caller) whose own normalized name
+    plausibly refers to the same real person/entity as holder_norm, when an
+    exact normalize_client_name() re-match already failed.
+
+    Deliberately conservative — a false-positive match here would silently
+    merge two DIFFERENT real investors' bulk-deal cost bases into one
+    Trendlyne cross-check, which is worse than the status quo (just missing
+    the cross-check for one family/ticker). Either of two independent,
+    narrowly-scoped signals is accepted:
+
+    1. Token overlap (Jaccard over word-sets, stopwords like "AND"/
+       "ASSOCIATES"/"FAMILY" excluded) >= _FUZZY_NAME_MATCH_THRESHOLD — catches
+       a missing/extra "AND ASSOCIATES" suffix or reordered tokens
+       ("SHAH SHARAD KANAYALAL" vs "SHARAD KANAYALAL SHAH AND ASSOCIATES")
+       without matching on stopwords alone.
+    2. _is_positional_abbreviation_match — same token count, order preserved,
+       every token identical except one which is a same-prefix abbreviation
+       ("HITESH R JAVERI" vs "HITESH RAMJI JAVERI"). Deliberately NOT a raw
+       edit-distance ratio: that measure treats "ASHISH KACHOLIA" (0.80
+       similarity to "ASHOK KACHOLIA", a genuinely different real investor)
+       as almost as close as the true positive above, which is too risky to
+       accept blindly — the positional/prefix structure check is safer.
+
+    Only ever called with candidates already restricted to the SAME ticker
+    (the caller's unmapped_by_ticker), so a coincidental cross-ticker
+    name collision can't produce a false match here.
+
+    Returns
+    -------
+    str or None
+        The single best-matching family_id if exactly one candidate clears
+        either check; None if zero or more than one candidate clears it
+        (an ambiguous multi-way match is treated as no match, not a guess).
+    """
+    if not candidate_family_ids or not holder_norm:
+        return None
+
+    holder_tokens = _name_tokens(holder_norm)
+    matches = []
+    for family_id in candidate_family_ids:
+        candidate_norm = family_id.removeprefix("unmapped:")
+        if candidate_norm == holder_norm:
+            matches.append(family_id)
+            continue
+        candidate_tokens = _name_tokens(candidate_norm)
+        jaccard = _token_jaccard(holder_tokens, candidate_tokens)
+        if jaccard >= _FUZZY_NAME_MATCH_THRESHOLD:
+            matches.append(family_id)
+            continue
+        if _is_positional_abbreviation_match(holder_norm, candidate_norm):
+            matches.append(family_id)
+
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _position_and_wac_asof(conn, family_tickers: list) -> dict:
     """
     Per (family_id, ticker, trade_date): the family's true cumulative
@@ -243,11 +354,16 @@ def _position_and_wac_asof(conn, family_tickers: list) -> dict:
 
     Matching a bulk-deal family_id to a Trendlyne holder is exact for
     already-seeded families (public_shareholders.family_id is set the same
-    way); for "unmapped:<name>" families it's done by re-normalizing
+    way); for "unmapped:<name>" families it's first attempted by re-normalizing
     public_shareholders.holder_name with the identical normalize_client_name
     used to build "unmapped:<name>" in bulk_deal_attribution.py, since
     Trendlyne's own family_id join comes up NULL for anyone not already in
-    investor_family.
+    investor_family. [BI6, 2026-07-11] If that exact re-normalization misses,
+    _fuzzy_match_unmapped_family() is tried next — a conservative token-overlap
+    + edit-distance heuristic (see its docstring) restricted to the same
+    ticker's other unmapped: families, so a name that differs only by
+    abbreviation/punctuation/a missing "AND ASSOCIATES" suffix still
+    cross-checks instead of silently losing the Trendlyne true-up.
 
     [Investigated, per user request] A tiny disclosed net position (e.g.
     SAKSOFT/JUNOMONETA FINSOL, ~0.001% of the company pre-materiality-
@@ -309,8 +425,29 @@ def _position_and_wac_asof(conn, family_tickers: list) -> dict:
     events: dict = {pair: [] for pair in target_pairs}
     for family_id, ticker, trade_date, net_type, net_qty, avg_price in trade_rows:
         events[(family_id, ticker)].append((trade_date, 0, ("trade", net_type, net_qty, avg_price)))
+
+    # BI6: unmapped: families indexed per ticker, for the fuzzy fallback below.
+    unmapped_by_ticker: dict = {}
+    for fam_id, tick in target_pairs:
+        if fam_id.startswith("unmapped:"):
+            unmapped_by_ticker.setdefault(tick, []).append(fam_id)
+
     for family_id, holder_name, ticker, quarter_end_date, reported_shares in ph_rows:
-        key = (family_id, ticker) if family_id is not None else (f"unmapped:{normalize_client_name(holder_name)}", ticker)
+        if family_id is not None:
+            key = (family_id, ticker)
+        else:
+            holder_norm = normalize_client_name(holder_name)
+            exact_key = (f"unmapped:{holder_norm}", ticker)
+            if exact_key in events:
+                key = exact_key
+            else:
+                # BI6: exact re-normalization missed — try a fuzzy match against
+                # this ticker's other unmapped: families before giving up. See
+                # _fuzzy_match_unmapped_family's docstring for the heuristic and
+                # why this is deliberately conservative (false positives here
+                # would silently merge two different real investors' cost bases).
+                matched_family = _fuzzy_match_unmapped_family(holder_norm, unmapped_by_ticker.get(ticker, []))
+                key = (matched_family, ticker) if matched_family else exact_key
         if key in events:
             events[key].append((quarter_end_date, 1, ("checkpoint", reported_shares)))
 
