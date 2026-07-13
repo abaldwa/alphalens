@@ -154,6 +154,28 @@ function tickerCell(ticker, extraTdAttrs) {
   ]);
 }
 
+// A67/ML28 — minimal dependency-free inline sparkline: an SVG polyline
+// over a series of numbers (e.g. rebased-return points from
+// features/sector_rotation.py's _sparkline_series, or raw OHLCV closes
+// fetched directly from the API for a first pass per A67's note). Renders
+// nothing (returns "—") for missing/too-short series — no fabricated
+// placeholder shape.
+function sparklineSvg(series, opts) {
+  const o = Object.assign({ width: 80, height: 24, stroke: "#2563eb" }, opts || {});
+  if (!Array.isArray(series) || series.length < 2) return "—";
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  const range = max - min || 1;
+  const stepX = o.width / (series.length - 1);
+  const points = series
+    .map((v, i) => `${(i * stepX).toFixed(2)},${(o.height - ((v - min) / range) * o.height).toFixed(2)}`)
+    .join(" ");
+  const lastUp = series[series.length - 1] >= series[0];
+  const color = o.strokeAuto ? (lastUp ? "#16a34a" : "#dc2626") : o.stroke;
+  return `<svg width="${o.width}" height="${o.height}" viewBox="0 0 ${o.width} ${o.height}" preserveAspectRatio="none">` +
+    `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+
 function sortableHeader(label, key, sortState, onSort) {
   const isActive = sortState.key === key;
   const arrow = isActive ? (sortState.dir === "asc" ? " ▲" : " ▼") : "";

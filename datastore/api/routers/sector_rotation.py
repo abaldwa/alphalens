@@ -41,6 +41,15 @@ class SectorRotationRow(BaseModel):
     trailing_21d_return: Optional[float]
     nifty500_trailing_21d_return: Optional[float]
     relative_strength: Optional[float]
+    # ML28 (2026-07-13): relative-strength across 1d/5d/21d/63d horizons,
+    # plus rebased-close sparkline series for both the sector index and
+    # Nifty 500 (percent-change-from-first-point, index 0 == 0.0).
+    rs_1d: Optional[float] = None
+    rs_5d: Optional[float] = None
+    rs_21d: Optional[float] = None
+    rs_63d: Optional[float] = None
+    sparkline: List[float] = []
+    nifty500_sparkline: List[float] = []
     top_stocks: List[Dict[str, Any]]
 
 

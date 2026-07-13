@@ -41,18 +41,47 @@ BENCHMARK_INDEX_NAME = "Nifty 500"
 MIN_INDEX_ROWS = TRAILING_WINDOW_DAYS + 1
 DEFAULT_TOP_N_STOCKS = 5
 
+# ML28 (2026-07-13): relative-strength horizons surfaced alongside the
+# original trailing-21d figure (kept as the default/primary ranking metric
+# for backward compatibility with the existing report/dashboard sort).
+RS_HORIZONS: Dict[str, int] = {"1d": 1, "5d": 5, "21d": 21, "63d": 63}
+# Longest horizon also sets how much index_ohlcv history the sparkline
+# trend series covers (one point per trading day over the window).
+SPARKLINE_WINDOW_DAYS = max(RS_HORIZONS.values())
 
-def _trailing_return(closes: pd.Series) -> Optional[float]:
-    """Trailing TRAILING_WINDOW_DAYS-trading-day close-to-close return, or
-    None if there isn't enough real history (no synthetic fill)."""
+
+def _return_over_window(closes: pd.Series, window_days: int) -> Optional[float]:
+    """Trailing `window_days`-trading-day close-to-close return, or None if
+    there isn't enough real history (no synthetic fill)."""
     closes = closes.dropna()
-    if len(closes) < MIN_INDEX_ROWS:
+    if len(closes) < window_days + 1:
         return None
-    first = closes.iloc[-MIN_INDEX_ROWS]
+    first = closes.iloc[-(window_days + 1)]
     last = closes.iloc[-1]
     if first is None or pd.isna(first) or first == 0:
         return None
     return float(last / first - 1)
+
+
+def _trailing_return(closes: pd.Series) -> Optional[float]:
+    """Trailing TRAILING_WINDOW_DAYS-trading-day close-to-close return, or
+    None if there isn't enough real history (no synthetic fill)."""
+    return _return_over_window(closes, TRAILING_WINDOW_DAYS)
+
+
+def _sparkline_series(closes: pd.Series, window_days: int = SPARKLINE_WINDOW_DAYS) -> List[float]:
+    """Last `window_days` (+1 anchor) real closes, rebased to a
+    percent-change-from-first-point series (first point = 0.0) for cheap
+    client-side sparkline rendering. Empty list if there isn't enough real
+    history — no synthetic fill (CLAUDE.md Absolute Rule 6)."""
+    closes = closes.dropna()
+    if len(closes) < 2:
+        return []
+    tail = closes.iloc[-(window_days + 1):]
+    base = tail.iloc[0]
+    if base is None or pd.isna(base) or base == 0:
+        return []
+    return [float(c / base - 1) for c in tail.tolist()]
 
 
 def compute_index_relative_strength(
@@ -105,6 +134,10 @@ def compute_index_relative_strength(
 
     nifty_rows = df[df["index_name"] == BENCHMARK_INDEX_NAME].sort_values("date")
     nifty_return = _trailing_return(nifty_rows["close"])
+    nifty_returns_by_horizon = {
+        h: _return_over_window(nifty_rows["close"], w) for h, w in RS_HORIZONS.items()
+    }
+    nifty_spark = _sparkline_series(nifty_rows["close"])
 
     records: List[Dict[str, Any]] = []
     for index_name in sorted(set(SECTOR_INDEX_MAP.values())):
@@ -112,6 +145,15 @@ def compute_index_relative_strength(
         idx_return = _trailing_return(rows["close"])
         if idx_return is None or nifty_return is None:
             continue
+
+        rs_by_horizon: Dict[str, Optional[float]] = {}
+        for h, w in RS_HORIZONS.items():
+            idx_h = _return_over_window(rows["close"], w)
+            nifty_h = nifty_returns_by_horizon[h]
+            rs_by_horizon[h] = None if idx_h is None or nifty_h is None else idx_h - nifty_h
+
+        spark = _sparkline_series(rows["close"])
+
         for sector in sectors_for_index(index_name):
             records.append(
                 {
@@ -121,12 +163,19 @@ def compute_index_relative_strength(
                     "trailing_21d_return": idx_return,
                     "nifty500_trailing_21d_return": nifty_return,
                     "relative_strength": idx_return - nifty_return,
+                    "rs_1d": rs_by_horizon.get("1d"),
+                    "rs_5d": rs_by_horizon.get("5d"),
+                    "rs_21d": rs_by_horizon.get("21d"),
+                    "rs_63d": rs_by_horizon.get("63d"),
+                    "sparkline": spark,
+                    "nifty500_sparkline": nifty_spark,
                 }
             )
 
     columns = [
         "sector", "index_name", "as_of_date", "trailing_21d_return",
         "nifty500_trailing_21d_return", "relative_strength",
+        "rs_1d", "rs_5d", "rs_21d", "rs_63d", "sparkline", "nifty500_sparkline",
     ]
     result = pd.DataFrame(records, columns=columns)
     if result.empty:
@@ -230,6 +279,12 @@ def compute_sector_rotation_report(
                 "trailing_21d_return": row["trailing_21d_return"],
                 "nifty500_trailing_21d_return": row["nifty500_trailing_21d_return"],
                 "relative_strength": row["relative_strength"],
+                "rs_1d": row.get("rs_1d"),
+                "rs_5d": row.get("rs_5d"),
+                "rs_21d": row.get("rs_21d"),
+                "rs_63d": row.get("rs_63d"),
+                "sparkline": list(row["sparkline"]) if isinstance(row.get("sparkline"), (list, tuple)) else [],
+                "nifty500_sparkline": list(row["nifty500_sparkline"]) if isinstance(row.get("nifty500_sparkline"), (list, tuple)) else [],
                 "top_stocks": top_stocks_df.to_dict(orient="records"),
             }
         )

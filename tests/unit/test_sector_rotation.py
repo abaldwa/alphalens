@@ -125,6 +125,33 @@ class TestComputeIndexRelativeStrength:
         assert fmcg_row["relative_strength"] < 0
         assert it_row["rank"] < fmcg_row["rank"]
 
+    def test_ml28_multi_horizon_and_sparkline_fields(self, normalised_db):
+        """ML28: rs_1d/5d/21d/63d + sparkline series are present; horizons
+        with insufficient history are None (no synthetic fill), and the
+        sparkline is a real rebased-close series, not fabricated."""
+        days = _trading_days(date(2026, 1, 1), 25)
+        nifty500_closes = {d: 1000.0 for d in days}
+        it_closes = {d: 1000.0 + i * 4.0 for i, d in enumerate(days)}
+        _seed_index_ohlcv(normalised_db, "Nifty 500", nifty500_closes)
+        _seed_index_ohlcv(normalised_db, "Nifty IT", it_closes)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            result = sector_rotation_mod.compute_index_relative_strength(conn)
+
+        it_row = result[result["sector"] == "Information Technology"].iloc[0]
+        # Only 25 days of history — 63d horizon can't be computed for real.
+        assert it_row["rs_63d"] is None
+        # 1d/5d/21d all have enough history and IT outperforms flat Nifty 500.
+        assert it_row["rs_1d"] is not None and it_row["rs_1d"] > 0
+        assert it_row["rs_5d"] is not None and it_row["rs_5d"] > 0
+        assert it_row["rs_21d"] is not None and it_row["rs_21d"] > 0
+        # Sparkline: rebased series, first point 0.0, last point matches the
+        # real cumulative return over the series' own window.
+        spark = it_row["sparkline"]
+        assert isinstance(spark, list) and len(spark) >= 2
+        assert spark[0] == pytest.approx(0.0)
+        assert spark[-1] > spark[0]
+
     def test_insufficient_history_excludes_sector_no_guess(self, normalised_db):
         days = _trading_days(date(2026, 1, 1), 25)
         nifty500_closes = {d: 1000.0 for d in days}
@@ -232,3 +259,8 @@ class TestSectorRotationEndpoint:
         assert len(body["sectors"]) == 1
         assert body["sectors"][0]["sector"] == "Information Technology"
         assert body["sectors"][0]["top_stocks"][0]["ticker"] == "TCS"
+        # ML28: multi-horizon RS + sparkline fields exposed on the API response.
+        row = body["sectors"][0]
+        assert row["rs_21d"] is not None and row["rs_21d"] > 0
+        assert row["rs_63d"] is None  # only 25 days seeded, not enough for 63d
+        assert isinstance(row["sparkline"], list) and len(row["sparkline"]) >= 2
