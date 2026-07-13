@@ -5,7 +5,7 @@ Phase: 0.2 (DataStore Schema & API Shell)
 Specs: SPEC-DS-001, SPEC-DS-002, SPEC-DS-003, SPEC-SOLID-005
 Owner: Platform / DataStore
 Consumers: systems/ml_signal_engine, systems/technical_analysis,
-           systems/damodaran_valuation, systems/fundamental_analysis,
+           systems/damodaran_valuation, features/fundamental_composites.py,
            backtest, dashboard
 
 Thin httpx client over the DataStore FastAPI layer. SPEC-DS-002: consumer

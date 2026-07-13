@@ -4,7 +4,7 @@ datastore.api package.
 Phase: 0.1 (Project Skeleton)
 Specs: SPEC-DS-001, SPEC-DS-002, SPEC-DS-003, SPEC-DS-004, SPEC-DS-005, SPEC-DS-007
 Owner: Platform / DataStore
-Consumers: systems/ml_signal_engine, systems/fundamental_analysis, systems/technical_analysis,
+Consumers: systems/ml_signal_engine, systems/technical_analysis,
            backtest, dashboard, features/*, ingestion/*
 
 FastAPI REST API for data access and signal writing.

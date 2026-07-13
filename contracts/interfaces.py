@@ -5,7 +5,7 @@ Phase: 0.1 (Project Skeleton)
 Specs: SPEC-PIPE-001, SPEC-PIPE-002, SPEC-MODEL-001, SPEC-MODEL-002, SPEC-MODEL-003,
        SPEC-DS-001, SPEC-DS-003, SPEC-DS-004, SPEC-DS-005
 Owner: Platform / Architecture
-Consumers: systems/ml_signal_engine, systems/fundamental_analysis, systems/technical_analysis,
+Consumers: systems/ml_signal_engine, systems/technical_analysis,
            backtest, ingestion/quality, features/registry
 
 Abstract base interfaces for all pluggable components in AlphaLens.

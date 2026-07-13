@@ -254,8 +254,8 @@ async def get_fundamental_ratios(ticker: str) -> FARatiosResponse:
 async def get_fundamental_peers(
     ticker: str, k: int = Query(5, ge=1, le=20, description="Number of peers")
 ) -> FAPeersResponse:
-    """Real peer-selection (was an unimplemented systems/fundamental_analysis/
-    peers/ stub) — same sector, ranked by market-cap proximity, then each
+    """Real peer-selection (was previously unimplemented) — same sector,
+    ranked by market-cap proximity, then each
     peer's already-computed sector-relative ratios."""
     resolved_date = resolve_date(None)
     if resolved_date is None:
