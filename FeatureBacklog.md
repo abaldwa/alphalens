@@ -989,6 +989,75 @@ unconditionally, before any network request — not a loading/error state,
 a permanent stub. Matches `alphalens_docs/CLAUDE.md:492`'s documented "one
 empty-stated sub-panel each" claim exactly; confirmed accurate, not stale.
 
+### F3 — Trendlyne `current_assets`/`current_liabilities` fallback: 405-cascade fixed, never actually populated the DB at scale (2026-07-13)
+
+**Background.** `features/fundamental_source_priority.py` already correctly
+ranks `nse_xbrl=4 > trendlyne=3 > screener=2` and
+`scripts/backfill_fundamentals_trendlyne.py` is wired to that priority
+system, but zero rows in the real DB are tagged
+`fundamentals_source='trendlyne'` — the two live runs on record both
+failed:
+  - `logs/trendlyne_backfill.log` (2026-06-25): 0/~1148 sampled tickers
+    matched (mass HTTP 405s starting a few minutes into the run).
+  - `logs/trendlyne_backfill_full2644_20260630.log` (2026-06-30): only
+    138/2644 tickers matched (2506 "not-on-Trendlyne").
+
+**Root cause (confirmed, not the ticker-matching bug it looked like).**
+A live re-check on 2026-07-13 shows the exact same tickers that failed in
+both runs — including large caps like ADANIPORTS, and the very first
+failure in the 06-25 log (ACLGATI) — resolve fine today with the
+*identical* login/URL/dash-slug-fallback logic already in the code (that
+fallback, referenced at `BuildLog.md:6790`, was already correctly in
+place by 06-30 and is not the fix). Live validation runs today:
+10/10, then 65/65 (before hitting a live block), then 20/20 sampled
+universe tickers all succeeded, with real `current_assets`/
+`current_liabilities` values pulled (e.g. INFY CA=103489.0 CL=52322.0,
+HDFCBANK CA=3611332.96 CL=252977.53, RELIANCE CA=594249.0 CL=541254.0,
+ADANIPORTS CA=21974.83 CL=15760.35 — all cross-checked as plausible
+real INR-Cr balance-sheet figures for FY2026).
+
+The real bug: Trendlyne intermittently returns HTTP 405 as a WAF/
+rate-limit signal (confirmed live 2026-07-13 — even the *login* endpoint
+itself returned 405 during one of this session's own rapid-succession
+validation attempts, recovering after a ~90s pause). The old code in
+`_fetch_ticker_data` treated 405 exactly like a genuine 404 "ticker not
+on Trendlyne" and applied the fast `0.3x` notfound retry delay before the
+next request — which fed the block instead of backing off from it,
+turning a transient rate-limit trip into a cascading near-100%-failure
+tail for the rest of the run (this exactly explains both historical
+runs' shape: mostly-clean start, then a wall of 405s once the WAF
+tripped).
+
+**Fix implemented** (branch `fix/trendlyne-405-waf-circuit-breaker`,
+commit 66fca7f, PR: https://github.com/abaldwa/alphalens/pull/new/fix/trendlyne-405-waf-circuit-breaker):
+`_fetch_ticker_data` now returns `(body, reason)` with `reason` in
+`{"ok", "404", "405", "error"}`, keeping the existing dash-slug fallback
+(a real, if rare, case) but classifying a still-failing 405/403 as a
+possible block rather than folding it into "not on Trendlyne". `main()`'s
+loop applies the full-length sleep (not the fast 404 skip) on 405, and a
+circuit breaker: after 5 consecutive 405s, back off 60s and re-login
+before continuing — observed live during this session's own validation
+(triggered once at ticker 70/80, recovered on the next attempt).
+Added `tests/unit/test_backfill_fundamentals_trendlyne.py` (6 tests,
+mocked `requests.Session`, no live network) covering the 404-vs-405-vs-ok
+classification, including the "405 + failing dash-slug fallback stays
+405, not 404" case that was the actual gap.
+
+**Full 2644-ticker backfill: recommended as a safe next step, NOT run in
+this task.** With the fix, sampled runs show ~100% match rate on tickers
+genuinely on Trendlyne (vs. 0% and 5.2% before) modulo the WAF's own
+transient trips, which the circuit breaker now survives automatically
+(costs ~60s per trip, self-recovers) instead of silently degrading the
+whole run. Recommend running via the script's existing
+`--publish-mode staged` (default, A25 rollback point) exactly as already
+built — `nohup .venv/bin/python3 scripts/backfill_fundamentals_trendlyne.py
+--universe-only > logs/trendlyne_backfill_YYYYMMDD.log 2>&1 &`, expect
+several circuit-breaker trips (~60s each) over the ~1hr run, watch the
+log for the final `ROE/ROCE completeness` summary and confirm a
+non-trivial `fundamentals_source='trendlyne'` row count afterward. Not
+run here per this task's explicit scope (live full-backfill go-ahead is a
+separate action, same precedent as A26's Ops force-run).
+
 ---
 
 ## Big Investors
