@@ -38,6 +38,7 @@ toward matched_conditions. This is the only tolerated NaN/missing behaviour;
 no synthetic fill-ins are ever applied in production paths.
 """
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -323,13 +324,38 @@ class ScreenerEngine:
         result_df["_score"] = scores[result_mask]
         result_df["_matched"] = match_counts[result_mask]
 
-        # Sort: score desc, then volume desc as secondary (more active first)
+        # Sort: score desc, then a liquidity/activity proxy desc as secondary
+        # (more active first). volume_ratio_21d is preferred, but it is not
+        # guaranteed to be present in every day's feature set. Rather than
+        # silently falling back to source-Parquet row order (which is
+        # ticker-alphabetical and produces a misleading "only A-tickers show
+        # up" screener result — see FeatureBacklog T9), we fall through a
+        # priority list of liquidity/volume proxy columns and, failing all
+        # of those, use a deterministic hash-of-ticker tiebreak so ordering
+        # is never simply alphabetical.
         sort_cols = ["_score"]
         sort_asc = [False]
-        if "volume_ratio_21d" in available_cols:
-            result_df["_vol"] = df.loc[result_mask, "volume_ratio_21d"]
+        _VOL_PROXY_PRIORITY = (
+            "volume_ratio_21d",
+            "volume_ratio_5d",
+            "volume_zscore_10d",
+            "vol_spike_vs_60d_avg",
+            "breakout_volume_ratio",
+            "turnover_acceleration",
+        )
+        vol_col = next((c for c in _VOL_PROXY_PRIORITY if c in available_cols), None)
+        if vol_col is not None:
+            result_df["_vol"] = df.loc[result_mask, vol_col]
             sort_cols.append("_vol")
             sort_asc.append(False)
+
+        # Deterministic, non-alphabetical final tiebreak (always present).
+        result_df["_tiebreak"] = result_df["ticker"].astype(str).map(
+            lambda t: int(hashlib.md5(t.encode("utf-8")).hexdigest(), 16) % (2**32)
+        )
+        sort_cols.append("_tiebreak")
+        sort_asc.append(True)
+
         result_df = result_df.sort_values(sort_cols, ascending=sort_asc).head(limit)
 
         # Determine display features

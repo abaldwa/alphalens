@@ -389,6 +389,92 @@ class TestApplySingleConditionOps:
         assert not mask.any()
 
 
+class TestScreenDfTiebreakOrdering:
+    """T9 regression: secondary sort must never silently degrade to
+    ticker-alphabetical (source Parquet row) order when volume_ratio_21d
+    (or any other volume proxy) is absent from the day's feature set.
+    """
+
+    def _tied_fixture_df(self) -> pd.DataFrame:
+        """Test fixture (SPEC-SYS-006 exemption): 5 tickers, all tied on the
+        single condition (score == 1.0), stored in alphabetical row order,
+        with NO volume/volume-proxy columns at all — reproducing the T9 bug
+        scenario where volume_ratio_21d is missing from the day's Parquet.
+        """
+        return pd.DataFrame(
+            {
+                "ticker": ["AAA", "BBB", "CCC", "DDD", "EEE"],
+                "feat_a": [10.0, 10.0, 10.0, 10.0, 10.0],
+            }
+        )
+
+    def test_missing_volume_columns_does_not_fall_back_to_alphabetical_order(self):
+        engine = ScreenerEngine()
+        df = self._tied_fixture_df()
+        template = ScreenerTemplate(
+            name="all_tied",
+            category="custom",
+            description="all rows tie on a single condition",
+            conditions=[{"feature": "feat_a", "op": "gte", "value": 0.0}],
+        )
+
+        results = engine._screen_df(df, template, "2026-07-02", limit=50)
+
+        assert len(results) == 5
+        result_order = [r.ticker for r in results]
+        # All 5 tickers must still be present (nothing silently dropped)...
+        assert set(result_order) == {"AAA", "BBB", "CCC", "DDD", "EEE"}
+        # ...but the order must NOT simply be the alphabetical source order,
+        # since that was the T9 symptom (screener "only picks up tickers in
+        # alphabetical order" when volume_ratio_21d is unavailable).
+        assert result_order != ["AAA", "BBB", "CCC", "DDD", "EEE"], (
+            "Screener fell back to alphabetical row order when no volume "
+            "proxy column was available — T9 regression."
+        )
+
+    def test_tiebreak_order_is_deterministic_across_calls(self):
+        engine = ScreenerEngine()
+        template = ScreenerTemplate(
+            name="all_tied",
+            category="custom",
+            description="all rows tie on a single condition",
+            conditions=[{"feature": "feat_a", "op": "gte", "value": 0.0}],
+        )
+
+        order_1 = [
+            r.ticker
+            for r in engine._screen_df(self._tied_fixture_df(), template, "2026-07-02", limit=50)
+        ]
+        order_2 = [
+            r.ticker
+            for r in engine._screen_df(self._tied_fixture_df(), template, "2026-07-02", limit=50)
+        ]
+        assert order_1 == order_2
+
+    def test_volume_ratio_21d_present_still_used_as_primary_tiebreak(self):
+        """When volume_ratio_21d IS present, it must still take priority over
+        the hash-based fallback tiebreak (i.e. no behavior change for the
+        common case where the column is available).
+        """
+        engine = ScreenerEngine()
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA", "BBB", "CCC"],
+                "feat_a": [10.0, 10.0, 10.0],
+                "volume_ratio_21d": [1.0, 3.0, 2.0],
+            }
+        )
+        template = ScreenerTemplate(
+            name="all_tied",
+            category="custom",
+            description="all rows tie on a single condition",
+            conditions=[{"feature": "feat_a", "op": "gte", "value": 0.0}],
+        )
+
+        results = engine._screen_df(df, template, "2026-07-02", limit=50)
+        assert [r.ticker for r in results] == ["BBB", "CCC", "AAA"]
+
+
 class TestScreenDfEdgeCases:
     def test_empty_dataframe_returns_no_results(self):
         engine = ScreenerEngine()
