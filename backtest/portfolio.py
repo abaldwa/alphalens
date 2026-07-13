@@ -174,8 +174,12 @@ class PortfolioSimulator:
     ) -> Optional[Position]:
         """
         Open a new position if SPEC-BT-002's gates (can_buy) pass.
-        Entry-side transaction cost is charged immediately (deducted from
-        cash); the matching exit-side cost is charged at sell()/reduce_position().
+        No transaction cost is deducted here: IndianTransactionCosts models
+        cost per round trip (both legs), so the full buy+sell cost is
+        charged once, at sell()/reduce_position() (see _close), against the
+        realized proceeds. cash is reduced by raw turnover (price * qty)
+        only; total_equity()/the equity curve therefore doesn't reflect the
+        pending exit cost until the position is actually closed.
 
         Parameters
         ----------

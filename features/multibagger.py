@@ -62,6 +62,8 @@ import numpy as np
 import pandas as pd
 import talib
 
+from features._vector_utils import safe_div as _safe_div
+
 logger = logging.getLogger(__name__)
 
 BASE_FORMATION_FEATURES = [
@@ -139,12 +141,6 @@ def _grouped_talib_multi(df: pd.DataFrame, cols: List[str], fn, out_names: List[
         return pd.DataFrame({name: arr for name, arr in zip(out_names, outs)}, index=g.index)
 
     return _apply_per_ticker(df, _one)
-
-
-def _safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
-    with np.errstate(divide="ignore", invalid="ignore"):
-        result = numerator.to_numpy(dtype=np.float64) / denominator.to_numpy(dtype=np.float64)
-    return pd.Series(result, index=numerator.index).replace([np.inf, -np.inf], np.nan)
 
 
 def _consecutive_true_run(flags: pd.Series, ticker: pd.Series) -> pd.Series:

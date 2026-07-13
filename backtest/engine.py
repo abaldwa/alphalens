@@ -567,7 +567,7 @@ class BacktestEngine:
             date_folds = validator.split_data(combined, n_folds=min(folds, n_folds_data))
 
         fold_results: List[FoldResult] = []
-        integrity: Dict[str, Any] = {"passed": False, "detail": {}}
+        fold_integrity_results: List[Dict[str, Any]] = []
         oof_rows: List[pd.DataFrame] = []
 
         for i, (train_fold, test_fold) in enumerate(date_folds):
@@ -622,7 +622,25 @@ class BacktestEngine:
                     **metrics,
                 )
             )
-            integrity = self._run_integrity_check(train_fold, test_fold)
+            fold_integrity = self._run_integrity_check(train_fold, test_fold)
+            fold_integrity["fold_index"] = i
+            fold_integrity_results.append(fold_integrity)
+
+        # A critical integrity failure in ANY fold makes the whole backtest
+        # untrustworthy — a later fold happening to pass must never mask an
+        # earlier fold's look-ahead/cost/liquidity violation (previously
+        # only the last fold's result was kept here, silently discarding
+        # every earlier fold's check_01..07 outcome).
+        integrity = {
+            "passed": all(r["passed"] for r in fold_integrity_results) if fold_integrity_results else False,
+            "detail": {
+                "critical_failures": [
+                    f"fold {r['fold_index']}: {failure}"
+                    for r in fold_integrity_results
+                    for failure in r["detail"].get("critical_failures", [])
+                ],
+            },
+        }
 
         aggregate = {
             "cagr_mean": float(np.mean([f.cagr for f in fold_results])),

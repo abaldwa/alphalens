@@ -41,6 +41,8 @@ from typing import List
 import numpy as np
 import pandas as pd
 
+from features._vector_utils import safe_div as _safe_div
+
 logger = logging.getLogger(__name__)
 
 REQUIRED_OHLCV_COLUMNS = ["date", "ticker", "open", "high", "low", "close", "volume"]
@@ -93,12 +95,6 @@ def _grouped_rolling(df: pd.DataFrame, col: str, window: int, how: str, min_peri
 
 def _grouped_shift(df: pd.DataFrame, col: str, periods: int) -> pd.Series:
     return df.groupby("ticker", sort=False)[col].shift(periods)
-
-
-def _safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
-    with np.errstate(divide="ignore", invalid="ignore"):
-        result = numerator.to_numpy(dtype=np.float64) / denominator.to_numpy(dtype=np.float64)
-    return pd.Series(result, index=numerator.index).replace([np.inf, -np.inf], np.nan)
 
 
 def _consecutive_true_run(flags: pd.Series, ticker: pd.Series) -> pd.Series:

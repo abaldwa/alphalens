@@ -133,6 +133,28 @@ def download_index_ohlcv(date: str) -> pd.DataFrame:
 
     raw.columns = [c.strip() for c in raw.columns]
     raw["Index Name"] = raw["Index Name"].str.strip()
+
+    # Same RCA as ingestion/scrapers/bhavcopy.py's DATE1 check: NSE's
+    # archives.nseindia.com host has been observed to return HTTP 200 with
+    # the last available file (not a 404) when queried for a date it has no
+    # data for (e.g. an undeclared holiday). ind_close_all carries its own
+    # "Index Date" column (e.g. "15-Jan-2025") — verify it matches the
+    # requested date instead of trusting the response blindly, so a holiday
+    # gap doesn't silently duplicate the prior trading day's index OHLCV
+    # under today's date.
+    if "Index Date" in raw.columns:
+        returned_dates = pd.to_datetime(
+            raw["Index Date"].astype(str).str.strip(), format="%d-%b-%Y", errors="coerce"
+        )
+        mismatched = returned_dates.dropna().dt.date.astype(str)
+        mismatched = mismatched[mismatched != date]
+        if not mismatched.empty:
+            raise ValueError(
+                f"Indices-close fetch for {date} returned data stamped {mismatched.iloc[0]} "
+                f"(NSE archive likely served a stale/cached file — the requested date "
+                f"may be an undeclared holiday; check config/nse_holidays.py)"
+            )
+
     raw = raw[raw["Index Name"].isin(TRACKED_INDICES)].reset_index(drop=True)
 
     volume = raw["Volume"].replace("-", pd.NA) if "Volume" in raw.columns else pd.NA

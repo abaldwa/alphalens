@@ -111,7 +111,6 @@ def _fetch_window(session: requests.Session, from_dt: date, to_dt: date) -> List
 
 def _parse_records(records: List[dict], universe: Optional[set]) -> pd.DataFrame:
     """Re-use the existing parser logic from ingestion/scrapers/corporate_actions.py."""
-    from ingestion.scrapers.corporate_actions import download_corporate_actions  # noqa: F401
     # Use the private helpers directly
     from ingestion.scrapers.corporate_actions import (
         _parse_nse_date,

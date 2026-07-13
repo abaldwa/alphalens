@@ -62,11 +62,18 @@ TIER_REVIEW_FREQUENCY = "quarterly"
 
 # ---------------------------------------------------------------------------
 # SPEC-SYS-002: Daily Pipeline Completion
+#
+# PIPELINE_WINDOW_START/PIPELINE_WINDOW_HOURS were originally set here to
+# "15:30"/15 (3:30 PM, 15-hour window). Consolidated below (previously a
+# duplicate reassignment further down this file silently overrode these
+# values with the current 18:00/23-hour window — see the "23-hour pipeline
+# window (user-confirmed, 2026-07-02)" section) into a single definition to
+# avoid two competing constants for the same setting in one file.
 # ---------------------------------------------------------------------------
 PIPELINE_MAX_DURATION_MINUTES = 90
-PIPELINE_WINDOW_START = "15:30"  # 3:30 PM
+PIPELINE_WINDOW_START = "18:00"  # 6:00 PM IST (user-confirmed 2026-07-02; was 3:30 PM)
 PIPELINE_WINDOW_END = "09:15"  # 9:15 AM next day
-PIPELINE_WINDOW_HOURS = 15
+PIPELINE_WINDOW_HOURS = 23  # 23-hour window (user-confirmed 2026-07-02; was 15h)
 OPTION_CHAIN_SCRAPE_TIME = "15:25"  # Only fixed-time job; must run before market close
 
 # ---------------------------------------------------------------------------
@@ -228,10 +235,9 @@ DEFAULT_TRAINING_INTERVAL_DAYS = 28
 # Trigger at 18:00 IST; all pipeline + model training must complete by
 # 17:00 IST the next day.  Heavy tasks (feature backfill, fundamentals
 # scraping) are pushed to the weekend when the laptop isn't needed for
-# real-time signal generation.
+# real-time signal generation. (PIPELINE_WINDOW_START/PIPELINE_WINDOW_HOURS
+# for this window are defined once, above, under SPEC-SYS-002.)
 # ---------------------------------------------------------------------------
-PIPELINE_WINDOW_START = "18:00"  # Updated: 6PM IST (was 3:30 PM)
-PIPELINE_WINDOW_HOURS = 23       # Updated: 23-hour window (was 15 h)
 # Model training (2026-07-07: moved off weekdays onto the weekend — a real
 # production-grade retrain with real Optuna trials runs 3-4+ hours per
 # model and was contending with the 18:00 daily pipeline / DuckDB's
