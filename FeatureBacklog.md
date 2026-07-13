@@ -41,6 +41,7 @@ by order within a section. This file now tracks only the still-open (⏳ pending
 | A69 | Ticker-hyperlink-to-chart convention (every ticker cell links to `technical/chart.html?ticker=...` in a new tab) + a "Signal Deep Dive" icon column that opens `ml/signal.html?ticker=...` in a new tab, applied uniformly | Dashboard (all) | ⏳ | None — convention + per-table audit |
 | A71 | Shared 1-year price/technical rollup table — a dedicated per-ticker table storing ~1yr of OHLCV + technical datapoints, so charts/sparklines stop reading from the main OHLCV/indicator tables directly | Data Layer | ⏳ | Design question: existing `ohlcv_adjusted` + `/api/v1/ohlcv/{ticker}` already serve `chart.html` without an apparent perf problem (per 2026-07-11 exploration) — needs a real load-measurement before committing to a new materialized table, not just building one speculatively |
 | A72 | New cross-cutting Events table (corporate actions, bulk/block deals, 5d/21d/63d & MultiBagger recommendation triggers, forensic-flag dates) + chart overlay showing these as markers on `chart.html` | Data Layer / Dashboard (Technical) | ⏳ | `corporate_actions` and `bulk_deal_positions` tables already exist and can be reused for 2 of the 4 event types; recommendation-trigger and forensic-flag event rows are net-new; chart overlay itself does not exist at all today |
+| A73 | Resizable/expandable table columns — user-draggable column width (drag handle on column border), framework-wide convention alongside A66/A68/A69 | Dashboard (all) | ⏳ | Found 2026-07-13 during a fresh cross-check of `Create additional Features.txt` against this file — genuinely distinct from A66 (sortability)/A67 (sparklines)/A68 (alignment)/A69 (hyperlinks); no existing entry or infra covers it. Likely persisted per-table via localStorage, same pattern as other per-table UI conventions here |
 | A65 | Real test coverage measurement + improvement toward 90% overall | Tests | ⏳ | 2026-07-11: added `.coveragerc` (scopes `datastore/`, `ingestion/`, `features/`, `systems/`, `backtest/`, `config/`; omits `tests/`, `scripts/` (one-off CLI tools), `dashboard/static/vendor/`, `__init__.py`, migrations) — no coverage config existed before. Baseline measured by running the full `tests/unit/`+`tests/integration/` suite in memory-safe batches (`--cov-append`, heavy ML-training files one at a time per `feedback_coverage` convention): **67.93%** (18,695 stmts / 5,995 missed). Added 3 new real-logic test files closing genuine 0%/low-coverage gaps: `tests/unit/test_build_universe_recompute.py` (6 tests, real seeded DuckDB — `config/build_universe.py`'s `compute_adtv_from_ohlcv`/`compute_market_cap_from_fundamentals`, previously 0%), `tests/unit/test_nse_ipo.py` (5 tests, mocked-HTTP-transport-only pattern matching `test_nse_pledge.py` — `ingestion/scrapers/nse_ipo.py`'s real parse/dedup/retry logic, previously 0%), `tests/unit/test_feature_store_utils.py` (12 tests, real Parquet files on `tmp_path` — `datastore/api/utils/feature_store.py`, previously ~31%). **Final: 68.49%** (5,890 missed) — a genuine but small improvement; reaching 90% overall was not achievable in this session's scope (would require ~40+ new test files across dozens of FastAPI routers, scraper modules, and scheduler steps — realistically multiple further sessions, not a single pass). Per-package breakdown at session end: `features` 80.17%, `config` 76.94%, `datastore` 70.98%, `systems` 66.15%, `ingestion` 63.31%, `backtest` 50.31%. Weakest individual modules (0% or near-0%, still open): `backtest/run_phase1_backtest.py` (21.60%), `backtest/run_phase2_backtest.py`/`run_phase3_backtest.py` (0%, network/live-dependent), `config/build_universe.py`'s `build_universe_csv`/`build_full_nse_universe_from_db` (network-dependent, not covered by this session's DB-driven-function tests), `features/hybrid_compute.py` (0%, 285 stmts, unexamined this session), `datastore/api/routers/technical.py` (19.76%, 253 stmts — large FastAPI router, no existing test file), `datastore/api/routers/ops.py` (33.89%, 298 stmts), `ingestion/scrapers/large_deals.py` (19.30%), `ingestion/scheduler/pipeline_scheduler.py` (41.40%, 744 stmts — large scheduler monolith, see A46). Ran the full quality gate battery (`tests/quality/test_no_stub_or_synthetic_data.py`, `tests/quality/test_duckdb_connection_discipline.py`) plus all new/touched tests: only the 2 known pre-existing failures (A63, A64) reproduced, nothing new introduced. Also independently reproduced `tests/integration/test_daily_pipeline.py::TestPnDBlockExcludedFromTopBuys::test_pnd_blocked_ticker_excluded_from_top_buys` failing (`duckdb.duckdb.ConnectionException: Can't open a connection to same database file with a different configuration`) — a DuckDB cross-process connection-config conflict, environmental (concurrent agent DB access in this shared checkout), not a coverage gap and not introduced by this session's changes; not logged as a new backlog row since a near-identical class of bug (cross-process DuckDB lock races) is already tracked/fixed elsewhere per BuildLog.md. Left open (⏳) for a follow-up session to continue closing router/scraper/scheduler gaps toward 90% |
 
 ### Technical
@@ -76,12 +77,12 @@ by order within a section. This file now tracks only the still-open (⏳ pending
 
 | ID | Item | Area | Status | Blocked On |
 |---|---|---|---|---|
-| FO1 | Altman Z-Score structurally NaN in production | ML Signal Engine / Forensic / Data Layer | ⏳ | Needs real market cap, retained earnings, EBIT, current assets/liabilities ingested |
+| FO1 | Altman Z-Score structurally NaN in production | ML Signal Engine / Forensic / Data Layer | ⏳ | 2026-07-13 investigation (no code change): most inputs are NOT missing — `ebit` is computed and stored but never added to `fundamentals.py`'s API `_COLUMNS` select list (1-line fix); `retained_earnings` is real, stored, and already returned by the API, but `features/forensic_classical.py` still uses a `book_equity` proxy instead of reading it (1-line fix). `current_assets`/`current_liabilities` are ~51% NULL — real ingestion-coverage gap capped by NSE's FY2023-24+ XBRL filing-regime start date, not closable by any new source. Real point-in-time market cap (`ohlcv_adjusted.close × fundamentals.shares_outstanding`) doesn't exist yet but needs no new ingestion, just a feature-code join — currently the biggest single blocker via its `book_value_per_share` dependency (see FO9). Altman fully computable for only 118/2643 tickers (4.5%) today. Needs user decision: wiring-fixes-only (cheap) vs. also building the PIT market-cap join (small extra effort, removes `book_value_per_share` dependency) |
 | FO2 | Dechow F-Score always called with `{}` — permanently NaN | ML Signal Engine / Forensic | ⏳ | Needs employee-count, share-issuance, book-to-market data — no existing source |
-| FO3 | Beneish M-Score's AQI term permanently NaN | ML Signal Engine / Forensic / Data Layer | ⏳ | Needs `current_assets`/PPE columns backfilled from a live scraper |
+| FO3 | Beneish M-Score's AQI term permanently NaN | ML Signal Engine / Forensic / Data Layer | ⏳ | 2026-07-13 investigation (no code change): confirmed `current_assets`/`property_plant_equipment` both exist in schema and are already sourced by `nse_xbrl_financials.py`/`screener.py` — this is a coverage-ceiling problem (~44% NULL for PPE), not a missing-scraper problem; same NSE FY2023-24+ filing-regime floor as FO1, not closable by any new source |
 | FO4 | Forensic Group C fields hardcoded `np.nan` | ML Signal Engine / Forensic | 🚫 | Needs a data-source decision only the user/product owner can make (GST filings vs. an alternate revenue-concentration input) before this can even be scoped — unblocks once that source decision is made |
 | FO8 | Several forensic/governance columns unavailable even from NSE XBRL (`contingent_liability_ratio`, etc.) | Data Layer / Ingestion | 🚫 | Only present as freeform "Textual Information" in NSE's template — needs NLP/text extraction |
-| FO9 | `altman_z` still NaN for a real subset of tickers | ML Signal Engine / Data Layer | ⏳ | Depends on `shares_outstanding` availability (pre-FY2023-24 filings, implausible-value rejections); full-universe gap size not yet measured |
+| FO9 | `altman_z` still NaN for a real subset of tickers | ML Signal Engine / Data Layer | ⏳ | 2026-07-13 investigation (no code change): measured against latest-quarter fundamentals for 2643 tickers — Altman fully computable for only 118 (4.5%); prior framing (blame on `shares_outstanding`) understated/misattributed the gap — `shares_outstanding` missing accounts for only 265/2525 NaN rows (10.5%), while `book_value_per_share` missing accounts for 1285/2525 (51%, the single largest driver, not previously called out), plus `current_assets`/`current_liabilities` (1351 rows, 53%) and `total_debt` (1296 rows, 51%). Wiring in real `retained_earnings`/`ebit` (see FO1) removes the `book_value_per_share` dependency entirely for those terms and should meaningfully shrink this gap with no new ingestion; the `current_assets`/`current_liabilities`/`total_debt` portion remains capped by the same NSE filing-regime floor as FO1/FO3 |
 
 ### Corporate Announcements
 
@@ -959,6 +960,14 @@ performance problem, so A71 (a dedicated 1yr rollup table) is left as a
 and `bulk_deal_positions` already exist and cover half of A72's proposed
 Events table — only the recommendation-trigger/forensic-flag event types
 and the chart overlay itself are net-new.
+**Update 2026-07-13:** a fresh point-by-point cross-check of the full
+`Create additional Features.txt` doc against this file (dispatched via the
+product-owner review agent) confirmed 27 of 28 items are already covered
+by A66-A72/T6-T12/ML22-ML32 or elsewhere (A36 for the Trendlyne-priority
+policy question, A70 for the menu-slider fix). One genuine gap found and
+logged as A73: resizable/expandable table columns (item 1c of the
+source doc), distinct from A66/A67/A68/A69, not covered by any existing
+entry or infra.
 
 ---
 
@@ -988,6 +997,75 @@ fire) and needs verification rather than a new table.
 unconditionally, before any network request — not a loading/error state,
 a permanent stub. Matches `alphalens_docs/CLAUDE.md:492`'s documented "one
 empty-stated sub-panel each" claim exactly; confirmed accurate, not stale.
+
+### F3 — Trendlyne `current_assets`/`current_liabilities` fallback: 405-cascade fixed, never actually populated the DB at scale (2026-07-13)
+
+**Background.** `features/fundamental_source_priority.py` already correctly
+ranks `nse_xbrl=4 > trendlyne=3 > screener=2` and
+`scripts/backfill_fundamentals_trendlyne.py` is wired to that priority
+system, but zero rows in the real DB are tagged
+`fundamentals_source='trendlyne'` — the two live runs on record both
+failed:
+  - `logs/trendlyne_backfill.log` (2026-06-25): 0/~1148 sampled tickers
+    matched (mass HTTP 405s starting a few minutes into the run).
+  - `logs/trendlyne_backfill_full2644_20260630.log` (2026-06-30): only
+    138/2644 tickers matched (2506 "not-on-Trendlyne").
+
+**Root cause (confirmed, not the ticker-matching bug it looked like).**
+A live re-check on 2026-07-13 shows the exact same tickers that failed in
+both runs — including large caps like ADANIPORTS, and the very first
+failure in the 06-25 log (ACLGATI) — resolve fine today with the
+*identical* login/URL/dash-slug-fallback logic already in the code (that
+fallback, referenced at `BuildLog.md:6790`, was already correctly in
+place by 06-30 and is not the fix). Live validation runs today:
+10/10, then 65/65 (before hitting a live block), then 20/20 sampled
+universe tickers all succeeded, with real `current_assets`/
+`current_liabilities` values pulled (e.g. INFY CA=103489.0 CL=52322.0,
+HDFCBANK CA=3611332.96 CL=252977.53, RELIANCE CA=594249.0 CL=541254.0,
+ADANIPORTS CA=21974.83 CL=15760.35 — all cross-checked as plausible
+real INR-Cr balance-sheet figures for FY2026).
+
+The real bug: Trendlyne intermittently returns HTTP 405 as a WAF/
+rate-limit signal (confirmed live 2026-07-13 — even the *login* endpoint
+itself returned 405 during one of this session's own rapid-succession
+validation attempts, recovering after a ~90s pause). The old code in
+`_fetch_ticker_data` treated 405 exactly like a genuine 404 "ticker not
+on Trendlyne" and applied the fast `0.3x` notfound retry delay before the
+next request — which fed the block instead of backing off from it,
+turning a transient rate-limit trip into a cascading near-100%-failure
+tail for the rest of the run (this exactly explains both historical
+runs' shape: mostly-clean start, then a wall of 405s once the WAF
+tripped).
+
+**Fix implemented** (branch `fix/trendlyne-405-waf-circuit-breaker`,
+commit 66fca7f, PR: https://github.com/abaldwa/alphalens/pull/new/fix/trendlyne-405-waf-circuit-breaker):
+`_fetch_ticker_data` now returns `(body, reason)` with `reason` in
+`{"ok", "404", "405", "error"}`, keeping the existing dash-slug fallback
+(a real, if rare, case) but classifying a still-failing 405/403 as a
+possible block rather than folding it into "not on Trendlyne". `main()`'s
+loop applies the full-length sleep (not the fast 404 skip) on 405, and a
+circuit breaker: after 5 consecutive 405s, back off 60s and re-login
+before continuing — observed live during this session's own validation
+(triggered once at ticker 70/80, recovered on the next attempt).
+Added `tests/unit/test_backfill_fundamentals_trendlyne.py` (6 tests,
+mocked `requests.Session`, no live network) covering the 404-vs-405-vs-ok
+classification, including the "405 + failing dash-slug fallback stays
+405, not 404" case that was the actual gap.
+
+**Full 2644-ticker backfill: recommended as a safe next step, NOT run in
+this task.** With the fix, sampled runs show ~100% match rate on tickers
+genuinely on Trendlyne (vs. 0% and 5.2% before) modulo the WAF's own
+transient trips, which the circuit breaker now survives automatically
+(costs ~60s per trip, self-recovers) instead of silently degrading the
+whole run. Recommend running via the script's existing
+`--publish-mode staged` (default, A25 rollback point) exactly as already
+built — `nohup .venv/bin/python3 scripts/backfill_fundamentals_trendlyne.py
+--universe-only > logs/trendlyne_backfill_YYYYMMDD.log 2>&1 &`, expect
+several circuit-breaker trips (~60s each) over the ~1hr run, watch the
+log for the final `ROE/ROCE completeness` summary and confirm a
+non-trivial `fundamentals_source='trendlyne'` row count afterward. Not
+run here per this task's explicit scope (live full-backfill go-ahead is a
+separate action, same precedent as A26's Ops force-run).
 
 ### F3 — Trendlyne `current_assets`/`current_liabilities` fallback: 405-cascade fixed, never actually populated the DB at scale (2026-07-13)
 

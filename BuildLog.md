@@ -13366,3 +13366,60 @@ parquet records. Findings, ranked by confidence:
 ### Files changed
 `BuildLog.md` (this entry). No code changes this session — diagnostic and
 harness-results write-up only.
+
+## Trendlyne Fundamentals Backfill 405-Cascade Fix (2026-07-13)
+
+### Task
+Investigation + fix for why `scripts/backfill_fundamentals_trendlyne.py` —
+the correct, working fallback source for `current_assets`/
+`current_liabilities` when NSE XBRL is capped by its FY2023-24+ filing-regime
+floor — has never actually populated the DB at scale (0 rows tagged
+`fundamentals_source='trendlyne'` despite being correctly wired into
+`features/fundamental_source_priority.py`'s priority system).
+
+### Root cause
+Not the ticker-matching bug it first looked like. `logs/trendlyne_backfill.log`
+(2026-06-25, 0/~1148 matched) and `logs/trendlyne_backfill_full2644_20260630.log`
+(2026-06-30, only 138/2644 matched) both fail on tickers that resolve fine
+today under live re-check with identical login/URL/dash-slug-fallback logic.
+The real bug: Trendlyne intermittently returns HTTP 405 as a WAF/rate-limit
+signal (confirmed live — even the login endpoint itself returned 405 during
+one rapid-succession validation attempt, recovering after ~90s). The old
+`_fetch_ticker_data` treated 405 exactly like a genuine 404 "ticker not on
+Trendlyne" and applied the fast `0.3x` notfound retry delay before the next
+request — feeding the block instead of backing off from it, turning a
+transient rate-limit trip into a cascading near-100%-failure tail for the
+rest of the run.
+
+### Fix
+`_fetch_ticker_data` now returns `(body, reason)` with `reason` in
+`{"ok", "404", "405", "error"}`, preserving the existing dash-slug fallback
+but classifying a still-failing 405/403 as a possible block rather than
+folding it into "not on Trendlyne". `main()`'s loop applies the full-length
+sleep (not the fast 404 skip) on 405, plus a circuit breaker: after 5
+consecutive 405s, back off 60s and re-login before continuing — observed
+live during validation (triggered once at ticker 70/80, recovered on the
+next attempt).
+
+### Validation
+Live sampled runs (small-sample only, no full backfill executed): 10/10,
+then 65/65 (before hitting a live block), then 20/20 sampled universe
+tickers all succeeded, with real values pulled (e.g. INFY CA=103489.0
+CL=52322.0, HDFCBANK CA=3611332.96 CL=252977.53, RELIANCE CA=594249.0
+CL=541254.0, ADANIPORTS CA=21974.83 CL=15760.35 — all cross-checked as
+plausible real INR-Cr balance-sheet figures for FY2026). Added
+`tests/unit/test_backfill_fundamentals_trendlyne.py` (6 tests, mocked
+`requests.Session`, no live network) covering the 404-vs-405-vs-ok
+classification.
+
+### Not done this session
+The full 2644-ticker production backfill was deliberately not run — that's
+a separate live-system action needing its own explicit go-ahead, same
+precedent as A26's Ops force-run. Recommended command documented in
+FeatureBacklog.md's new F3 entry.
+
+### Files changed
+`ingestion/scrapers/trendlyne.py`, `scripts/backfill_fundamentals_trendlyne.py`,
+`tests/unit/test_backfill_fundamentals_trendlyne.py` (new),
+`FeatureBacklog.md` (new F3 entry). Branch
+`fix/trendlyne-405-waf-circuit-breaker`, commit `66fca7f`.
