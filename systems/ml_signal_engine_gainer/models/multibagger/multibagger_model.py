@@ -302,6 +302,42 @@ def dedup_runs(labels: pd.DataFrame, cooldown_days: int = 15) -> pd.DataFrame:
     return df.loc[keep].reset_index(drop=True)
 
 
+def _subsample_negatives_for_rsf(
+    X_imputed: pd.DataFrame,
+    duration_valid: pd.Series,
+    event_valid: pd.Series,
+    negative_ratio: float,
+    random_state: int,
+) -> tuple:
+    """
+    2026-07-13: case-control / risk-set subsampling for RandomSurvivalForest
+    training only — keeps every event=1 (real multibagger) row and a random
+    sample of event=0 (censored) rows at `negative_ratio`:1. Standard
+    technique for rare-event survival analysis; see train_full()'s
+    rsf_negative_sample_ratio docstring for the motivating cost problem
+    (RSF split-finding cost scales with row count, and a real run was
+    ~99.7% censored rows).
+
+    Returns
+    -------
+    tuple of (X_subsampled, duration_subsampled, event_subsampled), each
+    reindexed/reset so downstream Surv.from_arrays() sees plain arrays.
+    """
+    positive_idx = event_valid[event_valid].index
+    negative_idx = event_valid[~event_valid].index
+    n_negative_keep = min(len(negative_idx), int(len(positive_idx) * negative_ratio))
+    sampled_negative_idx = pd.Index(
+        np.random.default_rng(random_state).choice(negative_idx, size=n_negative_keep, replace=False)
+    ) if n_negative_keep < len(negative_idx) else negative_idx
+
+    keep_idx = positive_idx.union(sampled_negative_idx)
+    logger.info(
+        f"RSF negative subsampling: {len(positive_idx)} positive + {len(sampled_negative_idx)}/{len(negative_idx)} "
+        f"negative rows kept (ratio={negative_ratio}:1, {len(keep_idx)}/{len(event_valid)} total)"
+    )
+    return X_imputed.loc[keep_idx], duration_valid.loc[keep_idx], event_valid.loc[keep_idx]
+
+
 class MultibaggerModel(ISurvivalModel):
     """M-08: LightGBM lambdarank (calibrated to mb_probability) + Random Survival Forest."""
 
@@ -428,6 +464,66 @@ class MultibaggerModel(ISurvivalModel):
             "archetypes": MB_ARCHETYPES,
         }
 
+    def _fit_rsf_checkpointed(
+        self,
+        X_imputed: pd.DataFrame,
+        surv_y: np.ndarray,
+        min_samples_leaf: int,
+        n_jobs: int,
+        checkpoint_path: str,
+        checkpoint_every_n_estimators: int,
+    ) -> None:
+        """
+        2026-07-13: grow the RandomSurvivalForest in batches via
+        `warm_start`, persisting the partial forest to `checkpoint_path`
+        after every batch — motivated by a real incident where a
+        single-shot 200-tree RSF fit on 629K rows ran 40+ hours and was
+        lost entirely to a host crash with no recoverable progress.
+        `warm_start=True` on a sklearn-family forest means calling
+        `fit()` again after raising `n_estimators` only trains the
+        *additional* trees and appends them — it does not refit or
+        discard the ones already grown, so each batch is genuinely
+        incremental work, not wasted re-computation.
+
+        Resumes from an existing checkpoint if one is present and its
+        feature set matches the current training run (a mismatch means a
+        stale checkpoint from a different dataset/experiment — starting
+        over is the safe choice there, not silently mixing feature sets).
+        """
+        n_done = 0
+        if os.path.exists(checkpoint_path):
+            try:
+                partial = joblib.load(checkpoint_path)
+            except Exception:
+                logger.warning(f"RSF checkpoint at {checkpoint_path} is unreadable — starting fresh")
+                partial = None
+            if partial is not None and partial.get("feature_names") == self._feature_names \
+                    and partial.get("n_estimators_target") == self.n_estimators:
+                self._rsf = partial["rsf"]
+                n_done = len(self._rsf.estimators_)
+                logger.info(f"Resuming RSF training from checkpoint: {n_done}/{self.n_estimators} trees already fit")
+            else:
+                logger.warning(f"RSF checkpoint at {checkpoint_path} doesn't match this run's feature set/target size — starting fresh")
+
+        if self._rsf is None:
+            self._rsf = RandomSurvivalForest(
+                n_estimators=n_done, random_state=self.random_state,
+                min_samples_leaf=min_samples_leaf, n_jobs=n_jobs, warm_start=True,
+            )
+
+        while n_done < self.n_estimators:
+            n_done = min(n_done + checkpoint_every_n_estimators, self.n_estimators)
+            self._rsf.n_estimators = n_done
+            self._rsf.fit(X_imputed, surv_y)
+
+            tmp_path = f"{checkpoint_path}.tmp"
+            joblib.dump(
+                {"rsf": self._rsf, "feature_names": self._feature_names, "n_estimators_target": self.n_estimators},
+                tmp_path,
+            )
+            os.replace(tmp_path, checkpoint_path)  # atomic — never leaves a half-written checkpoint
+            logger.info(f"RSF checkpoint saved: {n_done}/{self.n_estimators} trees -> {checkpoint_path}")
+
     # ===== Full M-08 pipeline =====
     def train_full(
         self,
@@ -436,6 +532,9 @@ class MultibaggerModel(ISurvivalModel):
         duration_months: pd.Series,
         event: pd.Series,
         groups: Optional[List[int]] = None,
+        rsf_checkpoint_path: Optional[str] = None,
+        rsf_checkpoint_every_n_estimators: int = 20,
+        rsf_negative_sample_ratio: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Full M-08 pipeline: lambdarank ranker + Platt-scaling calibration
@@ -462,6 +561,34 @@ class MultibaggerModel(ISurvivalModel):
             Lambdarank group sizes (e.g. one group per as-of-date
             snapshot — rows within a group are ranked against each
             other). Defaults to one group = the whole dataset.
+        rsf_checkpoint_path : str, optional
+            2026-07-13 (interim-persistence follow-up): if given, the
+            RandomSurvivalForest is grown in batches of
+            `rsf_checkpoint_every_n_estimators` trees (via `warm_start`)
+            instead of one blocking `fit()` call, saving the partial
+            forest to this path after every batch. A crash mid-training
+            (this is what motivated the change — a 40+ hour single-shot
+            RSF fit was lost whole to a host crash with zero recoverable
+            progress) loses at most one batch's worth of trees instead of
+            the entire fit. If the path already holds a checkpoint whose
+            feature set matches, training resumes from its tree count
+            rather than restarting at 0. None (default) preserves the
+            original single-shot, no-checkpoint behavior.
+        rsf_checkpoint_every_n_estimators : int
+            Trees per batch when `rsf_checkpoint_path` is set. Ignored
+            otherwise.
+        rsf_negative_sample_ratio : float, optional
+            2026-07-13 (scope-reduction follow-up to the same crash that
+            motivated checkpointing): if given, the RSF (only — the
+            ranker/calibrator above still train on the full `X`/`y`) fits
+            on every event=1 (real multibagger) row plus a random sample
+            of event=0 (censored) rows at this negative:positive ratio,
+            instead of the full cohort. This is standard case-control /
+            risk-set subsampling for rare-event survival analysis — with
+            a real ~0.3% positive rate, a full-cohort RSF fit spends
+            nearly all its split-finding time on a mostly-redundant
+            majority class. None (default) preserves the original
+            full-cohort behavior.
 
         Returns
         -------
@@ -503,7 +630,13 @@ class MultibaggerModel(ISurvivalModel):
         X_imputed = self._impute_fit(X_valid)
         self._fit_ranker_and_calibrator(X_imputed, y_valid, groups=groups)
 
-        surv_y = Surv.from_arrays(event=event_valid.to_numpy(), time=duration_valid.to_numpy())
+        X_rsf, duration_rsf, event_rsf = X_imputed, duration_valid, event_valid
+        if rsf_negative_sample_ratio is not None:
+            X_rsf, duration_rsf, event_rsf = _subsample_negatives_for_rsf(
+                X_imputed, duration_valid, event_valid, rsf_negative_sample_ratio, self.random_state,
+            )
+
+        surv_y = Surv.from_arrays(event=event_rsf.to_numpy(), time=duration_rsf.to_numpy())
         # [backlog #26/#27, 2026-07-04] Two independent memory fixes, both
         # confirmed live against the real ~57k-row training set the #27
         # labeling fix now produces (vs. ~1,138 rows pre-fix):
@@ -527,19 +660,26 @@ class MultibaggerModel(ISurvivalModel):
         #    labeled snapshots load_multibagger_training_data_from_db()
         #    produces in the future.
         rsf_n_jobs = min(4, os.cpu_count() or 1)
-        rsf_min_samples_leaf = max(5, len(X_imputed) // 1000)
-        self._rsf = RandomSurvivalForest(
-            n_estimators=self.n_estimators, random_state=self.random_state,
-            min_samples_leaf=rsf_min_samples_leaf, n_jobs=rsf_n_jobs,
-        )
-        self._rsf.fit(X_imputed, surv_y)
+        rsf_min_samples_leaf = max(5, len(X_rsf) // 1000)
+
+        if rsf_checkpoint_path is None:
+            self._rsf = RandomSurvivalForest(
+                n_estimators=self.n_estimators, random_state=self.random_state,
+                min_samples_leaf=rsf_min_samples_leaf, n_jobs=rsf_n_jobs,
+            )
+            self._rsf.fit(X_rsf, surv_y)
+        else:
+            self._fit_rsf_checkpointed(
+                X_rsf, surv_y, rsf_min_samples_leaf, rsf_n_jobs,
+                rsf_checkpoint_path, rsf_checkpoint_every_n_estimators,
+            )
         self._event_time_bounds = (float(self._rsf.unique_times_.min()), float(self._rsf.unique_times_.max()))
 
         self._trained_at = pd.Timestamp.now()
         self._training_samples = len(X_imputed)
 
         try:
-            rsf_score = float(self._rsf.score(X_imputed, surv_y))
+            rsf_score = float(self._rsf.score(X_rsf, surv_y))
         except Exception:
             rsf_score = np.nan
 

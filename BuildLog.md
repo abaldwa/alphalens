@@ -13536,3 +13536,103 @@ the already-armed Phase B) have released the DB lock. Verified via
 genuine forced recompute, not a no-op. `paper_trade` correctly stays
 un-run for these past dates (SPEC-SCHED-006, enforced inside
 `force_run_date_sync` itself).
+
+## Host Crash Recovery + MultiBagger RSF Checkpointing/Subsampling/Rescoping (2026-07-13)
+
+### Task
+The host crashed (hard reboot, uptime reset to ~2min; no OOM-kill/panic
+evidence found in `journalctl -k -b -1`, likely a hang that never flushed
+a clean crash log) mid-way through the MultiBagger experimental job (PID
+6990), which had been running 40+ hours and — per a `py-spy dump` taken
+just before the crash — was still stuck inside a single blocking
+`RandomSurvivalForest.fit()` call for the *first* of 3 variants
+(2x/12mo), with zero recoverable progress. User asked for three things:
+(1) schedule the remaining Tier-1 jobs now that the DB is free, (2)
+review MultiBagger's entire scope, (3) add interim persistence so a future
+crash doesn't lose everything again.
+
+### 1. ML31/A28(g)/A26 launched directly
+With MultiBagger dead and the DB lock free, launched
+`/tmp/run_production_retrains.py` directly (PID 7013) instead of waiting
+on a monitor — runs `train_all_phase1` (ML31's meta-labeler fix, see the
+2026-07-13 entry above), then `retrain_phase2 --horizon 63` (A28(g)),
+then the A26 force-run recompute, in sequence.
+
+### 2. RSF interim persistence (code landed)
+`systems/ml_signal_engine_gainer/models/multibagger/multibagger_model.py`:
+added `MultibaggerModel._fit_rsf_checkpointed()` — grows the RSF in
+batches via `warm_start=True` (sklearn-family forests: raising
+`n_estimators` and calling `fit()` again only trains the *new* trees,
+appending rather than refitting), saving the partial forest to a
+checkpoint path atomically (`os.replace`) after every batch. Resumes from
+an existing checkpoint if its feature set + target tree count match,
+otherwise starts fresh (a mismatch means a stale/different-dataset
+checkpoint — never silently mixed in). Wired through
+`train_full(rsf_checkpoint_path=..., rsf_checkpoint_every_n_estimators=20)`
+and `train_multibagger.py::train_multibagger_variant` (checkpoint path
+keyed per variant name under the same `_gainer_experiment/<name>/` dir the
+final model saves to; deleted on successful completion so a *future*
+unrelated retrain of the same variant can't accidentally resume from
+stale trees). Verified via an isolated smoke test that genuinely simulates
+a crash-and-resume (truncate a checkpoint to 5/12 trees, relaunch, confirm
+it resumes to exactly 12 rather than restarting).
+
+### 3. Negative subsampling for RSF (code landed)
+Investigated the actual cost driver behind the 40+ hour stall: the
+2x/12mo dataset was 629,151 rows, only 1,667 (0.26%) positive/event=1 —
+RSF's log-rank split-finding cost was being spent almost entirely on a
+mostly-redundant censored majority. Added
+`_subsample_negatives_for_rsf()` (case-control / risk-set subsampling,
+standard for rare-event survival analysis) — keeps every event=1 row plus
+a random sample of event=0 rows at a configurable ratio, applied only to
+the RSF's inputs (the ranker/calibrator still see the full cohort, which
+is cheap). Wired through `train_full(rsf_negative_sample_ratio=...)`.
+Verified via an isolated smoke test with an imbalanced synthetic dataset.
+
+### 4. Scope review and rescoped relaunch
+Corrected an earlier misreading of the crashed job's own log: the
+`py-spy dump` and the surviving `logs/multibagger_overnight_*.log`
+(repo-tracked, survived the crash) together confirm the 40+ hour run
+never got past variant 1 of 3 (2x/12mo) — not "deep into variant 2" as
+reported mid-session. Brainstormed with the user why the model trains on
+the "entire regime" rather than only known multibaggers: negatives are
+structurally required (a model with no non-multibagger examples has
+nothing to discriminate against), but the *volume* of negatives was the
+real, fixable cost driver (see #3 above). Agreed final relaunch scope:
+top-500-by-ADTV universe (was unrestricted, 1,410 tickers), 10-year
+lookback (was 20), RSF at 100 trees (was 200) with 10:1
+negative:positive subsampling, checkpointed every 20 trees, and only the
+2x/12mo variant queued for now (review its results before committing
+compute to 3x/24mo and 5x/36mo). Cleared the stale
+`checkpoints/multibagger_2x_12m/` directory first — its stage key
+(`stride{N}_cooldown{N}_mult{X}_win{Y}`) doesn't include lookback_days or
+the ticker set, so leaving it in place would have silently resumed from
+1410-ticker/20yr data instead of rebuilding at the new scope (the same
+class of checkpoint-collision risk flagged earlier this session for
+Phase B). Queued the actual relaunch (`/tmp/run_multibagger_v2.py`)
+behind PID 7013 via `/tmp/monitor_and_launch_multibagger_v2.sh` so it
+doesn't contend with the still-running ML31/A28(g)/A26 job for the DB
+lock.
+
+### 5. Explored: survival curve for 21d/63d gainer models — logged, not built
+User asked whether the multibagger-style RSF survival curve makes sense
+for the 21d/63d short-horizon gainer signal models too. Confirmed the
+survival curve's actual utility first (it's not dead weight in
+production — `predict_full()`'s `mb_survival_6m/12m/18m/24m/36m` columns
+are read by `datastore/api/routers/multibagger.py`,
+`dashboard/static/ml/js/multibagger.js`, and `watchlist.js`). Assessed
+21d/63d feasibility (small labeling addition needed —
+`first_touch_day` — and much cheaper than multibagger's case since
+positive rate there is ~26-35% vs multibagger's ~0.3%) and logged the
+full analysis as FeatureBacklog ML33, explicitly deferred — not built
+this session, user chose to keep focus on the MultiBagger relaunch.
+
+### Files changed
+`systems/ml_signal_engine_gainer/models/multibagger/multibagger_model.py`
+(`_fit_rsf_checkpointed`, `_subsample_negatives_for_rsf`,
+`train_full`'s new `rsf_checkpoint_path`/`rsf_checkpoint_every_n_estimators`/
+`rsf_negative_sample_ratio` params).
+`systems/ml_signal_engine_gainer/inference/train_multibagger.py`
+(`train_multibagger_variant` wires the RSF checkpoint path through,
+cleans it up on success).
+`FeatureBacklog.md` (new row ML33).

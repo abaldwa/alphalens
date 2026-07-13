@@ -442,6 +442,15 @@ def train_all_phase1(
             _save_model(model, name, run_date, registry, metadata_extra={"diagnostics": diag})
 
     # ===== 5. MetaLabeler (on Signal5D's validation fold) =====
+    # ML31 fix (2026-07-13): train() previously tuned the Act/Don't-Act
+    # threshold in-sample (on the same rows it just fit on) because
+    # tune_threshold() was never invoked here — a classic overfit-threshold
+    # bug. Root-caused via FeatureBacklog ML31: live meta_prob values sat
+    # right on the decision boundary (0.44-0.54) with near-random
+    # separation, vetoing ~all buy candidates. Fix: carve out a genuinely
+    # held-out slice of the Act-labeled rows (chronological split, mirroring
+    # get_train_validation_split's date-based approach) and re-tune the
+    # threshold on that slice, never on the fitting data.
     signal_5d_model, val_df_5d_raw = signal_models["signal_5d"]
     val_df_5d = val_df_5d_raw.reset_index(drop=True)
     meta_X = val_df_5d[CORE_TECHNICAL_FEATURES]
@@ -449,8 +458,17 @@ def train_all_phase1(
     meta_labels = MetaLabeler.compute_labels(direction, val_df_5d["_return"])
     meta_model = MetaLabeler(random_state=seed)
     meta_mask = meta_labels.notna()
-    if meta_mask.sum() >= 10:
-        meta_model.train(meta_X[meta_mask], meta_labels[meta_mask])
+    if meta_mask.sum() >= 20:
+        meta_dates = val_df_5d.loc[meta_mask, "date"]
+        order = meta_dates.sort_values().index
+        split_at = int(len(order) * 0.7)
+        fit_idx, tune_idx = order[:split_at], order[split_at:]
+        if len(tune_idx) >= 10:
+            meta_model.train(meta_X.loc[fit_idx], meta_labels.loc[fit_idx])
+            meta_model.tune_threshold(meta_X.loc[tune_idx], meta_labels.loc[tune_idx])
+        else:
+            logger.warning("Too few held-out rows to tune MetaLabeler threshold — using in-sample fit on all Act-labeled rows")
+            meta_model.train(meta_X[meta_mask], meta_labels[meta_mask])
         if save:
             _save_model(meta_model, "meta_labeler", run_date, registry)
     else:

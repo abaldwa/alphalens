@@ -15,6 +15,7 @@ interferes with the production `multibagger` model or datastore/models/registry.
 import argparse
 import json
 import logging
+import os
 from typing import Dict, List, NamedTuple
 
 from config.settings import MODELS_DIR
@@ -77,6 +78,7 @@ def train_multibagger_variant(
     save: bool = True,
     seed: int = 42,
     tickers: list = None,
+    rsf_checkpoint_every_n_estimators: int = 20,
 ) -> Dict:
     """Train one (return_multiplier, window_years) multibagger variant end-to-end."""
     run_date = now_ist()
@@ -99,12 +101,31 @@ def train_multibagger_variant(
     )
 
     model = MultibaggerModel(random_state=seed, n_estimators=n_estimators)
-    diagnostics = model.train_full(X, y, duration_months, event, groups=groups)
+    # 2026-07-13: RSF checkpoint keyed by variant name, rooted under the same
+    # GAINER_MODELS_DIR/<name>/ this variant's final model.save() also uses —
+    # a real 40+ hour single-shot RSF fit on the 3x/24mo variant was lost
+    # whole to a host crash with zero recoverable progress; see
+    # multibagger_model.py::_fit_rsf_checkpointed's docstring.
+    rsf_checkpoint_dir = GAINER_MODELS_DIR / target.name
+    rsf_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    rsf_checkpoint_path = str(rsf_checkpoint_dir / f"{target.name}_rsf_checkpoint.pkl")
+    diagnostics = model.train_full(
+        X, y, duration_months, event, groups=groups,
+        rsf_checkpoint_path=rsf_checkpoint_path,
+        rsf_checkpoint_every_n_estimators=rsf_checkpoint_every_n_estimators,
+    )
     logger.info(
         "Multibagger[%s] trained: %d samples, positive_rate=%.4f, event_rate=%.4f, rsf_concordance=%.4f",
         target.name, diagnostics["training_samples"], diagnostics["positive_rate"],
         diagnostics["event_rate"], diagnostics["rsf_concordance_index"],
     )
+    # Training reached here => the RSF checkpoint's job is done (the fully
+    # trained model gets its own save() below) — remove it so a *future*,
+    # unrelated retrain of this same variant can never accidentally resume
+    # from trees fit on a stale/different dataset (the checkpoint is only
+    # keyed on feature-set + target tree count, not on the underlying data).
+    if os.path.exists(rsf_checkpoint_path):
+        os.remove(rsf_checkpoint_path)
 
     registry: Dict = {}
     if save:
