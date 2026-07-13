@@ -12,7 +12,7 @@ function renderMbTable(containerId, tickers) {
   const table = el("table", {}, [
     el("thead", {}, [el("tr", {}, labels.map((l) => el("th", {}, [l])))]),
     el("tbody", {}, tickers.map((t) => el("tr", {}, cols.map((cc) => {
-      if (cc === "ticker") return el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${t.ticker}` }, [t.ticker])]);
+      if (cc === "ticker") return tickerCell(t.ticker);
       if (cc === "mb_probability") return el("td", { class: "mono" }, [fmtPct(t[cc])]);
       if (cc === "mb_tier") return el("td", {}, [el("span", { class: "badge b-purple" }, [mbTierLabel(t[cc])])]);
       if (cc.startsWith("survival")) return el("td", { class: "mono" }, [fmtPct(t[cc])]);

@@ -35,7 +35,7 @@ function renderReconciliationTable(rows) {
     el("tbody", {}, rows.map((r) => {
       const row = el("tr", {}, [
         el("td", {}, [r.family_id]),
-        el("td", { style: "font-weight:600" }, [r.ticker]),
+        tickerCell(r.ticker),
         el("td", {}, [r.quarter_end_date]),
         el("td", { class: "mono" }, [r.estimated_position_pre_correction != null ? r.estimated_position_pre_correction.toLocaleString("en-IN") : "—"]),
         el("td", { class: "mono" }, [r.reported_shares_est != null ? r.reported_shares_est.toLocaleString("en-IN") : "—"]),
@@ -162,7 +162,7 @@ function renderFamilyTable(rows) {
       return th;
     }))]),
     el("tbody", {}, sorted.map((r) => el("tr", {}, [
-      el("td", { style: "font-weight:600" }, [r.ticker]),
+      tickerCell(r.ticker),
       el("td", {}, [r.company_name || "—"]),
       el("td", {}, [el("span", { class: "badge " + (CAP_BAND_BADGE[r.cap_band] || "b-gray") }, [r.cap_band])]),
       el("td", { class: "mono" }, [r.market_cap_cr != null ? r.market_cap_cr.toLocaleString("en-IN") : "—"]),
@@ -250,7 +250,7 @@ function renderDealsTable(rows) {
       el("th", {}, ["Client"]), el("th", {}, ["Txn"]), el("th", {}, ["Quantity"]), el("th", {}, ["Price"]),
     ])]),
     el("tbody", {}, rows.map((r) => el("tr", {}, [
-      el("td", { style: "font-weight:600" }, [r.ticker]),
+      tickerCell(r.ticker),
       el("td", {}, [r.company_name || "—"]),
       el("td", {}, [el("span", { class: "badge " + (CAP_BAND_BADGE[r.cap_band] || "b-gray") }, [r.cap_band])]),
       el("td", { class: "mono" }, [r.market_cap_cr != null ? r.market_cap_cr.toLocaleString("en-IN") : "—"]),

@@ -20,7 +20,7 @@ apiGet("/api/v1/ta/watchlist/daily", { limit: 30 })
       el("thead", {}, [el("tr", {}, [
         el("th", {}, ["Stock"]), el("th", {}, ["Name"]), el("th", {}, ["Sector"]),
         el("th", {}, ["Price"]), el("th", {}, ["Template"]), el("th", {}, ["Score"]),
-        el("th", {}, ["Rationale"]), el("th", {}, ["Next Resistance"]), el("th", {}, ["Support"]),
+        el("th", {}, ["Rationale"]), el("th", {}, ["Next Resistance"]), el("th", {}, ["Support"]), el("th", {}, ["Deep Dive"]),
       ])]),
       el("tbody", {}, r.rows.map((row) => el("tr", {}, [
         el("td", { style: "font-weight:600" }, [el("a", { href: `chart.html?ticker=${row.ticker}` }, [row.ticker])]),
@@ -38,6 +38,9 @@ apiGet("/api/v1/ta/watchlist/daily", { limit: 30 })
         ]),
         el("td", { class: "mono", style: "color:var(--green)" }, [
           row.support_levels.length ? row.support_levels.map(fmtMoney).join(" / ") : "—",
+        ]),
+        el("td", {}, [
+          el("a", { href: `deep_dive.html?ticker=${row.ticker}`, target: "_blank", rel: "noopener", title: "Technical Deep Dive" }, ["🔎"]),
         ]),
       ]))),
     ]);

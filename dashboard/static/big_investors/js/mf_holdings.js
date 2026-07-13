@@ -151,7 +151,7 @@ function renderMfTable(r) {
       schemeCell.title = "Double-click for the list of mutual funds holding this stock";
       schemeCell.addEventListener("dblclick", () => showMfSchemeModal(row));
       return el("tr", {}, [
-        el("td", { style: "font-weight:600" }, [row.ticker]),
+        tickerCell(row.ticker),
         el("td", {}, [row.company_name || "—"]),
         el("td", {}, [el("span", { class: "badge " + (MF_CAP_BAND_BADGE[row.cap_band] || "b-gray") }, [row.cap_band])]),
         el("td", { class: "mono" }, [row.market_cap_cr != null ? row.market_cap_cr.toLocaleString("en-IN") : "—"]),

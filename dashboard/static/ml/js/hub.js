@@ -146,7 +146,7 @@ function renderTopBuysTable() {
       return th;
     }))]),
     el("tbody", {}, sorted.map((r) => el("tr", {}, [
-      el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${r.ticker}` }, [r.ticker])]),
+      tickerCell(r.ticker),
       el("td", {}, [el("span", { class: "badge " + (r.signal_direction === "sell" ? "b-red" : "b-green") }, [`${(r.signal_direction || "—").toUpperCase()} ${horizonLabel(r.model_name)}`])]),
       el("td", { class: "mono " + pnlClass(r.buy_prob - 0.5) }, [fmtPct(r.buy_prob)]),
       el("td", { class: "mono" }, [r.meta_label || "—"]),
@@ -239,7 +239,7 @@ function loadHorizonMini() {
           el("th", {}, ["Stock"]), el("th", {}, ["Horizon"]), el("th", {}, ["Buy Prob"]), el("th", {}, ["Expected Return"]),
         ])]),
         el("tbody", {}, rows.map((row) => el("tr", {}, [
-          el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${row.ticker}` }, [row.ticker])]),
+          tickerCell(row.ticker),
           el("td", {}, [el("span", { class: "badge b-gray" }, [row.horizon])]),
           el("td", { class: "mono" }, [fmtPct(row.buy_prob)]),
           el("td", { class: "mono " + pnlClass(row.expected_return_pct) }, [row.expected_return_pct != null ? `${row.expected_return_pct > 0 ? "+" : ""}${row.expected_return_pct.toFixed(1)}%` : "—"]),

@@ -32,7 +32,7 @@ apiGet("/api/v1/signals/ml/forensic/flagged", { flag: "red,amber" })
           el("tbody", {}, tickers.map((t, i) => {
             const d = details[i];
             return el("tr", {}, [
-              el("td", { style: "font-weight:600" }, [t.ticker]),
+              tickerCell(t.ticker),
               el("td", {}, [el("span", { class: "badge " + badgeClass(t.forensic_flag_label === "green" ? "green" : (["red", "black"].includes(t.forensic_flag_label) ? "red" : "amber")) }, [fmtNum(t.forensic_composite, 0)])]),
               d ? heatCell(d.beneish_m, 2, d.beneish_m !== null && d.beneish_m !== undefined && d.beneish_m > -1.78) : el("td", { class: "heatmap-cell h-neutral" }, ["—"]),
               d ? heatCell(d.altman_z, 2, d.altman_z !== null && d.altman_z !== undefined && d.altman_z < 1.81) : el("td", { class: "heatmap-cell h-neutral" }, ["—"]),

@@ -48,7 +48,7 @@ function renderAnnouncementsTable(containerId, rows) {
     ])]),
     el("tbody", {}, rows.map((r) => el("tr", {}, [
       el("td", { class: "mono" }, [r.announced_at ? r.announced_at.replace("T", " ").slice(0, 16) : "—"]),
-      el("td", { style: "font-weight:600" }, [r.ticker]),
+      tickerCell(r.ticker),
       el("td", {}, [r.company_name || "—"]),
       el("td", {}, [el("span", { class: "badge " + (CATEGORY_BADGE[r.category] || "b-gray") }, [CATEGORY_LABEL[r.category] || r.category])]),
       el("td", {}, [r.subject || "—"]),

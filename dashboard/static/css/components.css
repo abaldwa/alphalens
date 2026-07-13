@@ -72,6 +72,10 @@ tr:hover td{background:var(--bg)}
 .up{color:var(--green)}.dn{color:var(--red)}.neutral{color:var(--tx3)}
 .pos{color:var(--green)}.neg{color:var(--red)}
 
+/* A73 — framework-wide resizable-column drag handle (js/shell.js applyResizable) */
+.col-resize-handle{position:absolute;right:0;top:0;bottom:0;width:6px;cursor:col-resize;user-select:none}
+.col-resize-handle:hover{background:var(--blue)}
+
 .cross-links{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .cross-link{font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--bdr);color:var(--tx2);cursor:pointer;text-decoration:none;transition:.15s}
 .cross-link:hover{border-color:var(--blue);color:var(--blue);background:rgba(59,107,245,.04)}

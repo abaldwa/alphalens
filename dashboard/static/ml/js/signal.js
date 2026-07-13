@@ -189,72 +189,6 @@ function loadRegimeHistory() {
     .catch(() => drawRegimeChart([]));
 }
 
-// ===== #21 — sortable full-universe table (latest date), double-click to drill in =====
-const universeSortState = { key: "buy_prob", dir: "desc" };
-let universeRows = [];
-
-function forensicBadgeClass(flag) {
-  if (flag === "green") return "b-green";
-  if (flag === "red" || flag === "black") return "b-red";
-  if (flag === "amber") return "b-amber";
-  return "b-gray";
-}
-
-function renderUniverseTable() {
-  const c = document.getElementById("universe-table");
-  if (!universeRows.length) {
-    c.innerHTML = `<div class="empty">No scored universe found for the latest date</div>`;
-    return;
-  }
-  const sorted = sortRows(universeRows, universeSortState.key, universeSortState.dir);
-  const onSort = (key, dir) => {
-    universeSortState.key = key;
-    universeSortState.dir = dir;
-    renderUniverseTable();
-  };
-  const table = el("table", {}, [
-    el("thead", {}, [el("tr", {}, [
-      sortableHeader("Ticker", "ticker", universeSortState, onSort),
-      sortableHeader("Buy Prob", "buy_prob", universeSortState, onSort),
-      sortableHeader("Q50 Return", "q50_return", universeSortState, onSort),
-      sortableHeader("Meta Label Prob", "meta_label_prob", universeSortState, onSort),
-      sortableHeader("P&D Score", "pnd_score", universeSortState, onSort),
-      el("th", {}, ["Forensic"]),
-      sortableHeader("MB Probability", "mb_probability", universeSortState, onSort),
-    ])]),
-    el("tbody", {}, sorted.map((r) => {
-      const row = el("tr", { style: "cursor:pointer" }, [
-        el("td", { style: "font-weight:600" }, [r.ticker]),
-        el("td", { class: "mono" }, [fmtPct(r.buy_prob)]),
-        el("td", { class: "mono " + pnlClass(r.q50_return) }, [fmtPct(r.q50_return)]),
-        el("td", { class: "mono" }, [fmtPct(r.meta_label_prob)]),
-        el("td", { class: "mono" }, [fmtNum(r.pnd_score, 0)]),
-        el("td", {}, [el("span", { class: "badge " + forensicBadgeClass(r.forensic_flag) }, [r.forensic_flag || "—"])]),
-        el("td", { class: "mono" }, [fmtPct(r.mb_probability)]),
-      ]);
-      row.addEventListener("dblclick", () => {
-        document.getElementById("ticker-input").value = r.ticker;
-        document.getElementById("date-input").value = (r.date || "").slice(0, 10) || todayStr();
-        loadSignals();
-        window.scrollTo({ top: document.getElementById("signal-header").offsetTop - 60, behavior: "smooth" });
-      });
-      return row;
-    })),
-  ]);
-  c.innerHTML = "";
-  c.appendChild(el("div", { class: "card" }, [table]));
-}
-
-function loadUniverse() {
-  showLoading("universe-table");
-  apiGet(`/api/v1/signals/ml/universe/${todayStr()}`, { carry_forward: true })
-    .then((rows) => {
-      universeRows = rows;
-      renderUniverseTable();
-    })
-    .catch((e) => showError("universe-table", e));
-}
-
 // ===== #17 — 5-day recommendation history + Sell rationale =====
 const EXIT_TYPE_TEXT = {
   thesis_broken: "Thesis broken — stop-loss hit; the original entry thesis no longer holds.",
@@ -342,7 +276,6 @@ document.getElementById("load-btn").addEventListener("click", () => {
   loadHistory();
 });
 loadRegimeHistory();
-loadUniverse();
 if (params.get("ticker")) {
   loadSignals();
   loadHistory();

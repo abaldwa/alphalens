@@ -135,6 +135,25 @@ function sortRows(rows, key, dir) {
   });
 }
 
+// A69 — uniform ticker-hyperlink convention: every ticker cell links to
+// technical/chart.html?ticker=... in a new tab, plus a small "Signal Deep
+// Dive" icon that opens ml/signal.html?ticker=... in a new tab. Absolute
+// /ui/... paths so this works identically from any app's own directory
+// (ml/, technical/, forensic/, big_investors/, valuation/, fundamental/).
+function tickerCell(ticker, extraTdAttrs) {
+  const attrs = Object.assign({ style: "font-weight:600;white-space:nowrap" }, extraTdAttrs || {});
+  return el("td", attrs, [
+    el("a", { href: `/ui/technical/chart.html?ticker=${ticker}`, target: "_blank", rel: "noopener" }, [ticker]),
+    el("a", {
+      href: `/ui/ml/signal.html?ticker=${ticker}`,
+      target: "_blank",
+      rel: "noopener",
+      title: "Signal Deep Dive",
+      style: "margin-left:6px;text-decoration:none;font-size:12px",
+    }, ["🔎"]),
+  ]);
+}
+
 function sortableHeader(label, key, sortState, onSort) {
   const isActive = sortState.key === key;
   const arrow = isActive ? (sortState.dir === "asc" ? " ▲" : " ▼") : "";

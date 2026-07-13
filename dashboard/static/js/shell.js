@@ -9,6 +9,7 @@ const APPS = [
       { id: "hub", label: "Daily Insights", href: "index.html" },
       { id: "watchlist", label: "Daily WatchList", href: "watchlist.html" },
       { id: "signal", label: "Signal Deep Dive", href: "signal.html" },
+      { id: "universe", label: "Full Universe", href: "universe.html" },
       { id: "multibagger", label: "Multibagger", href: "multibagger.html" },
       { id: "sector_rotation", label: "Sector Rotation", href: "sector_rotation.html" },
       { id: "positions", label: "Paper Trading", href: "positions.html" },
@@ -26,6 +27,7 @@ const APPS = [
       { id: "compare", label: "Compare", href: "compare.html" },
       { id: "alerts", label: "Alert Manager", href: "alerts.html" },
       { id: "watchlist", label: "Daily WatchList", href: "watchlist.html" },
+      { id: "deep_dive", label: "Technical Deep Dive", href: "deep_dive.html" },
       { id: "overview", label: "Market Overview", href: "overview.html" },
     ],
   },
@@ -129,3 +131,174 @@ function renderAppShell(appId, screenId) {
     });
   }
 }
+
+// ===== A66/A68/A73 — framework-wide table conventions =====
+// Applied generically to every <table> on every screen (via renderAppShell's
+// callers, which run on every page load, plus a MutationObserver for
+// screens that re-render their tbody after an async fetch) rather than a
+// per-page audit/edit — this is the "apply to every table, not just the
+// ones that already opted in" gap those items describe. Deliberately DOM-
+// level (reads/sorts rendered <td> text, resizes rendered <th> width) so it
+// never needs to know about each page's own row-data shape or re-render
+// function, and never conflicts with a screen's *own* data-driven sort
+// (api.js's sortableHeader/sortRows, used by #21/#23 and others) because
+// those headers already set inline `cursor:pointer` and are skipped here.
+(function () {
+  function cellIsPercentOrRange(text) {
+    const t = (text || "").trim();
+    if (!t) return false;
+    if (t.endsWith("%")) return true;
+    return /^-?\d+(\.\d+)?\s*(-|–|to)\s*-?\d+(\.\d+)?%?$/.test(t);
+  }
+
+  function cellIsNumeric(text) {
+    const t = (text || "").trim();
+    if (!t || t === "—") return false;
+    return /^[₹\-+]?[\d,]+(\.\d+)?%?$/.test(t);
+  }
+
+  // A68 — amount fields right-aligned, percentage/range fields center-aligned.
+  // Column intent is sniffed from rendered cell content (>=60% of non-empty
+  // cells in that column matching), so it applies uniformly without each
+  // page declaring a column type.
+  function applyAlignment(table) {
+    const headRow = table.querySelector("thead tr");
+    const bodyRows = Array.from(table.querySelectorAll("tbody tr"));
+    if (!headRow || !bodyRows.length) return;
+    const ths = Array.from(headRow.children);
+    ths.forEach((th, idx) => {
+      let total = 0, numeric = 0, pctOrRange = 0;
+      bodyRows.forEach((r) => {
+        const cell = r.children[idx];
+        if (!cell) return;
+        const text = cell.textContent;
+        if (!text || !text.trim()) return;
+        total++;
+        if (cellIsPercentOrRange(text)) pctOrRange++;
+        else if (cellIsNumeric(text)) numeric++;
+      });
+      if (total === 0) return;
+      if (pctOrRange / total >= 0.6) {
+        th.style.textAlign = "center";
+        bodyRows.forEach((r) => { if (r.children[idx]) r.children[idx].style.textAlign = "center"; });
+      } else if (numeric / total >= 0.6) {
+        th.style.textAlign = "right";
+        bodyRows.forEach((r) => { if (r.children[idx]) r.children[idx].style.textAlign = "right"; });
+      }
+    });
+  }
+
+  // A66 — sortable columns everywhere: click a header to sort the rendered
+  // rows in place, click again to reverse. Skipped for headers a screen
+  // already made sortable itself via api.js's sortableHeader (identified by
+  // the inline cursor:pointer style that helper always sets), so this never
+  // double-handles a click already wired to a JS-side re-render.
+  function applySortable(table) {
+    if (table.dataset.a66Sortable === "1") return;
+    const headRow = table.querySelector("thead tr");
+    const tbody = table.querySelector("tbody");
+    if (!headRow || !tbody || !tbody.children.length) return;
+    table.dataset.a66Sortable = "1";
+    const ths = Array.from(headRow.children);
+    ths.forEach((th, idx) => {
+      if (th.style.cursor === "pointer") return; // already screen-managed
+      th.style.cursor = "pointer";
+      th.style.userSelect = "none";
+      th.title = "Click to sort";
+      let dir = null;
+      th.addEventListener("click", () => {
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+        dir = dir === "asc" ? "desc" : "asc";
+        const factor = dir === "asc" ? 1 : -1;
+        const parse = (cell) => {
+          const text = cell ? cell.textContent.trim() : "";
+          if (!text || text === "—") return null;
+          const num = Number(text.replace(/[₹,%]/g, ""));
+          return Number.isNaN(num) ? text.toLowerCase() : num;
+        };
+        rows.sort((a, b) => {
+          const va = parse(a.children[idx]);
+          const vb = parse(b.children[idx]);
+          if (va === null && vb === null) return 0;
+          if (va === null) return 1;
+          if (vb === null) return -1;
+          if (va < vb) return -1 * factor;
+          if (va > vb) return 1 * factor;
+          return 0;
+        });
+        rows.forEach((r) => tbody.appendChild(r));
+      });
+    });
+  }
+
+  // A73 — resizable columns: a drag handle on each header's right border,
+  // width persisted per (page path, header label) in localStorage so it
+  // survives reloads, framework-wide convention alongside A66/A68/A69.
+  function applyResizable(table) {
+    if (table.dataset.a73Resizable === "1") return;
+    const ths = table.querySelectorAll("thead th");
+    if (!ths.length) return;
+    table.dataset.a73Resizable = "1";
+    ths.forEach((th) => {
+      const label = (th.textContent || "").trim();
+      const storeKey = `a73-colwidth:${location.pathname}:${label}`;
+      try {
+        const saved = localStorage.getItem(storeKey);
+        if (saved) th.style.width = saved;
+      } catch (e) { /* localStorage unavailable — skip persistence */ }
+
+      if (getComputedStyle(th).position === "static") th.style.position = "relative";
+      const handle = document.createElement("span");
+      handle.className = "col-resize-handle";
+      th.appendChild(handle);
+
+      handle.addEventListener("mousedown", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const startX = evt.pageX;
+        const startWidth = th.offsetWidth;
+        function onMove(e2) {
+          const w = Math.max(48, startWidth + (e2.pageX - startX));
+          th.style.width = w + "px";
+        }
+        function onUp() {
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          try { localStorage.setItem(storeKey, th.style.width); } catch (e) { /* ignore */ }
+        }
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+    });
+  }
+
+  function enhanceTable(table) {
+    if (table.classList.contains("no-enhance")) return;
+    applySortable(table);
+    applyResizable(table);
+    applyAlignment(table);
+  }
+
+  function enhanceAllTables() {
+    document.querySelectorAll("table").forEach(enhanceTable);
+  }
+
+  let scheduled = false;
+  function scheduleEnhance() {
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(() => {
+      scheduled = false;
+      enhanceAllTables();
+    }, 50);
+  }
+
+  document.addEventListener("DOMContentLoaded", scheduleEnhance);
+  if (document.readyState !== "loading") scheduleEnhance();
+  const tableEnhanceObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.addedNodes && m.addedNodes.length) { scheduleEnhance(); return; }
+    }
+  });
+  tableEnhanceObserver.observe(document.documentElement, { childList: true, subtree: true });
+})();

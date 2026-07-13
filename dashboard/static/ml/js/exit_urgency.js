@@ -35,7 +35,7 @@ function render() {
       el("th", {}, ["Exit Type (reason)"]),
     ])]),
     el("tbody", {}, sorted.map((r) => el("tr", {}, [
-      el("td", { style: "font-weight:600" }, [el("a", { href: `signal.html?ticker=${r.ticker}` }, [r.ticker])]),
+      tickerCell(r.ticker),
       el("td", { style: "font-size:12px;color:var(--tx2)" }, [r.company_name || "—"]),
       el("td", { class: "mono" }, [r.entry_date]),
       el("td", { class: "mono" }, [fmtMoney(r.entry_price)]),
