@@ -67,15 +67,22 @@ function ema(closes, period) {
   return out;
 }
 
-function overlayDataset(label, values, dates, color) {
+function overlayDataset(label, values, color) {
   return {
     type: "line",
     label,
-    data: dates.map((d, i) => ({ x: d, y: values[i] })).filter((p) => p.y !== null),
+    data: values.map((v, i) => (v === null ? null : { x: i, y: v })).filter((p) => p !== null),
     borderColor: color,
     borderWidth: 1.5,
     pointRadius: 0,
     yAxisID: "y",
+  };
+}
+
+function dateAxisTickLabel(dates) {
+  return (value) => {
+    const d = dates[value];
+    return d ? d.slice(0, 10) : "";
   };
 }
 
@@ -100,24 +107,29 @@ function loadCandles(ticker) {
 
       const dates = rows.map((r) => r.date);
       const closes = rows.map((r) => r.close);
-      const candleData = rows.map((r) => ({ x: r.date, o: r.open, h: r.high, l: r.low, c: r.close }));
+      // Category (index-based) x scale, not "time" — chartjs-chart-financial's
+      // bar-derived controller miscomputes pixel positions against a
+      // continuous time scale (element.x resolves to NaN once trading-day
+      // gaps like weekends are involved), so every candle silently fails to
+      // draw. Indexing by row also removes weekend gaps from the chart.
+      const candleData = rows.map((r, i) => ({ x: i, o: r.open, h: r.high, l: r.low, c: r.close }));
 
       const datasets = [{
         label: ticker,
         data: candleData,
         yAxisID: "y",
       }];
-      if (document.getElementById("ov-sma50").checked) datasets.push(overlayDataset("SMA50", sma(closes, 50), dates, "#3b82f6"));
-      if (document.getElementById("ov-sma200").checked) datasets.push(overlayDataset("SMA200", sma(closes, 200), dates, "#a855f7"));
-      if (document.getElementById("ov-ema21").checked) datasets.push(overlayDataset("EMA21", ema(closes, 21), dates, "#f59e0b"));
+      if (document.getElementById("ov-sma50").checked) datasets.push(overlayDataset("SMA50", sma(closes, 50), "#3b82f6"));
+      if (document.getElementById("ov-sma200").checked) datasets.push(overlayDataset("SMA200", sma(closes, 200), "#a855f7"));
+      if (document.getElementById("ov-ema21").checked) datasets.push(overlayDataset("EMA21", ema(closes, 21), "#f59e0b"));
 
       candleChart = new Chart(canvasEl.getContext("2d"), {
         type: "candlestick",
-        data: { datasets },
+        data: { labels: dates, datasets },
         options: {
           animation: false,
           scales: {
-            x: { type: "time", time: { unit: "week" }, ticks: { maxRotation: 0 } },
+            x: { type: "category", ticks: { maxRotation: 0, autoSkip: true, callback: dateAxisTickLabel(dates) } },
             y: { position: "right" },
           },
           plugins: { legend: { display: true, position: "top" } },
@@ -127,16 +139,17 @@ function loadCandles(ticker) {
       volumeChart = new Chart(volEl.getContext("2d"), {
         type: "bar",
         data: {
+          labels: dates,
           datasets: [{
             label: "Volume",
-            data: rows.map((r) => ({ x: r.date, y: r.volume })),
+            data: rows.map((r, i) => ({ x: i, y: r.volume })),
             backgroundColor: "#64748b88",
           }],
         },
         options: {
           animation: false,
           scales: {
-            x: { type: "time", time: { unit: "week" }, ticks: { maxRotation: 0 } },
+            x: { type: "category", ticks: { maxRotation: 0, autoSkip: true, callback: dateAxisTickLabel(dates) } },
             y: { position: "right", ticks: { callback: (v) => fmtInt(v) } },
           },
           plugins: { legend: { display: false } },
