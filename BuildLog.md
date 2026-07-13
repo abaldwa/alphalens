@@ -14398,3 +14398,54 @@ Both left untouched per this session's coverage-only charter.
 10 new test files under `tests/unit/` (listed above), `FeatureBacklog.md`
 (A65 row appended with this session's numbers), `BuildLog.md` (this
 entry). No production code touched.
+ entry). No production code touched.
+
+## A65: 90%-coverage push, session 7 (2026-07-13) — recorded pending merge
+
+Branch `feature/backlog-burn-a65-coverage-push-90` (off master `d7253f4`,
+not yet merged to master as of this entry) added 174 new tests across 10
+new files under `tests/unit/`, taking overall measured coverage from
+69.12% to 71.13% (20,945 stmts, 6,047 missed). 90% overall was not
+reached and the session said so plainly rather than padding the number.
+
+### Per-package coverage at end of that session
+features 89.73%, datastore 85.97%, config 79.83%, ingestion 65.09%,
+backtest 64.61%, systems 55.20%.
+
+### Modules taken to 90-100% coverage
+`datastore/api/routers/alerts.py` (0%→100%), `datastore/api/routers/
+pipeline.py` (33%→100%), `datastore/api/routers/system.py` (34%→100%),
+`datastore/api/routers/models.py` (36%→100%), `datastore/api/routers/
+features.py` (39%→96%), `datastore/api/routers/regime.py` (58%→100%),
+`datastore/api/pit.py` (47%→100%), `datastore/api/utils/file_lock.py`
+(50%→100%), `datastore/api/routers/watchlist.py` (38%→90%), corporate
+announcements router (41%→97%), `datastore/api/routers/paper_trading.py`
+(40%→83%), `features/fundamental_composites.py` (41%→100%), `config/
+training_universe.py` (57%→98%), `ingestion/scrapers/nse_indices.py`
+(41%→68%).
+
+### Biggest remaining gaps (why they're still open)
+ML Signal Engine training/inference — dozens of 0% files, out of scope
+per the standing ML-core guardrail; live-network scraper fetch functions
+and scheduler `_execute_*_job` targets — need real infra this repo
+doesn't have; `backtest/run_phase{1,2,3}_backtest.py` live scripts.
+Largest not-yet-attempted modules with real remaining headroom:
+`datastore/api/routers/big_investors.py` (331 stmts, 62%), `datastore/
+client.py` (65%), and several scrapers whose parse logic isn't yet
+isolated from live-fetch (`corporate_actions.py`, `trendlyne.py`,
+`tijori.py`, `fyers_backfill.py`).
+
+### Verification
+`tests/quality/` gate battery (5/5) passed after every new file and at
+session end — no stub/synthetic-data or DuckDB-discipline regressions.
+Production DuckDB file never touched (in-memory/temp-file fixtures only,
+per this session's charter while a live retrain chain may have still been
+running).
+
+### Files changed
+10 new test files under `feature/backlog-burn-a65-coverage-push-90`'s
+`tests/unit/` (see branch), `FeatureBacklog.md`/`BuildLog.md` on that
+branch. **Not yet merged into this file's own branch (master)** — this
+entry documents the branch's own recorded changes for visibility; the
+branch itself still needs an explicit merge decision, which was not part
+of this update.
