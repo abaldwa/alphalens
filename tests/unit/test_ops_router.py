@@ -57,6 +57,17 @@ class TestTradingCalendarHolidays:
         date.fromisoformat(holidays[0])
 
 
+class TestHeartbeats:
+    def test_returns_a_row_per_tracked_job(self, client):
+        app_client, _, _ = client
+        r = app_client.get("/api/v1/ops/heartbeats")
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, list)
+        assert len(body) > 0
+        assert "job_id" in body[0]
+
+
 class TestOpsFreshness:
     def test_no_data_present_reports_error_rows_not_a_500(self, client):
         app_client, _, _ = client
@@ -66,6 +77,44 @@ class TestOpsFreshness:
         sources = {s["source"] for s in body["sources"]}
         assert "ohlcv_adjusted" in sources
         assert "mf_holdings" in sources
+
+    def test_mf_holdings_dir_missing_reports_no_parquet_files_error(self, client, tmp_path, monkeypatch):
+        app_client, _, _ = client
+        import config.settings as settings_module
+
+        monkeypatch.setattr(settings_module, "MF_HOLDINGS_DIR", tmp_path / "no_such_mf_dir")
+        r = app_client.get("/api/v1/ops/freshness")
+        assert r.status_code == 200
+        rows_by_source = {s["source"]: s for s in r.json()["sources"]}
+        assert rows_by_source["mf_holdings"]["error"] == "no Parquet files found"
+        assert rows_by_source["mf_holdings"]["row_count"] == 0
+
+    def test_mf_holdings_corrupt_parquet_file_reports_error_not_500(self, client, tmp_path, monkeypatch):
+        app_client, _, _ = client
+        import config.settings as settings_module
+
+        mf_dir = tmp_path / "mf_holdings"
+        mf_dir.mkdir()
+        (mf_dir / "2026-06.parquet").write_text("not actually a parquet file")
+        monkeypatch.setattr(settings_module, "MF_HOLDINGS_DIR", mf_dir)
+
+        r = app_client.get("/api/v1/ops/freshness")
+        assert r.status_code == 200
+        rows_by_source = {s["source"]: s for s in r.json()["sources"]}
+        assert rows_by_source["mf_holdings"]["error"] is not None
+
+    def test_missing_duckdb_table_reports_error_row(self, client, tmp_path, monkeypatch):
+        app_client, _, duckdb_path = client
+        import config.settings as settings_module
+
+        # SIGNALS_DUCKDB_PATH points at a file that has no ml_signals table
+        # created yet -> the query raises and the source row surfaces the
+        # real error instead of a 500.
+        monkeypatch.setattr(settings_module, "SIGNALS_DUCKDB_PATH", tmp_path / "no_signals.duckdb")
+        r = app_client.get("/api/v1/ops/freshness")
+        assert r.status_code == 200
+        rows_by_source = {s["source"]: s for s in r.json()["sources"]}
+        assert rows_by_source["ml_signals"]["error"] is not None
 
     def test_seeded_ohlcv_reports_row_count_and_latest_date(self, client, monkeypatch):
         app_client, _, duckdb_path = client
@@ -117,6 +166,49 @@ class TestOpsRuns:
         assert len(runs[0]["failed_steps"]) == 1
         assert runs[0]["failed_steps"][0]["step_name"] == "download_bhavcopy"
         assert runs[0]["failed_steps"][0]["error_message"] == "connection refused"
+
+    def test_sanity_check_success_reflected_on_run_row(self, client):
+        app_client, pipeline_log_path, _ = client
+        with get_sqlite_connection(pipeline_log_path) as conn:
+            conn.execute(
+                "INSERT INTO pipeline_runs (date, started_at, completed_at, status, "
+                "stocks_processed, error_message) VALUES (?, ?, ?, 'success', 100, NULL)",
+                ("2026-06-02", "2026-06-02T06:00:00", "2026-06-02T06:10:00"),
+            )
+            conn.execute(
+                "INSERT INTO pipeline_checkpoints (date, step_name, step_index, status, "
+                "started_at, completed_at) VALUES (?, 'sanity_check', 9, 'success', ?, ?)",
+                ("2026-06-02", "2026-06-02T06:09:00", "2026-06-02T06:09:30"),
+            )
+            conn.commit()
+
+        r = app_client.get("/api/v1/ops/runs")
+        assert r.status_code == 200
+        runs = r.json()["runs"]
+        assert len(runs) == 1
+        assert runs[0]["sanity_check_passed"] is True
+
+    def test_stale_running_row_flagged(self, client, monkeypatch):
+        app_client, pipeline_log_path, _ = client
+        import config.settings as settings_module
+        from config.timezone import now_ist
+        from datetime import timedelta
+
+        monkeypatch.setattr(settings_module, "PIPELINE_STALE_RUN_THRESHOLD_MINUTES", 1)
+        started_at = (now_ist() - timedelta(minutes=5)).isoformat()
+        with get_sqlite_connection(pipeline_log_path) as conn:
+            conn.execute(
+                "INSERT INTO pipeline_runs (date, started_at, completed_at, status, "
+                "stocks_processed, error_message) VALUES (?, ?, NULL, 'running', 0, NULL)",
+                ("2026-01-01", started_at),
+            )
+            conn.commit()
+
+        r = app_client.get("/api/v1/ops/runs")
+        assert r.status_code == 200
+        runs = r.json()["runs"]
+        assert len(runs) == 1
+        assert runs[0]["is_stale"] is True
 
     def test_limit_param_caps_results(self, client):
         app_client, pipeline_log_path, _ = client

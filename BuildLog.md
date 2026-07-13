@@ -14212,3 +14212,76 @@ real, tested partial-or-full implementation (see per-item notes above
 for exactly what's still open: A40's unattended scheduling, A72's
 forensic-flag event type, ML26's broader layout redesign, ML30's
 production-DB migration).
+
+## 2026-07-13 — A65 (test coverage) continued, 5th session pass
+
+Branch: `feature/backlog-burn-a65-coverage-continued` (local only, no PR
+per this run's standing instruction — one combined branch).
+
+### What was added
+- `tests/unit/test_hybrid_compute.py`: +5 tests (`TestComputePerTicker`),
+  closing the `compute_per_ticker` gap flagged in A65's 3rd-pass note.
+  Uses a real `BackfillDataCache` instance built via `object.__new__`
+  (bypasses only its network `__init__`, never its PIT logic) plus real
+  small OHLCV/F&O/MF-holdings DataFrames — no HTTP, no DuckDB.
+  `features/hybrid_compute.py`: **35.09% → 78.95%** (285 stmts, 60
+  missed; remaining lines are defensive `except Exception` branches).
+- `tests/unit/test_pipeline_scheduler_utils.py` (new file, 8 tests):
+  `create_jobstore`/`create_scheduler` (real APScheduler objects, tmp
+  SQLite jobstore, never started), `_job_timer_start`/`_job_timer_stats`
+  (pure timing/rusage), `_record_heartbeat` (real SQLite
+  `scheduler_heartbeats` + DuckDB `job_run_log` writes against tmp_path
+  fixtures, never the production DuckDB file).
+  `ingestion/scheduler/pipeline_scheduler.py` via
+  `test_scheduler.py`+`test_checkpoint_backfill_flag.py`+this new file:
+  **29.34% → 32.11%** (760 stmts). Remaining gap is almost entirely
+  `_execute_*_job` APScheduler targets (real scraper/model-training
+  code) and the live-network `_determine_groww_live_snapshot_month` —
+  out of scope for a unit test.
+- `tests/unit/test_ops_router.py`: +6 tests — `/heartbeats`,
+  `/freshness`'s mf-dir-missing/corrupt-parquet/duckdb-table-missing
+  error branches, `/runs`'s `sanity_check_passed=True` and
+  `is_stale=True` paths. `datastore/api/routers/ops.py` coverage:
+  **59.06% → 62.75%** (298 stmts, 111 missed — remaining gap is
+  `/steps/{step_name}/force`, `/scheduler-resources`, `/live-resources`,
+  `/missed-jobs/{id}/approve`, all deliberately out of scope, live
+  scheduler/systemd/psutil/catch-up side effects).
+
+Total: 19 new tests across 1 new file + 2 expanded files.
+
+### Test results
+`tests/unit/test_hybrid_compute.py` (13), `test_pipeline_scheduler_utils.py`
+(8), `test_ops_router.py` (22), `test_scheduler.py` (40, run alongside
+`test_checkpoint_backfill_flag.py` minus its 2 known pre-existing
+failures) — all pass. Full `tests/quality/` gate battery: **5/5 passed**.
+
+### Pre-existing failures noted, not touched
+While running the wider `tests/unit/` suite this session (batched, not
+all at once — per coverage strategy), 3 failures surfaced:
+`test_checkpoint_backfill_flag.py`'s 2 tests (cross-process
+`pipeline_run_lock` contention — this shared checkout currently has a
+real production job holding the lock, exactly the scenario
+`pipeline_run_lock`'s own docstring describes) and
+`test_phase2_endpoints.py::TestWatchlistCurrent::
+test_top_n_ranked_by_probability_from_latest_date` (a genuine assertion
+failure, empty result where 2 rows expected). Verified via `git stash`
+that all 3 reproduce identically on master with none of this session's
+changes applied — not introduced by this session. Logged here rather
+than self-healed: the lock-contention failures are inherent to
+concurrent-process testing in this shared checkout (not a code bug to
+fix), and the watchlist failure needs its own dedicated investigation
+session to root-cause (out of scope for a coverage-focused pass).
+
+### Files changed
+`tests/unit/test_hybrid_compute.py`, `tests/unit/test_ops_router.py`,
+`tests/unit/test_pipeline_scheduler_utils.py` (new), `FeatureBacklog.md`
+(A65 row updated with new numbers).
+
+### Not attempted this pass
+Full-suite overall coverage % was not re-measured (would require a
+complete memory-safe batched run of `tests/unit/`+`tests/integration/`,
+out of scope for a per-file targeted pass — per-file before/after numbers
+above are independently verified via `coverage report --include=`).
+`ingestion/scheduler/pipeline_scheduler.py`'s `_execute_*_job` functions
+and `backtest/run_phase{2,3}_backtest.py` remain the next-biggest
+untouched gaps for a future session.
