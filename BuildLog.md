@@ -13805,3 +13805,74 @@ sector_rotation.py`, `tests/unit/test_sector_rotation.py`,
 `feature/backlog-burn-a42-a63-a64-a67-a72-ml22-ml26-ml28-ml29-ml30-t9`,
 5 commits. Not pushed, no PR opened, no merge to master — local commits
 only, per instructions.
+
+## 2026-07-13 — Backlog burn: A64-followup, A65 (2nd pass), A71, ML24 (partial UI fix)
+
+### A64-followup — ml_signals/ml_multibagger schema/doc drift
+Same drift pattern as A64's `ml_forensic` fix: `tests/unit/
+test_schema.py::TestCreateSignalsSchema::test_duckdb_table_columns_match_architecture_doc`
+was failing for both `ml_multibagger` and `ml_signals` — both missing
+`in_training_universe` (added by ML24/ML27 on 2026-07-11) from the test's
+expected-columns set. Read `datastore/schema/create_signals.py`'s actual
+`CREATE TABLE` statements as ground truth: `in_training_universe` is real
+(both tables), and `alphalens_docs/12_platform_architecture.md`'s DDL
+sketch for `ml_signals`/`ml_multibagger` was also stale on
+`exit_survival_5d/21d/63d` and `survival_18m`. Updated both the test and
+the doc to match the real shipped schema. `tests/unit/test_schema.py`:
+18/18 passed (was 16/18).
+
+### A65 — large_deals.py coverage (2nd pass)
+Added `tests/unit/test_large_deals.py` (33 tests, no network/mocks — real
+dicts shaped like the NSE snapshot/historical and BSE payloads documented
+in the module's own docstring, plus a real in-memory DuckDB for
+`persist_large_deals`). Covers `_parse_nse_date`, `_parse_bse_date`,
+`_normalise_transaction_type`, `_parse_nse_records`, `_parse_bse_records`,
+`persist_large_deals` (insert/empty/replace-on-same-date). Coverage:
+`ingestion/scrapers/large_deals.py` 19.30% → 46.05%. Full `tests/quality/`
+gate re-run: 5/5 pass (the previously-noted pre-existing
+`test_no_stub_or_synthetic_data.py` failure from 07-11 no longer
+reproduces — resolved by an earlier session). Still open (⏳): 90%
+full-suite target remains out of reach in one pass; `features/
+hybrid_compute.py` (0%) and the two live-dependent `backtest/
+run_phase{2,3}_backtest.py` files are the next-biggest gaps.
+
+### A71 — 1-year price/technical rollup table: load-measured, closed
+Ran a real load measurement (`TestClient(app)` against the live real
+`alphalens.duckdb`, read-only) of `GET /api/v1/ohlcv/{ticker}` across 50
+real tickers. 1-year range (chart.html's actual use case): mean 57.2ms /
+median 57.6ms / p95 77.6ms / max 94.1ms — well within an interactive
+budget. Grepped all dashboard callers of `sparklineSvg()`: only
+`sector_rotation.js` uses it today, reading a precomputed field from
+`features/sector_rotation.py`, not a live per-ticker OHLCV fetch — so
+there's no current N-ticker-sequential-fetch pattern that would justify a
+materialized rollup table. Closed as "no new table needed" with the real
+numbers recorded in `FeatureBacklog.md`, per the row's own gating
+condition. Benchmark script kept in scratchpad only, not committed.
+
+### ML24 (partial) — Buy Prob vs Target/Q50 Return UI fix
+Implemented only the dashboard-presentation half of ML24 (the
+ticker/date-reconfirmation half stays ⏳, pending the user). Added
+column-header tooltips + explanatory footnotes to `dashboard/static/ml/
+js/watchlist.js` (Buy Prob*/Target*/Expected Return* columns) and
+`dashboard/static/ml/js/signal.js` (Buy Prob*/Q50 Return* columns) making
+explicit that the classifier's buy probability and the quantile
+regressor's median forward-return are two independent model heads,
+scored separately, and can legitimately disagree — not one unified
+confidence score. Frontend-only; no model/training/inference logic
+touched.
+
+### Verification
+`tests/unit/test_schema.py` (18/18), `tests/unit/test_large_deals.py`
+(33/33, new), `tests/quality/` full battery (5/5) — all run together, all
+passed. `node -c` syntax-checked both touched JS files. No dashboard JS
+test harness exists in this repo to run beyond that.
+
+### Files changed
+`tests/unit/test_schema.py`, `alphalens_docs/12_platform_architecture.md`
+(A64-followup); `tests/unit/test_large_deals.py` (A65); `FeatureBacklog.md`
+(A65/A71/ML24 status updates); `dashboard/static/ml/js/watchlist.js`,
+`dashboard/static/ml/js/signal.js` (ML24). Branch
+`feature/backlog-burn-a64followup-a65-a71-ml24`, branched from
+`feature/backlog-burn-a42-a63-a64-a67-a72-ml22-ml26-ml28-ml29-ml30-t9`,
+4 commits. Not pushed, no PR opened, no merge to master — local commits
+only, per instructions.
