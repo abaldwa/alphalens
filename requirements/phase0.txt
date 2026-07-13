@@ -42,3 +42,8 @@ pytest-cov==6.0.0
 # back to /proc parsing if psutil isn't installed, so this is additive,
 # not a hard runtime break.
 psutil==6.1.1
+# Shared retry/backoff helper for ingestion/scrapers/_retry.py (2026-07-13),
+# replacing the ~4 duplicated hand-rolled `_retry()` helpers and standalone
+# `for attempt in range(...)` retry loops across screener.py, tijori.py,
+# trendlyne.py, macro.py, bhavcopy.py, etc.
+tenacity==9.1.4

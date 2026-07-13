@@ -72,6 +72,7 @@ from config.settings import (
 )
 from config.universe import load_universe_raw
 from datastore.client import DataStoreClient
+from ingestion.scrapers._retry import retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +233,12 @@ class TijoriScraper:
         session = requests.Session()
         session.headers.update(_HEADERS)
 
-        login_page = _retry(lambda: session.get(LOGIN_URL, timeout=30))
+        login_page = retry_call(
+            lambda: session.get(LOGIN_URL, timeout=30),
+            retries=DEFAULT_RETRY_COUNT,
+            label="Tijori request",
+            exceptions=(requests.RequestException,),
+        )
         csrf_match = re.search(r'name=["\']csrfmiddlewaretoken["\']\s+value=["\']([^"\']+)["\']', login_page.text)
         if not csrf_match:
             raise TijoriAuthError(
@@ -242,13 +248,16 @@ class TijoriScraper:
             )
         csrf_token = csrf_match.group(1)
 
-        response = _retry(
+        response = retry_call(
             lambda: session.post(
                 LOGIN_URL,
                 data={"csrfmiddlewaretoken": csrf_token, "email": self.username, "password": self.password},
                 headers={"Referer": LOGIN_URL},
                 timeout=30,
-            )
+            ),
+            retries=DEFAULT_RETRY_COUNT,
+            label="Tijori request",
+            exceptions=(requests.RequestException,),
         )
         if response.status_code >= 400 or "id_password" in response.text:
             raise TijoriAuthError(
@@ -266,7 +275,12 @@ class TijoriScraper:
             self.login()
 
         url = f"{BASE_URL}/company/{ticker}/operating-metrics/"
-        response = _retry(lambda: self._session.get(url, timeout=30))
+        response = retry_call(
+            lambda: self._session.get(url, timeout=30),
+            retries=DEFAULT_RETRY_COUNT,
+            label="Tijori request",
+            exceptions=(requests.RequestException,),
+        )
         if response.status_code != 200:
             raise ConnectionError(f"Tijori fetch failed for {ticker}: HTTP {response.status_code}")
 
@@ -368,18 +382,6 @@ class TijoriScraper:
                 results[ticker] = False
             time.sleep(TIJORI_RATE_LIMIT_SLEEP_SECONDS)
         return results
-
-
-def _retry(fn, retries: int = DEFAULT_RETRY_COUNT):
-    """Retry a zero-arg callable up to `retries` times, same pattern as screener.py."""
-    last_exc = None
-    for attempt in range(1, retries + 1):
-        try:
-            return fn()
-        except requests.RequestException as exc:
-            last_exc = exc
-            logger.warning(f"Tijori request failed (attempt {attempt}/{retries}): {exc}")
-    raise ConnectionError(f"Tijori request failed after {retries} attempts: {last_exc}")
 
 
 def _parse_number(text: Optional[str]) -> Optional[float]:
