@@ -98,3 +98,116 @@ async function loadSectorRotation() {
 }
 
 loadSectorRotation();
+
+// ===== ML29 (2026-07-13) — Sector Accumulation =====
+// (sum of each constituent stock's delivery% x volume) / sector's total
+// outstanding shares (a simple sum of each constituent's own
+// shares_outstanding — 2026-07-13 user decision), tracked daily. Backed
+// by real GET /api/v1/sector_accumulation/daily
+// (features/sector_accumulation.py). Clicking a score drills down to the
+// per-stock breakdown for that (sector, date) via
+// GET /api/v1/sector_accumulation/drilldown.
+let currentAccumRows = [];
+let accumSortState = { key: "date", dir: "desc" };
+
+function fmtAccumScore(x) {
+  return x == null ? "—" : Number(x).toExponential(2);
+}
+
+function renderAccumulationTable(rows) {
+  const c = document.getElementById("sector-accumulation-content");
+  if (!rows.length) {
+    renderEmptyState("sector-accumulation-content", {
+      title: "No sector accumulation data available",
+      detail:
+        "Needs both ohlcv_adjusted (volume/delivery_pct) and fundamentals " +
+        "(shares_outstanding) rows for at least one full sector's " +
+        "constituents on a given date.",
+    });
+    return;
+  }
+
+  const sorted = sortRows(rows, accumSortState.key, accumSortState.dir);
+  const onSort = (key, dir) => {
+    accumSortState = { key, dir };
+    renderAccumulationTable(currentAccumRows);
+  };
+
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      sortableHeader("Date", "date", accumSortState, onSort),
+      sortableHeader("Sector", "sector", accumSortState, onSort),
+      sortableHeader("Accumulation Score", "accumulation_score", accumSortState, onSort),
+      sortableHeader("Delivery Volume", "delivery_volume", accumSortState, onSort),
+      sortableHeader("Sector Shares Outstanding", "sector_shares_outstanding", accumSortState, onSort),
+      sortableHeader("# Stocks", "n_stocks_included", accumSortState, onSort),
+    ])]),
+    el("tbody", {}, sorted.map((r) => {
+      const scoreTd = el("td", { class: "mono", style: "cursor:pointer;text-decoration:underline dotted" }, [fmtAccumScore(r.accumulation_score)]);
+      scoreTd.title = "Click to see the per-stock breakdown";
+      scoreTd.addEventListener("click", () => loadAccumulationDrilldown(r.sector, r.date));
+      return el("tr", {}, [
+        el("td", { class: "mono" }, [r.date]),
+        el("td", { style: "font-weight:600" }, [r.sector]),
+        scoreTd,
+        el("td", { class: "mono" }, [fmtNum(r.delivery_volume, 0)]),
+        el("td", { class: "mono" }, [fmtNum(r.sector_shares_outstanding, 0)]),
+        el("td", { class: "mono" }, [String(r.n_stocks_included)]),
+      ]);
+    })),
+  ]);
+
+  c.innerHTML = "";
+  c.appendChild(table);
+}
+
+function renderAccumulationDrilldownTable(sector, date, rows) {
+  const c = document.getElementById("sector-accumulation-drilldown");
+  if (!rows.length) {
+    c.innerHTML = `<div class="empty">No per-stock breakdown available for ${sector} on ${date}</div>`;
+    return;
+  }
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Stock"]), el("th", {}, ["Volume"]), el("th", {}, ["Delivery %"]),
+      el("th", {}, ["Delivery Volume"]), el("th", {}, ["Shares Outstanding"]), el("th", {}, ["Contribution %"]),
+    ])]),
+    el("tbody", {}, rows.map((r) => el("tr", {}, [
+      tickerCell(r.ticker),
+      el("td", { class: "mono" }, [fmtNum(r.volume, 0)]),
+      el("td", { class: "mono" }, [fmtPct(r.delivery_pct / 100)]),
+      el("td", { class: "mono" }, [fmtNum(r.delivery_volume, 0)]),
+      el("td", { class: "mono" }, [fmtNum(r.shares_outstanding, 0)]),
+      el("td", { class: "mono" }, [fmtPct(r.contribution_pct / 100)]),
+    ]))),
+  ]);
+  c.innerHTML = "";
+  c.appendChild(el("div", { class: "sec-head" }, [
+    el("span", { class: "sec-title", style: "font-size:14px" }, [`Breakdown — ${sector}, ${date}`]),
+  ]));
+  c.appendChild(el("div", { class: "card" }, [table]));
+}
+
+async function loadAccumulationDrilldown(sector, date) {
+  const c = document.getElementById("sector-accumulation-drilldown");
+  c.innerHTML = `<div class="loading">Loading…</div>`;
+  try {
+    const rows = await apiGet("/api/v1/sector_accumulation/drilldown", { sector, date });
+    renderAccumulationDrilldownTable(sector, date, rows);
+  } catch (err) {
+    showError("sector-accumulation-drilldown", err);
+  }
+}
+
+async function loadSectorAccumulation() {
+  showLoading("sector-accumulation-content");
+  try {
+    const rows = await apiGet("/api/v1/sector_accumulation/daily", {});
+    currentAccumRows = rows;
+    renderAccumulationTable(currentAccumRows);
+  } catch (err) {
+    showError("sector-accumulation-content", err);
+  }
+}
+
+loadSectorAccumulation();

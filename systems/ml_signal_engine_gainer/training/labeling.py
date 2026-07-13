@@ -353,7 +353,16 @@ def compute_fixed_pct_labels(
     pd.DataFrame
         Columns: label (0/1, NaN for unresolvable tail), max_return
         (float, forward max return actually realized over the window —
-        used downstream for the near-miss-magnitude metric).
+        used downstream for the near-miss-magnitude metric), first_touch_day
+        (ML33, 2026-07-13: int day index (1..horizon_days) the forward path
+        first reached +target_pct, or NaN if the label is 0/censored — i.e.
+        it never touched target_pct within the horizon. Together with a
+        censoring flag (event = label, since label==1 iff the touch
+        actually happened within the window) this is the (duration, event)
+        pair a survival model needs — first_touch_day is the "duration"
+        for event==1 rows; event==0 rows are right-censored at
+        horizon_days, same convention multibagger's build_binary_labels
+        uses for its own (duration_months, event) pair.)
     """
     if horizon_days <= 0:
         raise ValueError("horizon_days must be positive")
@@ -364,6 +373,7 @@ def compute_fixed_pct_labels(
     n = len(values)
     label = np.full(n, np.nan)
     max_return = np.full(n, np.nan)
+    first_touch_day = np.full(n, np.nan)
 
     for i in range(n):
         fwd = values[i + 1:i + 1 + horizon_days]
@@ -372,12 +382,24 @@ def compute_fixed_pct_labels(
         fwd_returns = fwd / values[i] - 1.0
         max_return[i] = np.nanmax(fwd_returns)
         label[i] = float(max_return[i] >= target_pct)
+        if label[i] == 1.0:
+            # First day (1-indexed) the forward path reached target_pct —
+            # np.argmax on a boolean array returns the first True index.
+            touched = fwd_returns >= target_pct
+            first_touch_day[i] = float(np.argmax(touched) + 1)
 
-    out = pd.DataFrame({"label": label, "max_return": max_return}, index=close.index)
+    out = pd.DataFrame(
+        {"label": label, "max_return": max_return, "first_touch_day": first_touch_day}, index=close.index
+    )
     if pnd_block is not None:
         block_vals = pnd_block.reindex(close.index).fillna(False).to_numpy(dtype=bool)
         downgraded = (out["label"] == 1.0) & block_vals
         out.loc[downgraded, "label"] = 0.0
+        # A downgraded label is no longer a real touch event for labeling
+        # purposes (same P&D-exclusion convention as the label itself) —
+        # its first_touch_day is dropped too so a survival model doesn't
+        # treat a P&D-driven spike as a genuine event.
+        out.loc[downgraded, "first_touch_day"] = np.nan
     return out
 
 

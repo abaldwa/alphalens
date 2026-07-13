@@ -6,8 +6,10 @@ const APPS = [
   {
     id: "ml", name: "AlphaLens.ML", short: "ML", color: "var(--teal)", base: "/ui/ml/",
     screens: [
-      { id: "hub", label: "Daily Insights", href: "index.html" },
-      { id: "watchlist", label: "Daily WatchList", href: "watchlist.html" },
+      // ML22 (2026-07-13): Daily Insights and Daily WatchList merged into
+      // one screen (index.html) — a single "hub" sub-tab now covers both;
+      // watchlist.html still exists only as a redirect for old links.
+      { id: "hub", label: "Daily Insights & WatchList", href: "index.html" },
       { id: "signal", label: "Signal Deep Dive", href: "signal.html" },
       { id: "universe", label: "Full Universe", href: "universe.html" },
       { id: "multibagger", label: "Multibagger", href: "multibagger.html" },

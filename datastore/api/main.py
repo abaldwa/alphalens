@@ -60,6 +60,7 @@ from .routers import (
     paper_trading,
     pipeline,
     regime,
+    sector_accumulation,
     sector_rotation,
     shareholding,
     signals,
@@ -172,6 +173,9 @@ app.include_router(big_investors.router)
 # relative strength per sector (config/sector_index_map.py) vs Nifty 500,
 # ranked, with top stocks per in-favor sector.
 app.include_router(sector_rotation.router)
+# [AS BUILT, ML29] Sector accumulation detection — delivery-weighted-volume
+# vs sector total outstanding shares, tracked daily.
+app.include_router(sector_accumulation.router)
 
 # ===== Static UI (P3.x — zero-new-dependency web UI, StaticFiles ships with
 # Starlette/FastAPI already; rebuilt to the 27-screen/5-app prototype layout
