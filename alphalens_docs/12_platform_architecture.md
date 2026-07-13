@@ -230,6 +230,7 @@ ml_multibagger(date, ticker, mb_probability, mb_tier, mb_archetype,
 -- Forensic outputs (written by ML Signal Engine, quarterly)
 ml_forensic(date, ticker, beneish_m, altman_z, piotroski_f,
             ohlson_o, dechow_f, sloan_accrual, benford_mad,
+            benford_detail_json, forensic_flag_label,
             forensic_composite, forensic_flag, forensic_ml_prob,
             shap_top5_json, pattern_match)
 

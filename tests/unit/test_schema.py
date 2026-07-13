@@ -129,6 +129,12 @@ SIGNAL_DUCKDB_TABLE_COLUMNS = {
         # (green/yellow/orange/red/black) — forensic_flag (BOOLEAN) stays
         # "blocked" semantics only.
         "forensic_flag_label",
+        # [AS BUILT, FO5 2026-07-11] full Benford chi-square/p-value +
+        # per-digit observed/expected distribution JSON blob, added
+        # alongside the pre-existing benford_mad aggregate so the API/UI
+        # can render the richer breakdown (see create_signals.py's
+        # _CREATE_ML_FORENSIC comment for detail).
+        "benford_detail_json",
     },
 }
 
