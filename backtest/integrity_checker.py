@@ -43,6 +43,26 @@ from config.settings import MIN_ADT_INR, TOTAL_ROUNDTRIP_COST
 
 logger = logging.getLogger(__name__)
 
+# [AS BUILT, full-codebase-review Fix 12, 2026-07-19] Narrow allowlist of
+# fundamentals-derived feature name patterns used by check_02_pit's
+# stopgap (see that method's docstring for why this exists instead of a
+# full features/registry.py cross-check). Deliberately conservative —
+# false negatives (a fundamentals feature this list misses) are possible,
+# but false positives (flagging a genuinely PITRule.NONE technical/macro
+# column) would break real backtests, so this only matches unambiguous
+# fundamentals-ratio/governance naming conventions already used across
+# features/fundamental*.py and features/governance.py.
+_FUNDAMENTALS_DERIVED_PATTERNS = (
+    "_ratio", "roe", "roce", "pledge", "promoter", "eps", "pat", "ebitda",
+    "book_value", "debt_to_equity", "interest_coverage", "altman_z",
+    "quality_flag", "shareholding",
+)
+
+
+def _looks_fundamentals_derived(column_name: str) -> bool:
+    lowered = column_name.lower()
+    return any(pattern in lowered for pattern in _FUNDAMENTALS_DERIVED_PATTERNS)
+
 # SPEC-BT-001: data-integrity / look-ahead-prevention checks — a failure
 # here means the backtest result is not trustworthy and must halt.
 # 08/09/10 are performance-quality signals (a real, clean backtest can
@@ -135,6 +155,26 @@ class BacktestIntegrityChecker:
 
         pit_cols = [c for c in ("announcement_date", "filing_date") if c in df.columns]
         if not pit_cols:
+            # [AS BUILT, full-codebase-review Fix 12, 2026-07-19] Trusting
+            # "no PIT columns present" as proof of PITRule.NONE is a
+            # trust-not-verify gap — features/registry.py's pit_rule
+            # declarations aren't currently wired into the production
+            # feature pipeline (matrix_builder.py uses different column
+            # names — see registry.py's own disclaimer), so a full
+            # registry cross-check isn't viable yet. As a narrower,
+            # achievable stopgap: fail loudly if any column name matches a
+            # known fundamentals-derived feature pattern (these should
+            # always carry announcement_date/filing_date) rather than
+            # silently vacuous-passing a feature_df that's missing its PIT
+            # column by mistake.
+            suspect = [c for c in df.columns if _looks_fundamentals_derived(c)]
+            if suspect:
+                return self._result(
+                    name, False,
+                    f"no announcement_date/filing_date column present, but {suspect} "
+                    "look fundamentals-derived (roe/pledge/ratio-style names) and should "
+                    "carry one — likely a missing PIT column, not a genuine PITRule.NONE feature",
+                )
             return self._result(
                 name, True, "no announcement_date/filing_date columns present — "
                 "pure technical/calendar/macro features are PITRule.NONE by construction"

@@ -1374,6 +1374,152 @@ def step_check_ta_alerts(run_date: date_type, db_path: Optional[Path] = None) ->
     logger.info(f"check_ta_alerts: {len(newly_triggered)} user-defined alert(s) newly triggered for {date_str}")
 
 
+def step_compute_momentum(run_date: date_type, db_path: Optional[Path] = None) -> None:
+    """
+    ML38 (2026-07-14, extended 2026-07-15): live momentum-strategy
+    section. For EACH of the 5 rank-band strategies
+    (features.momentum_live.STRATEGIES — Rank 1-50/51-100/100-150/
+    150-200/100-200, same top 15 stocks / 6-month lookback / monthly
+    rebalance / grace=2 config, different market-cap band each) computes
+    run_date's momentum ranking, upserts it into momentum_rankings,
+    refreshes momentum_rebalance_state's next_rebalance_date, and — on a
+    rebalance day — writes fresh momentum_rebalance_suggestions by
+    diffing that strategy's ranking against its own currently-open
+    momentum_trades rows (applying the exact grace-period rule
+    backtest.momentum_backtest.decide_grace_transitions uses, never a
+    second hand-written copy). Each strategy is fully independent —
+    one strategy's ranking/suggestions never affect another's.
+
+    Deterministic given that day's own already-final EOD OHLCV — same
+    backfill rationale as check_ta_alerts — and it only ever suggests
+    trades for the user to manually review and record, never auto-trades,
+    so a missed/late day is safe to backfill (unlike paper_trade).
+
+    Parameters
+    ----------
+    run_date : date
+    db_path : Path, optional
+        Defaults to config.settings.DUCKDB_PATH.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    Exception
+        Any DB or compute failure — propagated so the checkpoint records
+        this step as failed rather than silently skipping a day.
+    """
+    from config.settings import DUCKDB_PATH
+    from datastore.schema.create_normalised import (
+        _CREATE_MOMENTUM_RANKINGS,
+        _CREATE_MOMENTUM_REBALANCE_STATE,
+        _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS,
+        _CREATE_MOMENTUM_TRADES,
+    )
+    from features import momentum_live
+
+    date_str = run_date.isoformat()
+    resolved_db_path = db_path or DUCKDB_PATH
+
+    with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+        # Lazily ensure every momentum table this step touches exists —
+        # same idempotent CREATE TABLE IF NOT EXISTS convention as
+        # datastore/api/routers/holdings.py's _ensure_table, in case this
+        # runs before create_normalised.create_schema() has ever been
+        # applied against this DB file.
+        for ddl in (
+            _CREATE_MOMENTUM_TRADES, _CREATE_MOMENTUM_RANKINGS,
+            _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS, _CREATE_MOMENTUM_REBALANCE_STATE,
+        ):
+            conn.execute(ddl)
+
+        summary_parts = []
+        for strategy in momentum_live.STRATEGIES:
+            strategy_id = strategy["strategy_id"]
+
+            ranking = momentum_live.compute_daily_ranking(conn, date_str, strategy_id=strategy_id)
+            if ranking.empty:
+                logger.warning(f"compute_momentum: no ranking computable for {strategy_id} on {date_str} — skipping")
+                continue
+
+            conn.execute(
+                "DELETE FROM momentum_rankings WHERE date = ? AND strategy_id = ?",
+                [date_str, strategy_id],
+            )
+            conn.executemany(
+                """
+                INSERT INTO momentum_rankings
+                    (date, strategy_id, ticker, momentum_return, momentum_rank, in_top_n, band_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    [date_str, strategy_id, row.ticker, float(row.momentum_return),
+                     int(row.momentum_rank), bool(row.in_top_n), strategy["band_id"]]
+                    for row in ranking.itertuples(index=False)
+                ],
+            )
+
+            next_date = momentum_live.next_rebalance_date(conn, date_str)
+            conn.execute(
+                """
+                INSERT INTO momentum_rebalance_state (strategy_id, next_rebalance_date)
+                VALUES (?, ?)
+                ON CONFLICT (strategy_id) DO UPDATE SET
+                    next_rebalance_date = excluded.next_rebalance_date,
+                    updated_at = now()
+                """,
+                [strategy_id, next_date],
+            )
+
+            n_suggestions = 0
+            if momentum_live.is_rebalance_day(conn, date_str, strategy_id=strategy_id):
+                open_trades = conn.execute(
+                    "SELECT ticker, grace_remaining FROM momentum_trades "
+                    "WHERE strategy_id = ? AND sale_date IS NULL",
+                    [strategy_id],
+                ).fetchall()
+                current_open_trades = [{"ticker": t, "grace_remaining": g} for t, g in open_trades]
+
+                suggestions = momentum_live.compute_rebalance_suggestions(
+                    conn, date_str, current_open_trades, strategy_id=strategy_id,
+                )
+                for s in suggestions:
+                    conn.execute(
+                        """
+                        INSERT INTO momentum_rebalance_suggestions
+                            (strategy_id, rebalance_date, ticker, action, momentum_rank, grace_remaining)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        [strategy_id, date_str, s["ticker"], s["action"],
+                         s["momentum_rank"], s["grace_remaining"]],
+                    )
+                    # Persist the updated grace countdown onto the open trade
+                    # itself (momentum_trades.grace_remaining) so the NEXT
+                    # rebalance's compute_rebalance_suggestions call reads the
+                    # correct current state. "add" suggestions never have an
+                    # existing open trade row (compute_rebalance_suggestions
+                    # only emits "add" for tickers not already held) — nothing
+                    # to update there; that row is created with
+                    # grace_remaining=NULL once the user records the buy.
+                    if s["action"] in ("grace_hold", "exit"):
+                        conn.execute(
+                            "UPDATE momentum_trades SET grace_remaining = ? "
+                            "WHERE strategy_id = ? AND ticker = ? AND sale_date IS NULL",
+                            [s["grace_remaining"], strategy_id, s["ticker"]],
+                        )
+                n_suggestions = len(suggestions)
+                conn.execute(
+                    "UPDATE momentum_rebalance_state SET last_rebalance_date = ? WHERE strategy_id = ?",
+                    [date_str, strategy_id],
+                )
+
+            summary_parts.append(f"{strategy_id}: ranked={len(ranking)} next={next_date} suggestions={n_suggestions}")
+
+    logger.info(f"compute_momentum: {date_str} — " + "; ".join(summary_parts))
+
+
 def step_publish_and_snapshot(run_date: date_type, db_path: Optional[Path] = None) -> None:
     """
     A25 (Write-Audit-Publish Architecture): takes today's incremental
@@ -1547,6 +1693,7 @@ _STEP_DISPATCH = {
     "sanity_check": step_sanity_check,
     "paper_trade": step_paper_trade,
     "check_ta_alerts": step_check_ta_alerts,
+    "compute_momentum": step_compute_momentum,
     "publish_and_snapshot": step_publish_and_snapshot,
     "data_integrity_check": step_data_integrity_check,
 }

@@ -439,11 +439,11 @@ _UPSERT_SQL = f"""
 INSERT INTO fundamentals (
     ticker, fiscal_year, quarter, quarter_end_date, announcement_date,
     {", ".join(_UPSERT_DATA_COLS)},
-    fundamentals_source, fundamentals_source_priority
+    fundamentals_source, fundamentals_source_priority, as_of_ingested
 ) VALUES (
     ?,?,?,?,?,
     {", ".join("?" for _ in _UPSERT_DATA_COLS)},
-    ?,?
+    ?,?,CURRENT_TIMESTAMP
 )
 ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET
     {build_priority_update_clause(_UPSERT_DATA_COLS)}

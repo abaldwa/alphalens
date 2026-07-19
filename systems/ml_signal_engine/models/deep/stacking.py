@@ -4,8 +4,15 @@ systems/ml_signal_engine/models/deep/stacking.py
 Phase: 3.3 (Stacking Ensemble + Adaptive Weighting)
 Specs: SPEC-MODEL-003, SPEC-MODEL-005, SPEC-SOLID-003
 Owner: ml_signal_engine / deep
-Consumers: systems/ml_signal_engine/inference/daily_inference.py,
-           backtest/run_phase3_backtest.py
+Consumers: systems/ml_signal_engine/inference/daily_inference.py
+           (`_step_signals_and_meta`'s ensemble-combine step, 2026-07-19
+           full-codebase-review Fix A3 — combines signal_5d/21d/63d only;
+           see STACKING_ENSEMBLE_BASE_MODELS there and
+           _load_stacking_ensemble's docstring for why tft/bilstm aren't
+           included at inference time), scripts/train_stacking.py
+           (OOF training — full 5-model set, NOT wired into any
+           unattended retrain trigger due to documented OOM history,
+           see that script's own module docstring)
 
 M-13: Stacking Ensemble Meta-Learner with adaptive monthly weight updates.
 

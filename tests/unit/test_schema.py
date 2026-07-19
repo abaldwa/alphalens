@@ -77,6 +77,10 @@ NORMALISED_TABLE_COLUMNS = {
         # create_normalised.py's column comment and
         # features/fundamental_source_priority.py.
         "fundamentals_source", "fundamentals_source_priority",
+        # [AS BUILT, full-codebase-review Fix 5, 2026-07-19] restatement-
+        # versioning audit trail — see create_normalised.py's column
+        # comment and features/fundamental_source_priority.py.
+        "as_of_ingested",
     },
     "shareholding": {
         "ticker", "quarter_end_date", "filing_date", "promoter_pct",

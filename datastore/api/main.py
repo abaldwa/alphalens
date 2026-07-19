@@ -39,12 +39,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config.settings import DATASTORE_API_HOST, DATASTORE_API_PORT
+from config.settings import (
+    DATASTORE_API_CORS_ORIGINS,
+    DATASTORE_API_HOST,
+    DATASTORE_API_PORT,
+)
 
 from .routers import (
     alerts,
     backtest_reports,
     big_investors,
+    copilot,
     corporate_actions,
     corporate_announcements,
     events,
@@ -56,6 +61,7 @@ from .routers import (
     holdings,
     macro,
     models,
+    momentum,
     multibagger,
     ohlcv,
     ops,
@@ -110,7 +116,7 @@ app = FastAPI(
 # ===== CORS Middleware =====
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: SPEC-SEC-003 — restrict in production
+    allow_origins=DATASTORE_API_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
@@ -187,6 +193,16 @@ app.include_router(holdings.router)
 # overlay. "forensic-flag date" event type deliberately not included this
 # pass — see events.py's module docstring.
 app.include_router(events.router)
+# [AS BUILT, ML38] Momentum — live dashboard section for the
+# robustness-validated momentum strategy (Rank 100-150 / top 15 / 6-month
+# lookback / monthly rebalance / grace=2), manual paper-trading style CRUD
+# mirroring holdings.router above.
+app.include_router(momentum.router)
+# [AS BUILT, Co-Pilot v1] Natural-language strategy authoring: NL query ->
+# structured spec -> dedup check against screener templates/saved
+# strategies -> backtest via the existing momentum backtest engine -> save
+# to strategies/*.yaml. See systems/copilot/ for the implementation.
+app.include_router(copilot.router)
 
 # ===== Static UI (P3.x — zero-new-dependency web UI, StaticFiles ships with
 # Starlette/FastAPI already; rebuilt to the 27-screen/5-app prototype layout

@@ -197,6 +197,54 @@ def write_resume_checkpoint(checkpoint_path: Path, ticker: str) -> None:
     checkpoint_path.write_text(ticker)
 
 
+OUTLIER_REVERSION_RATIO = 0.5  # a row whose close halves then bounces back is corrupt, not a crash
+
+
+def _drop_isolated_outliers(df, ticker: str):
+    """
+    Drop rows whose close jumps >2x from both neighbors then reverts.
+
+    Guards against the class of bug found in 2026-07 (SPEC-PIPE-001 RCA):
+    a stray candle — e.g. from an epoch/timezone edge case in
+    fyers_backfill.py's date derivation — lands on a non-trading day with
+    a 10x price-down/volume-up scale error, and nothing upstream filters
+    it before it reaches this upsert. A single day's close genuinely
+    halving (real crash) does not also bounce back the very next row, so
+    this only catches the corruption pattern, not real volatility. Not a
+    blanket weekend/holiday filter: rare legitimate weekend sessions
+    (Diwali Muhurat trading, Union Budget Saturday sessions) must still
+    write through untouched.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Sorted by date, as returned by FYERSBackfill.download_history().
+    ticker : str
+
+    Returns
+    -------
+    pd.DataFrame
+        df with corrupt rows removed.
+    """
+    if len(df) < 3:
+        return df
+    close = df["close"]
+    prev_ratio = close / close.shift(1)
+    next_ratio = close.shift(-1) / close
+    suspect = (prev_ratio < OUTLIER_REVERSION_RATIO) & (next_ratio > 1 / OUTLIER_REVERSION_RATIO)
+    if suspect.any():
+        for bad_date in df.loc[suspect, "date"]:
+            logger.error(
+                f"{ticker}: dropping FYERS candle on {bad_date} — close "
+                "halves vs. the prior row then reverts on the next one, "
+                "the signature of the 2026-07 scale-corruption bug. "
+                "Investigate the FYERS response for this date before "
+                "re-adding it manually."
+            )
+        df = df.loc[~suspect].reset_index(drop=True)
+    return df
+
+
 def write_ohlcv_to_duckdb(conn, ticker: str, df) -> int:
     """
     Upsert one ticker's downloaded OHLCV rows into ohlcv_adjusted.
@@ -204,6 +252,10 @@ def write_ohlcv_to_duckdb(conn, ticker: str, df) -> int:
     adj_factor is set to 1.0 on insert and left untouched on conflict —
     corporate-action adjustment is applied afterwards, uniformly, by
     ingestion/adjust/price_adjuster.py (SPEC-PIPE-002), never here.
+
+    Rows matching the isolated-outlier corruption signature (see
+    _drop_isolated_outliers) are dropped before the write, not silently
+    written through.
 
     Parameters
     ----------
@@ -227,6 +279,10 @@ def write_ohlcv_to_duckdb(conn, ticker: str, df) -> int:
     ------
     None
     """
+    if df.empty:
+        return 0
+
+    df = _drop_isolated_outliers(df, ticker)
     if df.empty:
         return 0
 

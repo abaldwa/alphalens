@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from config.settings import FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS
+from config.settings import FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER
 from ingestion.scrapers.tijori import (
     _SECTOR_METRICS,
     TijoriAuthError,
@@ -121,7 +121,9 @@ class TestExportCompanyMetrics:
         assert row["sector_specific_metric_2"] == 2.1  # Subscriber Churn Rate %, position 1
         assert row["sector_specific_metric_3"] is None  # Data Usage per Subscriber GB, not found
         assert row["announcement_date"] > row["quarter_end_date"]
-        expected = row["quarter_end_date"] + timedelta(days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS)
+        expected = row["quarter_end_date"] + timedelta(
+            days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER[row["quarter"]]
+        )
         assert row["announcement_date"] == expected
 
     def test_no_matching_rows_at_all_returns_none(self, monkeypatch):

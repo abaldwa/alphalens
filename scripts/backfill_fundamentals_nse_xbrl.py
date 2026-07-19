@@ -388,10 +388,14 @@ def main() -> None:
             rows = [tuple(r[c] for c in all_cols) for r in delta_records]
             placeholders = ", ".join("?" for _ in all_cols)
             conn.executemany(f"INSERT INTO nse_xbrl_delta ({col_list_sql}) VALUES ({placeholders})", rows)
+            # as_of_ingested (Fix 5, 2026-07-19): stamped as CURRENT_TIMESTAMP
+            # here rather than sourced from delta_records (which predate this
+            # column) — every row in this batch was ingested "now", by
+            # definition of this being a live upsert run.
             conn.execute(
                 f"""
-                INSERT INTO fundamentals ({col_list_sql})
-                SELECT {col_list_sql} FROM nse_xbrl_delta
+                INSERT INTO fundamentals ({col_list_sql}, as_of_ingested)
+                SELECT {col_list_sql}, CURRENT_TIMESTAMP FROM nse_xbrl_delta
                 ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET {update_clause}
                 """
             )

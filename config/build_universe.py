@@ -56,8 +56,9 @@ NOT sourced at build time — left as explicit placeholders, NOT fabricated:
 """
 
 import logging
+from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import pandas as pd
 
@@ -539,6 +540,78 @@ def build_full_nse_universe_from_db(
         len(out), output_path, n_nifty500, n_broader,
     )
     return out
+
+
+def build_historical_universe_from_delisted(
+    db_path: Optional[Path] = None,
+    include_since_year: Optional[int] = None,
+) -> List[str]:
+    """
+    True historical candidate ticker pool for a momentum/cross-sectional
+    backtest (2026-07-19 full-codebase-review Fix A4): the union of
+    today's active-universe tickers (config.universe.load_universe_raw())
+    with every ticker in the `delisted_companies` table (see
+    ingestion/scrapers/nse_delisted_companies.py — NOTE that scraper's
+    target endpoint is UNVERIFIED in this environment; this table may be
+    empty or its contents unconfirmed until that scraper has been run
+    from an environment with real NSE access).
+
+    Closes the survivorship-bias gap `features/momentum_universe.py`'s
+    `_all_candidate_tickers()` has by default: the current-snapshot
+    universe CSV alone permanently excludes any ticker that delisted,
+    merged, or was suspended before the CSV was last rebuilt, even for
+    historical dates when that ticker legitimately belonged in a tracked
+    market-cap band.
+
+    Parameters
+    ----------
+    db_path : Path, optional
+        Defaults to config.settings.DUCKDB_PATH.
+    include_since_year : int, optional
+        If set, only delisted_companies rows with delisting_date in or
+        after this year are included (e.g. to bound a 10-year backtest's
+        candidate pool to tickers that could plausibly have appeared in
+        it). None (default) includes every delisted ticker regardless of
+        delisting date.
+
+    Returns
+    -------
+    list of str
+        Deduplicated ticker symbols: today's active universe + eligible
+        delisted tickers. Empty delisted_companies table (not yet
+        scraped) degrades gracefully to just today's active universe —
+        never raises just because the table is empty.
+    """
+    from config.settings import DUCKDB_PATH
+    from config.universe import load_universe_raw
+    from datastore.api.db import get_duckdb_connection
+
+    db_path = db_path or DUCKDB_PATH
+    active_tickers = set(load_universe_raw()["ticker"])
+
+    delisted_tickers: set = set()
+    if db_path.exists():
+        try:
+            with get_duckdb_connection(db_path) as conn:
+                query = "SELECT ticker, delisting_date FROM delisted_companies"
+                params: list = []
+                if include_since_year is not None:
+                    query += " WHERE delisting_date >= ?"
+                    params.append(date(include_since_year, 1, 1))
+                rows = conn.execute(query, params).df()
+            delisted_tickers = set(rows["ticker"]) if not rows.empty else set()
+        except Exception as exc:
+            logger.warning(
+                "build_historical_universe_from_delisted: could not read delisted_companies "
+                "(table may not exist yet) — falling back to active universe only: %s", exc,
+            )
+
+    combined = sorted(active_tickers | delisted_tickers)
+    logger.info(
+        "Historical universe: %d active + %d delisted-only = %d total tickers",
+        len(active_tickers), len(delisted_tickers - active_tickers), len(combined),
+    )
+    return combined
 
 
 if __name__ == "__main__":

@@ -124,14 +124,28 @@ class TestLifecycleClassifier:
         assert result != LifecycleStage.DISTRESSED
 
     def test_distressed_low_altman_z(self) -> None:
-        """Altman Z < 1.81 → DISTRESSED."""
+        """Altman Z'' < 1.1 → DISTRESSED (Z'' non-manufacturing threshold,
+        matching the Z'' weights valuation_engine._altman_z actually computes
+        — not the original manufacturing Z-score's 1.81)."""
         result = self.clf.classify({
-            "altman_z": 1.5,
+            "altman_z": 1.0,
             "net_margin": 0.03,
             "interest_coverage": 2.5,
             "sector": "Metals",
         })
         assert result == LifecycleStage.DISTRESSED
+
+    def test_not_distressed_altman_z_in_greyzone(self) -> None:
+        """Altman Z'' = 1.5 is in the 1.1-2.6 grey zone, not distressed."""
+        result = self.clf.classify({
+            "altman_z": 1.5,
+            "net_margin": 0.03,
+            "interest_coverage": 2.5,
+            "revenue_cagr_3y": 0.10,
+            "payout_ratio": 0.20,
+            "sector": "Metals",
+        })
+        assert result != LifecycleStage.DISTRESSED
 
     def test_young_growth(self) -> None:
         """High CAGR + low margin → YOUNG_GROWTH."""
@@ -396,6 +410,30 @@ class TestFCFFTwoStageModel:
         result = self.model.value(inputs)
         expected_equity = result.enterprise_value - 400.0 + 150.0
         assert result.equity_value == pytest.approx(expected_equity, rel=1e-6)
+
+    def test_equity_value_accounts_minority_interest(self) -> None:
+        """2026-07-19 full-codebase-review Fix B6: equity_value = EV -
+        debt - minority_interest + cash. A company with a material
+        non-controlling interest should have a LOWER equity value (and
+        intrinsic value per share) than an otherwise-identical company
+        with none, since consolidated EV includes 100% of a
+        partially-owned subsidiary's value."""
+        inputs_no_mi = _make_fcff_inputs(total_debt=400.0, cash=150.0, minority_interest=0.0)
+        inputs_with_mi = _make_fcff_inputs(total_debt=400.0, cash=150.0, minority_interest=200.0)
+
+        result_no_mi = self.model.value(inputs_no_mi)
+        result_with_mi = self.model.value(inputs_with_mi)
+
+        expected_equity = result_with_mi.enterprise_value - 400.0 - 200.0 + 150.0
+        assert result_with_mi.equity_value == pytest.approx(expected_equity, rel=1e-6)
+        assert result_with_mi.equity_value < result_no_mi.equity_value
+        assert result_with_mi.intrinsic_value < result_no_mi.intrinsic_value
+
+    def test_minority_interest_defaults_to_zero_no_change(self) -> None:
+        """Omitting minority_interest preserves prior behavior exactly."""
+        explicit_zero = self.model.value(_make_fcff_inputs(minority_interest=0.0))
+        default = self.model.value(_make_fcff_inputs())
+        assert explicit_zero.equity_value == pytest.approx(default.equity_value, rel=1e-9)
 
     def test_higher_growth_gives_higher_ev(self) -> None:
         low = self.model.value(_make_fcff_inputs(high_growth_rate=0.05))

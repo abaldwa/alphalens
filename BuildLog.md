@@ -14398,3 +14398,223 @@ Both left untouched per this session's coverage-only charter.
 10 new test files under `tests/unit/` (listed above), `FeatureBacklog.md`
 (A65 row appended with this session's numbers), `BuildLog.md` (this
 entry). No production code touched.
+
+## RL Brainstorm → Real Investigations (ML35/ML36/ML37) (2026-07-13)
+
+### Task
+User asked whether Reinforcement Learning has any role in AlphaLens, then
+specifically proposed it for (1) recommendation gating — learning from
+stocks the meta-labeler blocked that would have won, and stocks the
+primary model didn't flag that performed well anyway, (2) exit timing,
+(3) position sizing/portfolio allocation. Asked for a proper investigation
+of all three, then requirements logged in FeatureBacklog.md.
+
+### Core finding, before any data work
+All three problems, evaluated against **historical** price data that
+already reveals every ticker's outcome regardless of which action the
+model took, are **full-information counterfactual-reward problems, not
+partial-feedback bandit/RL problems** — the entire point of RL machinery
+(policy gradients, replay buffers, exploration/exploitation) is to handle
+situations where you only observe the outcome of the action actually
+taken. That doesn't apply here (no live capital yet, no market impact
+from AlphaLens's own orders). Recommendation: reformulate ML35/ML36 as
+direct reward-optimized supervised problems instead of standing up an RL
+agent — same benefit, far easier to validate/backtest. ML37 (portfolio
+allocation) is the one genuine exception, since concurrently-held
+positions interact and aren't decomposable into independent per-ticker
+regressions — this is scoped as new (currently nonexistent) work either
+way.
+
+### ML35 — recommendation-gating investigation (real data pulled)
+Joined `datastore/signals/signals.duckdb`'s `ml_signals` (correcting a
+join mistake mid-investigation: `meta_label`/`meta_prob` live on their
+own `model_name='meta_labeler'` row, not on the `signal_5d` row — same
+pattern `datastore/api/routers/signals.py` already uses) against
+`ohlcv_adjusted`'s forward 5-day return. **n=22 acted / n=563 blocked, 4
+distinct dates only** — proof-of-concept scale, not a real sample.
+Findings: BUY calls the (pre-ML31-fix) meta-labeler let through performed
+*worse* (mean -1.78%, hit-rate 27.3%) than the ones it blocked (mean
++0.42%, hit-rate 48.7%) — a striking quantification consistent with
+ML31's mis-calibration finding. 23.2% of HOLD-classified rows moved >2%
+in 5 days anyway. Blocking constraint: production's live `ml_signals`
+only has ~3 weeks of history (2026-06-22 onward) — nowhere near enough
+for a real training set; needs backtested historical inference, not
+live-table-only.
+
+### ML36 — exit-timing hindsight-optimal investigation
+Attempted against real model buy signals first — **0 rows resolved**,
+since a 20-trading-day-forward return needs history the ~3-week-old
+signal table doesn't have yet. Ran a methodology demonstration instead:
+technical-momentum proxy entry (day after a >5% move in the prior 5
+days, top-300-ADTV tickers, full 2015+ OHLCV, 118,435 resolved rows).
+Fixed-5-day exit: +0.63% average. Hindsight-best-of-{1,3,5,10,15,20}-day:
++8.33% average (median +4.95%) — stated plainly as a **statistically
+inflated upper bound** (max-of-6-samples), not an achievable target; the
+honest takeaway is the *dispersion* — optimal exit day is roughly evenly
+spread across 1-20 days (20.5% at day 1, 28.5% at day 20), not clustered
+near any single horizon, so a fixed-horizon exit structurally leaves
+uncaptured variation on the table.
+
+### ML37 — portfolio allocation scoping (no data to pull)
+Confirmed via code inspection (`daily_pipeline.py`'s own comments,
+`backtest/engine.py` has no position-sizing logic, `my_holdings` is a
+manual-entry table only) that this layer is genuinely absent from Phase
+1 — nothing exists to improve yet, RL or otherwise. This is real
+greenfield scope: (1) build the missing position-tracking layer first,
+(2) define state/action/reward, (3) start with a non-RL baseline
+(fixed-fraction/volatility-scaled sizing) before justifying full RL.
+
+### Files changed
+`FeatureBacklog.md` (new rows ML35, ML36, ML37). No code changes —
+investigation and requirements-logging only, per the user's explicit ask
+("build a proper investigation... write these as requirements").
+
+## MultiBagger v2 Held-Out Backtest (2026-07-13)
+
+### Task
+User asked to see MultiBagger's backtest results. The only number produced
+so far (concordance=0.94, from the rescoped relaunch) was an **in-sample**
+diagnostic — computed on the same subsampled data the RSF had just fit on
+— not a real backtest. Ran the actual held-out evaluation harness
+(`evaluate_gainer_multibagger.py`, walk-forward-purged vs stock-level
+k-fold, 3 folds each, restricted to the one variant actually retrained —
+2x/12mo — reusing the same top-500-ADTV ticker universe via the saved
+`/tmp/top500_adtv_tickers.csv`, `n_estimators=30` to keep 6 total fold
+fits tractable since this harness doesn't yet use the new
+checkpointing/subsampling from earlier this session).
+
+### Results
+**Stock-level k-fold** (generalization to unseen stocks, same period):
+concordance 0.843/0.836/0.879 (mean 0.853, std 0.019 — consistent), top-20
+hit rate 15%/30%/40% (mean 28.3%) against a 0.26% base event rate — a
+~100x lift.
+
+**Calendar walk-forward, purged+embargoed** (generalization to future time
+periods): concordance 0.692 (2024, n=18,866), 0.744 (2025, n=9,165), 0.0
+(2026 partial, **n=2** — a statistically meaningless degenerate fold, not
+a real failure). The naive fold-average (0.479) is misleading because of
+that last fold; the two real folds show 0.69-0.74, genuinely good (0.5 =
+random). Fold 2's 0% top-20 hit rate despite 0.744 concordance isn't a
+contradiction — with an 0.19% base event rate, missing all 20 by chance
+is plausible even with decent ranking quality.
+
+### Interpretation
+The ~0.15-0.2 gap between stock-kfold (0.85) and time-based walk-forward
+(~0.7, excluding the degenerate fold) quantifies real, moderate time-based
+overfitting — normal and expected, not alarming. Net verdict: a genuine,
+working signal, strongest on cross-sectional generalization.
+
+### Files changed
+None — evaluation-only, via `/tmp/run_multibagger_backtest.py` (not
+committed, ephemeral per this session's `/tmp` convention).
+
+## MultiBagger v2 Multi-N Hit-Rate Backtest (2026-07-14)
+
+### Task
+Following the initial held-out backtest (top-20 only), user asked "if
+deployed today with 100 picks/year, how many would double?" — rather than
+extrapolate top-20 to top-100 (invalid, since lower-ranked picks are less
+confident), reran the SAME 6 fold-fits once each, measuring hit rate at
+N=10/20/50/100 simultaneously per fold (avoids 3x redundant refitting —
+`/tmp/run_multibagger_backtest_multiN.py`, same top-500-ADTV universe,
+n_estimators=30, 3 walk-forward + 3 stock-kfold folds).
+
+### Results
+Walk-forward (realistic future-prediction test, excluding the degenerate
+n=2 2026-partial fold): top10 20%/0% (avg 20%... actually per-fold avg
+across 2024/2025), top20 20%/0%, top50 8%/0%, top100 4%/1% — averaging to
+roughly top10=20%, top20=10%, top50=4%, top100=2.5% across the two real
+years. Stock-kfold (optimistic, cross-stock generalization only): top10
+33.3%, top20 28.3%, top50 26%, top100 21.7% (means across 3 folds).
+
+### Answer given to user
+"~100 picks/year → expect roughly 2-3 stocks to double" (the honest,
+walk-forward-based estimate), explicitly flagging (1) the ~9x gap between
+stock-kfold's optimistic 22/100 and walk-forward's realistic 2-3/100 —
+recommended trusting the lower, time-based number since it's the real
+deployment analog; (2) that estimate rests on only 2 real test years, a
+small/noisy sample; (3) the one reassuring pattern — hit rate consistently
+decreases as N grows in both schemes, meaning the model's ranking itself
+carries real signal even though absolute hit rates are modest, so its
+top-10/20 picks are meaningfully better bets than casting a wide top-100
+net.
+
+### Files changed
+None — evaluation-only, ephemeral `/tmp` scripts per this session's
+convention.
+
+## Co-Pilot v1 (2026-07-19)
+
+### Task
+User asked to brainstorm, then plan, then build a "Co-Pilot" feature:
+query the database and author strategies via natural language, backtest
+them, and surface it as a button available throughout the application.
+Scoping decisions made during the brainstorm (see FeatureBacklog.md's
+CP1 for the full list): structured strategy spec only (no LLM-generated
+executable code); internet-lookup toggle deferred; dedup against
+existing strategies before treating a new query as genuinely new;
+promotion into production models gated behind the `model-review` skill,
+never automatic; and, per explicit instruction, strict adherence to the
+existing no-mock-data policy — any data the system can't provide must be
+called out to the user, not fabricated.
+
+Two Explore agents researched the codebase in parallel (backend:
+`config/settings.py`'s credential pattern, router/schema conventions,
+`backtest/momentum_backtest.py`'s API, the `tests/quality/` no-stub
+policy; frontend: the `frontend/` React app's shell/routing, API client,
+and Radix UI primitives) before a plan was written and approved
+(`kind-swinging-perlis.md`).
+
+### Implementation
+New `systems/copilot/` package (spec schema, OpenRouter LLM client —
+first LLM integration in this codebase, `config/settings.py`'s new
+`OPENROUTER_API_KEY`/`OPENROUTER_MODEL`/`OPENROUTER_BASE_URL` — spec
+builder with feature-catalog validation, deterministic dedup matcher,
+YAML-file strategy registry under `strategies/`, and a backtest bridge
+reusing `MomentumBacktester`/`ScreenerEngine` rather than any new
+backtest logic). New `datastore/api/routers/copilot.py` (5 endpoints),
+wired into `main.py`. New `frontend/src/shared/api/copilot.ts` +
+`frontend/src/lib/ui/CopilotPanel.tsx`, mounted once inside `AppShell.tsx`
+so the Co-Pilot button appears on all 46 existing pages without touching
+any of them individually.
+
+Every "can't compute this" case is surfaced rather than papered over:
+unknown LLM-requested features land in `StrategySpec.unresolved` (shown
+as an amber warning in the panel, not dropped); the backtest bridge
+returns a `caveats` list disclosing that fundamental/valuation conditions
+aren't yet walked forward through history (only applied as a one-time
+latest-date filter) and that a spec without rebalance rules can't be
+backtested at all; any `None` metric renders as "not available" in the
+UI rather than blank or zero.
+
+### Verification
+18 new unit tests across
+`tests/unit/test_copilot_{strategy_spec,registry,dedup,spec_builder,
+backtest_bridge,router}.py`; re-ran alongside the existing momentum/
+screener suites (86 total) — all pass, no regressions from the
+`main.py`/router wiring changes. `tests/quality/test_no_stub_or_
+synthetic_data.py` initially flagged the word "placeholder" in an
+`llm_client.py` docstring/error message (both were about the *absence*
+of a placeholder, i.e. exactly the kind of prose the negation-detection
+regex is meant to catch, but didn't match its phrasing) — reworded, gate
+now passes clean. Frontend `tsc -b` and `npm run build` both clean.
+`app.openapi()` confirms all 5 `/api/v1/copilot/*` routes register
+correctly with no path-collision issues against the other 29 routers.
+
+**Not done this session**: no live end-to-end run against a real
+OpenRouter API key (none was provided) — the `/query` endpoint's LLM
+round trip is verified only via monkeypatched unit tests. CP2
+(fundamental/valuation walk-forward), CP3 (model-review promotion
+wiring), and CP4 (internet toggle) remain open, tracked in
+FeatureBacklog.md.
+
+### Files changed
+`config/settings.py` (OpenRouter config block); new `systems/copilot/`
+package (`__init__.py`, `strategy_spec.py`, `known_fields.py`,
+`llm_client.py`, `spec_builder.py`, `dedup.py`, `registry.py`,
+`backtest_bridge.py`); new `datastore/api/routers/copilot.py`;
+`datastore/api/main.py` (router wiring); new
+`frontend/src/shared/api/copilot.ts`, new
+`frontend/src/lib/ui/CopilotPanel.tsx`;
+`frontend/src/lib/ui/AppShell.tsx` + `frontend/src/lib/ui/index.ts`
+(mount/export); 6 new test files under `tests/unit/`.

@@ -227,7 +227,11 @@ async def get_sensitivity(
     # Re-run valuation at each grid point (re-uses same fundamentals via engine)
     # We tweak WACC directly by building a mini FCFFTwoStageModel grid.
     base_wacc = base.wacc
-    base_g = 0.05  # standard terminal growth baseline
+    # Center the grid on the terminal growth rate actually used for this
+    # ticker's lifecycle-stage base case (0.02-0.06 depending on stage),
+    # not a hardcoded 0.05 — a DECLINING-stage stock's base case uses 0.02,
+    # so a fixed 0.05 center misrepresented the sensitivity anchor point.
+    base_g = base.terminal_growth_rate if base.terminal_growth_rate is not None else 0.05
 
     table: List[Dict[str, Any]] = []
     model = FCFFTwoStageModel()
@@ -385,7 +389,7 @@ def _ttm_pe(ticker: str, fund_df: pd.DataFrame, aod: str) -> Optional[float]:
 async def get_relative_valuation(
     ticker: str,
     as_of_date: Optional[str] = Query(default=None, description="ISO date YYYY-MM-DD"),
-    min_peers: int = Query(default=5, ge=3, le=50, description="Minimum sector peers required to fit the regression"),
+    min_peers: int = Query(default=20, ge=3, le=50, description="Minimum sector peers required to fit the regression"),
 ) -> Dict[str, Any]:
     """
     Sector-relative P/E regression valuation (SPEC-VAL-002 Model 5).
@@ -479,6 +483,15 @@ async def get_relative_valuation(
         "current_price": current_price,
         "implied_price": implied_price,
         "coefficients": result.coefficients,
+        # `fundamentals` has no payout_ratio column and this uses
+        # sector-average beta (not the company's own) — surface which
+        # regression inputs are proxies rather than blending them in
+        # silently (Fix 6/14).
+        "proxy_used": [
+            "eps_growth_3y_from_revenue_cagr",
+            "beta_sector_average",
+            "payout_ratio_missing",
+        ],
     }
 
 

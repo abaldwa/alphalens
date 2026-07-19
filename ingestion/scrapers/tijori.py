@@ -64,7 +64,7 @@ from bs4 import BeautifulSoup
 
 from config.settings import (
     DEFAULT_RETRY_COUNT,
-    FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS,
+    FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER,
     TIJORI_PASSWORD,
     TIJORI_RATE_LIMIT_SLEEP_SECONDS,
     TIJORI_RAW_DIR,
@@ -314,8 +314,12 @@ class TijoriScraper:
             return None
 
         quarter_end = _current_quarter_end()
-        announcement_date = quarter_end + timedelta(days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS)
         fiscal_year, quarter = _fiscal_year_quarter(quarter_end)
+        # Q4/annual results get 60 days under SEBI LODR Reg. 33, not the
+        # 45-day Q1-Q3 deadline (2026-07-19 full-codebase-review Fix A2).
+        announcement_date = quarter_end + timedelta(
+            days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER[quarter]
+        )
 
         row: Dict[str, Any] = {
             "ticker": ticker,

@@ -112,6 +112,11 @@ SYNTHETIC_DATA_ALLOWLIST: dict[str, set[str]] = {
     # verify the model can't beat chance on noise. This is a model-integrity
     # test, not a data fallback — the values being permuted are real.
     "backtest/overfit_checks.py": {"rng.permutation"},
+    # Random-buy baseline for the strategy confidence framework: samples
+    # which REAL tickers to evaluate on a given date (for the "what would
+    # an unconditional random buy have scored" control), never fabricates
+    # a price/return value — same class of use as overfit_checks.py above.
+    "backtest/strategy_confidence.py": {"rng.choice"},
     # Subsamples real out-of-fold rows for SHAP-speed reasons (TabNet
     # feature-selection validator) — not data fabrication.
     "systems/ml_signal_engine/models/training/feature_selection.py": {"rng.choice"},

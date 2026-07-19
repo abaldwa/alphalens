@@ -140,6 +140,48 @@ _CREATE_CORPORATE_ACTIONS_VALIDATION = """
     )
 """
 
+# [AS BUILT, full-codebase-review Fix A5, 2026-07-19] Real SEBI
+# enforcement-order event dates, replacing pnd_detector.py's hardcoded
+# undated KNOWN_PND_TICKERS list — see
+# ingestion/scrapers/sebi_enforcement_orders.py's module docstring for
+# the live-verified source structure and its documented limitations
+# (manipulation_start_date/end_date are NULL until per-order detail-page
+# parsing is built; ticker resolution is a conservative fuzzy match that
+# drops unresolvable company names rather than guessing).
+_CREATE_SEBI_ENFORCEMENT_ORDERS = """
+    CREATE TABLE IF NOT EXISTS sebi_enforcement_orders (
+        ticker VARCHAR NOT NULL,
+        company_name VARCHAR,
+        order_date DATE NOT NULL,
+        order_type VARCHAR,
+        source_url VARCHAR NOT NULL,
+        manipulation_start_date DATE,
+        manipulation_end_date DATE,
+        PRIMARY KEY (ticker, order_date, source_url)
+    )
+"""
+
+# [AS BUILT, full-codebase-review Fix A4, 2026-07-19] Historical
+# delisted/suspended NSE companies — closes the survivorship-bias gap in
+# features/momentum_universe.py's candidate universe (config/
+# nifty500_universe.csv is a current-day snapshot; any ticker delisted
+# before that snapshot was built is otherwise permanently invisible to a
+# historical backtest). See ingestion/scrapers/nse_delisted_companies.py's
+# module docstring — this scraper's target page structure is UNVERIFIED
+# in this environment (NSE returns HTTP 403 to every endpoint tried, a
+# genuine host-level block, not a guessable wrong URL) and needs live
+# verification before this table's contents should be trusted.
+_CREATE_DELISTED_COMPANIES = """
+    CREATE TABLE IF NOT EXISTS delisted_companies (
+        ticker VARCHAR NOT NULL,
+        company_name VARCHAR,
+        delisting_date DATE,
+        delisting_type VARCHAR,
+        source_url VARCHAR,
+        PRIMARY KEY (ticker)
+    )
+"""
+
 # SPEC-PIPE-003 (CRITICAL): announcement_date is the PIT key, never quarter_end_date
 _CREATE_FUNDAMENTALS = """
     CREATE TABLE IF NOT EXISTS fundamentals (
@@ -329,6 +371,16 @@ _CREATE_FUNDAMENTALS = """
         -- build_priority_update_clause's NULL-existing-priority handling).
         fundamentals_source VARCHAR,
         fundamentals_source_priority INTEGER,
+        -- [AS BUILT, full-codebase-review Fix 5, 2026-07-19] Restatement-
+        -- versioning audit trail: ingestion timestamp of whichever source
+        -- currently wins fundamentals_source/_priority above (same
+        -- winner-tracking semantics, see
+        -- features/fundamental_source_priority.build_priority_update_clause).
+        -- Purely additive/audit — does not change PIT filtering
+        -- (announcement_date remains the only PIT key) or which value wins
+        -- a source-priority conflict. NULL for rows written before this
+        -- fix, same self-healing NULL handling as fundamentals_source.
+        as_of_ingested TIMESTAMP,
         PRIMARY KEY (ticker, fiscal_year, quarter)
     )
 """
@@ -743,12 +795,97 @@ _CREATE_MY_HOLDINGS = """
     )
 """
 
+# ML38 (2026-07-14): Momentum strategy live dashboard section. Mirrors
+# my_holdings' shape/conventions above (surrogate `id` sequence, NULL for
+# not-yet-sold, idempotent DDL). `strategy_id` is carried on every table
+# even though only one variant (Rank 100-150 / top15 / 6mo / monthly /
+# grace=2, validated in FeatureBacklog.md ML38 as the config that survives
+# the rebalance-offset and grace-period robustness checks — other,
+# higher-CAGR variants found via parameter sweeps were rejected as
+# overfit to lucky calendar alignment) is live today, so a second variant
+# could be added later without a migration.
+_MOMENTUM_STRATEGY_ID_DEFAULT = "band3_top15_6m_m_g2"
+
+_CREATE_MOMENTUM_TRADES = f"""
+    CREATE SEQUENCE IF NOT EXISTS momentum_trades_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS momentum_trades (
+        id BIGINT PRIMARY KEY DEFAULT nextval('momentum_trades_id_seq'),
+        strategy_id VARCHAR NOT NULL DEFAULT '{_MOMENTUM_STRATEGY_ID_DEFAULT}',
+        ticker VARCHAR NOT NULL,
+        purchase_date DATE NOT NULL,
+        qty DOUBLE NOT NULL,
+        purchase_price DOUBLE,
+        sale_date DATE,
+        sell_price DOUBLE,
+        entry_rank INTEGER,
+        exit_rank INTEGER,
+        suggestion_id BIGINT,
+        grace_remaining INTEGER,
+        purchase_rationale VARCHAR,
+        sell_rationale VARCHAR,
+        journal_entry VARCHAR,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
+_CREATE_MOMENTUM_CONTRIBUTIONS = f"""
+    CREATE SEQUENCE IF NOT EXISTS momentum_contributions_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS momentum_contributions (
+        id BIGINT PRIMARY KEY DEFAULT nextval('momentum_contributions_id_seq'),
+        strategy_id VARCHAR NOT NULL DEFAULT '{_MOMENTUM_STRATEGY_ID_DEFAULT}',
+        contribution_date DATE NOT NULL,
+        amount DOUBLE NOT NULL,
+        note VARCHAR,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
+_CREATE_MOMENTUM_RANKINGS = f"""
+    CREATE TABLE IF NOT EXISTS momentum_rankings (
+        date DATE NOT NULL,
+        strategy_id VARCHAR NOT NULL DEFAULT '{_MOMENTUM_STRATEGY_ID_DEFAULT}',
+        ticker VARCHAR NOT NULL,
+        momentum_return DOUBLE NOT NULL,
+        momentum_rank INTEGER NOT NULL,
+        in_top_n BOOLEAN NOT NULL,
+        band_id INTEGER NOT NULL,
+        PRIMARY KEY (date, strategy_id, ticker)
+    )
+"""
+
+_CREATE_MOMENTUM_REBALANCE_SUGGESTIONS = f"""
+    CREATE SEQUENCE IF NOT EXISTS momentum_suggestions_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS momentum_rebalance_suggestions (
+        id BIGINT PRIMARY KEY DEFAULT nextval('momentum_suggestions_id_seq'),
+        strategy_id VARCHAR NOT NULL DEFAULT '{_MOMENTUM_STRATEGY_ID_DEFAULT}',
+        rebalance_date DATE NOT NULL,
+        ticker VARCHAR NOT NULL,
+        action VARCHAR NOT NULL,
+        momentum_rank INTEGER,
+        grace_remaining INTEGER,
+        status VARCHAR NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
+_CREATE_MOMENTUM_REBALANCE_STATE = f"""
+    CREATE TABLE IF NOT EXISTS momentum_rebalance_state (
+        strategy_id VARCHAR PRIMARY KEY DEFAULT '{_MOMENTUM_STRATEGY_ID_DEFAULT}',
+        last_rebalance_date DATE,
+        next_rebalance_date DATE,
+        updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
 _ALL_TABLES = {
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
     "index_ohlcv": _CREATE_INDEX_OHLCV,
     "ohlcv_ca_audit": _CREATE_OHLCV_CA_AUDIT,
     "corporate_actions": _CREATE_CORPORATE_ACTIONS,
     "corporate_actions_validation": _CREATE_CORPORATE_ACTIONS_VALIDATION,
+    "sebi_enforcement_orders": _CREATE_SEBI_ENFORCEMENT_ORDERS,
+    "delisted_companies": _CREATE_DELISTED_COMPANIES,
     "qip_details": _CREATE_QIP_DETAILS,
     "brsr_filings": _CREATE_BRSR_FILINGS,
     "fundamentals": _CREATE_FUNDAMENTALS,
@@ -772,6 +909,11 @@ _ALL_TABLES = {
     "job_run_log": _CREATE_JOB_RUN_LOG,
     "missed_job_findings": _CREATE_MISSED_JOB_FINDINGS,
     "my_holdings": _CREATE_MY_HOLDINGS,
+    "momentum_trades": _CREATE_MOMENTUM_TRADES,
+    "momentum_contributions": _CREATE_MOMENTUM_CONTRIBUTIONS,
+    "momentum_rankings": _CREATE_MOMENTUM_RANKINGS,
+    "momentum_rebalance_suggestions": _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS,
+    "momentum_rebalance_state": _CREATE_MOMENTUM_REBALANCE_STATE,
 }
 
 # [AS BUILT, P2.1] This project has no formal migration system — `CREATE
@@ -852,6 +994,9 @@ _MIGRATE_ADDED_COLUMNS = {
         # above these two columns for rationale.
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fundamentals_source VARCHAR",
         "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fundamentals_source_priority INTEGER",
+        # [AS BUILT, full-codebase-review Fix 5, 2026-07-19] see
+        # _CREATE_FUNDAMENTALS comment above as_of_ingested for rationale.
+        "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS as_of_ingested TIMESTAMP",
     ],
     "shareholding": [
         "ALTER TABLE shareholding ADD COLUMN IF NOT EXISTS superstar_flag BOOLEAN",

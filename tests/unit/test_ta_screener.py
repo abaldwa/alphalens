@@ -182,7 +182,7 @@ def test_daily_alert_checker_writes_correct_table():
     Uses an in-memory DuckDB connection (via get_duckdb_connection with db_path=None)
     to verify that:
     1. The ta_signals table is created with the correct schema.
-    2. The DailyAlertChecker._write_results_batch() inserts rows with the
+    2. The DailyAlertChecker._write_all_results() inserts rows with the
        correct column values.
     3. The upsert (ON CONFLICT DO UPDATE) is idempotent.
 
@@ -232,7 +232,7 @@ def test_daily_alert_checker_writes_correct_table():
         assert "ta_signals" in tables, "ta_signals table was not created"
 
         # Write the fake results
-        checker._write_results_batch(conn, "2026-07-02", fake_results)
+        checker._write_all_results(conn, "2026-07-02", {"A1": fake_results})
 
         # Verify row count and values
         rows = conn.execute(
@@ -250,7 +250,7 @@ def test_daily_alert_checker_writes_correct_table():
             assert abs(float(r[3]) - 1.0) < 1e-6
 
         # Test idempotency: write the same batch again (ON CONFLICT DO UPDATE)
-        checker._write_results_batch(conn, "2026-07-02", fake_results)
+        checker._write_all_results(conn, "2026-07-02", {"A1": fake_results})
         rows_after = conn.execute(
             "SELECT COUNT(*) FROM ta_signals"
         ).fetchone()[0]
@@ -603,14 +603,19 @@ class TestDailyAlertCheckerEvaluateAndRun:
 
         checker = checker_mod.DailyAlertChecker()
 
-        original_screen = checker._engine.screen
+        # evaluate() loads the feature Parquet once and calls _screen_df()
+        # per template (not screen(), which would re-read the file 42x) —
+        # patch the method actually invoked per-template to simulate one
+        # template failing, and confirm it's isolated rather than crashing
+        # the whole 42-template run.
+        original_screen_df = checker._engine._screen_df
 
-        def flaky_screen(template_name, date=None, limit=50):
-            if template_name == "A1":
+        def flaky_screen_df(df, template, date_str, limit):
+            if template.name == "A1":
                 raise RuntimeError("boom")
-            return original_screen(template_name, date=date, limit=limit)
+            return original_screen_df(df, template, date_str, limit)
 
-        monkeypatch.setattr(checker._engine, "screen", flaky_screen)
+        monkeypatch.setattr(checker._engine, "_screen_df", flaky_screen_df)
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
         assert template_results["A1"] == []  # failed template degrades to empty, not a crash

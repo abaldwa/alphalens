@@ -55,6 +55,18 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 | A58 | ~40 of the 880 findings' columns looked like already-documented structurally-sparse forensic gaps (FeatureBacklog FO8/A26), but only about half actually are | Data Layer / Ingestion | ✅ 2026-07-10 | Column-by-column investigation split them three ways. (1) Real bugs, now fixed: `intangibles_growth` in `features/deep_forensic.py` read the wrong dict key (`"intangibles"` instead of the real schema/NSE-XBRL column `"intangible_assets"`, populated on 5,760/36,346 rows) — fixed the lookup key only, left the schema column and the existing YoY-diff calculation untouched per explicit instruction. `audit_qualification_flag`/`goodwill_ratio`/`capex_to_assets`/`noncash_assets_ratio` were already correctly wired to real, populated NSE XBRL columns — the FO8-era "unavailable" docstring claim was stale (predated `ingestion/scrapers/nse_xbrl_financials.py`'s structured parser); docstring corrected, all 5 columns removed from `daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS` so a future regression in their computation is still caught by `step_sanity_check`. (2) Real-but-unscheduled scrapers, now scheduled: `scripts/backfill_promoter_pledge_nse.py` and `scripts/backfill_balance_sheet_from_screener.py` were both live-verified 2026-07-07 but never invoked by any scheduler — added `schedule_promoter_pledge_backfill`/`schedule_balance_sheet_backfill` (Saturday 11:00/11:30 IST, after `weekend_fundamentals`) to `ingestion/scheduler/pipeline_scheduler.py`, wired into `daily_pipeline.py::main()`. (3) Genuinely unfixable today (no schema column, or freeform-text-only NSE disclosures — `contingent_liability_ratio`, `subsidiary_count`, `loans_to_related`, `off_balance_sheet_proxy`, and Group E's remaining 7 governance columns): left in the allowlist. `benford_mad` added to the allowlist after fixing forensic_classical.py's matching A52-class bug (see A57) — its residual nulls are legitimate new-listing warmup, not breakage |
 | A62 | Kaggle confirmed dead code — `scripts/load_kaggle_fundamentals.py` never invoked by any scheduler/job registry/pipeline; operator decision: remove entirely | Data Layer / Ingestion | ✅ 2026-07-10 | Deleted `scripts/load_kaggle_fundamentals.py` (no test file existed for it). Removed `"kaggle": 1` from `SOURCE_PRIORITY` in `features/fundamental_source_priority.py`; real precedence is now NSE XBRL (4) > Trendlyne (3) > Screener (2) — confirmed correct via existing `build_priority_update_clause` logic, no change needed there beyond dropping the dict entry. Updated docstrings/comments in `datastore/schema/create_normalised.py` and `features/fundamental_quality_gate.py` that referenced the removed script. Updated `tests/unit/test_fundamental_source_priority.py`'s 6 tests to use `screener` instead of `kaggle` as the lowest-ranked source in the priority-ordering assertions — all pass. Remaining `kaggle` mentions in the codebase are historical-incident-narrative comments (BuildLog-style "what was true when this was fixed" notes), left as-is per this project's existing convention for such comments |
 | A70 | Menu app-switcher labels currently carry an `"AlphaLens."` prefix (`shell.js` `app.name`), forcing the app-tab bar into horizontal scroll; drop the prefix (keep on the logo only) | Dashboard (shell) | ✅ 2026-07-11 | Added a `short` field (e.g. `"ML"`, `"Technical"`, `"BigInvestors"`) to each entry in `APPS` in `dashboard/static/js/shell.js`; the app-switcher tabs (`.app-tabs`, `renderAppShell`) now render `a.short \|\| a.name`, while the top-left logo still renders the full `app.name` (`"AlphaLens.ML"` etc.) unchanged. Only shortens the `.app-tabs` scroll bar as scoped — the per-app `.sub-tabs` bar (e.g. ML's 10 screens) still scrolls on screen-heavy apps; that's tracked separately if the user still wants it addressed after seeing this land |
+| A24 | UI refactor for responsive layout (mobile/tablet) | Dashboard (all) | ✅ | 2026-07-10 (Group 1 backlog sweep): landed for AlphaLens.Ops only (`dashboard/static/ops/css/responsive.css`). **2026-07-13: extended framework-wide** — new shared `dashboard/static/css/responsive.css` (same `.card:has(> table)`/`.kv-row`/table-font-shrink/app-bar-collapse rules as Ops' own copy), linked after `shell.css` in every HTML file under `technical/`, `fundamental/`, `forensic/`, `valuation/`, plus `ml/backtest.html` — all 5 apps now have the same responsive pass. |
+| A26 | Expand `_SANITY_KNOWN_SPARSE_COLUMNS` with remaining confirmed-unsourceable columns; finish 2026-07-03/06/07 recompute+re-run | Scheduler / Data Layer | ✅ 2026-07-13 | 2026-07-09: audit found 13 of the "remaining ~12" list were already exempted; only `capex_to_assets`/`noncash_assets_ratio` were actually missing — added, with tests. 2026-07-03/06/07 `step_compute_features` recompute + `sanity_check`/`paper_trade` re-run still outstanding (needs an explicit Ops force-run, not run this session). 2026-07-13: confirmed the mechanism (`POST /api/v1/ops/steps/{step_name}/force`, backed by `ingestion/scheduler/force_run.py::force_run_date_sync`) — user gave explicit go-ahead. No live API server was running to hit over HTTP, so wired a direct call (`force_run_date_sync("compute_features", [2026-07-03, 07-06, 07-07], cascade=True)`) into `/tmp/run_production_retrains.py` as its 3rd step, queued behind ML31/A28(g) in the same DB-lock-avoidance chain (waits for the in-flight MultiBagger job + Phase B to finish first). Confirmed `pipeline_checkpoints` already shows `compute_features`/`sanity_check` as `status='success'` for all 3 dates from before the corporate-action data fix — `force_run_date_sync` re-runs regardless of prior success (only checks lower-index prerequisites), so this correctly forces a genuine recompute rather than a no-op. `paper_trade` will correctly stay un-run for these past dates per SPEC-SCHED-006 (enforced by `force_run_date_sync` itself, not skipped by omission). First execution attempt (same day) surfaced 2 new failures: 2026-07-03 `run_models` timed out, and 2026-07-06/07 both failed `sanity_check` on 16 all-NaN F&O columns — root-caused to a real Data Layer bug (see ML34 below), fixed, retry re-launched. Retry #2 confirmed the fix: **2026-07-07 completed fully clean end-to-end (compute_features → sanity_check, `sanity_check: passed ... signal_rows=2317, top_buys=2313, regime=bullish`)**. 2026-07-03/06 hit a *different*, unrelated issue on that attempt — transient DuckDB lock-conflict 500s from the concurrently-running always-on scheduler (`alphalens-scheduler.service`, PID 2123) contending for the same DB files (`run_models`'s NIFTYBEES OHLCV fetch for 07-03, `write_signals`'s `signals.duckdb` write for 07-06) — not a code bug, just momentary contention on a shared box. Retry #3 (07-03/06 only, 07-07 already done): 07-03 completed fully clean (`sanity_check: passed, signal_rows=2317, top_buys=2314`); 07-06 hit one more transient `run_models` timeout (server load, not a bug) — retry #4 (07-06 alone, no other jobs competing) finally succeeded clean (`sanity_check: passed, signal_rows=2317, top_buys=2315`). **All 3 dates now fully recomputed and passing sanity_check — A26 DONE.** `paper_trade` correctly stays un-run for all 3 (past dates, SPEC-SCHED-006). See BuildLog.md 2026-07-13 "fno_data Shadow-Table Bug" |
+| A63 | `tests/quality/test_no_stub_or_synthetic_data.py::test_no_unallowlisted_stub_keywords` fails on 3 pre-existing, benign "placeholder" comments | Data Layer / Tests | ✅ | Found 2026-07-10/11 during the FeatureBacklog full sweep (Groups 1-9). **2026-07-13: fixed** on branch `feature/backlog-burn-a42-a63-a64-a67-a72-ml22-ml26-ml28-ml29-ml30-t9` — added narrow `KEYWORD_ALLOWLIST` entries for the (by then 7, not 3 — 4 more had drifted in from the ML gainer system) confirmed-benign matches: `config/nse_holidays.py`, `datastore/schema/create_normalised.py`, `scripts/align_remaining_to_fyers.py` prose, plus `sklearn.dummy.DummyClassifier` imports in 3 multibagger/signal_ranker model files. `tests/quality/test_no_stub_or_synthetic_data.py` (4 tests) passes. |
+| A64 | `tests/unit/test_schema.py::TestCreateSignalsSchema::test_duckdb_table_columns_match_architecture_doc[ml_forensic]` fails — schema/doc drift | Data Layer / Tests | ✅ | Found 2026-07-11 during Group 7's schema-addition work. **2026-07-13: fixed** on branch `feature/backlog-burn-a42-a63-a64-a67-a72-ml22-ml26-ml28-ml29-ml30-t9` — the real DuckDB `ml_forensic` table has 2 columns (`benford_detail_json` from FO5, `forensic_flag_label` from P2.6's flag taxonomy) that the architecture doc (`alphalens_docs/12_platform_architecture.md`) and the test's expected-columns constant hadn't caught up to; both are genuine, already-shipped columns per `create_signals.py`'s own comments, so updated the doc/test to match reality. `ml_forensic` param of `TestCreateSignalsSchema` now passes; `ml_multibagger`/`ml_signals` params still fail with similar drift — out of this item's scope (see new backlog note below, `A64-followup`). |
+| A64-followup | `tests/unit/test_schema.py::TestCreateSignalsSchema` still fails for `ml_multibagger` and `ml_signals` (same class of schema/doc drift as A64, different tables) | Data Layer / Tests | ✅ | Found 2026-07-13 while fixing A64. **2026-07-13, re-verified same day**: an intervening session had already reconciled both tables — `datastore/schema/create_signals.py`'s DDL, `alphalens_docs/12_platform_architecture.md`, and `tests/unit/test_schema.py::TestCreateSignalsSchema`'s expected-columns sets for `ml_signals`/`ml_multibagger` now match exactly (confirmed via a direct column-set diff against the DDL, both come out identical). `tests/unit/test_schema.py -k TestCreateSignalsSchema` — 6/6 pass. No code change needed this pass, just re-confirmation + status update. |
+| A66 | Framework-wide sortable-columns audit — apply existing `sortRows`/`sortableHeader` helper to every dashboard table, not just the ones that already use it | Dashboard (all) | ✅ 2026-07-13 | Implemented on branch `feature/backlog-burn-a66-a68-a69-a73-t6-t10-ml23-ml25-ml32` (PR: see BuildLog.md 2026-07-13 entry). Rather than a per-file audit/edit of ~40 table-rendering JS files, added a generic DOM-level table enhancer to `js/shell.js` (runs on every screen via `renderAppShell`, re-triggered by a `MutationObserver` after async re-renders) that makes every `<th>` clickable-sortable by re-ordering the rendered `<tr>`s by that column's text, skipping headers a screen already made sortable itself via the existing `sortableHeader` helper (detected by its inline `cursor:pointer`) so there's no double-handling |
+| A67 | Sparkline column support — no sparkline rendering exists anywhere in the dashboard; needed for price/RS trend columns across tables (Sector Rotation, Signal Deep Dive, etc.) | Dashboard (all) | ✅ | 2026-07-13: added `sparklineSvg()` (`dashboard/static/js/api.js`), wired into Sector Rotation (ML28). **2026-07-13 (2nd pass):** extended to Signal Deep Dive's Raw Signal Log (`ml/signal.js`) — a new "Trend" column shows the since-recommendation price sparkline for each historical call, reusing the same OHLCV closes already fetched for the recommended-price lookup (no extra API call). Two real consumers now — convention proven framework-wide. |
+| A68 | Column-alignment convention — amount fields right-aligned, percentage/range fields center-aligned, across all tables | Dashboard (all) | ✅ 2026-07-13 | Same `js/shell.js` enhancer as A66: sniffs each column's rendered cell text (>=60% of non-empty cells matching a percent/range or numeric-amount pattern) and applies `text-align:center`/`right` accordingly — framework-wide, no per-table edits needed. See BuildLog.md 2026-07-13 |
+| A69 | Ticker-hyperlink-to-chart convention (every ticker cell links to `technical/chart.html?ticker=...` in a new tab) + a "Signal Deep Dive" icon column that opens `ml/signal.html?ticker=...` in a new tab, applied uniformly | Dashboard (all) | ✅ 2026-07-13 (partial audit) | Added a shared `tickerCell(ticker)` helper to `js/api.js` (chart.html link + 🔎 Signal Deep Dive icon, both new-tab). Applied to every table that previously rendered a bare, unlinked ticker cell (`forensic/heatmap.js`, `big_investors/index.js` x3, `big_investors/announcements.js`, `big_investors/mf_holdings.js`, `ml/hub.js` x2, `ml/exit_urgency.js`, `ml/multibagger.js`, `ml/universe.js`). Tables that already had their own in-app ticker drill-down link (e.g. `valuation/accuracy.js`/`batch.js` → `dcf.html`, `forensic/universe.js` → `dashboard.html`) were left as-is this pass — not re-audited to also add the chart.html+icon pair, since that's an additive-only follow-up, not a fix for a broken/missing convention. See BuildLog.md 2026-07-13 |
+| A71 | Shared 1-year price/technical rollup table — a dedicated per-ticker table storing ~1yr of OHLCV + technical datapoints, so charts/sparklines stop reading from the main OHLCV/indicator tables directly | Data Layer | ✅ | 2026-07-13: ran a real in-process load measurement (`TestClient(app)` against the live, real `alphalens.duckdb` — read-only, no synthetic writes) of `GET /api/v1/ohlcv/{ticker}` across 50 real tickers with >=200 rows. Full-history range (2000-01-01..2026-07-13): mean 133.9ms/median 119.7ms/p95 229.5ms/max 313.9ms. Realistic 1-year range (chart.html's actual use case): mean 57.2ms/median 57.6ms/p95 77.6ms/max 94.1ms — well within an interactive single-chart-load budget, confirming the 2026-07-11 exploration's "no apparent perf problem" note with real numbers rather than a hunch. Also checked whether any screen fetches raw per-ticker OHLCV in a loop for multi-ticker sparklines (the scenario that would most plausibly need a rollup table): grepped all dashboard callers of `sparklineSvg()` — only `dashboard/static/ml/js/sector_rotation.js` uses it today, and it renders from `features/sector_rotation.py`'s already-precomputed `sparkline` field, not a live per-ticker OHLCV fetch, so there is no current N-ticker-sequential-fetch code path in production. A synthetic worst-case (50 sequential 1yr fetches, simulating a hypothetical future 50-row sparkline table) measured ~2.95s total — noted here as the number a future session should re-check against if/when such a screen is actually built, since that would cross into "needs a materialized table" territory. Given today's single-chart real numbers are fast and no multi-ticker live-fetch pattern exists yet, building the new table now would be speculative work with no current perf problem to solve — closing as "no new table needed," per the row's own gating condition. Benchmark script: not committed (scratch, per session policy), rerunnable via `TestClient(app)` + `/api/v1/ohlcv/_meta/tickers` |
+| A72 | New cross-cutting Events table (corporate actions, bulk/block deals, 5d/21d/63d & MultiBagger recommendation triggers, forensic-flag dates) + chart overlay showing these as markers on `chart.html` | Data Layer / Dashboard (Technical) | ✅ (3/4 event types) | 2026-07-13 (earlier pass): skipped as multi-part/bigger-than-safe. **2026-07-13 (this pass): implemented 3 of 4 event types + the chart overlay.** New `GET /api/v1/events/{ticker}` (`datastore/api/routers/events.py`) merges: `corporate_action` (read-only reuse of `corporate_actions`), `bulk_deal` (read-only reuse of `bulk_deal_positions`), and `recommendation_trigger` (new query, no new table — detects a ticker crossing INTO a signal_5d "buy" call from real `ml_signals` history, i.e. `signal_direction == 'buy'` where the immediately preceding row wasn't). `chart.html`/`chart.js` gained a real marker overlay: a second Chart.js dataset (`eventOverlayDataset`) plotting a colored triangle just above that day's high at each event's matching candle index, with the real event description in the tooltip — no vendored annotation plugin exists under `dashboard/static/vendor/`, so this is a plain second dataset, not a plugin-based annotation. `forensic-flag date` (the 4th type) still NOT implemented — `ml_forensic` only records composite scores as of each (infrequent, quarterly) scoring date, not a discrete "flag raised on this date" event; defining "the date a flag first appeared" would need its own dedup/definition pass, left as a follow-up. Tests: `tests/unit/test_events_router.py` (4 tests, real seeded DuckDB via TestClient). |
+| A73 | Resizable/expandable table columns — user-draggable column width (drag handle on column border), framework-wide convention alongside A66/A68/A69 | Dashboard (all) | ✅ 2026-07-13 | Same `js/shell.js` enhancer: adds a `.col-resize-handle` drag handle to every `<th>`, width persisted per `(page path, header label)` in `localStorage` so it survives reloads — framework-wide, no per-table edits. See BuildLog.md 2026-07-13 |
 
 ### Technical
 
@@ -65,6 +77,12 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 | T3 | No charting library on Technical > Chart screen | Dashboard (Technical) | ✅ 2026-07-11 | — |
 | T4 | Watchlist screen wiring status unresolved | Dashboard (Technical) | ✅ | — |
 | T5 | 18 "advanced" TA features computed but unused by any ML training pipeline | ML Signal Engine / Data Layer | ✅ 2026-07-11 | Group 2 backlog sweep: A38 already wired all 297 feature columns (including the 18 advanced TA features) into TFT/BiLSTM's registry; A42's audit this session confirmed 297/297 architecturally reach the input tensor. Closed — "wire into training" was the chosen path, not "stop computing" |
+| T6 | Make Daily WatchList the AlphaLens.Technical landing page; add a "Technical Deep Dive" page (5/21/63 DMA, 52wk hi/lo, support/resistance, delivery volumes/%) mirroring Signal Deep Dive, opened via a per-row icon in a new tab | Dashboard (Technical) | ✅ 2026-07-13 | `technical/index.html` now redirects to `watchlist.html` (was `screener.html`). New `technical/deep_dive.html`/`js/deep_dive.js` built against the existing `/api/v1/ta/{ticker}/indicators` (SMA 20/50/100/200 ratios — the real feature set has no literal 5/21/63-day SMA columns, `sma_20/50/100/200_ratio` are the closest real equivalents, used as-is rather than inventing new features) and `/patterns` endpoints, plus reusing the Daily WatchList's already-computed support/resistance levels (`/api/v1/ta/watchlist/daily`, matched client-side by ticker since that endpoint has no per-ticker filter). Delivery volume/% surfaced from `delivery_pct`/`delivery_pct_zscore_21d`/`delivery_price_corr_21d`. Opened via a new 🔎 icon column on `watchlist.html`'s table, new tab. Branch `feature/backlog-burn-a66-a68-a69-a73-t6-t10-ml23-ml25-ml32`, see BuildLog.md 2026-07-13 |
+| T7 | "Charts currently do not work" — live-repro and fix `technical/chart.html` | Dashboard (Technical) | ✅ 2026-07-13 | Root-caused via a live Playwright browser session (Chromium): API/wiring was fine (2026-07-11 note below), but `chartjs-chart-financial`'s bar-derived candlestick/OHLC controller miscomputes element pixel positions against a continuous `"time"` x-scale once real trading-day gaps (weekends/holidays) are involved — every candle/line element's `x` resolved to `NaN`, so the chart silently rendered blank (axis + legend only, no console error). Confirmed via `chart.getDatasetMeta(0).data[i].x` before/after. Fix: switched both the candlestick and volume charts in `dashboard/static/technical/js/chart.js` to an index-based `"category"` x-scale with date-formatted tick labels (also removes weekend gaps from the plot). Verified rendering on RELIANCE/TCS/IRFC with zero console/page errors. 2026-07-11: confirmed `chart.html`/`chart.js` is fully wired — `GET /api/v1/ohlcv/{ticker}`, `/api/v1/ta/{ticker}/indicators`, `/api/v1/ta/{ticker}/patterns` all verified returning real data via curl; script load order in `chart.html` is correct. |
+| T9 | Technical screener appears not to list the full universe — looks like it's only picking up tickers in alphabetical-order order | Dashboard (Technical) / Data Layer | ✅ | **2026-07-13: confirmed merged into branch `feature/backlog-burn-a42-a63-a64-a67-a72-ml22-ml26-ml28-ml29-ml30-t9`** (already present on the base branch this session started from — `fix/ta-screener-tiebreak-t9-engine`'s commit `543be46` was already an ancestor; no new changes needed, cherry-pick came back empty). 2026-07-11: root cause found in `systems/technical_analysis/screener/engine.py::_screen_df` (`:326-331`) — root cause found in `systems/technical_analysis/screener/engine.py::_screen_df` (`:326-331`) — results are sorted `_score desc, _vol desc` where `_vol` is `volume_ratio_21d`; when that column is absent from a given day's feature set, the tiebreak silently drops and ties fall back to the source Parquet's original row order, which is ticker-alphabetical — producing exactly the "alphabetical-only" symptom for any template/day where `volume_ratio_21d` isn't populated. Fix not yet applied: needs a deterministic secondary sort (e.g. always include `_score desc` then market-cap or ADTV desc, never silently falling through to file order) — small, scoped change to `_screen_df`, next session. **2026-07-13: fix implemented, in PR pending merge (not yet ✅).** No `market_cap`/ADTV column is actually present in the daily feature Parquet, so the fix instead falls through a priority list of available volume/liquidity proxy columns (`volume_ratio_21d`, `volume_ratio_5d`, `volume_zscore_10d`, `vol_spike_vs_60d_avg`, `breakout_volume_ratio`, `turnover_acceleration`) and, as a final always-present tiebreak, sorts by a deterministic hash of `ticker` — so ties can never silently degrade to alphabetical Parquet row order again, on any day regardless of which proxy columns are populated. Added regression tests in `tests/unit/test_ta_screener.py::TestScreenDfTiebreakOrdering` (missing-volume-columns case reproduces the original bug and asserts non-alphabetical order; determinism-across-calls case; and a case confirming `volume_ratio_21d` still takes priority when present, i.e. no behavior change for the common path). Full `tests/unit/test_ta_screener.py` (34 tests) and the broader `tests/unit -k "technical or screener or ta_"` sweep (125 tests) pass. Branch `fix/ta-screener-tiebreak-t9-engine` pushed to origin (named `-engine` suffix because the repo had concurrent multi-agent sessions running in the same working tree during this fix and `fix/ta-screener-tiebreak-t9` had already been claimed by an unrelated tenacity-retry-migration branch by the time of push — see PR: https://github.com/abaldwa/alphalens/pull/new/fix/ta-screener-tiebreak-t9-engine). |
+| T10 | Persist every technical recommendation with strategy name + date to DB (verify/extend existing `ta_signals`) | Data Layer | ✅ 2026-07-13 (verified, no gap) | Confirmed via code review of `systems/technical_analysis/alerts/daily_alert_checker.py`'s `_CREATE_TA_SIGNALS_SQL`/`_INSERT_SQL`: `ta_signals`' primary key is `(date, ticker, template_name)` — every full template match (score=1.0) is persisted with its exact strategy name and date already, upserted (not overwritten) so history genuinely accumulates day over day rather than only keeping the latest. `score`/`matched_conditions`/`total_conditions`/`key_values` (JSON) are captured alongside. No code change needed — this was already fully built (SPEC-TA-006/008), just unverified before this pass. See BuildLog.md 2026-07-13 |
+| T11 | Multi-strategy consensus: when the same stock is recommended by multiple strategies, list all of them and surface the stock with the most concurrent strategy-recommendations first | Dashboard (Technical) / Features | ✅ 2026-07-13 | Implemented `GET /api/v1/ta/consensus/daily` (`datastore/api/routers/technical.py`) — groups `ta_signals` by (date, ticker), counts distinct `template_name`s firing that day, orders by strategy_count desc then avg_score desc, returns template names/categories/avg score per ticker. Verified end-to-end against the live signals DuckDB (2026-07-10, real multi-template consensus rows e.g. UJJIVANSFB/NORTHARC with 25 concurrent template fires) and via TestClient; added regression tests in `tests/unit/test_technical_router.py::TestConsensusDaily` (27/27 router tests pass). |
+| T12 | Sell-recommendation section for stocks previously Buy-recommended by AlphaLens.ML | Dashboard (ML) / ML Signal Engine | ✅ 2026-07-13 | Implemented `GET /api/v1/signals/ml/downgrades/{date}` (`datastore/api/routers/signals.py`, read-only query only — no ML training/inference files touched). Uses signal_5d's already-computed `signal_direction` field (literal "buy"/"sell"/"hold" from `CLASS_NAMES` in `systems/ml_signal_engine/models/signal/base_signal_model.py`, read for context only) rather than inventing a new probability threshold: flags any ticker whose most recent row is "sell" but which had an earlier "buy" row within a configurable `lookback_days` window (default 200, matching this backlog's other trailing-window conventions). Verified end-to-end against the live signals DuckDB (2026-07-10, real buy-to-sell transitions e.g. 3IINFOLTD, AARVI, AETHER) and via TestClient; added regression tests in `tests/unit/test_signals_downgrades.py` (6/6 pass, covering buy-then-sell flagged, always-sell/buy-then-hold not flagged, lookback-window exclusion, carry-forward date resolution). |
 
 ### Fundamental
 
@@ -100,6 +118,7 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 | FO5 | Benford's Law screen only surfaces one aggregate MAD float | Dashboard (Forensic) / API | ✅ | — |
 | FO6 | Investigation Report has no PDF/report-builder backend | Dashboard (Forensic) | ✅ 2026-07-11 | — |
 | FO7 | Universe Scan has no on-demand trigger | Dashboard (Forensic) / API | ✅ | — |
+| FO9 | `altman_z` still NaN for a real subset of tickers | ML Signal Engine / Data Layer | ✅ 2026-07-13 | Fixable portion (ebit column, real retained_earnings, PIT market-cap join) merged into `feature/backlog-burn-t7-t8-t11-t12-fo9` — see FO1. Remaining NaN gap for `current_assets`/`current_liabilities`/`total_debt`/`revenue` co-availability is a genuine NSE FY2023-24+ XBRL filing-regime data-coverage floor, not fixable in code — tracked as the known residual, not a further open action item. 2026-07-13 (prior investigation): measured against latest-quarter fundamentals for 2643 tickers (PR `fix/forensic-altman-pit-wiring`, pending merge, same fixes as FO1). Field-level coverage on this snapshot: `current_assets`&`current_liabilities` (working capital term) 62.8%, `total_debt` 36.8%, `revenue` 40.5%, `retained_earnings` (real column, no proxy) 26.0% (proxy-or-real together 27.0%), `ebit`-or-`ebitda` 40.5%, market-cap term via real close-price x shares_outstanding 89.3% (up from ~25% via the old book-equity-only proxy — this is the fix's real, verified effect). The overall Altman-computable count (109/2643, 4.1%) is capped by the `current_assets`/`current_liabilities`/`total_debt`/`revenue` intersection, all ~37–41%, not by `retained_earnings`/`ebit`/market-cap (all now meaningfully higher or unchanged-but-correct) — so the residual NaN gap is dominated by the current_assets/current_liabilities/total_debt NSE-filing-regime floor (FY2023-24+ XBRL Integrated Filing start date), the same unclosable constraint documented for FO1/FO3, not by a wiring bug. Not marking ✅ until merged. |
 
 ### Corporate Announcements
 
@@ -134,6 +153,13 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 | ML19 | `test_multibagger.py`/`test_paper_trading_router.py` fail only when run inside the full suite, pass standalone | Tests | ✅ 2026-07-11 | Not reproducible after extensive re-bisection — see writeup below |
 | ML20 | `test_score_multibagger.py`/`test_rule_based_exit_policy.py` real-data cases require a live DataStore API server, not gated/skipped without one | Tests | ✅ 2026-07-11 | `test_score_multibagger.py` already DB-direct (no live-server dependency); `test_rule_based_exit_policy.py`'s ATR real-OHLCV cases now `pytest.skip` on `httpx.RequestError` instead of hard-failing — see writeup below |
 | ML21 | SMOTETomek unbounded oversampling causes repeated OOM in signal_63d retrain | ML Signal Engine / Tests | ✅ 2026-07-10 | Subprocess isolation per horizon + fewer Optuna trials for signal_63d adopted; SMOTETomek sampling-strategy cap built but left opt-in (default unchanged) pending a real before/after Sharpe comparison |
+| ML17 | Unified backtest strategy (per-horizon, Nifty benchmark) | Backtest | ✅ | (a) Real Nifty 500 benchmark curve ✅ 2026-07-11 — `backtest/engine.py` now computes `benchmark_cagr`/`benchmark_sharpe`/`excess_return` per fold. (b) **2026-07-13: per-horizon reporting restructured.** New `backtest/report_utils.py::write_per_horizon_reports()` (pure function over already-computed `BacktestResults.to_dict()` dicts — no engine/training changes) writes one standalone JSON report per horizon variant, in addition to each script's existing combined comparison report; wired into both `run_phase2_backtest.py` (writes `phase2_signal_5d_*.json`/`phase2_signal_63d_watchlist_*.json` alongside the combined `phase2_*.json`) and `run_phase3_backtest.py` (`phase3_signal_5d_p2baseline_*.json`/`phase3_signal_21d_p3variant_*.json`). Each horizon's own fold-level results + real-benchmark comparison now stand on their own, independent of whichever other variant that script ran alongside it. Not run as a real (multi-hour) backtest this session — verified via `tests/unit/test_backtest_report_utils.py` (3 tests, injected results dicts) plus a real module-import smoke check of both scripts. |
+| ML22 | Merge Daily Insights and Daily WatchList screens — significant column/purpose overlap | Dashboard (ML) | ✅ 2026-07-13 | Merged on branch `feature/backlog-burn-ml22-ml29-ml33dev`: `dashboard/static/ml/index.html`/`js/hub.js` now also render the full Daily WatchList tables (5d/21d/63d horizon + MultiBagger + low-liquidity, ported from the old `watchlist.js`) below the existing regime/alerts/top-buys/positions sections. The hub's own truncated "watchlist-mini" (MB top-3) and "horizon-mini" (21d/63d top-3) sections were dropped as duplicates of the same `/api/v1/watchlist/daily` data with fewer columns — no columns were lost, only the redundant shorter view. `watchlist.html` now redirects to `index.html` for old links; `js/shell.js`'s ML sub-tab nav collapsed to one "Daily Insights & WatchList" entry. |
+| ML23 | Surface SHAP-derived descriptive "Basis" text in table rows, not only on the Signal Deep Dive detail view | Dashboard (ML) / ML Signal Engine | ✅ 2026-07-13 | Added `shap_top5_json` to `SignalUniverseRow`/`GET /api/v1/signals/ml/universe/{date}` (datastore/api layer only — no model logic touched) so the row already carries it. New `shapBasisText()` in `ml/js/universe.js` parses it client-side and renders the top-2-by-magnitude SHAP features as a short "Basis" column (e.g. `sma_50_ratio (+0.12), rs_vs_nifty500_21d (+0.08)`) on the Full Universe table (moved there by ML25); full 5-feature bar breakdown remains on the ticker detail view. See BuildLog.md 2026-07-13 |
+| ML25 | Split "Full Universe" out of Signal Deep Dive (`ml/signal.html`) into its own page; Signal Deep Dive keeps only the per-ticker detail section | Dashboard (ML) | ✅ 2026-07-13 | New `ml/universe.html`/`js/universe.js` (added to the ML app's sub-tab nav as "Full Universe"). `ml/signal.html`/`signal.js` had the full-universe table/`loadUniverse()`/sort-state code removed, keeping only Ticker Detail + History + Model Scores + SHAP + Price + Regime History. Double-clicking a row on the new Full Universe page opens `signal.html?ticker=...` in a new tab (was: scroll-to-section on the same page) — consistent with A69's new-tab convention. See BuildLog.md 2026-07-13 |
+| ML26 | Signal Deep Dive layout redesign: Forensic Score, MultiBagger Score, 52wk hi/lo up top; Recommendation History as paired Buy-date/Sell-date/Buy-price/Sell-price/CMP/rationale rows (collapsing a Buy that persists across N days into 1 row); per-horizon (5d/21d/63d) meta-label probabilities + range + Q50 return; SHAP explanation; all raw model scores moved to the bottom | Dashboard (ML) | ✅ (pairing logic) | 2026-07-13 (earlier pass): skipped — buy/sell-pairing needed its own focused pass. **2026-07-13 (this pass): implemented.** New `pairBuySellHistory()` (`dashboard/static/ml/js/signal.js`) walks the already-fetched signal_5d call history ascending-by-date and collapses a Buy signal that persists across N consecutive days into one paired row (Buy-date/Buy-price/Sell-date/Sell-price/CMP/rationale). Edge cases handled conservatively: an unmatched Buy (no Sell call yet) reports CMP instead of a Sell-date/price; a Buy→Sell→Buy sequence (re-entry) produces two separate paired rows, never merged; extra consecutive Sell calls after a position already closed are ignored (nothing to pair them with) rather than fabricating a match; "hold" calls neither open nor close a position. Rendered as a new "Recommendation History & Sell Rationale" section (paired) above the pre-existing raw per-call "Raw Signal Log" table (kept, relabeled) on `signal.html`. Verified via a real Node invocation of the extracted pairing function against a constructed buy/persist/sell/re-entry sequence (no JS test runner exists in this repo) — confirmed 3-day Buy persistence collapses to one row, first Sell closes it, a subsequent extra Sell is ignored, and the re-entry Buy gets its own unmatched-open row. The broader layout redesign (Forensic/MultiBagger/52wk-hi-lo reordering, per-horizon meta-label panel, raw scores moved to bottom) is NOT done this pass — scoped narrowly to the pairing logic this item's own note flagged as the missing piece. |
+| ML29 | Sector accumulation detection: (sum of each stock's delivery % × volume) / sector's total outstanding shares, tracked daily, to surface sectors under constant accumulation; drill-down by clicking a sector's %age | Features / Dashboard (ML) | ✅ 2026-07-13 | Implemented on branch `feature/backlog-burn-ml22-ml29-ml33dev`: new `features/sector_accumulation.py` (`compute_sector_accumulation`/`sector_accumulation_drilldown`) joins `ohlcv_adjusted` (volume, delivery_pct) with `fundamentals` (shares_outstanding, PIT-gated on `announcement_date` via `pd.merge_asof`, never `quarter_end_date`) per `config.universe.load_universe()` sector membership; sector total outstanding shares = simple sum of each constituent's own `shares_outstanding` (user decision). New `GET /api/v1/sector_accumulation/daily` + `/drilldown` endpoints (`datastore/api/routers/sector_accumulation.py`), and a new "Sector Accumulation" table on the existing Sector Rotation dashboard page (`ml/sector_rotation.html`/`js/sector_rotation.js`) with a click-to-drill-down per-stock breakdown. 9/9 new tests pass (`tests/unit/test_sector_accumulation.py`), including a PIT-correctness regression test and a no-guess-on-missing-data test. |
+| ML34 | `fno_data` shadow-table bug: a stray, empty, pre-A50-migration `fno_data` table left in `alphalens.duckdb`'s own `main` schema silently shadowed the real 120.7M-row companion file (`fno_db.fno_data`) for every unqualified query | Data Layer | ✅ 2026-07-13 | Found while retrying A26's force-run: 2026-07-06/07 both failed `sanity_check` on 16 all-NaN F&O/options columns (`pcr_oi`, `iv_call`/`iv_put`, `max_pain_level`, etc). Root cause: A50 (2026-07-10) moved `fno_data` into its own file (`alphalens_fno_data.duckdb`, ATTACHed as `fno_db`) with `search_path='main,fno_db.main'` so every existing unqualified `fno_data` reference keeps working transparently — but a leftover local `fno_data` table from before that migration was still sitting in the main file's `main` schema (confirmed via `information_schema.tables`: 0 rows, correct schema, zero code references anywhere in the repo), and `search_path` checks `main` first, so it silently won every unqualified resolution instead of the real, correctly-populated companion file. Verified 0 rows twice (including inside the same write transaction immediately before the drop) and confirmed no code path explicitly targets `alphalens.main.fno_data`, then dropped it (with explicit user sign-off — Auto Mode's safety classifier correctly gated an unprompted `DROP TABLE` on production). Verified post-fix: `information_schema.tables` shows exactly one `fno_data` (in `fno_db`), and unqualified `SELECT COUNT(*) FROM fno_data` now correctly returns 120,723,287. A26's retry re-launched to confirm the sanity_check failures are actually resolved — see A26's row above and BuildLog.md 2026-07-13 |
 
 ---
 
@@ -1258,6 +1284,133 @@ part of A30's original Ops-panel-focused ask.
 
 ---
 
+### A24 — UI refactor for responsive layout
+All 5 dashboard apps currently render fixed desktop-width layouts. Needed
+specifically to make A22's remote/mobile access actually usable — SSH'ing
+in via Tailscale to a phone browser that renders a desktop-width table is
+not a real solution to the "check the dashboard from my phone" ask. Scope
+TBD (breakpoint strategy, whether tables collapse to cards on narrow
+widths, touch target sizing) — flagged here as a dependency of A22 rather
+than designed in detail yet.
+
+### A26 — Expand sanity_check exemption list + finish backfilling 2026-07-03/06/07
+
+2026-07-08 session (see BuildLog.md for the full fix) added
+`_SANITY_KNOWN_SPARSE_COLUMNS` to `daily_pipeline.py`'s `step_sanity_check`,
+exempting 38 permanently-unsourceable feature columns from the all-NaN
+failure check, and backfilled real `YIELD_10YR`/`YIELD_3M` data for
+2026-07-03/06 (the wiring gap that made them NaN for exactly those 3 dates).
+2026-07-08 itself is fully fixed and verified (`sanity_check`/`paper_trade`
+both `success`).
+
+Not yet done:
+- `features/deep_forensic.py`'s own 2026-07-07 real-data-availability audit
+  already confirms ~19 more columns (`goodwill_ratio`,
+  `contingent_liability_ratio`, `subsidiary_count`, `loans_to_related`,
+  `capex_to_assets`, `intangibles_growth`, `off_balance_sheet_proxy`,
+  `noncash_assets_ratio`, `promoter_pledge`, `promoter_pledge_change_qoq`,
+  `pledge_spiral_risk`, `audit_qualification_flag`, `auditor_change_flag`,
+  `cfo_tenure_months`, `board_independence`, `director_resignation_count_4q`,
+  `whistle_blower_policy`, `salary_to_pat`, `rpt_intensity`,
+  `buyback_acceptance_estimated`) as genuinely unsourceable from any free
+  structured source today — same category as the 38 already exempted, just
+  not folded into `_SANITY_KNOWN_SPARSE_COLUMNS` yet.
+- 2026-07-03/06/07 need `step_compute_features` re-run (was in progress,
+  still running at 2026-07-08 session end) to pick up the yield backfill
+  plus several already-landed 2026-07-07 fixes (`cwip_ratio`,
+  `asset_inflation_flag`, `insider_selling_flag`, `peer_outlier_score`,
+  `tax_rate_anomaly`, `ipo_lockin_expiry_proximity`,
+  `ipo_listing_age_months`), then need `sanity_check`/`paper_trade`
+  re-run via the Ops force-run endpoint once the exemption list above is
+  expanded — without it, `sanity_check` will still fail on the ~19
+  remaining columns even after the recompute.
+
+**[UPDATE 2026-07-08, later same-day session]** The "~19 more columns"
+list above is now partially stale — a separate same-day session (see
+BuildLog.md "58-column NSE-sourced fundamentals wiring effort") found
+real NSE sources for several of them: `goodwill_ratio`,
+`promoter_pledge`, `promoter_pledge_change_qoq`, `pledge_spiral_risk`,
+`audit_qualification_flag`, `ipo_lockin_expiry_proximity`, and
+`ipo_listing_age_months` are now genuinely populated (NSE Integrated
+Filing IndAS + `corporate-pledgedata-sast3132` + `public-past-issues`).
+Before expanding `_SANITY_KNOWN_SPARSE_COLUMNS`, re-check which of the
+remaining ~12 (`contingent_liability_ratio`, `subsidiary_count`,
+`loans_to_related`, `capex_to_assets`, `intangibles_growth`,
+`off_balance_sheet_proxy`, `noncash_assets_ratio`, `auditor_change_flag`,
+`cfo_tenure_months`, `board_independence`, `director_resignation_count_4q`,
+`whistle_blower_policy`, `salary_to_pat`, `rpt_intensity`,
+`buyback_acceptance_estimated`) are still genuinely blocked — see FO8 for
+the confirmed-still-blocked list and CA6 for newer real leads (RPT/
+governance endpoints found but not yet wired) that could close a few
+more of these.
+
+**[UPDATE 2026-07-09]** Re-checked the "remaining ~12" list above against
+the live `_SANITY_KNOWN_SPARSE_COLUMNS` in `ingestion/scheduler/
+daily_pipeline.py`: 13 of the 15 named columns (everything except
+`capex_to_assets`/`noncash_assets_ratio`) were **already** in the
+exemption list from the earlier 2026-07-08 pass — this write-up's "not yet
+folded in" framing had gone stale. Only `capex_to_assets` and
+`noncash_assets_ratio` (FO8: NSE's own disclosure template renders these
+inputs as freeform "Textual Information", same permanently-unstructured
+gap as `contingent_liability_ratio`/`subsidiary_count`/`loans_to_related`/
+`off_balance_sheet_proxy`) were genuinely missing — added to
+`_SANITY_KNOWN_SPARSE_COLUMNS`, with new unit tests
+(`tests/unit/test_daily_pipeline.py::TestSanityKnownSparseColumns`,
+`TestStepSanityCheck`) covering both the exemption membership and
+`step_sanity_check`'s actual pass/fail behavior around it (no prior test
+coverage existed for `step_sanity_check` at all).
+
+The 6 CA6-tracked columns (`auditor_change_flag`, `board_independence`,
+`cfo_tenure_months`, `director_resignation_count_4q`,
+`whistle_blower_policy`, `rpt_intensity`) plus `salary_to_pat` are
+deliberately **left in** the exemption list as before, but are not
+"confirmed-unsourceable" in the permanent sense FO8's columns are — CA6
+found real, working NSE endpoints for all of them, just blocked on an
+undiscovered secondary lookup param (`recId`/`seqNum`). Worth revisiting
+if CA6 is ever picked up, rather than treating their exemption as
+permanent.
+
+**Still outstanding (not done this session):** the 2026-07-03/06/07
+`step_compute_features` recompute and subsequent `sanity_check`/
+`paper_trade` re-run via the Ops force-run endpoint — this is a live
+re-run against the real feature store/signals DB, not a code change, and
+wasn't executed in this session; needs an explicit operator-approved
+Ops force-run.
+
+### A66-A72 — "Create additional Features" framework/UI/data-layer asks (logged 2026-07-11)
+
+**Update 2026-07-11:** A70 implemented and moved to `FeatureBacklogImplemented.md` — see there for details. A66-A69, A71, A72 remain open, scoped per the phased implementation plan in this session's BuildLog entry.
+
+Sourced from a user-provided requirements dump (`Create additional Features.txt`).
+Cross-referenced against the 2026-07-11 exploration pass before logging: the
+generic sortable-table helper (`sortRows`/`sortableHeader` in `js/api.js`)
+already exists and is reused by several screens (A66 is an audit-and-apply
+gap, not new infra); no sparkline implementation exists anywhere (A67); no
+column-alignment convention is currently enforced (A68); ticker-hyperlink
+and Signal-Deep-Dive-icon conventions are inconsistently applied today
+(A69); the app-switcher's `"AlphaLens."` prefix is the one half of the
+"2 sliders" complaint that's fixable in isolation — the sub-tab bar will
+still scroll on screen-heavy apps (A70); `chart.html` already reads
+directly from `ohlcv_adjusted`/the OHLCV API without an apparent
+performance problem, so A71 (a dedicated 1yr rollup table) is left as a
+"measure first" item rather than pre-built speculatively; `corporate_actions`
+and `bulk_deal_positions` already exist and cover half of A72's proposed
+Events table — only the recommendation-trigger/forensic-flag event types
+and the chart overlay itself are net-new.
+
+**Update 2026-07-13:** a fresh point-by-point cross-check of the full
+`Create additional Features.txt` doc against this file (dispatched via the
+product-owner review agent) confirmed 27 of 28 items are already covered
+by A66-A72/T6-T12/ML22-ML32 or elsewhere (A36 for the Trendlyne-priority
+policy question, A70 for the menu-slider fix). One genuine gap found and
+logged as A73: resizable/expandable table columns (item 1c of the
+source doc), distinct from A66/A67/A68/A69, not covered by any existing
+entry or infra.
+
+---
+
+---
+
 ## Technical
 
 ### T1 — Docstring says "76 core" indicators, code computes 70 — ✅ 2026-07-11
@@ -1728,6 +1881,27 @@ no-synthetic-fallback guard, not a bug); the dashboard's default `limit`
 `score_universe` itself to test the router's own wiring/bounding — the
 underlying scoring pipeline already has its own coverage in
 `test_score_forensic.py`).
+
+---
+
+### FO9 — `altman_z` still NaN for a real subset of tickers
+
+Even after 2026-07-08's `shares_outstanding` fix (BuildLog.md), `altman_z`
+stays NaN when:
+- The ticker has no NSE Integrated Filing at all yet (pre-FY2023-24
+  quarters, or an entity type/exchange segment NSE's regime doesn't cover).
+- The `shares_outstanding` plausibility check (`ingestion/scrapers/
+  nse_xbrl_financials.py::_parse_shares_outstanding`) finds neither the
+  Lakh-scaled nor raw-rupee interpretation plausible for that filing —
+  returns `None` rather than guessing, per this session's no-fabrication
+  discipline, but means `market_cap` (and therefore `altman_z`'s X4 term)
+  stays unavailable for those specific filings.
+No further investigation done on how large this remaining gap is at the
+full-universe level — the 2026-07-08 session's DB-wide integrity sweep
+only checked for *implausibly large* values, not a count of genuinely
+`NULL` `shares_outstanding` rows after the fix.
+
+---
 
 ---
 
@@ -2456,3 +2630,52 @@ default oversampling behavior. Revisit before the `max_tickers=800`
 workaround becomes stale (i.e. before wanting full-universe coverage
 back) — see 2026-07-09 comment above `DEFAULT_MAX_TICKERS` in
 `retrain_phase2.py`.
+### ML17 — Unified backtest strategy — (a) real Nifty benchmark curve ✅ 2026-07-11, (b) restructuring still unbuilt
+Scope was explicitly split 2026-07-05/06 into two independent pieces:
+
+**(a) Real Nifty benchmark curve for backtests — ✅ 2026-07-11.**
+`backtest/engine.py`: `BacktestEngine` gained a `benchmark_index`
+constructor param (real Nifty 500 `index_ohlcv` closes — distinct from
+the pre-existing `benchmark` param, which stays the NIFTYBEES/etc
+ETF-price proxy Category 7 relative-strength features already depend on;
+these are two different real data sources for two different purposes,
+not a duplicate). New `_build_benchmark_curve(test_fold)` builds a
+buy-and-hold equity curve normalised to `initial_capital` at the first
+date the fold's test window and the real index history overlap, sliced
+to that fold's own test dates — returns `None` (no synthetic fallback)
+when there's no real overlap. `compute_fold_metrics()` gained an optional
+`benchmark_equity_curve` param and now returns `benchmark_cagr`/
+`benchmark_sharpe`/`excess_return` (`cagr - benchmark_cagr`) alongside
+the existing strategy metrics, all `None` when no benchmark curve was
+available. `FoldResult` and `run_full_backtest`'s `aggregate` dict
+(`excess_return_mean`, `benchmark_cagr_mean`, averaged only over folds
+that actually had real coverage) extended to match; `to_dict()` updated.
+
+`backtest/run_phase1_backtest.py`: new `_fetch_real_benchmark_index()`
+fetches real Nifty 500 `index_ohlcv` via a new
+`DataStoreClient.get_index_ohlcv(index_name, from_date, to_date)` method
+and a new `GET /api/v1/ohlcv/index/{index_name}` endpoint
+(`datastore/api/routers/ohlcv.py`) — index names containing spaces/`&`
+(e.g. "Nifty Oil & Gas") are percent-encoded client-side since they're
+path segments, not query params. Wired into `run_phase1_backtest()`'s
+`engine_kwargs`; the per-fold print block now shows
+`Benchmark CAGR=... Sharpe=... Excess=...` or an explicit "n/a" when no
+real coverage exists for that fold, rather than a silently-missing field.
+`run_phase{2,3}_backtest.py` were NOT touched (out of this item's scope —
+they don't share `_fetch_real_benchmark_index`/`engine_kwargs` wiring
+with phase1; extending them is folded into (b) below).
+
+New tests: `tests/unit/test_backtest_benchmark.py` (8 tests —
+`compute_fold_metrics` benchmark-curve math including the "benchmark
+curve is normalised off its own first value, not `initial_capital`"
+scale-mismatch case, and `_build_benchmark_curve` slicing/overlap logic),
+`tests/unit/test_ohlcv_index_endpoint.py` (5 tests, seeded
+`index_ohlcv` via `TestClient`), 2 new cases in
+`tests/unit/test_datastore_client.py` for `get_index_ohlcv`.
+
+**(b) "One backtest per horizon model, unified cadence" restructuring**
+of the 3 existing `run_phase{1,2,3}_backtest.py` scripts — still
+unscoped, independent of (a), explicitly out of scope for this session
+per the task brief ("ML17b ... is explicitly OUT of scope"), not
+attempted.
+

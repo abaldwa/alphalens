@@ -46,6 +46,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from config.timezone import now_ist
+from config.universe import load_universe_raw
 from datastore.client import DataStoreClient
 from features.forensic_classical import compute_forensic_classical_scores
 from systems.ml_signal_engine.models.forensic.forensic_ml import (
@@ -100,10 +101,22 @@ def score_universe(
     run_date = as_of.date()
     results: Dict[str, bool] = {}
 
+    # 2026-07-19 full-codebase-review: sector lookup so compute_forensic_
+    # classical_scores can skip Beneish/Altman (NaN) for Financial
+    # Services tickers, where those ratios don't apply — see that
+    # function's docstring. Loaded once, not per-ticker.
+    try:
+        _univ = load_universe_raw()
+        sector_map = dict(zip(_univ["ticker"], _univ["sector"]))
+    except Exception:
+        sector_map = {}
+
     for ticker in tickers:
         try:
             ml_features = compute_forensic_ml_features(client, ticker, as_of)
-            classical = compute_forensic_classical_scores(client, ticker, as_of)
+            classical = compute_forensic_classical_scores(
+                client, ticker, as_of, sector=sector_map.get(ticker)
+            )
             governance_score = compute_governance_score(ml_features)
 
             X = pd.DataFrame([ml_features])[FORENSIC_ML_FEATURES]

@@ -446,8 +446,12 @@ _UPDATE_COLS = [c for c in _COLUMNS if c not in _NON_DATA_COLS]
 # nse_xbrl > trendlyne > screener > kaggle priority, not "whichever
 # source's write happened to run last" — see A36 in FeatureBacklog.md.
 _UPDATE_CLAUSE = build_priority_update_clause(_UPDATE_COLS)
+# as_of_ingested (Fix 5, 2026-07-19): stamped CURRENT_TIMESTAMP at write
+# time, same pattern as the backfill scripts — not part of _COLUMNS since
+# that list is shared with read endpoints too.
 _INSERT_SQL = f"""
-    INSERT INTO fundamentals ({_SELECT_COLS}) VALUES ({", ".join("?" for _ in _COLUMNS)})
+    INSERT INTO fundamentals ({_SELECT_COLS}, as_of_ingested)
+    VALUES ({", ".join("?" for _ in _COLUMNS)}, CURRENT_TIMESTAMP)
     ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET {_UPDATE_CLAUSE}
 """
 

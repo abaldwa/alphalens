@@ -520,6 +520,7 @@ def build_feature_matrix(
     deep_forensic = compute_deep_forensic_features_panel(
         client, tickers, to_date, data_cache=data_cache,
         ohlcv_panel=universe_panel if not universe_panel.empty else None,
+        sector_map=sector_map,
     )
 
     matrix = pd.DataFrame({"ticker": tickers})

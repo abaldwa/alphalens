@@ -233,3 +233,42 @@ class TestMarketCapPITWiring:
 
         result = compute_forensic_classical_scores(client, "TEST", datetime(2026, 7, 1))
         assert not np.isnan(result["z_score"])  # degrades to the book-equity proxy, never raises
+
+
+class TestFinancialServicesSectorGuard:
+    """2026-07-19 full-codebase-review: Beneish/Altman ratios (current
+    assets/liabilities, leverage, working capital) don't apply to
+    banks/NBFCs/insurers — both should skip to NaN for that sector
+    rather than serve a misleading score, even with every input present."""
+
+    def test_altman_and_beneish_nan_for_financial_services(self):
+        client = MagicMock()
+        client.get_fundamentals_history.return_value = [_base_row()]
+        client.get_ohlcv.return_value = [{"date": "2026-06-30", "close": 500.0}]
+
+        result = compute_forensic_classical_scores(
+            client, "TEST", datetime(2026, 7, 1), sector="Financial Services"
+        )
+
+        assert np.isnan(result["z_score"])
+        assert np.isnan(result["m_score"])
+
+    def test_altman_and_beneish_compute_for_non_financial_sector(self):
+        client = MagicMock()
+        client.get_fundamentals_history.return_value = [_base_row()]
+        client.get_ohlcv.return_value = [{"date": "2026-06-30", "close": 500.0}]
+
+        result = compute_forensic_classical_scores(
+            client, "TEST", datetime(2026, 7, 1), sector="Information Technology"
+        )
+
+        assert not np.isnan(result["z_score"])
+
+    def test_default_sector_none_preserves_prior_behavior(self):
+        client = MagicMock()
+        client.get_fundamentals_history.return_value = [_base_row()]
+        client.get_ohlcv.return_value = [{"date": "2026-06-30", "close": 500.0}]
+
+        result = compute_forensic_classical_scores(client, "TEST", datetime(2026, 7, 1))
+
+        assert not np.isnan(result["z_score"])

@@ -206,10 +206,12 @@ def main() -> None:
         rows = [tuple(r.get(c) for c in all_cols) for r in fundamentals_rows]
         placeholders = ", ".join("?" for _ in all_cols)
         conn.executemany(f"INSERT INTO external_csv_delta ({col_list_sql}) VALUES ({placeholders})", rows)
+        # as_of_ingested (Fix 5, 2026-07-19): see backfill_fundamentals_nse_xbrl.py's
+        # identical pattern — stamped CURRENT_TIMESTAMP at write time.
         conn.execute(
             f"""
-            INSERT INTO fundamentals ({col_list_sql})
-            SELECT {col_list_sql} FROM external_csv_delta
+            INSERT INTO fundamentals ({col_list_sql}, as_of_ingested)
+            SELECT {col_list_sql}, CURRENT_TIMESTAMP FROM external_csv_delta
             ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET {update_clause}
             """
         )

@@ -233,6 +233,52 @@ class TestWatchlistDaily:
         assert row["ticker"] == _TICKER_A
         assert row["current_price"] is not None
 
+    def test_pools_recommendations_across_trailing_window_dedup_per_ticker(self, client):
+        # Ticker A recommended earlier in the week (2026-06-01) and again
+        # today (2026-06-03, higher score) — expect one row, taken from the
+        # higher-scoring occurrence, with recommended_price sourced from
+        # THAT occurrence's own date, not today's.
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A,
+            template_name="A1", score=0.5, matched=1, total=2,
+        )
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-03", ticker=_TICKER_A,
+            template_name="A2", score=1.0, matched=2, total=2,
+        )
+        # Ticker B only recommended earlier in the window (2026-06-02) —
+        # should still surface even though it has no signal today.
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-02", ticker=_TICKER_B,
+            template_name="B1", category="B", score=1.0, matched=1, total=1,
+        )
+
+        base = date(2026, 1, 1)
+        rows = []
+        for i in range(160):
+            d = (base + timedelta(days=i)).isoformat()
+            price = 100.0 + i * 0.5
+            rows.append((d, price + 2, price - 2, price))
+        _seed_ohlcv(technical_router.DUCKDB_PATH, _TICKER_A, rows)
+        _seed_ohlcv(technical_router.DUCKDB_PATH, _TICKER_B, rows)
+
+        r = client.get("/api/v1/ta/watchlist/daily", params={"date": "2026-06-03", "lookback_days": 5})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["count"] == 2
+
+        by_ticker = {row["ticker"]: row for row in body["rows"]}
+        row_a = by_ticker[_TICKER_A]
+        assert row_a["recommendation_date"] == "2026-06-03"
+        assert row_a["template_name"] == "A2"
+        assert row_a["recommended_price"] == row_a["current_price"]
+
+        row_b = by_ticker[_TICKER_B]
+        assert row_b["recommendation_date"] == "2026-06-02"
+        # Recommended earlier in the window at a lower price than today's —
+        # recommended_price and current_price must diverge.
+        assert row_b["recommended_price"] < row_b["current_price"]
+
 
 class TestConsensusDaily:
     def test_no_ta_signals_table_returns_empty(self, client):

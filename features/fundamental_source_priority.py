@@ -121,4 +121,22 @@ def build_priority_update_clause(columns: Iterable[str]) -> str:
         "COALESCE(fundamentals.fundamentals_source_priority, 0) "
         "THEN excluded.fundamentals_source_priority ELSE fundamentals.fundamentals_source_priority END"
     )
+    # 2026-07-19 full-codebase-review Fix 5: restatement-versioning audit
+    # trail. Tracks WHEN the currently-winning source's value was ingested
+    # — "whichever source won, use its ingestion timestamp" (same
+    # winner-tracking semantics as fundamentals_source/_priority above),
+    # NOT "most recent write wins" (which would defeat the priority
+    # ordering this whole module exists to enforce). Purely additive/audit
+    # — does not change which value wins a conflict, does not alter any
+    # existing stored fundamentals value, and does not change PIT
+    # filtering (get_fundamentals_pit still filters on announcement_date
+    # only). Lets a later pass detect "this quarter's numbers were
+    # silently overwritten by a restatement after date X" without having
+    # to diff full snapshots.
+    clauses.append(
+        "as_of_ingested = CASE "
+        "WHEN excluded.fundamentals_source_priority >= "
+        "COALESCE(fundamentals.fundamentals_source_priority, 0) "
+        "THEN excluded.as_of_ingested ELSE fundamentals.as_of_ingested END"
+    )
     return ", ".join(clauses)
