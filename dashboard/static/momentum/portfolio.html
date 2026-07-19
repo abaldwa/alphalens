@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.Momentum — Holding Dashboard</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/shell.css">
+<link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+<div class="app-bar" id="app-bar"></div>
+<div class="sub-tabs" id="sub-tabs"></div>
+<div class="page">
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-title">Holding Dashboard</span>
+      <span class="sec-sub">Select a strategy to see its holding statement, capital invested, current value, CAGR and XIRR</span>
+    </div>
+    <div class="card" id="strategy-picker" style="margin-bottom:16px"></div>
+    <div id="summary-tiles"><div class="loading">Loading…</div></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-title">Open Positions</span>
+      <span class="sec-sub">Record an ad hoc buy not tied to a rebalance suggestion below</span>
+    </div>
+    <div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+      <input type="text" id="add-ticker" placeholder="Ticker" style="width:100px">
+      <input type="date" id="add-date">
+      <input type="number" id="add-qty" placeholder="Qty" style="width:80px">
+      <input type="number" id="add-price" placeholder="Buy Price" style="width:100px">
+      <button id="add-btn">Record Buy</button>
+    </div>
+    <div id="positions-table"><div class="loading">Loading…</div></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Fund Contributions</span></div>
+    <div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+      <input type="date" id="contrib-date">
+      <input type="number" id="contrib-amount" placeholder="Amount" style="width:120px">
+      <input type="text" id="contrib-note" placeholder="Note" style="flex:1;min-width:160px">
+      <button id="contrib-btn">Add Contribution</button>
+    </div>
+    <div id="contributions-table"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+<script src="../js/api.js"></script>
+<script src="../js/shell.js"></script>
+<script src="js/portfolio.js"></script>
+</body>
+</html>
