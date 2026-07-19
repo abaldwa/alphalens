@@ -31,6 +31,18 @@ async function apiPost(path, body) {
   return resp.json();
 }
 
+async function apiPut(path, body) {
+  const resp = await fetch(API_BASE + path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) {
+    throw new Error(`${resp.status} ${resp.statusText} — ${path}`);
+  }
+  return resp.json();
+}
+
 async function apiDelete(path) {
   const resp = await fetch(API_BASE + path, { method: "DELETE" });
   if (!resp.ok) {
@@ -104,6 +116,38 @@ function el(tag, attrs, children) {
     node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   });
   return node;
+}
+
+// ML38 (2026-07-15) — shared rank-band strategy dropdown for the Momentum
+// app's 3 screens (Universe/Rebalance/Holding Dashboard). Fetches the 5
+// selectable strategies once, renders a <select> into containerId, remembers
+// the user's last choice across pages/reloads via localStorage, and calls
+// onChange(strategyId) both immediately (with the restored/default choice)
+// and again every time the user picks a different strategy.
+function initMomentumStrategyDropdown(containerId, onChange) {
+  apiGet("/api/v1/momentum/strategies").then((strategies) => {
+    if (!strategies.length) return;
+    const saved = localStorage.getItem("momentum_strategy_id");
+    const initial = strategies.some((s) => s.strategy_id === saved) ? saved : strategies[0].strategy_id;
+    const select = el(
+      "select",
+      { id: "strategy-select" },
+      strategies.map((s) => el("option", { value: s.strategy_id }, [s.label]))
+    );
+    select.value = initial;
+    select.addEventListener("change", () => {
+      localStorage.setItem("momentum_strategy_id", select.value);
+      onChange(select.value);
+    });
+    const c = document.getElementById(containerId);
+    c.innerHTML = "";
+    c.appendChild(
+      el("label", { style: "font-size:12px;color:var(--tx2);display:flex;gap:8px;align-items:center" }, [
+        "Strategy (rank band):", select,
+      ])
+    );
+    onChange(initial);
+  });
 }
 
 function showError(containerId, err) {

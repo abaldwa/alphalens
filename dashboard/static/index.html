@@ -33,7 +33,9 @@
     technical: { label: "Partially live", color: "var(--amber)", desc: "Charting, compare, market overview, and the strategy screener (42 templates) are live (real indicators/patterns/breadth). Alerts still need real new logic." },
     valuation: { label: "Not yet built", color: "var(--tx3)", desc: "Damodaran DCF, relative valuation, batch ranking, accuracy tracking — backend not built yet." },
     ops: { label: "Live", color: "var(--green)", desc: "Scheduled-job heartbeats, today's pipeline step checklist, recent runs, and force-start for a step that hasn't run yet." },
+    macro: { label: "Live", color: "var(--green)", desc: "Manual entry for macro series with no free automated source (PMI, GST, rail freight, UPI, auto sales, bank credit), plus last-12-months history." },
     big_investors: { label: "Live", color: "var(--green)", desc: "Bulk/block deals (family-attributed, wash-trade-netted), MF holdings movers/entries-exits, and quarterly reconciliation against Trendlyne's named-holder stakes (5 investors covered) — all cap-band annotated." },
+    momentum: { label: "Live", color: "var(--green)", desc: "ML38 momentum strategy: universe/rank-band picker, rebalance suggestions, manual holding dashboard, plus the 732-variant backtest ledger and year-on-year benchmark report." },
   };
 
   const tiles = document.getElementById("app-tiles");

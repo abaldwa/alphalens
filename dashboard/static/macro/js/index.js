@@ -1,5 +1,7 @@
-// dashboard/static/ops/js/macro.js — A27 manual macro-entry screen.
-renderAppShell("ops", "macro");
+// dashboard/static/macro/js/index.js — A27 manual macro-entry screen.
+// Promoted out of AlphaLens.Ops into its own top-level app (was
+// renderAppShell("ops", "macro")).
+renderAppShell("macro", "index");
 
 // Mirrors features/real_economy_macro.py's MANUAL_ENTRY_FEATURES (the 8
 // series with no free automated source — cement_dispatches_growth/

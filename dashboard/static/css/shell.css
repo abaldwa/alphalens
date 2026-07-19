@@ -27,6 +27,7 @@
 .grid-3{grid-template-columns:repeat(3,1fr)}
 .grid-4{grid-template-columns:repeat(4,1fr)}
 .grid-5{grid-template-columns:repeat(5,1fr)}
+.grid-6{grid-template-columns:repeat(6,1fr)}
 
 /* app launcher (new top-level index.html) */
 .app-tile{display:block;background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--r2);padding:24px;box-shadow:var(--sh);transition:.15s}
@@ -37,5 +38,5 @@
 .app-tile .at-status{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 
 @media (max-width: 900px){
-  .grid-2,.grid-3,.grid-4,.grid-5{grid-template-columns:1fr}
+  .grid-2,.grid-3,.grid-4,.grid-5,.grid-6{grid-template-columns:1fr}
 }

@@ -91,8 +91,9 @@ tr:hover td{background:var(--bg)}
 .shap-bar{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
 .shap-label{width:140px;text-align:right;color:var(--tx2);font-size:11px}
 .shap-track{flex:1;height:16px;background:var(--bg3);border-radius:3px;position:relative;overflow:hidden}
-.shap-fill{height:100%;border-radius:3px;position:absolute;top:0}
+.shap-fill{height:100%;border-radius:3px;position:absolute;top:0;min-width:3px}
 .shap-pos{background:var(--green);right:50%}.shap-neg{background:var(--red);left:50%}
+.shap-fill.up{background:var(--green);left:0}.shap-fill.dn{background:var(--red);left:0}
 
 .chart-placeholder{background:var(--bg);border:1px dashed var(--bdr);border-radius:var(--r);height:240px;display:flex;align-items:center;justify-content:center;color:var(--tx3);font-size:13px;text-align:center;padding:16px}
 

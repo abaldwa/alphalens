@@ -40,7 +40,10 @@ apiGet("/api/v1/ta/watchlist/daily", { limit: 30 })
           row.support_levels.length ? row.support_levels.map(fmtMoney).join(" / ") : "—",
         ]),
         el("td", {}, [
-          el("a", { href: `deep_dive.html?ticker=${row.ticker}`, target: "_blank", rel: "noopener", title: "Technical Deep Dive" }, ["🔎"]),
+          el("a", {
+            href: `deep_dive.html?ticker=${row.ticker}&reason=${encodeURIComponent(row.rationale || "")}`,
+            target: "_blank", rel: "noopener", title: "Technical Deep Dive",
+          }, ["🔎"]),
         ]),
       ]))),
     ]);
