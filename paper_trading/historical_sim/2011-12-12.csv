@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-12-12,FINCABLES,BUY,25.59382167093845,34340,09:15:00,23.83210545649527,15:30:00,2011-12-13,thesis_broken,miss,-64032.318627143744,-0.07285574400764805,,,,,,
+2011-12-12,NMDC,BUY,27.420927112539214,32051,09:15:00,25.886264623859944,15:30:00,2011-12-15,thesis_broken,miss,-52722.35591903108,-0.059988926468462905,,,,,,

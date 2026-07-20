@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-29,KIRIINDUS,BUY,39.1,16756,09:15:00,35.3,15:30:00,2012-05-31,thesis_broken,miss,-66307.91218588327,-0.10120879276726354,,,,,,

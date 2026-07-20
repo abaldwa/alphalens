@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-05-14,HINDOILEXP,BUY,200.25,4902,09:15:00,187.6,15:30:00,2010-05-19,thesis_broken,miss,-65958.48807054607,-0.06719312820474414,,,,,,

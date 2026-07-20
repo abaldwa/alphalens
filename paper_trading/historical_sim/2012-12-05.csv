@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-12-05,PUNJABCHEM,BUY,57.25,20762,09:15:00,52.9,15:30:00,2012-12-13,thesis_broken,miss,-95095.45709245396,-0.08000462475109167,,,,,,

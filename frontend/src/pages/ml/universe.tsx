@@ -43,7 +43,7 @@ const columns: ColumnDef<SignalUniverseRow, unknown>[] = [
     accessorKey: 'ticker',
     header: 'Ticker',
     cell: (i) => (
-      <a className="text-teal underline-offset-2 hover:underline" href={`/ml-signal.html?ticker=${i.getValue<string>()}`} target="_blank" rel="noopener noreferrer">
+      <a className="text-teal underline-offset-2 hover:underline" href={`/ml-signal?ticker=${i.getValue<string>()}`} target="_blank" rel="noopener noreferrer">
         {i.getValue<string>()}
       </a>
     ),
@@ -56,6 +56,7 @@ const columns: ColumnDef<SignalUniverseRow, unknown>[] = [
         <InfoTooltip>signal_5d's own probability that its call is "buy" (0-1). The only model AlphaLens actually trades paper positions off of.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtPct(i.getValue<number | null>()),
   },
   {
@@ -66,6 +67,7 @@ const columns: ColumnDef<SignalUniverseRow, unknown>[] = [
         <InfoTooltip>signal_5d's median (50th percentile) forecast forward return over its holding horizon, from its quantile-regression head.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
   },
   {
@@ -76,6 +78,7 @@ const columns: ColumnDef<SignalUniverseRow, unknown>[] = [
         <InfoTooltip>meta_labeler's estimate of whether signal_5d's call is worth acting on at all (a secondary filter, not a return forecast).</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low', align: 'right' },
     cell: (i) => fmtPct(i.getValue<number | null>()),
   },
   {
@@ -86,6 +89,7 @@ const columns: ColumnDef<SignalUniverseRow, unknown>[] = [
         <InfoTooltip>pnd_detector's 0-100 pump-and-dump risk score from volume/price anomaly features.</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low', align: 'right' },
     cell: (i) => i.getValue<number | null>()?.toFixed(0) ?? '—',
   },
   {
@@ -96,6 +100,7 @@ const columns: ColumnDef<SignalUniverseRow, unknown>[] = [
         <InfoTooltip>forensic_ml's 5-level taxonomy (green/yellow/orange/red/black), carried forward from ml_forensic's most recent weekly scoring run — can be several days stale.</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low' },
     cell: (i) => <Badge variant={forensicVariant(i.getValue<string | null>())}>{i.getValue<string | null>() ?? '—'}</Badge>,
   },
   {
@@ -106,6 +111,7 @@ const columns: ColumnDef<SignalUniverseRow, unknown>[] = [
         <InfoTooltip>The MultibaggerModel's probability estimate, carried forward from ml_multibagger's most recent (typically weekly) run. Not a return multiplier prediction.</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low', align: 'right' },
     cell: (i) => fmtPct(i.getValue<number | null>()),
   },
   {

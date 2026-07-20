@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-01-27,SUZLON,BUY,73.2,13661,09:15:00,69.05,15:30:00,2010-02-24,thesis_broken,miss,-60715.182473038556,-0.0607160810710384,,,,,,
+2010-01-27,MFSL,BUY,177.95277146926506,1,09:15:00,167.24849391043614,15:30:00,2010-04-28,thesis_broken,miss,-11.420019977333283,-0.06417444293249279,,,,,,
+2010-01-27,TIMKEN,BUY,86.31564949063623,1,09:15:00,125.62473034584082,15:30:00,2010-06-15,target_achieved,hit,38.96191137191349,0.4513887296432866,,,,,,

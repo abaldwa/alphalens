@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-10-07,ITI,BUY,19.95,1,09:15:00,18.8,15:30:00,2011-11-23,thesis_broken,miss,-1.230240735399999,-0.06166620227568917,,,,,,
+2011-10-07,JUBLFOOD,BUY,70.12249318712175,1,09:15:00,96.43137541685428,15:30:00,2012-02-03,target_achieved,hit,26.02684311086456,0.3711625461093059,,,,,,

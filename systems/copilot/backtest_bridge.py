@@ -93,7 +93,8 @@ def run_backtest(spec: StrategySpec) -> Dict[str, Any]:
 
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         yearly_universes = yearly_band_universes(
-            conn, start_date.isoformat(), end_date.isoformat(), rank_start, rank_end
+            conn, start_date.isoformat(), end_date.isoformat(), rank_start, rank_end,
+            include_delisted=True,  # 2026-07-20 survivorship-bias fix — BacktestUmbrellaPlan.md Gap #1
         )
         if not any(yearly_universes.values()):
             return {

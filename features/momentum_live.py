@@ -89,6 +89,15 @@ def compute_daily_ranking(
         momentum/ranking logic. Production callers omit this and get the
         real rank_band_tickers() universe for strategy_id's band.
 
+    Deliberately calls rank_band_tickers() WITHOUT include_delisted=True
+    (2026-07-20): that flag closes survivorship bias for BACKTESTS, where
+    a stock alive at a past as_of_date must be included even though it
+    later delisted. Here as_of_date is effectively "today" — a stock that
+    has already delisted is not tradeable today, and its frozen last-known
+    close (which market_cap_snapshot would still report as "the most
+    recent close <= as_of_date") would wrongly earn it a live rank-band
+    slot. This is the one caller that should keep the default False.
+
     Returns a DataFrame with columns: ticker, momentum_return,
     momentum_rank (1 = highest momentum), in_top_n. Empty if the band's
     universe or momentum can't be computed (e.g. no real OHLCV rows yet

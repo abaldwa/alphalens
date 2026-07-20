@@ -58,7 +58,7 @@ NOT sourced at build time — left as explicit placeholders, NOT fabricated:
 import logging
 from datetime import date
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import pandas as pd
 
@@ -545,6 +545,7 @@ def build_full_nse_universe_from_db(
 def build_historical_universe_from_delisted(
     db_path: Optional[Path] = None,
     include_since_year: Optional[int] = None,
+    conn: Any = None,
 ) -> List[str]:
     """
     True historical candidate ticker pool for a momentum/cross-sectional
@@ -566,13 +567,25 @@ def build_historical_universe_from_delisted(
     Parameters
     ----------
     db_path : Path, optional
-        Defaults to config.settings.DUCKDB_PATH.
+        Defaults to config.settings.DUCKDB_PATH. Ignored if `conn` is given.
     include_since_year : int, optional
         If set, only delisted_companies rows with delisting_date in or
         after this year are included (e.g. to bound a 10-year backtest's
         candidate pool to tickers that could plausibly have appeared in
         it). None (default) includes every delisted ticker regardless of
         delisting date.
+    conn : an already-open DuckDB connection to reuse, optional (2026-07-20
+        fix). Prefer this over db_path whenever the caller already has a
+        connection open against the same file — DuckDB only allows one
+        read-write connection OR multiple read-only connections per file,
+        and this function previously always opened its OWN connection
+        with default (read-write, cached) settings regardless of what the
+        caller already had open. In production that caller (momentum_
+        universe.py's full_rank_universe(), invoked with an
+        already-open read_only=True/persist=False connection to the SAME
+        live DUCKDB_PATH) would hit exactly this conflict the moment
+        include_delisted=True was actually used — caught by a test
+        seeding a real delisted_companies row rather than in production.
 
     Returns
     -------
@@ -584,27 +597,42 @@ def build_historical_universe_from_delisted(
     """
     from config.settings import DUCKDB_PATH
     from config.universe import load_universe_raw
-    from datastore.api.db import get_duckdb_connection
 
-    db_path = db_path or DUCKDB_PATH
     active_tickers = set(load_universe_raw()["ticker"])
 
+    def _query(c) -> Optional[pd.DataFrame]:
+        query = "SELECT ticker, delisting_date FROM delisted_companies"
+        params: list = []
+        if include_since_year is not None:
+            query += " WHERE delisting_date >= ?"
+            params.append(date(include_since_year, 1, 1))
+        return c.execute(query, params).df()
+
     delisted_tickers: set = set()
-    if db_path.exists():
+    if conn is not None:
         try:
-            with get_duckdb_connection(db_path) as conn:
-                query = "SELECT ticker, delisting_date FROM delisted_companies"
-                params: list = []
-                if include_since_year is not None:
-                    query += " WHERE delisting_date >= ?"
-                    params.append(date(include_since_year, 1, 1))
-                rows = conn.execute(query, params).df()
-            delisted_tickers = set(rows["ticker"]) if not rows.empty else set()
+            rows = _query(conn)
+            delisted_tickers = set(rows["ticker"]) if rows is not None and not rows.empty else set()
         except Exception as exc:
             logger.warning(
                 "build_historical_universe_from_delisted: could not read delisted_companies "
-                "(table may not exist yet) — falling back to active universe only: %s", exc,
+                "via the supplied connection (table may not exist yet) — falling back to "
+                "active universe only: %s", exc,
             )
+    else:
+        from datastore.api.db import get_duckdb_connection
+
+        db_path = db_path or DUCKDB_PATH
+        if db_path.exists():
+            try:
+                with get_duckdb_connection(db_path, read_only=True, persist=False) as c:
+                    rows = _query(c)
+                delisted_tickers = set(rows["ticker"]) if rows is not None and not rows.empty else set()
+            except Exception as exc:
+                logger.warning(
+                    "build_historical_universe_from_delisted: could not read delisted_companies "
+                    "(table may not exist yet) — falling back to active universe only: %s", exc,
+                )
 
     combined = sorted(active_tickers | delisted_tickers)
     logger.info(

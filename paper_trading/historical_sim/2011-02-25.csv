@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-02-25,PFOCUS,BUY,43.3,37,09:15:00,60.55,15:30:00,2011-04-06,target_achieved,hit,631.8062064067999,0.3943612798244803,,,,,,

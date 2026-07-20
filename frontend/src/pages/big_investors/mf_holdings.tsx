@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, Sheet, SheetContent, SheetHeader, SheetTitle, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, Sheet, SheetContent, SheetHeader, SheetTitle, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, numericCellClass, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 
 interface MfMoverRow {
@@ -90,23 +90,26 @@ export function BigInvestorsMfHoldingsPage() {
   })
 
   const columns: ColumnDef<MfMoverRow, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-    { accessorKey: 'company_name', header: 'Company', cell: (i) => i.getValue<string | null>() ?? '—' },
+    tickerColumn<MfMoverRow>(),
+    { accessorKey: 'company_name', header: 'Company', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
     {
       accessorKey: 'cap_band',
       header: 'Cap Band',
+      meta: { priority: 'low' },
       cell: (i) => <Badge variant={CAP_BAND_VARIANT[i.getValue<string>()] ?? 'secondary'}>{i.getValue<string>()}</Badge>,
     },
     {
       accessorKey: 'market_cap_cr',
       header: 'Market Cap (cr)',
+      meta: { priority: 'low', align: 'right' },
       cell: (i) => i.getValue<number | null>()?.toLocaleString('en-IN') ?? '—',
     },
-    { accessorKey: 'prev_qty', header: 'Prev Qty', cell: (i) => i.getValue<number>().toLocaleString('en-IN') },
-    { accessorKey: 'curr_qty', header: 'Curr Qty', cell: (i) => i.getValue<number>().toLocaleString('en-IN') },
+    { accessorKey: 'prev_qty', header: 'Prev Qty', meta: { priority: 'low', align: 'right' }, cell: (i) => i.getValue<number>().toLocaleString('en-IN') },
+    { accessorKey: 'curr_qty', header: 'Curr Qty', meta: { priority: 'low', align: 'right' }, cell: (i) => i.getValue<number>().toLocaleString('en-IN') },
     {
       accessorKey: 'qty_change_pct',
       header: 'Change %',
+      meta: { align: 'right' },
       cell: (i) => {
         const v = i.getValue<number | null>()
         return v == null ? '—' : `${v.toFixed(1)}%`
@@ -136,6 +139,7 @@ export function BigInvestorsMfHoldingsPage() {
           <InfoTooltip>Net change in the number of distinct mutual fund schemes holding this stock between the two most recent reporting months.</InfoTooltip>
         </span>
       ),
+      meta: { priority: 'low', align: 'right' },
       cell: (i) => {
         const v = i.getValue<number>()
         return v > 0 ? `+${v}` : String(v)
@@ -201,22 +205,22 @@ export function BigInvestorsMfHoldingsPage() {
             ) : !schemeDetail.data?.data.length ? (
               <p className="text-sm text-muted-foreground">No scheme-level detail found for this month.</p>
             ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left">
-                    <th className="pb-2">Scheme</th>
-                    <th className="pb-2">Quantity</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Scheme</TableHead>
+                    <TableHead>Quantity</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {schemeDetail.data.data.map((s) => (
-                    <tr key={s.scheme_name}>
-                      <td className="py-1">{s.scheme_name}</td>
-                      <td className="py-1 font-mono-data">{s.quantity.toLocaleString('en-IN')}</td>
-                    </tr>
+                    <TableRow key={s.scheme_name}>
+                      <TableCell>{s.scheme_name}</TableCell>
+                      <TableCell className={numericCellClass}>{s.quantity.toLocaleString('en-IN')}</TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             )}
           </div>
         </SheetContent>

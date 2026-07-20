@@ -166,6 +166,16 @@ SIGNALS_DUCKDB_PATH = SIGNALS_DIR / "signals.duckdb"
 # Store 5: Models
 MODEL_REGISTRY_PATH = MODELS_DIR / "registry.json"
 
+# Store 6: Backtest (DuckDB) — Unified Backtest & Paper Trading Umbrella, Phase 1
+# (BacktestUmbrellaPlan.md at the repo root). Own file rather than reusing
+# SIGNALS_DUCKDB_PATH: backtest_feature_log is a per-decision write-heavy log
+# (one row per candidate signal per rebalance date, across every channel's
+# every run), a different write pattern from signals.duckdb's once-daily
+# batch upserts, and keeping it separate means Phase-6's fine-tuning loop can
+# query/purge backtest history without contending with live signal reads.
+BACKTEST_DIR = DATASTORE_DIR / "backtest_store"
+BACKTEST_DUCKDB_PATH = BACKTEST_DIR / "backtest.duckdb"
+
 # Observability
 OBSERVABILITY_LOG_PATH = LOGS_DIR / "observability.jsonl"
 

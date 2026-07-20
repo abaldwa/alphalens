@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-12-08,NECLIFE,BUY,25.4,1,09:15:00,23.7,15:30:00,2011-02-08,thesis_broken,miss,-1.8021611367999988,-0.07095122585826767,,,,,,

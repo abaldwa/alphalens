@@ -2,12 +2,12 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, numericCellClass, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { TACompareResponse, TACompareTickerRow } from './types'
 
 const columns: ColumnDef<TACompareTickerRow, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+  tickerColumn<TACompareTickerRow>(),
   {
     accessorKey: 'rs_vs_nifty500_21d',
     header: () => (
@@ -16,6 +16,7 @@ const columns: ColumnDef<TACompareTickerRow, unknown>[] = [
         <InfoTooltip>RS (Relative Strength): trailing 21-day return relative to the Nifty 500 index — positive means the stock has outperformed the broader market.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => {
       const v = i.getValue<number | null>()
       return v == null ? '—' : `${(v * 100).toFixed(2)}%`
@@ -29,6 +30,7 @@ const columns: ColumnDef<TACompareTickerRow, unknown>[] = [
         <InfoTooltip>Beta: sensitivity of the stock's trailing 63-day returns to the market index's returns — greater than 1 means it tends to move more than the market, less than 1 means less.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => i.getValue<number | null>()?.toFixed(2) ?? '—',
   },
   {
@@ -39,6 +41,7 @@ const columns: ColumnDef<TACompareTickerRow, unknown>[] = [
         <InfoTooltip>Alpha: trailing 21-day return in excess of what Beta alone would predict from the market's move — a rough measure of stock-specific performance.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => {
       const v = i.getValue<number | null>()
       return v == null ? '—' : `${(v * 100).toFixed(2)}%`
@@ -108,35 +111,33 @@ export function TechnicalComparePage() {
             {!corrTickers.length ? (
               <p className="text-sm text-muted-foreground">Not enough overlapping OHLCV history to compute correlation (need at least 2 tickers).</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr>
-                      <th className="p-2 text-left"></th>
-                      {corrTickers.map((t) => (
-                        <th key={t} className="p-2 text-left font-mono-data">
-                          {t}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {corrTickers.map((t1) => (
-                      <tr key={t1}>
-                        <td className="p-2 font-semibold">{t1}</td>
-                        {corrTickers.map((t2) => {
-                          const v = compare.data?.correlation[t1]?.[t2]
-                          return (
-                            <td key={t2} className={`p-2 font-mono-data ${corrTone(v)}`}>
-                              {v == null ? '—' : v.toFixed(2)}
-                            </td>
-                          )
-                        })}
-                      </tr>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead />
+                    {corrTickers.map((t) => (
+                      <TableHead key={t} className="font-mono-data">
+                        {t}
+                      </TableHead>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {corrTickers.map((t1) => (
+                    <TableRow key={t1}>
+                      <TableCell className="font-semibold">{t1}</TableCell>
+                      {corrTickers.map((t2) => {
+                        const v = compare.data?.correlation[t1]?.[t2]
+                        return (
+                          <TableCell key={t2} className={`${numericCellClass} ${corrTone(v)}`}>
+                            {v == null ? '—' : v.toFixed(2)}
+                          </TableCell>
+                        )
+                      })}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>

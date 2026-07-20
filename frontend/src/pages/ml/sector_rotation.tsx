@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { AppShell, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, ResponsiveChartCard, TickerLink } from '@/lib/ui'
+import { AppShell, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, ResponsiveChartCard, TickerLink, sectorColumn, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type {
   SectorAccumulationDrilldownRow,
@@ -49,22 +49,23 @@ function Sparkline({ series }: { series: number[] | null | undefined }) {
 }
 
 const columns: ColumnDef<SectorRotationRow, unknown>[] = [
-  { accessorKey: 'rank', header: 'Rank' },
-  { accessorKey: 'sector', header: 'Sector' },
+  { accessorKey: 'rank', header: 'Rank', meta: { align: 'right' } },
+  sectorColumn<SectorRotationRow>(),
   { accessorKey: 'index_name', header: 'Index' },
-  { accessorKey: 'sector_market_cap_cr', header: 'Market Cap (₹ cr)', cell: (i) => i.getValue<number | null>()?.toLocaleString('en-IN') ?? '—' },
+  { accessorKey: 'sector_market_cap_cr', header: 'Market Cap (₹ cr)', meta: { align: 'right' }, cell: (i) => i.getValue<number | null>()?.toLocaleString('en-IN') ?? '—' },
   { accessorKey: 'sparkline', header: 'Trend (63d)', cell: (i) => <Sparkline series={i.getValue<number[] | null | undefined>()} /> },
-  { accessorKey: 'rs_1d', header: 'RS 1d', cell: (i) => <span className={tone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
-  { accessorKey: 'rs_5d', header: 'RS 5d', cell: (i) => <span className={tone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
+  { accessorKey: 'rs_1d', header: 'RS 1d', meta: { align: 'right' }, cell: (i) => <span className={tone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
+  { accessorKey: 'rs_5d', header: 'RS 5d', meta: { align: 'right' }, cell: (i) => <span className={tone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
   {
     accessorKey: 'rs_21d',
     header: 'RS 21d',
+    meta: { align: 'right' },
     cell: ({ row }) => {
       const v = row.original.rs_21d ?? row.original.relative_strength
       return <span className={tone(v)}>{fmtPct(v)}</span>
     },
   },
-  { accessorKey: 'rs_63d', header: 'RS 63d', cell: (i) => <span className={tone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
+  { accessorKey: 'rs_63d', header: 'RS 63d', meta: { align: 'right' }, cell: (i) => <span className={tone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
   {
     id: 'top_stocks',
     header: 'Top Stocks',
@@ -106,10 +107,11 @@ export function MlSectorRotationPage() {
 
   const accumulationColumns: ColumnDef<SectorAccumulationRow, unknown>[] = [
     { accessorKey: 'date', header: 'Date' },
-    { accessorKey: 'sector', header: 'Sector' },
+    sectorColumn<SectorAccumulationRow>(),
     {
       accessorKey: 'accumulation_score',
       header: 'Accumulation Score',
+      meta: { align: 'right' },
       cell: ({ row }) => (
         <button
           type="button"
@@ -121,18 +123,18 @@ export function MlSectorRotationPage() {
         </button>
       ),
     },
-    { accessorKey: 'delivery_volume', header: 'Delivery Volume', cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
-    { accessorKey: 'sector_shares_outstanding', header: 'Sector Shares Outstanding', cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
-    { accessorKey: 'n_stocks_included', header: '# Stocks' },
+    { accessorKey: 'delivery_volume', header: 'Delivery Volume', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
+    { accessorKey: 'sector_shares_outstanding', header: 'Sector Shares Outstanding', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
+    { accessorKey: 'n_stocks_included', header: '# Stocks', meta: { align: 'right' } },
   ]
 
   const drilldownColumns: ColumnDef<SectorAccumulationDrilldownRow, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Stock', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-    { accessorKey: 'volume', header: 'Volume', cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
-    { accessorKey: 'delivery_pct', header: 'Delivery %', cell: (i) => <span className="font-mono-data">{fmtPct((i.getValue<number>() ?? 0) / 100)}</span> },
-    { accessorKey: 'delivery_volume', header: 'Delivery Volume', cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
-    { accessorKey: 'shares_outstanding', header: 'Shares Outstanding', cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
-    { accessorKey: 'contribution_pct', header: 'Contribution %', cell: (i) => <span className="font-mono-data">{fmtPct((i.getValue<number>() ?? 0) / 100)}</span> },
+    tickerColumn<SectorAccumulationDrilldownRow>(),
+    { accessorKey: 'volume', header: 'Volume', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
+    { accessorKey: 'delivery_pct', header: 'Delivery %', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtPct((i.getValue<number>() ?? 0) / 100)}</span> },
+    { accessorKey: 'delivery_volume', header: 'Delivery Volume', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
+    { accessorKey: 'shares_outstanding', header: 'Shares Outstanding', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
+    { accessorKey: 'contribution_pct', header: 'Contribution %', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtPct((i.getValue<number>() ?? 0) / 100)}</span> },
   ]
 
   const chartData = (report.data?.sectors ?? []).slice(0, 15).map((s) => ({ sector: s.sector, rs21d: (s.rs_21d ?? 0) * 100 }))

@@ -122,6 +122,14 @@ def _run_variant(
         watchlist_tickers=watchlist_tickers,
     )
     results = engine.run_full_backtest(model_name, folds=folds)
+
+    from backtest.adapters.ml_dual_write import dual_write_ml_run
+
+    dual_write_ml_run(
+        results, strategy_id=model_name, horizon_days=horizon_days, ohlcv=ohlcv,
+        initial_capital=1_000_000.0, random_seed=seed,
+    )
+
     return results.to_dict()
 
 
@@ -159,7 +167,7 @@ def run_phase2_backtest(
 
     print("\n=== Phase 1 vs Phase 2 Comparison ===")
     print(f"{'Metric':<20}{'Phase 1 (Signal5D)':<25}{'Phase 2 (Signal63D+Watchlist)':<25}")
-    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_mean"):
+    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_worst"):
         v1 = phase1["aggregate"].get(key)
         v2 = phase2["aggregate"].get(key)
         print(f"{key:<20}{str(v1):<25}{str(v2):<25}")

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, StatCard } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, StatCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { BacktestReport, BacktestReportsResponse } from './types'
 
@@ -53,35 +53,33 @@ function PhaseSection({ phaseKey, phase }: { phaseKey: string; phase: Record<str
         ) : null}
 
         {folds.length ? (
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr>
+          <div className="mt-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
                   {foldCols.map((c) => (
-                    <th key={c} className="p-2 text-left text-xs font-semibold uppercase text-muted-foreground">
-                      {c}
-                    </th>
+                    <TableHead key={c}>{c}</TableHead>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {folds.map((f, i) => (
-                  <tr key={i} className="border-t border-border">
+                  <TableRow key={i}>
                     {foldCols.map((c) => {
                       let v = f[c]
                       if (['cagr', 'max_drawdown', 'win_rate'].includes(c)) v = fmtPct(v)
                       else if (typeof v === 'number') v = fmtNum(v, c === 'sharpe' || c === 'profit_factor' ? 2 : 0)
                       else if (typeof v === 'string' && v.includes(' 00:00:00')) v = v.slice(0, 10)
                       return (
-                        <td key={c} className="p-2 font-mono-data">
+                        <TableCell key={c} className="font-mono-data">
                           {v == null ? '—' : String(v)}
-                        </td>
+                        </TableCell>
                       )
                     })}
-                  </tr>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         ) : null}
       </CardContent>

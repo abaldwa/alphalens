@@ -37,13 +37,21 @@ Usage:
 import argparse
 import logging
 import sqlite3
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import DUCKDB_PATH, NSE_XBRL_RAW_CACHE_DIR, PIPELINE_LOG_DB_PATH
 from datastore.api.db import get_duckdb_connection
 from features.fundamental_quality_gate import validate_and_annotate
-from features.fundamental_source_priority import SOURCE_PRIORITY, build_priority_update_clause
+from features.fundamental_source_priority import (
+    SOURCE_PRIORITY,
+    append_fundamentals_history,
+    build_priority_update_clause,
+)
 from ingestion.scrapers.nse_xbrl_financials import (
     download_indas_filing,
     ensure_ingested_filings_table,
@@ -400,6 +408,9 @@ def main() -> None:
                 """
             )
             conn.execute("DROP TABLE nse_xbrl_delta")
+            # 2026-07-20 Gap #2 fix: one append-only history snapshot per written row.
+            for r in delta_records:
+                append_fundamentals_history(conn, r["ticker"], r["fiscal_year"], r["quarter"])
 
     mark_filings_ingested(state_conn, newly_ingested)
     state_conn.close()

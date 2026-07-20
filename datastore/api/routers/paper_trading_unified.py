@@ -1,0 +1,153 @@
+"""
+datastore/api/routers/paper_trading_unified.py
+
+Phase: Unified Backtest & Paper Trading Umbrella, Phase 5
+(BacktestUmbrellaPlan.md at the repo root)
+Owner: Platform / DataStore
+Consumers: Phase 4's Backtest frontend page (a future "Paper Trading" tab
+within it, per the plan's "same nav section, not a separate menu item")
+
+Channel-aware paper-trading API, generalizing the existing ML-only
+/api/v1/paper_trading/* router (datastore/api/routers/paper_trading.py,
+left completely untouched — "wrap, don't refactor") to any of the four
+channels via backtest/paper_trading/live_runner.py +
+backtest/paper_trading/approval_queue.py.
+
+Distinct prefix (/api/v1/paper_trading2, not /api/v1/paper_trading) to
+avoid any path collision with the existing router's routes (both
+routers' path shapes — {id}/accept, gate_status, etc. — would otherwise
+collide once mounted on the same prefix). "2" is an intentionally
+unglamorous placeholder name — a future full retirement of the ML-only
+router (out of scope for this initiative; ML's paper trading has a real
+production track record it shouldn't lose) would be the natural time to
+rename this to the plain prefix.
+
+Every endpoint is scoped to a (channel, strategy_id) pair, since a run is
+now always exactly one strategy with its own capital base (confirmed
+2026-07-20, no pooled capital) — there is no "the" paper trading state
+the way the ML-only router's singular portfolio_state.json assumes.
+"""
+
+import logging
+from typing import Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from backtest.core.horizon import HorizonBucket
+from backtest.paper_trading.approval_queue import gate_status as _gate_status
+from backtest.paper_trading.approval_queue import read_pending_actions
+from backtest.paper_trading.live_runner import PaperTradingRunner
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/paper_trading2", tags=["Paper Trading (Unified)"])
+
+
+class PendingActionResponse(BaseModel):
+    action_id: str
+    channel: str
+    strategy_id: str
+    as_of_date: str
+    ticker: str
+    action: str
+    sector: str
+    conviction: float
+    adtv_cr: Optional[float] = None
+    status: str
+    proposed_at: str
+    decided_at: Optional[str] = None
+    executed_price: Optional[float] = None
+    executed_quantity: Optional[int] = None
+
+
+class PendingActionsListResponse(BaseModel):
+    channel: str
+    strategy_id: str
+    as_of_date: str
+    actions: List[PendingActionResponse]
+
+
+class GateStatusResponse(BaseModel):
+    channel: str
+    strategy_id: str
+    days_completed: int
+    gate_threshold: int
+    gate_passed: bool
+
+
+class StateSummaryResponse(BaseModel):
+    channel: str
+    strategy_id: str
+    cash: float
+    initial_capital: float
+    total_contributed: float
+    n_open_positions: int
+    n_closed_trades: int
+
+
+class AcceptActionRequest(BaseModel):
+    as_of_date: str
+    price: float
+    prices: Dict[str, float] = {}
+    # Only required the FIRST time this (channel, strategy_id) accepts an
+    # action, before any portfolio state file exists for it — ignored (the
+    # persisted state wins) on every subsequent call. See
+    # PaperTradingRunner._portfolio()'s docstring.
+    horizon_bucket: Optional[str] = None
+    initial_capital: Optional[float] = None
+
+
+class RejectActionRequest(BaseModel):
+    as_of_date: str
+
+
+@router.get("/{channel}/{strategy_id}/pending", response_model=PendingActionsListResponse)
+async def list_pending_actions(channel: str, strategy_id: str, as_of_date: str) -> PendingActionsListResponse:
+    actions = read_pending_actions(channel, strategy_id, as_of_date)
+    return PendingActionsListResponse(
+        channel=channel, strategy_id=strategy_id, as_of_date=as_of_date,
+        actions=[PendingActionResponse(**a.__dict__) for a in actions],
+    )
+
+
+@router.post("/{channel}/{strategy_id}/pending/{action_id}/accept", response_model=PendingActionResponse)
+async def accept_pending_action(channel: str, strategy_id: str, action_id: str, body: AcceptActionRequest) -> PendingActionResponse:
+    horizon_bucket = HorizonBucket(body.horizon_bucket) if body.horizon_bucket else None
+    runner = PaperTradingRunner(channel, strategy_id, horizon_bucket=horizon_bucket, initial_capital=body.initial_capital)
+    try:
+        decided = runner.accept(action_id, body.as_of_date, body.price, body.prices)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return PendingActionResponse(**decided.__dict__)
+
+
+@router.post("/{channel}/{strategy_id}/pending/{action_id}/reject", response_model=PendingActionResponse)
+async def reject_pending_action(channel: str, strategy_id: str, action_id: str, body: RejectActionRequest) -> PendingActionResponse:
+    # reject() never touches portfolio state (see live_runner.py), so no
+    # horizon_bucket/initial_capital is ever needed here.
+    runner = PaperTradingRunner(channel, strategy_id)
+    try:
+        decided = runner.reject(action_id, body.as_of_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return PendingActionResponse(**decided.__dict__)
+
+
+@router.get("/{channel}/{strategy_id}/gate_status", response_model=GateStatusResponse)
+async def get_gate_status(channel: str, strategy_id: str) -> GateStatusResponse:
+    """Phase 3 Gate 7, generalized: >=90 real forward paper-trading days
+    for THIS strategy specifically, before it may ever be considered for
+    live capital (still requires separate human sign-off regardless —
+    this endpoint never sets any live-eligibility flag itself)."""
+    return GateStatusResponse(**_gate_status(channel, strategy_id))
+
+
+@router.get("/{channel}/{strategy_id}/state", response_model=StateSummaryResponse)
+async def get_state_summary(channel: str, strategy_id: str) -> StateSummaryResponse:
+    runner = PaperTradingRunner(channel, strategy_id)  # read-only: no fallback portfolio creation
+    try:
+        summary = runner.state_summary()
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"No paper-trading state yet for {channel}/{strategy_id}")
+    return StateSummaryResponse(**summary)

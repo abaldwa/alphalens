@@ -1,0 +1,6 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-05-25,BASML,BUY,91.9,1,09:15:00,84.5,15:30:00,2011-06-20,thesis_broken,miss,-7.769630254800006,-0.08454439885527754,,,,,,
+2011-05-25,INDIAGLYCO,BUY,53.0,3,09:15:00,71.15,15:30:00,2011-07-13,target_achieved,hit,53.81048737200001,0.3384307381886793,,,,,,
+2011-05-25,LYKALABS,BUY,18.4,1,09:15:00,17.3,15:30:00,2011-08-02,thesis_broken,miss,-1.1740064927999967,-0.063804700695652,,,,,,
+2011-05-25,DBREALTY,BUY,76.5,1,09:15:00,68.25,15:30:00,2011-08-09,thesis_broken,miss,-8.557690038000004,-0.11186522925490201,,,,,,
+2011-05-25,SBIN,BUY,185.35535234279075,1,09:15:00,176.88310765134938,15:30:00,2011-08-18,thesis_broken,miss,-9.217760971256496,-0.049730212021120594,,,,,,

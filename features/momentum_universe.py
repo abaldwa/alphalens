@@ -51,7 +51,7 @@ RANK_BANDS: List[tuple] = [
 ]
 
 
-def _all_candidate_tickers(include_delisted: bool = False) -> List[str]:
+def _all_candidate_tickers(include_delisted: bool = False, normalised_conn: Any = None) -> List[str]:
     """Every ticker AlphaLens has ever tracked (config/nifty500_universe.csv's
     full stock master, unfiltered by tier/ADTV/mcap) — the candidate pool a
     historical market-cap ranking is drawn from, since a stock's *current*
@@ -69,10 +69,24 @@ def _all_candidate_tickers(include_delisted: bool = False) -> List[str]:
         plain CSV-only list if delisted_companies is empty/missing (e.g.
         ingestion/scrapers/nse_delisted_companies.py hasn't been run yet,
         or its unverified target endpoint hasn't been confirmed live —
-        see that module's docstring)."""
+        see that module's docstring).
+
+    normalised_conn : the caller's already-open connection to reuse for
+        the delisted_companies lookup (2026-07-20 fix), forwarded to
+        build_historical_universe_from_delisted's `conn` param. Without
+        this, build_historical_universe_from_delisted() always opened its
+        OWN read-write connection to config.settings.DUCKDB_PATH — a real
+        bug, not just a style issue: in production, full_rank_universe()
+        is invoked with an already-open connection to that SAME live file
+        (typically read_only=True/persist=False), and DuckDB only allows
+        one read-write connection OR many read-only connections per file
+        at a time. The moment include_delisted=True was actually used in
+        production it would have hit "Connection Error: Can't open a
+        connection to same database file with a different configuration"
+        — caught here by a test, not in production."""
     if include_delisted:
         from config.build_universe import build_historical_universe_from_delisted
-        return build_historical_universe_from_delisted()
+        return build_historical_universe_from_delisted(conn=normalised_conn)
     raw = load_universe_raw()
     return raw["ticker"].tolist()
 
@@ -197,7 +211,7 @@ MAX_TRACKED_RANK = 200
 
 
 def full_rank_universe(
-    normalised_conn: Any, as_of_date: str, max_rank: int = MAX_TRACKED_RANK, include_delisted: bool = False
+    normalised_conn: Any, as_of_date: str, max_rank: int = MAX_TRACKED_RANK, include_delisted: bool = False,
 ) -> pd.DataFrame:
     """Every candidate ticker's real PIT market cap as of as_of_date,
     ranked descending and truncated to the top `max_rank` — the single
@@ -205,8 +219,11 @@ def full_rank_universe(
     all 4 bands for one date costs one query, not four.
 
     include_delisted : forwarded to _all_candidate_tickers (Fix A4) —
-        see that function's docstring. Defaults to False."""
-    candidates = _all_candidate_tickers(include_delisted=include_delisted)
+        see that function's docstring. Defaults to False. Reuses this
+        function's own normalised_conn for the delisted_companies lookup
+        (2026-07-20 fix) rather than opening a second, conflicting
+        connection to the same file."""
+    candidates = _all_candidate_tickers(include_delisted=include_delisted, normalised_conn=normalised_conn)
     snapshot = market_cap_snapshot(normalised_conn, candidates, as_of_date)
     if snapshot.empty:
         return snapshot
@@ -216,12 +233,12 @@ def full_rank_universe(
 
 
 def rank_band_tickers(
-    normalised_conn: Any, as_of_date: str, rank_start: int, rank_end: int, include_delisted: bool = False
+    normalised_conn: Any, as_of_date: str, rank_start: int, rank_end: int, include_delisted: bool = False,
 ) -> List[str]:
     """Tickers ranked [rank_start, rank_end] (1-indexed, inclusive) by real
     PIT market cap as of as_of_date, out of every ticker AlphaLens tracks."""
     ranked = full_rank_universe(
-        normalised_conn, as_of_date, max_rank=max(rank_end, MAX_TRACKED_RANK), include_delisted=include_delisted
+        normalised_conn, as_of_date, max_rank=max(rank_end, MAX_TRACKED_RANK), include_delisted=include_delisted,
     )
     if ranked.empty:
         return []
@@ -283,7 +300,8 @@ def yearly_band_approximation_flags_from_rankings(
 
 
 def yearly_band_universes(
-    normalised_conn: Any, start_date: str, end_date: str, rank_start: int, rank_end: int
+    normalised_conn: Any, start_date: str, end_date: str, rank_start: int, rank_end: int,
+    include_delisted: bool = False,
 ) -> Dict[str, List[str]]:
     """
     {first_trading_day_of_year_iso: [tickers]} for every calendar year in
@@ -293,6 +311,59 @@ def yearly_band_universes(
     ever re-deriving membership mid-year. Convenience wrapper for a single
     band; prefer all_yearly_full_rankings + yearly_band_universes_from_rankings
     when computing multiple bands so the DB is only queried once per year.
+
+    include_delisted : forwarded to all_yearly_full_rankings/
+        full_rank_universe/_all_candidate_tickers (2026-07-20
+        survivorship-bias fix — see BacktestUmbrellaPlan.md Truthful
+        Review Gap #1). This wrapper previously had NO way to opt into
+        the include_delisted candidate pool at all — a real bug, not
+        just a missing convenience, since every caller of this
+        particular function was silently stuck on the survivorship-
+        biased current-snapshot universe regardless of intent. Defaults
+        to False to keep existing callers' results unchanged unless they
+        explicitly opt in.
     """
-    yearly_rankings = all_yearly_full_rankings(normalised_conn, start_date, end_date)
+    yearly_rankings = all_yearly_full_rankings(normalised_conn, start_date, end_date, include_delisted=include_delisted)
     return yearly_band_universes_from_rankings(yearly_rankings, rank_start, rank_end)
+
+
+# 2026-07-20 user decision (BacktestUmbrellaPlan.md Truthful Review Gap #5):
+# real historical Nifty/Nifty500 constituent lists are not available as free
+# NSE/index data in this environment. Rather than leave PIT index membership
+# as an "accepted approximation" indefinitely, the decided methodology is:
+# at every rebalance date, rank the full candidate pool (today's active
+# universe UNION every real delisted_companies ticker, per this module's
+# include_delisted fix) by real PIT market cap, and take the top N as that
+# date's index-membership proxy — exactly the technique RANK_BANDS above
+# already used for Nifty50/Next50, generalized to Nifty500 scale. This is
+# the SAME function (full_rank_universe/rank_band_tickers) with a wider
+# band, not new ranking logic — rank_band_tickers's own
+# max(rank_end, MAX_TRACKED_RANK) already lifts the 200 cap whenever
+# rank_end exceeds it, so no separate code path was needed to go from
+# "top 200" to "top 500".
+NIFTY500_PROXY_RANK: int = 500
+
+
+def nifty500_proxy_universe(normalised_conn: Any, as_of_date: str, include_delisted: bool = True) -> List[str]:
+    """Top NIFTY500_PROXY_RANK tickers by real PIT market cap as of
+    as_of_date — the decided stand-in for "who was actually in Nifty500 on
+    this historical date" (see module-level note above). include_delisted
+    defaults to True here (unlike every other function in this module)
+    because this function's entire purpose is being a point-in-time
+    historical-membership proxy — the survivorship-bias gap this fix
+    closes is exactly what a caller of THIS function is trying to avoid."""
+    return rank_band_tickers(normalised_conn, as_of_date, 1, NIFTY500_PROXY_RANK, include_delisted=include_delisted)
+
+
+def yearly_nifty500_proxy_universes(
+    normalised_conn: Any, start_date: str, end_date: str, include_delisted: bool = True,
+) -> Dict[str, List[str]]:
+    """{first_trading_day_of_year_iso: [tickers]} Nifty500-proxy membership
+    (see nifty500_proxy_universe), one fixed list per year — the same
+    yearly-fixing convention as yearly_band_universes, so a Technical or
+    Fundamental backtest's universe_provider can look this up per
+    rebalance date without re-deriving membership mid-year. include_delisted
+    defaults to True for the same reason as nifty500_proxy_universe."""
+    return yearly_band_universes(
+        normalised_conn, start_date, end_date, 1, NIFTY500_PROXY_RANK, include_delisted=include_delisted,
+    )

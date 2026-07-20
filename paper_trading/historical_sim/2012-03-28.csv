@@ -1,0 +1,5 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-03-28,TRIVENI,BUY,15.35,1017,09:15:00,14.25,15:30:00,2012-05-09,thesis_broken,miss,-1181.4886771073998,-0.07568332978501628,,,,,,
+2012-03-28,TVSMOTOR,BUY,32.86930293077178,3,09:15:00,30.701143106842235,15:30:00,2012-05-11,thesis_broken,miss,-6.901089552878943,-0.06998515268601614,,,,,,
+2012-03-28,KOPRAN,BUY,14.15,1,09:15:00,19.6,15:30:00,2012-07-06,target_achieved,hit,5.3930873982000005,0.38113691860070675,,,,,,
+2012-03-28,JYOTISTRUC,BUY,38.35,1,09:15:00,51.1,15:30:00,2012-10-04,target_achieved,hit,12.5957527718,0.32844205402346804,,,,,,

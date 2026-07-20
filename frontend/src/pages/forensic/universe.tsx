@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, tickerColumn } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 import type { ForensicFlaggedResponse, ForensicFlaggedRow, ForensicSummaryResponse } from './types'
 import { flagBadgeVariant } from './types'
@@ -14,8 +14,8 @@ interface ScanRunResult {
 }
 
 const columns: ColumnDef<ForensicFlaggedRow & { rank: number }, unknown>[] = [
-  { accessorKey: 'rank', header: '#' },
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+  { accessorKey: 'rank', header: '#', meta: { align: 'right' } },
+  tickerColumn<ForensicFlaggedRow & { rank: number }>(),
   {
     accessorKey: 'forensic_composite',
     header: () => (
@@ -27,6 +27,7 @@ const columns: ColumnDef<ForensicFlaggedRow & { rank: number }, unknown>[] = [
         </InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => (i.getValue<number | null>() ?? 0).toFixed(0),
   },
   {

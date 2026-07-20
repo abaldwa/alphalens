@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Card, CardContent, CardHeader, CardTitle, DataTable, StatCard } from '@/lib/ui'
+import { AppShell, Card, CardContent, CardHeader, CardTitle, DataTable, StatCard, sectorColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { TAMarketOverviewResponse, TASectorBreadthRow } from './types'
 
@@ -10,12 +10,13 @@ function fmtPct(v: number | null): string {
 }
 
 const columns: ColumnDef<TASectorBreadthRow, unknown>[] = [
-  { accessorKey: 'sector', header: 'Sector' },
-  { accessorKey: 'advances', header: 'Advances', cell: (i) => <span className="text-green">{i.getValue<number>()}</span> },
-  { accessorKey: 'declines', header: 'Declines', cell: (i) => <span className="text-red">{i.getValue<number>()}</span> },
+  sectorColumn<TASectorBreadthRow>(),
+  { accessorKey: 'advances', header: 'Advances', meta: { align: 'right' }, cell: (i) => <span className="text-green">{i.getValue<number>()}</span> },
+  { accessorKey: 'declines', header: 'Declines', meta: { align: 'right' }, cell: (i) => <span className="text-red">{i.getValue<number>()}</span> },
   {
     accessorKey: 'avg_change_pct',
     header: 'Avg Change %',
+    meta: { align: 'right' },
     cell: (i) => {
       const v = i.getValue<number | null>()
       return <span className={v != null && v >= 0 ? 'text-green' : 'text-red'}>{fmtPct(v)}</span>

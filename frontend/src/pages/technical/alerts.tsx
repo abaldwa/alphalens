@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, tickerColumn } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 import type { TATemplateListResponse, TAUserAlertResponse, TAUserAlertRow } from './types'
 
@@ -41,7 +41,7 @@ export function TechnicalAlertsPage() {
   })
 
   const columns: ColumnDef<TAUserAlertRow, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+    tickerColumn<TAUserAlertRow>(),
     { accessorKey: 'template_name', header: 'Template' },
     { accessorKey: 'category', header: 'Category' },
     {

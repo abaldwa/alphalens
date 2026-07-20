@@ -10,7 +10,7 @@ const pct = (v: number | null | undefined) => (v == null ? '—' : `${(v).toFixe
 
 const columns: ColumnDef<GovernanceRow, unknown>[] = [
   { accessorKey: 'filing_date', header: 'Filing Date', cell: (i) => i.getValue<string>().slice(0, 10) },
-  { accessorKey: 'promoter_pct', header: 'Promoter %', cell: (i) => pct(i.getValue<number | null>()) },
+  { accessorKey: 'promoter_pct', header: 'Promoter %', meta: { align: 'right' }, cell: (i) => pct(i.getValue<number | null>()) },
   {
     accessorKey: 'promoter_pledge',
     header: () => (
@@ -19,6 +19,7 @@ const columns: ColumnDef<GovernanceRow, unknown>[] = [
         <InfoTooltip>Promoter Pledge %: share of promoters' holding pledged as collateral for loans. High/rising pledge is a governance red flag — a forced sale on default can crash the stock.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => pct(i.getValue<number | null>()),
   },
   {
@@ -29,6 +30,7 @@ const columns: ColumnDef<GovernanceRow, unknown>[] = [
         <InfoTooltip>FII (Foreign Institutional Investors): share of the company held by foreign institutional investors (funds, FPIs).</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => pct(i.getValue<number | null>()),
   },
   {
@@ -39,10 +41,11 @@ const columns: ColumnDef<GovernanceRow, unknown>[] = [
         <InfoTooltip>DII (Domestic Institutional Investors): share of the company held by domestic institutions (mutual funds, insurers, banks).</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => pct(i.getValue<number | null>()),
   },
-  { accessorKey: 'mf_pct', header: 'MF %', cell: (i) => pct(i.getValue<number | null>()) },
-  { accessorKey: 'retail_pct', header: 'Retail %', cell: (i) => pct(i.getValue<number | null>()) },
+  { accessorKey: 'mf_pct', header: 'MF %', meta: { align: 'right' }, cell: (i) => pct(i.getValue<number | null>()) },
+  { accessorKey: 'retail_pct', header: 'Retail %', meta: { align: 'right' }, cell: (i) => pct(i.getValue<number | null>()) },
 ]
 
 export function FundamentalManagementPage() {

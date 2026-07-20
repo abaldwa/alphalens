@@ -1,16 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, formatCurrencyINR, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { ExitUrgencyResponse, ExitUrgencyRow } from './types'
 
 function fmtPct(v: number | null | undefined) {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
-function fmtMoney(v: number | null | undefined) {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN')}`
-}
+const fmtMoney = formatCurrencyINR
 function urgencyVariant(u: number | null | undefined) {
   if (u == null) return 'outline' as const
   if (u >= 70) return 'destructive' as const
@@ -23,14 +21,15 @@ function pnlTone(v: number | null | undefined) {
 }
 
 const columns: ColumnDef<ExitUrgencyRow, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-  { accessorKey: 'company_name', header: 'Name', cell: (i) => i.getValue<string | null>() ?? '—' },
-  { accessorKey: 'entry_date', header: 'Entry Date' },
-  { accessorKey: 'entry_price', header: 'Entry Price', cell: (i) => fmtMoney(i.getValue<number>()) },
-  { accessorKey: 'current_price', header: 'Current', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  tickerColumn<ExitUrgencyRow>(),
+  { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
+  { accessorKey: 'entry_date', header: 'Entry Date', meta: { priority: 'low' } },
+  { accessorKey: 'entry_price', header: 'Entry Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number>()) },
+  { accessorKey: 'current_price', header: 'Current', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
   {
     accessorKey: 'unrealised_pnl_pct',
     header: 'Unrealised P&L',
+    meta: { align: 'right' },
     cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
   },
   {
@@ -41,6 +40,7 @@ const columns: ColumnDef<ExitUrgencyRow, unknown>[] = [
         <InfoTooltip>rule_based_exit_policy's 0-100 urgency score for exiting an existing position.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => <Badge variant={urgencyVariant(i.getValue<number | null>())}>{i.getValue<number | null>()?.toFixed(0) ?? '—'}</Badge>,
   },
   {

@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-11-19,ONMOBILE,BUY,138.55,7565,09:15:00,126.35,15:30:00,2010-11-23,thesis_broken,miss,-96508.67830452917,-0.09207694584337799,,,,,,
+2010-11-19,HCLTECH,BUY,66.54793389928054,1,09:15:00,84.32346955884964,15:30:00,2011-01-06,target_achieved,hit,17.507873747016276,0.2630866613156499,,,,,,

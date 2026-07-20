@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard } from '@/lib/ui'
+import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, formatCurrencyINR } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { ForensicRow } from './types'
 
@@ -21,13 +21,9 @@ interface FundamentalsHistoryResponse {
   data: FundamentalsRow[]
 }
 
-function fmtMoney(v: number | null | undefined): string {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
-}
-
 const columns: ColumnDef<FundamentalsRow, unknown>[] = [
   { id: 'quarter', header: 'Quarter', cell: ({ row }) => `${row.original.fiscal_year} Q${row.original.quarter}` },
-  { accessorKey: 'pat', header: 'PAT', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'pat', header: 'PAT', meta: { align: 'right' }, cell: (i) => formatCurrencyINR(i.getValue<number | null>()) },
   {
     accessorKey: 'fcf',
     header: () => (
@@ -40,9 +36,10 @@ const columns: ColumnDef<FundamentalsRow, unknown>[] = [
         </InfoTooltip>
       </span>
     ),
-    cell: (i) => fmtMoney(i.getValue<number | null>()),
+    meta: { align: 'right' },
+    cell: (i) => formatCurrencyINR(i.getValue<number | null>()),
   },
-  { accessorKey: 'capex', header: 'Capex', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'capex', header: 'Capex', meta: { align: 'right' }, cell: (i) => formatCurrencyINR(i.getValue<number | null>()) },
 ]
 
 export function CashflowPage() {

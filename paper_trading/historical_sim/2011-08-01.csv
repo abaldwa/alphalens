@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-08-01,NCC,BUY,62.92899345159145,16531,09:15:00,58.590605132611806,15:30:00,2011-08-08,thesis_broken,miss,-75901.99591192754,-0.07296310123951658,,,,,,

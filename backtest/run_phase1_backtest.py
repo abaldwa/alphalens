@@ -260,6 +260,13 @@ def run_phase1_backtest(
         json.dump(results.to_dict(), fh, indent=2, default=str)
     print(f"\nReport written to {report_path}")
 
+    from backtest.adapters.ml_dual_write import dual_write_ml_run
+
+    dual_write_ml_run(
+        results, strategy_id="signal_5d", horizon_days=5, ohlcv=ohlcv,
+        initial_capital=1_000_000.0, random_seed=seed,
+    )
+
     return results.to_dict()
 
 

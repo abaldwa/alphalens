@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-09-26,IFCI,BUY,28.497033062645006,33230,09:15:00,26.869959396751735,15:30:00,2011-10-04,thesis_broken,miss,-57876.40371330059,-0.06111833996084833,,,,,,
+2011-09-26,TI,BUY,27.7,1,09:15:00,38.2,15:30:00,2011-12-09,target_achieved,hit,10.388588051600006,0.3750392798411555,,,,,,
+2011-09-26,GLOBUSSPR,BUY,104.6,1,09:15:00,98.0,15:30:00,2011-12-20,thesis_broken,miss,-7.020710823199991,-0.06711960634034408,,,,,,

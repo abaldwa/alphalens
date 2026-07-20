@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, cmpColumn, formatCurrencyINR, tickerColumn } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 
 interface ReconciliationRow {
@@ -82,9 +82,7 @@ function fmtNum(v: number | null | undefined): string {
   return v != null ? v.toLocaleString('en-IN') : '—'
 }
 
-function fmtPrice(v: number | null | undefined): string {
-  return v != null ? v.toFixed(2) : '—'
-}
+const fmtPrice = formatCurrencyINR
 
 export function BigInvestorsPage() {
   const queryClient = useQueryClient()
@@ -103,13 +101,14 @@ export function BigInvestorsPage() {
 
   const reconciliationColumns: ColumnDef<ReconciliationRow, unknown>[] = [
     { accessorKey: 'family_id', header: 'Family' },
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+    tickerColumn<ReconciliationRow>(),
     { accessorKey: 'quarter_end_date', header: 'Quarter End' },
-    { accessorKey: 'estimated_position_pre_correction', header: 'Est. Position', cell: (i) => fmtNum(i.getValue<number | null>()) },
-    { accessorKey: 'reported_shares_est', header: 'Reported Est.', cell: (i) => fmtNum(i.getValue<number | null>()) },
+    { accessorKey: 'estimated_position_pre_correction', header: 'Est. Position', meta: { align: 'right' }, cell: (i) => fmtNum(i.getValue<number | null>()) },
+    { accessorKey: 'reported_shares_est', header: 'Reported Est.', meta: { align: 'right' }, cell: (i) => fmtNum(i.getValue<number | null>()) },
     {
       accessorKey: 'discrepancy_pct',
       header: 'Discrepancy',
+      meta: { align: 'right' },
       cell: (i) => {
         const v = i.getValue<number | null>()
         return v != null ? `${(v * 100).toFixed(1)}%` : '—'
@@ -153,14 +152,14 @@ export function BigInvestorsPage() {
   })
 
   const familyColumns: ColumnDef<FamilyRow, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+    tickerColumn<FamilyRow>(),
     { accessorKey: 'company_name', header: 'Company', cell: (i) => i.getValue<string | null>() ?? '—' },
     {
       accessorKey: 'cap_band',
       header: 'Cap Band',
       cell: (i) => <Badge variant={CAP_BAND_VARIANT[i.getValue<string>()] ?? 'secondary'}>{i.getValue<string>()}</Badge>,
     },
-    { accessorKey: 'market_cap_cr', header: 'Market Cap (cr)', cell: (i) => fmtNum(i.getValue<number | null>()) },
+    { accessorKey: 'market_cap_cr', header: 'Market Cap (cr)', meta: { align: 'right' }, cell: (i) => fmtNum(i.getValue<number | null>()) },
     {
       accessorKey: 'family_display_name',
       header: 'Investor Family',
@@ -180,23 +179,25 @@ export function BigInvestorsPage() {
         return v ? <Badge variant={v === 'BUY' ? 'success' : 'destructive'}>{v}</Badge> : '—'
       },
     },
-    { accessorKey: 'net_quantity', header: 'Net Qty', cell: (i) => fmtNum(i.getValue<number | null>()) },
-    { accessorKey: 'avg_price', header: 'Entry Price', cell: (i) => fmtPrice(i.getValue<number | null>()) },
-    { accessorKey: 'wac', header: 'WAC', cell: (i) => fmtPrice(i.getValue<number | null>()) },
-    { accessorKey: 'cmp', header: 'CMP', cell: (i) => fmtPrice(i.getValue<number | null>()) },
+    { accessorKey: 'net_quantity', header: 'Net Qty', meta: { align: 'right' }, cell: (i) => fmtNum(i.getValue<number | null>()) },
+    { accessorKey: 'avg_price', header: 'Entry Price', meta: { align: 'right' }, cell: (i) => fmtPrice(i.getValue<number | null>()) },
+    { accessorKey: 'wac', header: 'WAC', meta: { align: 'right' }, cell: (i) => fmtPrice(i.getValue<number | null>()) },
+    cmpColumn<FamilyRow>('cmp'),
     {
       id: 'price_diff',
       header: 'CMP vs Entry',
+      meta: { align: 'right' },
       cell: ({ row }) => {
         const { price_diff, price_diff_pct } = row.original
         if (price_diff == null || price_diff_pct == null) return '—'
         return `${price_diff >= 0 ? '+' : ''}${price_diff.toFixed(2)} (${price_diff_pct.toFixed(1)}%)`
       },
     },
-    { accessorKey: 'cumulative_position_est', header: 'Position Est.', cell: (i) => fmtNum(i.getValue<number | null>()) },
+    { accessorKey: 'cumulative_position_est', header: 'Position Est.', meta: { align: 'right' }, cell: (i) => fmtNum(i.getValue<number | null>()) },
     {
       accessorKey: 'holding_pct_of_company',
       header: '% of Company',
+      meta: { align: 'right' },
       cell: (i) => {
         const v = i.getValue<number | null>()
         return v != null ? `${v.toFixed(2)}%` : '—'
@@ -231,14 +232,14 @@ export function BigInvestorsPage() {
   })
 
   const dealsColumns: ColumnDef<DealRow, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+    tickerColumn<DealRow>(),
     { accessorKey: 'company_name', header: 'Company', cell: (i) => i.getValue<string | null>() ?? '—' },
     {
       accessorKey: 'cap_band',
       header: 'Cap Band',
       cell: (i) => <Badge variant={CAP_BAND_VARIANT[i.getValue<string>()] ?? 'secondary'}>{i.getValue<string>()}</Badge>,
     },
-    { accessorKey: 'market_cap_cr', header: 'Market Cap (cr)', cell: (i) => fmtNum(i.getValue<number | null>()) },
+    { accessorKey: 'market_cap_cr', header: 'Market Cap (cr)', meta: { align: 'right' }, cell: (i) => fmtNum(i.getValue<number | null>()) },
     { accessorKey: 'exchange', header: 'Exchange' },
     { accessorKey: 'deal_type', header: 'Deal' },
     { accessorKey: 'client_name', header: 'Client', cell: (i) => i.getValue<string | null>() ?? '—' },
@@ -250,8 +251,8 @@ export function BigInvestorsPage() {
         return v ? <Badge variant={v === 'BUY' ? 'success' : 'destructive'}>{v}</Badge> : '—'
       },
     },
-    { accessorKey: 'quantity', header: 'Quantity', cell: (i) => fmtNum(i.getValue<number | null>()) },
-    { accessorKey: 'price', header: 'Price', cell: (i) => fmtPrice(i.getValue<number | null>()) },
+    { accessorKey: 'quantity', header: 'Quantity', meta: { align: 'right' }, cell: (i) => fmtNum(i.getValue<number | null>()) },
+    { accessorKey: 'price', header: 'Price', meta: { align: 'right' }, cell: (i) => fmtPrice(i.getValue<number | null>()) },
   ]
 
   return (

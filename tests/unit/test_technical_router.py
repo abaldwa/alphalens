@@ -232,6 +232,17 @@ class TestWatchlistDaily:
         row = body["rows"][0]
         assert row["ticker"] == _TICKER_A
         assert row["current_price"] is not None
+        # market_cap_rank is computed live from the real universe CSV's
+        # market_cap_cr column (config/universe.py), ranked over the full
+        # universe rather than just this response's rows — _TICKER_A is
+        # the highest-ADTV ticker, which in the real Nifty 500 universe
+        # also has a known nonzero market cap, so both fields should be
+        # populated rather than null.
+        expected_mcap = float(_REAL_UNIVERSE.loc[_REAL_UNIVERSE["ticker"] == _TICKER_A, "market_cap_cr"].iloc[0])
+        assert expected_mcap > 0, "test assumes _TICKER_A has a real nonzero market cap in the universe CSV"
+        assert row["market_cap_cr"] == pytest.approx(expected_mcap)
+        assert row["market_cap_rank"] is not None
+        assert row["market_cap_rank"] >= 1
 
     def test_pools_recommendations_across_trailing_window_dedup_per_ticker(self, client):
         # Ticker A recommended earlier in the week (2026-06-01) and again

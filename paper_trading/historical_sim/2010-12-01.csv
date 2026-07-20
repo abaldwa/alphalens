@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-12-01,ARIHANT,BUY,93.2,11173,09:15:00,83.0,15:30:00,2010-12-09,thesis_broken,miss,-118152.89932097122,-0.11346415208583693,,,,,,

@@ -212,6 +212,22 @@ KEYWORD_ALLOWLIST: dict[str, set[str]] = {
     "systems/ml_signal_engine/models/multibagger/multibagger_model.py": {
         "from sklearn.dummy import DummyClassifier",
     },
+    # Prose describing a deliberately unglamorous *naming* choice for a
+    # future retirement path, not a fabricated-data stand-in.
+    "datastore/api/routers/paper_trading_unified.py": {
+        "unglamorous placeholder name",
+    },
+    # Docstring instructing callers to pass a REAL benchmark series rather
+    # than a synthetic one — the word appears only in a negative
+    # instruction, not a fabrication path in this module.
+    "features/regime_signal.py": {
+        "rather than a synthetic",
+    },
+    # Docstring instructing implementers never to silently default to a
+    # dummy value — a warning against fabrication, not fabrication itself.
+    "backtest/paper_trading/live_runner.py": {
+        "to a dummy horizon bucket",
+    },
 }
 
 
@@ -301,7 +317,13 @@ def _is_stub_body(body: list[ast.stmt]) -> str | None:
 # function qualnames (module_rel_path::FunctionName) already known and
 # tracked as legitimately-incomplete scaffolding (BuildLog.md / phase
 # delivery plan Weeks 33-38 — TA and Damodaran systems are 0% built).
-STUB_FUNCTION_ALLOWLIST: set[str] = set()
+STUB_FUNCTION_ALLOWLIST: set[str] = {
+    # typing.Protocol method declarations — `...` bodies are the correct,
+    # idiomatic form for a structural-typing interface, not incomplete code.
+    # Implementations live in the concrete adapter classes (e.g. ml_adapter.py).
+    "backtest/core/engine.py::generate_signals",
+    "backtest/core/engine.py::feature_vector",
+}
 
 # Whole packages that are intentionally-empty scaffolding today (Weeks
 # 33-38 of alphalens_docs/11_phase_delivery_plan.md — not yet built). Listed

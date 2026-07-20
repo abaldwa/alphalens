@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard } from '@/lib/ui'
+import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, numericCellClass } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { FARatiosResponse, FAScoresResponse, FundamentalsResponse, FundamentalsRow } from './types'
 
@@ -48,6 +48,7 @@ const columns: ColumnDef<FundamentalsRow, unknown>[] = [
     ([key, label, isPct]): ColumnDef<FundamentalsRow, unknown> => ({
       accessorKey: key,
       header: label,
+      meta: { align: 'right' },
       cell: (i) => {
         const v = i.getValue<number | null>()
         return isPct ? fmtPct(v) : fmtNum(v, 2)
@@ -123,29 +124,29 @@ export function FundamentalPage() {
                   Sector-relative z-score (vs sector peers, not an absolute threshold)
                   <InfoTooltip>Sector-relative z-score: how many standard deviations this stock's ratio is from the sector average — 0 means average, positive/negative means above/below peers.</InfoTooltip>
                 </p>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
                       {TRAFFIC_LIGHT_RATIOS.map(([key, label]) => (
-                        <th key={key} className="p-2 text-left font-medium">
+                        <TableHead key={key} className="font-medium normal-case">
                           {label}
-                        </th>
+                        </TableHead>
                       ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow>
                       {TRAFFIC_LIGHT_RATIOS.map(([key]) => {
                         const z = ratios.data?.ratios[key]
                         return (
-                          <td key={key} className={`p-2 rounded ${trafficLightClass(key, z)}`}>
+                          <TableCell key={key} className={`rounded ${numericCellClass} ${trafficLightClass(key, z)}`}>
                             {z === null || z === undefined ? '—' : fmtNum(z, 2)}
-                          </td>
+                          </TableCell>
                         )
                       })}
-                    </tr>
-                  </tbody>
-                </table>
+                    </TableRow>
+                  </TableBody>
+                </Table>
               </>
             )}
           </CardContent>

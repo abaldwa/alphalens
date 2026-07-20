@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-05-18,PRAKASH,BUY,174.3,5712,09:15:00,160.2,15:30:00,2010-05-25,thesis_broken,miss,-84543.60123054741,-0.08491710060585218,,,,,,

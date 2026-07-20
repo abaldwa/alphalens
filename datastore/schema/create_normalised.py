@@ -385,6 +385,40 @@ _CREATE_FUNDAMENTALS = """
     )
 """
 
+# 2026-07-20 (BacktestUmbrellaPlan.md Truthful Review Gap #2 fix): `fundamentals`
+# above is a mutable upsert table — a later-corrected filing overwrites the
+# original row in place (PK is `(ticker, fiscal_year, quarter)`, no version
+# key), so a backtest run today "sees" restated numbers for old quarters
+# that were not actually known to a trader at that historical date. This is
+# lookahead bias baked into the data layer, not the backtest logic.
+#
+# fundamentals_history is a genuinely append-only shadow of every write ever
+# made to `fundamentals` — a plain `CREATE TABLE ... AS SELECT * FROM
+# fundamentals WHERE 1=0` (no rows copied, only the column shape, so this
+# table can never drift out of sync with `fundamentals`'s real schema as it
+# evolves) plus two new columns: `history_id` (surrogate key, since there is
+# deliberately no uniqueness constraint on the real data columns — this
+# table must accept unlimited rows for the same (ticker, fiscal_year,
+# quarter)) and `recorded_at` (when THIS snapshot was appended, independent
+# of and more precise than `fundamentals.as_of_ingested`, which only tracks
+# whichever source currently wins a priority conflict, not every write).
+# Populated by features/fundamental_source_priority.append_fundamentals_history(),
+# called by every real writer immediately after its normal upsert — see
+# that function's docstring. datastore/api/pit.py::get_fundamentals_pit()
+# is the new PIT-safe reader: filters BOTH announcement_date <= as_of AND
+# recorded_at <= as_of, so a restatement recorded after a backtest's as_of
+# date can never leak into that run, unlike reading the live `fundamentals`
+# table directly.
+_CREATE_FUNDAMENTALS_HISTORY = """
+    CREATE SEQUENCE IF NOT EXISTS fundamentals_history_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS fundamentals_history AS
+    SELECT
+        CAST(NULL AS BIGINT) AS history_id,
+        CAST(NULL AS TIMESTAMP) AS recorded_at,
+        *
+    FROM fundamentals WHERE 1=0
+"""
+
 # SPEC-PIPE-003 (CRITICAL): filing_date is the PIT key, never quarter_end_date
 #
 # [AS BUILT, P2.6] `shareholding` IS this project's "governance" store —
@@ -889,6 +923,7 @@ _ALL_TABLES = {
     "qip_details": _CREATE_QIP_DETAILS,
     "brsr_filings": _CREATE_BRSR_FILINGS,
     "fundamentals": _CREATE_FUNDAMENTALS,
+    "fundamentals_history": _CREATE_FUNDAMENTALS_HISTORY,
     "shareholding": _CREATE_SHAREHOLDING,
     # A50 (2026-07-10): fno_data deliberately NOT in this dict — it lives in
     # its own file (config.settings.FNO_DATA_DB_PATH) for a real DB, created

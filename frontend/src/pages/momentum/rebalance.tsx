@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, tickerColumn } from '@/lib/ui'
 import { apiGet, apiPost, apiPut } from '@/shared/api/client'
 import { StrategyPicker, useActiveStrategy, useStrategies } from './StrategyPicker'
 import type { MomentumRebalanceNext, MomentumSuggestion, MomentumTrade } from './types'
@@ -95,7 +95,7 @@ export function MomentumRebalancePage() {
       ),
       cell: (i) => <Badge variant={actionVariant(i.getValue<string>())}>{i.getValue<string>().toUpperCase()}</Badge>,
     },
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+    tickerColumn<MomentumSuggestion>(),
     {
       accessorKey: 'momentum_rank',
       header: () => (
@@ -104,6 +104,7 @@ export function MomentumRebalancePage() {
           <InfoTooltip>Rank among the strategy's rank-band universe by trailing return (1 = highest momentum).</InfoTooltip>
         </span>
       ),
+      meta: { align: 'right' },
       cell: (i) => i.getValue<number | null>() ?? '—',
     },
     {
@@ -117,6 +118,7 @@ export function MomentumRebalancePage() {
           </InfoTooltip>
         </span>
       ),
+      meta: { align: 'right' },
       cell: (i) => i.getValue<number | null>() ?? '—',
     },
     { accessorKey: 'status', header: 'Status' },

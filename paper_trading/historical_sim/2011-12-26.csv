@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-12-26,TARIL,BUY,0.30272444029850754,1,09:15:00,0.41562761194029857,15:30:00,2012-02-17,target_achieved,hit,0.11168558609226192,0.3689348173610697,,,,,,

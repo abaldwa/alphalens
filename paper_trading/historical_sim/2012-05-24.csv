@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-24,VOLTAS,BUY,89.66621713886094,1,09:15:00,120.14975696218846,15:30:00,2012-09-17,target_achieved,hit,30.122894048703046,0.33594474050414597,,,,,,

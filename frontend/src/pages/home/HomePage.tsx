@@ -1,8 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { AppShell, Card, CardContent, CardDescription, CardHeader, CardTitle, ResponsiveChartCard, StatCard } from '@/lib/ui'
-import { NAV_SECTIONS } from '@/lib/ui/nav'
+import { AppShell, Card, CardContent, CardDescription, CardHeader, CardTitle, ResponsiveChartCard, StatCard, NAV_SECTIONS } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { TAMarketOverviewResponse } from '@/pages/technical/types'
 

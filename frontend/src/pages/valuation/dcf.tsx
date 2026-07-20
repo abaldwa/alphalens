@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip, StatCard } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip, StatCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 
 interface ValuationResult {
@@ -224,41 +224,34 @@ export function DcfPage() {
             ) : !s ? (
               <p className="text-sm text-muted-foreground">Loading…</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-sm">
-                  <thead>
-                    <tr>
-                      <th className="border border-border px-2 py-1 text-left">WACC \ Growth</th>
-                      {growthVals.map((g) => (
-                        <th key={g} className="border border-border px-2 py-1 font-mono-data">
-                          {(g * 100).toFixed(0)}%
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {waccVals.map((w) => (
-                      <tr key={w}>
-                        <th className="border border-border px-2 py-1 text-left font-mono-data font-semibold">
-                          {(w * 100).toFixed(1)}%
-                        </th>
-                        {growthVals.map((g) => {
-                          const v = byKey.get(`${w}|${g}`)
-                          const isBase = Math.abs(w - s.base_wacc) < 1e-6 && Math.abs(g - s.base_terminal_growth) < 1e-6
-                          return (
-                            <td
-                              key={g}
-                              className={`border border-border px-2 py-1 text-right font-mono-data ${isBase ? 'bg-accent font-bold' : ''}`}
-                            >
-                              {v != null ? fmtMoney(v) : '—'}
-                            </td>
-                          )
-                        })}
-                      </tr>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>WACC \ Growth</TableHead>
+                    {growthVals.map((g) => (
+                      <TableHead key={g} className="font-mono-data normal-case">
+                        {(g * 100).toFixed(0)}%
+                      </TableHead>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {waccVals.map((w) => (
+                    <TableRow key={w}>
+                      <TableHead className="font-mono-data font-semibold normal-case">{(w * 100).toFixed(1)}%</TableHead>
+                      {growthVals.map((g) => {
+                        const v = byKey.get(`${w}|${g}`)
+                        const isBase = Math.abs(w - s.base_wacc) < 1e-6 && Math.abs(g - s.base_terminal_growth) < 1e-6
+                        return (
+                          <TableCell key={g} className={`text-right font-mono-data ${isBase ? 'bg-accent font-bold' : ''}`}>
+                            {v != null ? fmtMoney(v) : '—'}
+                          </TableCell>
+                        )
+                      })}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>

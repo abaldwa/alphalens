@@ -6,10 +6,17 @@ export interface TAWatchlistRow {
   ticker: string
   company_name: string | null
   sector: string | null
+  market_cap_cr: number | null
+  /** Rank by market cap over the full universe (1 = largest), computed
+   * live from config/universe.py's market_cap_cr — null for tickers with
+   * an unknown/not-yet-sourced market cap, never a fabricated number. */
+  market_cap_rank: number | null
   recommendation_date: string | null
   recommended_price: number | null
   current_price: number | null
   template_name: string
+  template_description: string | null
+  template_strategy_description: string | null
   category: string
   score: number
   rationale: string

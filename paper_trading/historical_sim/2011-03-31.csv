@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-03-31,VINYLINDIA,BUY,8.8,14301,09:15:00,12.9,15:30:00,2011-04-11,target_achieved,hit,58127.92454831039,0.4618869989090908,,,,,,

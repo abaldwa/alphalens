@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-08-29,GTLINFRA,BUY,6.35,314,09:15:00,8.85,15:30:00,2012-09-28,target_achieved,hit,776.9803507612003,0.38967869540157496,,,,,,

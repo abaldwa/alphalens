@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, tickerColumn } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 import type { MLSignalRow } from './types'
 
@@ -38,7 +38,7 @@ export function MlToolsPage() {
   })
 
   const columns: ColumnDef<MLSignalRow, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Stock', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+    tickerColumn<MLSignalRow>(),
     {
       accessorKey: 'signal_direction',
       header: 'Direction',
@@ -52,6 +52,7 @@ export function MlToolsPage() {
           <InfoTooltip>signal_5d's own probability that its call is "buy" (0-1). The only model AlphaLens actually trades paper positions off of.</InfoTooltip>
         </span>
       ),
+      meta: { align: 'right' },
       cell: (i) => fmtPct(i.getValue<number | null>()),
     },
     {

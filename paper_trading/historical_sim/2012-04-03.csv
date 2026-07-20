@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-04-03,ELECTHERM,BUY,62.75,17347,09:15:00,57.6,15:30:00,2012-04-27,thesis_broken,miss,-93715.1946777309,-0.08609380514741027,,,,,,

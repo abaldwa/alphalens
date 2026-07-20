@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, TickerLink, formatCurrencyINR, sectorColumn, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { AlertsResponse, DailyWatchlistResponse, DailyWatchlistRow, MLSignalRow, MultibaggerRow, PaperTradingStateResponse, RegimeResponse } from './types'
 
@@ -11,9 +11,7 @@ function todayStr() {
 function fmtPct(v: number | null | undefined) {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
-function fmtMoney(v: number | null | undefined) {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN')}`
-}
+const fmtMoney = formatCurrencyINR
 function pnlTone(v: number | null | undefined) {
   if (v == null) return undefined
   return v >= 0 ? 'text-green' : 'text-red'
@@ -34,7 +32,7 @@ function regimeVariant(regime: string | null) {
 }
 
 const topBuysColumns: ColumnDef<MLSignalRow, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Stock', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+  tickerColumn<MLSignalRow>(),
   {
     id: 'signal',
     header: 'Signal',
@@ -44,21 +42,22 @@ const topBuysColumns: ColumnDef<MLSignalRow, unknown>[] = [
       </Badge>
     ),
   },
-  { accessorKey: 'buy_prob', header: 'Prob', cell: (i) => fmtPct(i.getValue<number | null>()) },
+  { accessorKey: 'buy_prob', header: 'Prob', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
   { accessorKey: 'meta_label', header: 'Meta', cell: (i) => i.getValue<string | null>() ?? '—' },
   {
     id: 'interval',
     header: 'Interval',
+    meta: { align: 'right' },
     cell: ({ row }) => `${fmtPct(row.original.conformal_lower)} to ${fmtPct(row.original.conformal_upper)}`,
   },
-  { accessorKey: 'pnd_score', header: 'P&D', cell: (i) => i.getValue<number | null>()?.toFixed(0) ?? '—' },
+  { accessorKey: 'pnd_score', header: 'P&D', meta: { align: 'right' }, cell: (i) => i.getValue<number | null>()?.toFixed(0) ?? '—' },
   { accessorKey: 'hmm_regime', header: 'Regime', cell: (i) => i.getValue<string | null>() ?? '—' },
 ]
 
 const watchlistColumns: ColumnDef<DailyWatchlistRow, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Stock', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+  tickerColumn<DailyWatchlistRow>(),
   { accessorKey: 'company_name', header: 'Name', cell: (i) => i.getValue<string | null>() ?? '—' },
-  { accessorKey: 'sector', header: 'Sector', cell: (i) => i.getValue<string | null>() ?? '—' },
+  sectorColumn<DailyWatchlistRow>(),
   {
     accessorKey: 'buy_prob',
     header: () => (
@@ -67,9 +66,10 @@ const watchlistColumns: ColumnDef<DailyWatchlistRow, unknown>[] = [
         <InfoTooltip>Buy/hold/sell classifier's own probability — a separate model head from Target/Expected Return below.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtPct(i.getValue<number | null>()),
   },
-  { accessorKey: 'current_price', header: 'Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'current_price', header: 'Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
   {
     accessorKey: 'target_price',
     header: () => (
@@ -78,6 +78,7 @@ const watchlistColumns: ColumnDef<DailyWatchlistRow, unknown>[] = [
         <InfoTooltip>Median (q50) of the quantile-regressor's forward-return distribution — independent of Buy Prob*.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtMoney(i.getValue<number | null>()),
   },
   {
@@ -88,11 +89,13 @@ const watchlistColumns: ColumnDef<DailyWatchlistRow, unknown>[] = [
         <InfoTooltip>Median (q50) of the quantile-regressor's forward-return distribution — independent of Buy Prob*.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{i.getValue<number | null>() != null ? `${(i.getValue<number>() > 0 ? '+' : '')}${i.getValue<number>().toFixed(1)}%` : '—'}</span>,
   },
   {
     id: 'range',
     header: 'Range (low-high)',
+    meta: { align: 'right' },
     cell: ({ row }) => (row.original.target_low != null && row.original.target_high != null ? `${fmtMoney(row.original.target_low)} – ${fmtMoney(row.original.target_high)}` : '—'),
   },
   {
@@ -103,15 +106,15 @@ const watchlistColumns: ColumnDef<DailyWatchlistRow, unknown>[] = [
 ]
 
 const multibaggerColumns: ColumnDef<MultibaggerRow, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-  { accessorKey: 'mb_probability', header: 'MB Prob', cell: (i) => fmtPct(i.getValue<number | null>()) },
+  tickerColumn<MultibaggerRow>(),
+  { accessorKey: 'mb_probability', header: 'MB Prob', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
   { accessorKey: 'mb_tier', header: 'Deterministic Probability Band', cell: (i) => <Badge variant="outline">{i.getValue<string | null>() ?? '—'}</Badge> },
   { accessorKey: 'mb_archetype', header: 'Archetype', cell: (i) => i.getValue<string | null>() ?? '—' },
-  { accessorKey: 'survival_6m', header: '6m', cell: (i) => fmtPct(i.getValue<number | null>()) },
-  { accessorKey: 'survival_12m', header: '12m', cell: (i) => fmtPct(i.getValue<number | null>()) },
-  { accessorKey: 'survival_18m', header: '18m', cell: (i) => fmtPct(i.getValue<number | null>()) },
-  { accessorKey: 'survival_24m', header: '24m', cell: (i) => fmtPct(i.getValue<number | null>()) },
-  { accessorKey: 'survival_36m', header: '36m', cell: (i) => fmtPct(i.getValue<number | null>()) },
+  { accessorKey: 'survival_6m', header: '6m', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+  { accessorKey: 'survival_12m', header: '12m', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+  { accessorKey: 'survival_18m', header: '18m', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+  { accessorKey: 'survival_24m', header: '24m', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+  { accessorKey: 'survival_36m', header: '36m', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
 ]
 
 function HorizonSection({ title, rows }: { title: string; rows: DailyWatchlistRow[] }) {
@@ -294,7 +297,7 @@ export function MlPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>Open positions (top 3)</CardTitle>
-              <a href="/ml-positions.html" className="text-xs text-muted-foreground hover:underline">View All &rarr;</a>
+              <a href="/ml-positions" className="text-xs text-muted-foreground hover:underline">View All &rarr;</a>
             </div>
           </CardHeader>
           <CardContent>
@@ -341,7 +344,7 @@ export function MlPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>MultiBagger Candidates</CardTitle>
-              <a href="/ml-multibagger.html" className="text-xs text-muted-foreground hover:underline">View All &rarr;</a>
+              <a href="/ml-multibagger" className="text-xs text-muted-foreground hover:underline">View All &rarr;</a>
             </div>
             <CardDescription>{multibagger.length ? `Top ${multibagger.length} by multibagger probability` : undefined}</CardDescription>
           </CardHeader>

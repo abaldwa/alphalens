@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, ResponsiveChartCard, StatCard } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, ResponsiveChartCard, StatCard, cmpColumn, getSignalVariant, formatCurrencyINR } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type {
   ForensicRow,
@@ -21,15 +21,7 @@ function fmtPct(v: number | null | undefined) {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
 
-function fmtMoney(v: number | null | undefined) {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN')}`
-}
-
-function directionVariant(dir: string | null) {
-  if (dir === 'sell') return 'destructive' as const
-  if (dir === 'buy') return 'success' as const
-  return 'outline' as const
-}
+const fmtMoney = formatCurrencyINR
 
 const EXIT_TYPE_TEXT: Record<string, string> = {
   thesis_broken: 'Thesis broken — stop-loss hit; the original entry thesis no longer holds.',
@@ -97,7 +89,7 @@ const modelColumns: ColumnDef<MLSignalRow, unknown>[] = [
   {
     id: 'direction',
     header: 'Direction',
-    cell: ({ row }) => <Badge variant={directionVariant(row.original.signal_direction)}>{row.original.signal_direction ?? '—'}</Badge>,
+    cell: ({ row }) => <Badge variant={getSignalVariant(row.original.signal_direction)}>{row.original.signal_direction ?? '—'}</Badge>,
   },
   {
     accessorKey: 'buy_prob',
@@ -107,6 +99,7 @@ const modelColumns: ColumnDef<MLSignalRow, unknown>[] = [
         <InfoTooltip>signal_5d's own probability that its call is "buy" (0-1). The only model AlphaLens actually trades paper positions off of.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtPct(i.getValue<number | null>()),
   },
   {
@@ -127,6 +120,7 @@ const modelColumns: ColumnDef<MLSignalRow, unknown>[] = [
         <InfoTooltip>pnd_detector's 0-100 pump-and-dump risk score from volume/price anomaly features.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => i.getValue<number | null>()?.toFixed(0) ?? '—',
   },
   {
@@ -137,6 +131,7 @@ const modelColumns: ColumnDef<MLSignalRow, unknown>[] = [
         <InfoTooltip>rule_based_exit_policy's 0-100 urgency score for exiting an existing position.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => i.getValue<number | null>()?.toFixed(0) ?? '—',
   },
   {
@@ -147,6 +142,7 @@ const modelColumns: ColumnDef<MLSignalRow, unknown>[] = [
         <InfoTooltip>signal_5d's median (50th percentile) forecast forward return over its holding horizon, from its quantile-regression head.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtPct(i.getValue<number | null>()),
   },
   {
@@ -157,6 +153,7 @@ const modelColumns: ColumnDef<MLSignalRow, unknown>[] = [
         <InfoTooltip>signal_5d's conformal-prediction bounds around its point forecast — a distinct uncertainty-quantification method from the Q10/Q90 quantile bounds.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: ({ row }) => `${fmtPct(row.original.conformal_lower)} to ${fmtPct(row.original.conformal_upper)}`,
   },
 ]
@@ -173,7 +170,7 @@ interface HistoryDisplayRow {
 function buildHistoryColumns(): ColumnDef<HistoryDisplayRow, unknown>[] {
   return [
     { accessorKey: 'recDate', header: 'Recommended Date' },
-    { accessorKey: 'recPrice', header: 'Recommended Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+    { accessorKey: 'recPrice', header: 'Recommended Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
     {
       id: 'q50_return',
       header: () => (
@@ -182,18 +179,20 @@ function buildHistoryColumns(): ColumnDef<HistoryDisplayRow, unknown>[] {
           <InfoTooltip>signal_5d's median (50th percentile) forecast forward return over its holding horizon, from its quantile-regression head.</InfoTooltip>
         </span>
       ),
+      meta: { align: 'right' },
       cell: ({ row }) => fmtPct(row.original.signal.q50_return),
     },
-    { accessorKey: 'cmp', header: 'CMP', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+    cmpColumn<HistoryDisplayRow>('cmp'),
     {
       accessorKey: 'currentReturn',
       header: 'Current Return',
+      meta: { align: 'right' },
       cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
     },
     {
       id: 'direction',
       header: 'Direction',
-      cell: ({ row }) => <Badge variant={directionVariant(row.original.signal.signal_direction)}>{row.original.signal.signal_direction ?? '—'}</Badge>,
+      cell: ({ row }) => <Badge variant={getSignalVariant(row.original.signal.signal_direction)}>{row.original.signal.signal_direction ?? '—'}</Badge>,
     },
     { id: 'trend', header: 'Trend', cell: ({ row }) => <Sparkline series={row.original.trend} /> },
   ]
@@ -201,11 +200,11 @@ function buildHistoryColumns(): ColumnDef<HistoryDisplayRow, unknown>[] {
 
 const pairedHistoryColumns: ColumnDef<PairedHistoryRow & { buyPrice: number | null; sellPrice: number | null; cmp: number | null; ret: number | null; rationale: string }, unknown>[] = [
   { accessorKey: 'buyDate', header: 'Buy Date' },
-  { accessorKey: 'buyPrice', header: 'Buy Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'buyPrice', header: 'Buy Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
   { accessorKey: 'sellDate', header: 'Sell Date', cell: (i) => i.getValue<string | null>() ?? '—' },
-  { accessorKey: 'sellPrice', header: 'Sell Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
-  { accessorKey: 'cmp', header: 'CMP', cell: (i) => fmtMoney(i.getValue<number | null>()) },
-  { accessorKey: 'ret', header: 'Return', cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
+  { accessorKey: 'sellPrice', header: 'Sell Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  cmpColumn<PairedHistoryRow & { buyPrice: number | null; sellPrice: number | null; cmp: number | null; ret: number | null; rationale: string }>('cmp'),
+  { accessorKey: 'ret', header: 'Return', meta: { align: 'right' }, cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span> },
   { accessorKey: 'rationale', header: 'Rationale' },
 ]
 
@@ -334,7 +333,7 @@ export function MlSignalPage() {
               Load
             </Button>
             {forensic.data ? (
-              <Badge variant={forensic.data.forensic_flag_label === 'green' ? 'success' : ['red', 'black'].includes(forensic.data.forensic_flag_label ?? '') ? 'destructive' : 'warning'}>
+              <Badge variant={getSignalVariant(forensic.data.forensic_flag_label)}>
                 Forensic: {forensic.data.forensic_flag_label ?? '—'} ({forensic.data.forensic_composite?.toFixed(0) ?? '—'})
               </Badge>
             ) : null}

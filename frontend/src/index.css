@@ -51,6 +51,14 @@
   --sidebar: var(--tx);
   --sidebar-foreground: #e7e9f0;
   --sidebar-border: #2a2e3c;
+
+  /* Semantic signal tokens (buy/hold/sell) — one alias per verdict, reused
+   * everywhere a recommendation is rendered (SignalBadge, Confidence
+   * Matrix, Symbol Overview) instead of each call site picking a raw
+   * green/amber/red directly. */
+  --signal-buy: var(--green);
+  --signal-hold: var(--amber);
+  --signal-sell: var(--red);
 }
 
 .dark {
@@ -127,6 +135,11 @@
   --color-green: var(--green);
   --color-amber: var(--amber);
   --color-red: var(--red);
+
+  /* Signal semantics as Tailwind utilities: bg-signal-buy, text-signal-sell, etc. */
+  --color-signal-buy: var(--signal-buy);
+  --color-signal-hold: var(--signal-hold);
+  --color-signal-sell: var(--signal-sell);
 
   --radius-token: var(--radius);
   --radius-token-lg: var(--radius-lg);

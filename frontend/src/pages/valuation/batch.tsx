@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, cmpColumn, formatCurrencyINR, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 
 interface ValuationResult {
@@ -22,9 +22,7 @@ interface BatchRankedResponse {
   results: ValuationResult[]
 }
 
-function fmtMoney(v: number | null | undefined): string {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
-}
+const fmtMoney = formatCurrencyINR
 
 function valuationBadge(mos: number | null | undefined) {
   if (mos == null) return <Badge variant="outline">N/A</Badge>
@@ -34,9 +32,9 @@ function valuationBadge(mos: number | null | undefined) {
 }
 
 const columns: ColumnDef<ValuationResult, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Stock', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+  tickerColumn<ValuationResult>(),
   { id: 'valuation', header: 'Overall Valuation', cell: ({ row }) => valuationBadge(row.original.margin_of_safety) },
-  { accessorKey: 'current_price', header: 'CMP', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  cmpColumn<ValuationResult>('current_price'),
   {
     accessorKey: 'intrinsic_value',
     header: () => (
@@ -45,6 +43,7 @@ const columns: ColumnDef<ValuationResult, unknown>[] = [
         <InfoTooltip>DCF-estimated intrinsic value per share, discounting projected future cash flows back at the model's WACC.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtMoney(i.getValue<number | null>()),
   },
   {
@@ -55,12 +54,13 @@ const columns: ColumnDef<ValuationResult, unknown>[] = [
         <InfoTooltip>Gap between current market price and DCF intrinsic value, as a percentage of intrinsic value.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => {
       const v = i.getValue<number | null>()
       return v == null ? '—' : `${(v * 100).toFixed(1)}%`
     },
   },
-  { accessorKey: 'lifecycle_stage', header: 'Lifecycle Stage', cell: (i) => i.getValue<string | null>() ?? '—' },
+  { accessorKey: 'lifecycle_stage', header: 'Lifecycle Stage', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
   {
     accessorKey: 'dcf_model_type',
     header: () => (
@@ -69,6 +69,7 @@ const columns: ColumnDef<ValuationResult, unknown>[] = [
         <InfoTooltip>Which DCF variant was used for this ticker (e.g. standard, distressed, excess-return) — chosen based on the company's lifecycle stage and financial health.</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low' },
     cell: (i) => i.getValue<string | null>() ?? '—',
   },
   {
@@ -79,6 +80,7 @@ const columns: ColumnDef<ValuationResult, unknown>[] = [
         <InfoTooltip>How complete the underlying fundamentals data was for this valuation — "full" vs "partial" inputs, affecting confidence in the result.</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low' },
     cell: (i) => {
       const v = i.getValue<string | null>()
       return <Badge variant={v === 'full' ? 'success' : v === 'partial' ? 'warning' : 'outline'}>{v ?? '—'}</Badge>

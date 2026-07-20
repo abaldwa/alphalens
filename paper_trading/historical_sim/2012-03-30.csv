@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-03-30,SONATSOFTW,BUY,4.973481545001719,1,09:15:00,7.382368554827598,15:30:00,2012-12-03,target_achieved,hit,2.3888832094915795,0.4803241326777164,,,,,,

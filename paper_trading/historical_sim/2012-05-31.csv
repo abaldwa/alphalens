@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-31,BEML,BUY,206.2736191273554,4665,09:15:00,195.10685489485687,15:30:00,2012-06-07,thesis_broken,miss,-55963.279267565114,-0.05815777973234198,,,,,,

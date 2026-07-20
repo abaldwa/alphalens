@@ -106,7 +106,9 @@ def run_refinement(years_back: int = 10) -> dict:
 
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         logger.info("Computing yearly full market-cap rankings (top 200) %s..%s", start_date, end_date)
-        yearly_rankings = all_yearly_full_rankings(conn, start_date.isoformat(), end_date.isoformat())
+        yearly_rankings = all_yearly_full_rankings(
+            conn, start_date.isoformat(), end_date.isoformat(), include_delisted=True,
+        )  # 2026-07-20 survivorship-bias fix — BacktestUmbrellaPlan.md Gap #1
         if not yearly_rankings:
             raise RuntimeError("No real ohlcv_adjusted rows found in the requested date range — cannot run.")
 

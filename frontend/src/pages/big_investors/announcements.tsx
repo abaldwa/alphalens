@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 
 interface AnnouncementRow {
@@ -46,7 +46,7 @@ const CATEGORY_VARIANT: Record<string, 'default' | 'secondary' | 'outline' | 'su
 function makeColumns(): ColumnDef<AnnouncementRow, unknown>[] {
   return [
     { accessorKey: 'announced_at', header: 'Date', cell: (i) => i.getValue<string>().replace('T', ' ').slice(0, 16) },
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+    tickerColumn<AnnouncementRow>(),
     { accessorKey: 'company_name', header: 'Company', cell: (i) => i.getValue<string | null>() ?? '—' },
     {
       accessorKey: 'category',

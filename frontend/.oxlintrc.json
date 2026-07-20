@@ -4,5 +4,23 @@
   "rules": {
     "react/rules-of-hooks": "error",
     "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["src/pages/**", "src/app/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["@/lib/ui/*"],
+                "message": "Import from the '@/lib/ui' barrel instead of a deep path — every UI component has one entry point so framework-wide changes (tokens, primitives, composites) propagate everywhere they're used. Add a new export to src/lib/ui/index.ts if the component isn't exported yet."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

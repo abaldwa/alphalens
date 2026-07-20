@@ -1,0 +1,5 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-11-18,UNITECH,BUY,71.25,14900,09:15:00,66.75,15:30:00,2010-11-23,thesis_broken,miss,-71319.95341950003,-0.06717998673684214,,,,,,
+2010-11-18,REPRO,BUY,113.2,9378,09:15:00,103.95,15:30:00,2010-11-25,thesis_broken,miss,-91016.31103744335,-0.08573587291872804,,,,,,
+2010-11-18,MHRIL,BUY,162.66666666666666,6526,09:15:00,153.64444444444442,15:30:00,2010-11-26,thesis_broken,miss,-63148.72493132099,-0.059486572874317044,,,,,,
+2010-11-18,VASCONEQ,BUY,138.4,7671,09:15:00,120.7,15:30:00,2010-11-26,thesis_broken,miss,-140046.81993410888,-0.13191226541040468,,,,,,

@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-12-15,ACE,BUY,50.20923744572269,72,09:15:00,46.380540767911796,15:30:00,2011-01-28,thesis_broken,miss,-290.2062852048557,-0.08027691825482622,,,,,,

@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-01-28,PRAJIND,BUY,85.25,11895,09:15:00,79.35,15:30:00,2010-02-25,thesis_broken,miss,-74259.09736498515,-0.07323030314369516,,,,,,

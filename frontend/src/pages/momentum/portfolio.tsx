@@ -2,23 +2,21 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, TickerLink } from '@/lib/ui'
+import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, formatCurrencyINR, tickerColumn } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 import { StrategyPicker, useActiveStrategy, useStrategies } from './StrategyPicker'
 import type { MomentumSummary, MomentumTrade, MomentumContribution } from './types'
 
-function fmtMoney(v: number | null | undefined): string {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
-}
+const fmtMoney = formatCurrencyINR
 function fmtPct(v: number | null | undefined): string {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
 
 const positionColumns: ColumnDef<MomentumTrade, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+  tickerColumn<MomentumTrade>(),
   { accessorKey: 'purchase_date', header: 'Purchase Date' },
-  { accessorKey: 'qty', header: 'Qty' },
-  { accessorKey: 'purchase_price', header: 'Purchase Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'qty', header: 'Qty', meta: { align: 'right' } },
+  { accessorKey: 'purchase_price', header: 'Purchase Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
   {
     accessorKey: 'grace_remaining',
     header: () => (
@@ -30,13 +28,14 @@ const positionColumns: ColumnDef<MomentumTrade, unknown>[] = [
         </InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => i.getValue<number | null>() ?? '—',
   },
 ]
 
 const contributionColumns: ColumnDef<MomentumContribution, unknown>[] = [
   { accessorKey: 'contribution_date', header: 'Date' },
-  { accessorKey: 'amount', header: 'Amount', cell: (i) => fmtMoney(i.getValue<number>()) },
+  { accessorKey: 'amount', header: 'Amount', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number>()) },
   { accessorKey: 'note', header: 'Note', cell: (i) => i.getValue<string | null>() ?? '—' },
 ]
 

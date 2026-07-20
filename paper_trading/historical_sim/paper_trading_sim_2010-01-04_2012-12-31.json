@@ -1,0 +1,23 @@
+{
+  "simulation_type": "historical_paper_trading",
+  "exit_policy": "rule_based",
+  "from_date": "2010-01-04",
+  "to_date": "2012-12-31",
+  "trading_days": 750,
+  "skipped_dates": 0,
+  "n_positions": 10,
+  "initial_capital_inr": 10000000,
+  "final_equity_inr": 11738259.63,
+  "total_pnl_inr": 1735415.65,
+  "total_trades": 2753,
+  "win_rate_pct": 77.81,
+  "sharpe_ratio": 0.3646,
+  "cagr_pct": 5.53,
+  "portfolio_action_counts": {
+    "exit_model_reduce": 2336,
+    "exit_model_urgent": 417
+  },
+  "model": "signal_5d_current",
+  "meta_model": "meta_labeler_current",
+  "output_dir": "paper_trading/historical_sim"
+}

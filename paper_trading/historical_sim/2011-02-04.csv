@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-02-04,PARSVNATH,BUY,43.0,1,09:15:00,32.75,15:30:00,2011-02-09,thesis_broken,miss,-10.422949955999997,-0.24239418502325574,,,,,,

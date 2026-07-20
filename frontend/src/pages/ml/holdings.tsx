@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, formatCurrencyINR, tickerColumn } from '@/lib/ui'
 import { API_BASE_URL, apiDelete, apiGet, apiPost, ApiError } from '@/shared/api/client'
 import type { HoldingRow, MLSignalRow } from './types'
 
@@ -12,9 +12,7 @@ function todayStr() {
 function fmtPct(v: number | null | undefined) {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
-function fmtMoney(v: number | null | undefined) {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN')}`
-}
+const fmtMoney = formatCurrencyINR
 
 export function MlHoldingsPage() {
   const queryClient = useQueryClient()
@@ -113,12 +111,12 @@ export function MlHoldingsPage() {
   }
 
   const columns: ColumnDef<HoldingRow, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-    { accessorKey: 'qty', header: 'Qty' },
-    { accessorKey: 'purchase_date', header: 'Buy Date' },
-    { accessorKey: 'purchase_price', header: 'Buy Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
-    { accessorKey: 'sale_date', header: 'Sale Date', cell: (i) => i.getValue<string | null>() ?? '—' },
-    { accessorKey: 'sell_price', header: 'Sell Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+    tickerColumn<HoldingRow>(),
+    { accessorKey: 'qty', header: 'Qty', meta: { priority: 'low', align: 'right' } },
+    { accessorKey: 'purchase_date', header: 'Buy Date', meta: { priority: 'low' } },
+    { accessorKey: 'purchase_price', header: 'Buy Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+    { accessorKey: 'sale_date', header: 'Sale Date', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
+    { accessorKey: 'sell_price', header: 'Sell Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
     {
       id: 'direction',
       header: 'Direction (signal_5d)',
@@ -135,6 +133,7 @@ export function MlHoldingsPage() {
           <InfoTooltip>signal_5d's own probability that its call is "buy" (0-1). The only model AlphaLens actually trades paper positions off of.</InfoTooltip>
         </span>
       ),
+      meta: { align: 'right' },
       cell: ({ row }) => fmtPct(signals.data?.[row.original.ticker]?.buy_prob),
     },
     {
@@ -145,16 +144,19 @@ export function MlHoldingsPage() {
           <InfoTooltip>rule_based_exit_policy's 0-100 urgency score for exiting an existing position.</InfoTooltip>
         </span>
       ),
+      meta: { align: 'right' },
       cell: ({ row }) => signals.data?.[row.original.ticker]?.exit_urgency?.toFixed(0) ?? '—',
     },
     {
       id: 'exit_type',
       header: 'Exit Type',
+      meta: { priority: 'low' },
       cell: ({ row }) => <Badge variant="outline">{signals.data?.[row.original.ticker]?.exit_type ?? '—'}</Badge>,
     },
     {
       id: 'pnd_score',
       header: 'P&D Score',
+      meta: { priority: 'low', align: 'right' },
       cell: ({ row }) => signals.data?.[row.original.ticker]?.pnd_score?.toFixed(0) ?? '—',
     },
     {

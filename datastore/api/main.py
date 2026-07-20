@@ -48,6 +48,7 @@ from config.settings import (
 from .routers import (
     alerts,
     backtest_reports,
+    backtest_runs,
     big_investors,
     copilot,
     corporate_actions,
@@ -66,6 +67,7 @@ from .routers import (
     ohlcv,
     ops,
     paper_trading,
+    paper_trading_unified,
     pipeline,
     regime,
     sector_accumulation,
@@ -153,7 +155,9 @@ app.include_router(macro.router)
 # [AS BUILT, P3.x] paper_trading/backtest_reports added for the Automated
 # Daily Paper Trading + Web UI build (see plan: scalable-bubbling-reddy.md).
 app.include_router(paper_trading.router)
+app.include_router(paper_trading_unified.router)
 app.include_router(backtest_reports.router)
+app.include_router(backtest_runs.router)
 # [AS BUILT, SPEC-TA-004] Technical Analysis API scaffolding over the
 # already-computed features/{technical,advanced_technical,pattern_scores}.py
 # output — see plan: squishy-frolicking-whisper.md.

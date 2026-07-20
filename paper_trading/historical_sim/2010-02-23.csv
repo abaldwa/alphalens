@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-02-23,DLF,BUY,263.23022653373727,1,09:15:00,245.6815447648214,15:30:00,2010-05-20,thesis_broken,miss,-18.607417957215375,-0.07068875866666677,,,,,,

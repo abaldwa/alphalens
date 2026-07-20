@@ -463,6 +463,39 @@ def _describe_condition(cond: Dict[str, Any], key_values: Dict[str, Optional[flo
     return f"{label} {actual_str} ({symbol} {value})"
 
 
+def _describe_rule(cond: Dict[str, Any]) -> str:
+    """Render one screener condition dict as a strategy-level rule, with no
+    per-ticker actual value (unlike `_describe_condition`, which answers
+    "why did this fire for THIS ticker today") — e.g. 'SMA 50 Ratio > 1.0'.
+    Used to build a general "what is this strategy" description straight
+    from the template's own real condition definitions in templates.py,
+    not a fabricated summary."""
+    feature = cond.get("feature", "")
+    op = cond.get("op", "")
+    value = cond.get("value")
+    label = _humanize_feature(feature)
+
+    if op == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
+        return f"{label} in {value[0]}-{value[1]}"
+    if op == "top_pct":
+        return f"{label} in top {float(value) * 100:.0f}% of universe"
+    if op == "bottom_pct":
+        return f"{label} in bottom {float(value) * 100:.0f}% of universe"
+    symbol = {"lt": "<", "gt": ">", "lte": "<=", "gte": ">=", "eq": "="}.get(op, op)
+    return f"{label} {symbol} {value}"
+
+
+def _template_strategy_description(tmpl: Any) -> Optional[str]:
+    """One-line plain-English explanation of what a screener template
+    actually requires, e.g. 'Minervini SEPA requires: SMA 50 Ratio > 1.0;
+    SMA 200 Ratio > 1.0; ADX 14 > 20; ...' — derived from the template's own
+    conditions list, not a separately maintained (and driftable) blurb."""
+    if tmpl is None or not tmpl.conditions:
+        return None
+    rules = "; ".join(_describe_rule(c) for c in tmpl.conditions)
+    return f"{tmpl.description} requires: {rules}"
+
+
 @router.get("/watchlist/daily", response_model=TAWatchlistResponse)
 async def get_ta_daily_watchlist(
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest ta_signals date"),
@@ -538,6 +571,15 @@ async def get_ta_daily_watchlist(
 
     name_map = dict(zip(universe["ticker"], universe["company_name"].fillna("")))
     sector_map = dict(zip(universe["ticker"], universe["sector"].fillna("")))
+    mcap_map = dict(zip(universe["ticker"], universe["market_cap_cr"]))
+    # market_cap_cr == 0 means "not yet sourced" for that ticker (see
+    # config/universe.py's REQUIRED_COLUMNS docstring) — excluded from the
+    # ranking rather than ranked as if it were a real (tiny) market cap.
+    # Ranked over the full universe, not just this watchlist's filtered
+    # subset, so "rank" means market-cap rank, not rank-among-20-rows.
+    ranked = universe[universe["market_cap_cr"] > 0].copy()
+    ranked["market_cap_rank"] = ranked["market_cap_cr"].rank(ascending=False, method="min").astype(int)
+    mcap_rank_map = dict(zip(ranked["ticker"], ranked["market_cap_rank"]))
 
     tickers = df["ticker"].tolist()
     placeholders = ",".join("?" * len(tickers))
@@ -598,10 +640,14 @@ async def get_ta_daily_watchlist(
             ticker=ticker,
             company_name=name_map.get(ticker) or None,
             sector=sector_map.get(ticker) or None,
+            market_cap_cr=float(mcap_map[ticker]) if ticker in mcap_map and mcap_map[ticker] > 0 else None,
+            market_cap_rank=int(mcap_rank_map[ticker]) if ticker in mcap_rank_map else None,
             recommendation_date=rec_date,
             recommended_price=round(recommended_price, 2) if recommended_price is not None else None,
             current_price=round(current_price, 2) if current_price is not None else None,
             template_name=str(r["template_name"]),
+            template_description=tmpl.description if tmpl is not None else None,
+            template_strategy_description=_template_strategy_description(tmpl),
             category=str(r["category"]),
             score=float(r["score"]),
             rationale=rationale,

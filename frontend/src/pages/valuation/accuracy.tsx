@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, StatCard, formatCurrencyINR, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 
 interface AccuracyRow {
@@ -29,18 +29,16 @@ interface AccuracyResponse {
   rows: AccuracyRow[]
 }
 
-function fmtMoney(v: number | null | undefined): string {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
-}
+const fmtMoney = formatCurrencyINR
 
 function fmtNum(v: number | null | undefined, digits = 2): string {
   return v == null ? '—' : v.toFixed(digits)
 }
 
 const columns: ColumnDef<AccuracyRow, unknown>[] = [
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-  { accessorKey: 'signal_date', header: 'Signal Date' },
-  { accessorKey: 'lifecycle_stage', header: 'Lifecycle', cell: (i) => i.getValue<string | null>() ?? '—' },
+  tickerColumn<AccuracyRow>(),
+  { accessorKey: 'signal_date', header: 'Signal Date', meta: { priority: 'low' } },
+  { accessorKey: 'lifecycle_stage', header: 'Lifecycle', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
   {
     accessorKey: 'margin_of_safety',
     header: () => (
@@ -49,6 +47,7 @@ const columns: ColumnDef<AccuracyRow, unknown>[] = [
         <InfoTooltip>Margin of Safety — the gap between intrinsic value and price at the time of the signal, as a fraction. Positive means the model called it undervalued.</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low', align: 'right' },
     cell: (i) => fmtNum(i.getValue<number | null>()),
   },
   {
@@ -65,12 +64,13 @@ const columns: ColumnDef<AccuracyRow, unknown>[] = [
       return <Badge variant={v ? 'success' : 'destructive'}>{v ? 'Undervalued' : 'Overvalued'}</Badge>
     },
   },
-  { accessorKey: 'entry_price', header: 'Entry Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
-  { accessorKey: 'realized_date', header: 'Realized Date' },
-  { accessorKey: 'realized_price', header: 'Realized Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'entry_price', header: 'Entry Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'realized_date', header: 'Realized Date', meta: { priority: 'low' } },
+  { accessorKey: 'realized_price', header: 'Realized Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
   {
     accessorKey: 'realized_return_pct',
     header: 'Realized Return',
+    meta: { align: 'right' },
     cell: (i) => `${i.getValue<number>().toFixed(2)}%`,
   },
   {

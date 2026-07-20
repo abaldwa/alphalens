@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { TAScreenerResponse, TAScreenerRow, TAStrategyWinRateResponse, TATemplateListResponse } from './types'
 
@@ -63,41 +63,41 @@ function StrategyWinRates() {
                 ) : rows.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No {style} templates have earned a shown win rate yet.</p>
                 ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-xs text-muted-foreground">
-                        <th className="py-1">Template</th>
-                        <th className="py-1 text-right">W / L / Pending</th>
-                        <th className="py-1 text-right">Win Rate (95% CI)</th>
-                        <th className="py-1 text-right">vs. Baseline</th>
-                        <th className="py-1 text-right">Tier</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Template</TableHead>
+                        <TableHead className="text-right">W / L / Pending</TableHead>
+                        <TableHead className="text-right">Win Rate (95% CI)</TableHead>
+                        <TableHead className="text-right">vs. Baseline</TableHead>
+                        <TableHead className="text-right">Tier</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {rows.map((r) => (
-                        <tr key={r.template_name} className="border-t border-border" title={r.reasons.join('; ')}>
-                          <td className="py-1.5">
+                        <TableRow key={r.template_name} title={r.reasons.join('; ')}>
+                          <TableCell>
                             <span className="inline-flex items-center gap-1.5">
                               <Badge>{r.category}</Badge>
                               <span>{r.template_name}</span>
                               <span className="text-xs text-muted-foreground">{r.description}</span>
                             </span>
-                          </td>
-                          <td className="py-1.5 text-right font-mono-data text-xs">
+                          </TableCell>
+                          <TableCell className="text-right font-mono-data text-xs">
                             {r.wins} / {r.losses} / {r.pending}
-                          </td>
-                          <td className="py-1.5 text-right font-mono-data">
+                          </TableCell>
+                          <TableCell className="text-right font-mono-data">
                             {fmtPct(r.win_rate)}
                             <span className="ml-1 text-xs text-muted-foreground">({fmtInterval(r.wilson_lo, r.wilson_hi)})</span>
-                          </td>
-                          <td className="py-1.5 text-right font-mono-data text-xs">{fmtDelta(r.delta_vs_baseline)}</td>
-                          <td className="py-1.5 text-right">
+                          </TableCell>
+                          <TableCell className="text-right font-mono-data text-xs">{fmtDelta(r.delta_vs_baseline)}</TableCell>
+                          <TableCell className="text-right">
                             <Badge variant={TIER_BADGE_VARIANT[r.tier] ?? 'outline'}>{r.tier}</Badge>
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 )}
               </CardContent>
             </Card>
@@ -127,16 +127,18 @@ export function TechnicalScreenerPage() {
   const columns = useMemo<ColumnDef<TAScreenerRow, unknown>[]>(() => {
     const keyCols = results.data?.rows[0] ? Object.keys(results.data.rows[0].key_values) : []
     return [
-      { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-      { accessorKey: 'score', header: 'Score', cell: (i) => i.getValue<number>().toFixed(2) },
+      tickerColumn<TAScreenerRow>(),
+      { accessorKey: 'score', header: 'Score', meta: { align: 'right' }, cell: (i) => i.getValue<number>().toFixed(2) },
       {
         id: 'matched',
         header: 'Matched',
+        meta: { align: 'right' },
         cell: ({ row }) => `${row.original.matched_conditions}/${row.original.total_conditions}`,
       },
       ...keyCols.map((k) => ({
         id: k,
         header: k,
+        meta: { align: 'right' as const },
         cell: ({ row }: { row: { original: TAScreenerRow } }) => {
           const v = row.original.key_values[k]
           return v == null ? '—' : v.toFixed(2)

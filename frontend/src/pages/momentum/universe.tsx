@@ -1,14 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, formatCurrencyINR, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import { StrategyPicker, useActiveStrategy, useStrategies } from './StrategyPicker'
 import type { MomentumRankingRow } from './types'
 
-function fmtMoney(v: number | null | undefined): string {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN')}`
-}
+const fmtMoney = formatCurrencyINR
 function fmtPct(v: number | null | undefined): string {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
@@ -43,10 +41,11 @@ const columns: ColumnDef<MomentumRankingRow, unknown>[] = [
         <InfoTooltip>Rank within this rank-band's universe by trailing return (1 = highest momentum).</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
   },
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-  { accessorKey: 'company_name', header: 'Name', cell: (i) => i.getValue<string | null>() ?? '—' },
-  { accessorKey: 'price', header: 'Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  tickerColumn<MomentumRankingRow>(),
+  { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
+  { accessorKey: 'price', header: 'Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
   {
     accessorKey: 'momentum_return',
     header: () => (
@@ -55,9 +54,10 @@ const columns: ColumnDef<MomentumRankingRow, unknown>[] = [
         <InfoTooltip>Trailing 6-month return, the ranking metric used to rank tickers by momentum.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtPct(i.getValue<number>()),
   },
-  { accessorKey: 'return_20d', header: '20d Return', cell: (i) => fmtPct(i.getValue<number | null>()) },
+  { accessorKey: 'return_20d', header: '20d Return', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
   {
     accessorKey: 'sparkline',
     header: '30d Trend',

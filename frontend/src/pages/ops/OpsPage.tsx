@@ -284,7 +284,7 @@ export function OpsPage() {
 
   const runColumns = useMemo<ColumnDef<OpsRunRow, unknown>[]>(
     () => [
-      { header: 'Run', accessorKey: 'run_id' },
+      { header: 'Run', accessorKey: 'run_id', meta: { align: 'right' } },
       { header: 'Date', accessorKey: 'date' },
       {
         header: 'Status',
@@ -297,7 +297,7 @@ export function OpsPage() {
           </span>
         ),
       },
-      { header: 'Stocks', accessorKey: 'stocks_processed' },
+      { header: 'Stocks', accessorKey: 'stocks_processed', meta: { align: 'right' } },
       { header: 'Started', accessorFn: (r) => fmt(r.started_at) },
       { header: 'Completed', accessorFn: (r) => fmt(r.completed_at) },
       {
@@ -324,7 +324,7 @@ export function OpsPage() {
   const freshnessColumns = useMemo<ColumnDef<OpsFreshnessRow, unknown>[]>(
     () => [
       { header: 'Source', accessorKey: 'source' },
-      { header: 'Rows', accessorFn: (r) => fmt(r.row_count) },
+      { header: 'Rows', accessorFn: (r) => fmt(r.row_count), meta: { align: 'right' } },
       { header: 'Latest Data Date', accessorFn: (r) => fmt(r.latest_data_date) },
       { header: 'Last Write', accessorFn: (r) => fmt(r.last_write_at) },
       {
@@ -376,7 +376,7 @@ export function OpsPage() {
 
   const integrityColumns = useMemo<ColumnDef<OpsIntegrityFinding, unknown>[]>(
     () => [
-      { header: 'ID', accessorKey: 'id' },
+      { header: 'ID', accessorKey: 'id', meta: { align: 'right' } },
       { header: 'Check', accessorKey: 'check_name' },
       { header: 'Ticker', accessorFn: (r) => fmt(r.ticker) },
       { header: 'Date', accessorKey: 'finding_date' },
@@ -423,7 +423,7 @@ export function OpsPage() {
 
   const missedJobColumns = useMemo<ColumnDef<OpsMissedJobFinding, unknown>[]>(
     () => [
-      { header: 'ID', accessorKey: 'id' },
+      { header: 'ID', accessorKey: 'id', meta: { align: 'right' } },
       { header: 'Job', accessorKey: 'job_id' },
       { header: 'Missed Date', accessorKey: 'missed_date' },
       {

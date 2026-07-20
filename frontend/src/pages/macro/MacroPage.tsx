@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip, ResponsiveChartCard } from '@/lib/ui'
+import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip, ResponsiveChartCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 
 // Mirrors features/real_economy_macro.py's MANUAL_ENTRY_FEATURES (the 8
@@ -203,31 +203,31 @@ export function MacroPage() {
             ) : allRows.length === 0 ? (
               <p className="text-sm text-muted-foreground">No manual entries yet — use the form above to enter this month&apos;s readings.</p>
             ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left">
-                    <th className="pb-2">Indicator</th>
-                    <th className="pb-2">Month</th>
-                    <th className="pb-2">Value</th>
-                    <th className="pb-2">Available Since</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Indicator</TableHead>
+                    <TableHead>Month</TableHead>
+                    <TableHead>Value</TableHead>
+                    <TableHead>Available Since</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {allRows.map((r) => (
-                    <tr key={`${r.feature_name}-${r.reference_month_end}`}>
-                      <td className="py-1">
+                    <TableRow key={`${r.feature_name}-${r.reference_month_end}`}>
+                      <TableCell>
                         <span className="inline-flex items-center gap-1">
                           {r.feature_name}
                           {FEATURE_TOOLTIP[r.feature_name] && <InfoTooltip>{FEATURE_TOOLTIP[r.feature_name]}</InfoTooltip>}
                         </span>
-                      </td>
-                      <td className="py-1 font-mono-data">{r.reference_month_end}</td>
-                      <td className="py-1 font-mono-data">{r.value}</td>
-                      <td className="py-1 font-mono-data text-xs">{r.availability_date}</td>
-                    </tr>
+                      </TableCell>
+                      <TableCell className="font-mono-data">{r.reference_month_end}</TableCell>
+                      <TableCell className="font-mono-data">{r.value}</TableCell>
+                      <TableCell className="font-mono-data text-xs">{r.availability_date}</TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>

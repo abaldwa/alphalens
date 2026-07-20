@@ -117,6 +117,77 @@ class TestDownloadIndexOhlcv:
         saved = tmp_path / "nse_indices" / "2026-06-01.csv"
         assert saved.exists()
 
+    def test_historical_cnx_name_canonicalized_to_current_nifty_name(self, patched, monkeypatch):
+        """2026-07-20 fix: NSE's pre-2015-11-06 archives called this index
+        'CNX Nifty' (and 'S&P CNX Nifty' even earlier) — real historical
+        data that was previously silently dropped by the TRACKED_INDICES
+        filter since it only matched the current name."""
+        raw = _raw_csv_df(
+            [
+                {
+                    "Index Name": "CNX Nifty", "Open Index Value": 8400.0, "High Index Value": 8420.0,
+                    "Low Index Value": 8390.0, "Closing Index Value": 8410.0, "Volume": "100000",
+                },
+                {
+                    "Index Name": "S&P CNX Nifty", "Open Index Value": 5900.0, "High Index Value": 5950.0,
+                    "Low Index Value": 5880.0, "Closing Index Value": 5920.0, "Volume": "50000",
+                },
+                {
+                    "Index Name": "CNX Finance", "Open Index Value": 4000.0, "High Index Value": 4050.0,
+                    "Low Index Value": 3980.0, "Closing Index Value": 4020.0, "Volume": "20000",
+                },
+            ]
+        )
+        monkeypatch.setattr(nse_indices, "_fetch_indices_csv", lambda trade_date: raw)
+        df = nse_indices.download_index_ohlcv("2026-06-01")
+        # Both aliases map to the SAME canonical name -> both rows survive
+        # the filter under "Nifty 50" (real NSE archives never emit both
+        # aliases on the same date; this just proves the mapping itself).
+        assert (df["index_name"] == "Nifty 50").sum() == 2
+        assert (df["index_name"] == "Nifty Financial Services").sum() == 1
+
+    def test_unmapped_historical_names_stay_dropped(self, patched, monkeypatch):
+        """Nifty Healthcare Index / Nifty Oil & Gas have no verified
+        historical alias (launched after the CNX-era archives checked) —
+        must NOT be guessed; an untracked old name stays untracked."""
+        raw = _raw_csv_df(
+            [{
+                "Index Name": "CNX Some Discontinued Index", "Open Index Value": 100.0,
+                "High Index Value": 100.0, "Low Index Value": 100.0, "Closing Index Value": 100.0,
+                "Volume": "1",
+            }]
+        )
+        monkeypatch.setattr(nse_indices, "_fetch_indices_csv", lambda trade_date: raw)
+        df = nse_indices.download_index_ohlcv("2026-06-01")
+        assert len(df) == 0
+
+    def test_staleness_check_parses_historical_ddmmyyyy_index_date(self, patched, monkeypatch):
+        """Old archives stamp Index Date as DD-MM-YYYY (e.g. '05-01-2015'),
+        not the current DD-Mon-YYYY format — this must still be caught as
+        a real date mismatch, not silently pass through as unparseable."""
+        raw = _raw_csv_df(
+            [{
+                "Index Name": "Nifty 50", "Index Date": "04-01-2015", "Open Index Value": 8400.0,
+                "High Index Value": 8420.0, "Low Index Value": 8390.0, "Closing Index Value": 8410.0,
+                "Volume": "100000",
+            }]
+        )
+        monkeypatch.setattr(nse_indices, "_fetch_indices_csv", lambda trade_date: raw)
+        with pytest.raises(ValueError, match="stale"):
+            nse_indices.download_index_ohlcv("2015-01-05")  # requested date != stamped date
+
+    def test_staleness_check_accepts_matching_historical_ddmmyyyy_index_date(self, patched, monkeypatch):
+        raw = _raw_csv_df(
+            [{
+                "Index Name": "Nifty 50", "Index Date": "05-01-2015", "Open Index Value": 8400.0,
+                "High Index Value": 8420.0, "Low Index Value": 8390.0, "Closing Index Value": 8410.0,
+                "Volume": "100000",
+            }]
+        )
+        monkeypatch.setattr(nse_indices, "_fetch_indices_csv", lambda trade_date: raw)
+        df = nse_indices.download_index_ohlcv("2015-01-05")  # matches -> no raise
+        assert len(df) == 1
+
     def test_no_tracked_indices_present_returns_empty_df_with_columns(self, patched, monkeypatch):
         raw = _raw_csv_df(
             [

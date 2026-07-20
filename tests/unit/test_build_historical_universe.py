@@ -91,3 +91,17 @@ class TestBuildHistoricalUniverseFromDelisted:
         result = build_historical_universe_from_delisted(db_path=nonexistent_db)
 
         assert result == ["ACTIVE1"]
+
+    def test_conn_param_reuses_caller_connection_instead_of_opening_a_new_one(
+        self, tmp_path, db_path, monkeypatch
+    ):
+        """2026-07-20 fix: passing an already-open connection (as
+        features/momentum_universe.py's full_rank_universe() now does)
+        must work without opening — and conflicting with — a second one."""
+        _write_universe_csv(tmp_path, ["ACTIVE1"], monkeypatch)
+        _insert_delisted(db_path, "DELISTED1", date(2018, 5, 1))
+
+        with get_duckdb_connection(db_path, persist=False, read_only=True) as conn:
+            result = build_historical_universe_from_delisted(conn=conn)
+
+        assert set(result) == {"ACTIVE1", "DELISTED1"}

@@ -1,8 +1,6 @@
-// Sidebar nav model shared by AppShell across every Vite entry. Each
-// section links to its first (index) page, built as its own .html entry
-// under frontend/ (see vite.config.ts `build.rollupOptions.input`). Most
-// sections also have sub-pages, each its own Vite HTML entry
-// (`<section>-<sub>.html`) — these render as an expandable sub-menu under
+// Sidebar nav model shared by AppShell across the SPA route tree (see
+// src/app/router.tsx). Each section links to its first (index) route; most
+// sections also have sub-routes, rendered as an expandable sub-menu under
 // the section in AppShell's sidebar.
 export interface NavSubItem {
   id: string
@@ -21,85 +19,85 @@ export interface NavSection {
 }
 
 export const NAV_SECTIONS: NavSection[] = [
-  { id: 'home', label: 'Home', href: '/index.html' },
+  { id: 'home', label: 'Home', href: '/' },
   {
     id: 'technical',
     label: 'Technical',
-    href: '/technical-watchlist.html',
+    href: '/technical-watchlist',
     subItems: [
-      { id: 'overview', label: 'Market Overview', href: '/technical-overview.html' },
-      { id: 'watchlist', label: 'Daily WatchList', href: '/technical-watchlist.html' },
-      { id: 'screener', label: 'Screener', href: '/technical-screener.html' },
-      { id: 'alerts', label: 'Alerts', href: '/technical-alerts.html' },
-      { id: 'compare', label: 'Compare', href: '/technical-compare.html' },
-      { id: 'chart', label: 'Chart', href: '/technical-chart.html' },
-      { id: 'deep_dive', label: 'Deep Dive', href: '/technical-deep_dive.html' },
+      { id: 'overview', label: 'Market Overview', href: '/technical-overview' },
+      { id: 'watchlist', label: 'Daily WatchList', href: '/technical-watchlist' },
+      { id: 'screener', label: 'Screener', href: '/technical-screener' },
+      { id: 'alerts', label: 'Alerts', href: '/technical-alerts' },
+      { id: 'compare', label: 'Compare', href: '/technical-compare' },
+      { id: 'chart', label: 'Chart', href: '/technical-chart' },
+      { id: 'deep_dive', label: 'Deep Dive', href: '/technical-deep_dive' },
     ],
   },
   {
     id: 'fundamental',
     label: 'Fundamental',
-    href: '/fundamental.html',
+    href: '/fundamental',
     subItems: [
-      { id: 'dashboard', label: 'Dashboard', href: '/fundamental.html' },
-      { id: 'screener', label: 'Screener', href: '/fundamental-screener.html' },
-      { id: 'peers', label: 'Peers', href: '/fundamental-peers.html' },
-      { id: 'sector', label: 'Sector', href: '/fundamental-sector.html' },
-      { id: 'management', label: 'Management', href: '/fundamental-management.html' },
-      { id: 'thesis', label: 'Thesis', href: '/fundamental-thesis.html' },
+      { id: 'dashboard', label: 'Dashboard', href: '/fundamental' },
+      { id: 'screener', label: 'Screener', href: '/fundamental-screener' },
+      { id: 'peers', label: 'Peers', href: '/fundamental-peers' },
+      { id: 'sector', label: 'Sector', href: '/fundamental-sector' },
+      { id: 'management', label: 'Management', href: '/fundamental-management' },
+      { id: 'thesis', label: 'Thesis', href: '/fundamental-thesis' },
     ],
   },
   {
     id: 'valuation',
     label: 'Valuation',
-    href: '/valuation.html',
+    href: '/valuation',
     subItems: [
-      { id: 'dcf', label: 'DCF', href: '/valuation-dcf.html' },
-      { id: 'relative', label: 'Relative', href: '/valuation-relative.html' },
-      { id: 'batch', label: 'Batch', href: '/valuation-batch.html' },
-      { id: 'accuracy', label: 'Accuracy', href: '/valuation-accuracy.html' },
+      { id: 'dcf', label: 'DCF', href: '/valuation-dcf' },
+      { id: 'relative', label: 'Relative', href: '/valuation-relative' },
+      { id: 'batch', label: 'Batch', href: '/valuation-batch' },
+      { id: 'accuracy', label: 'Accuracy', href: '/valuation-accuracy' },
     ],
   },
   {
     id: 'forensic',
     label: 'Forensic',
-    href: '/forensic.html',
+    href: '/forensic',
     subItems: [
-      { id: 'dashboard', label: 'Dashboard', href: '/forensic.html' },
-      { id: 'benford', label: 'Benford', href: '/forensic-benford.html' },
-      { id: 'cashflow', label: 'Cash Flow', href: '/forensic-cashflow.html' },
-      { id: 'heatmap', label: 'Heatmap', href: '/forensic-heatmap.html' },
-      { id: 'redflag', label: 'Red Flags', href: '/forensic-redflag.html' },
-      { id: 'report', label: 'Report', href: '/forensic-report.html' },
-      { id: 'universe', label: 'Universe', href: '/forensic-universe.html' },
+      { id: 'dashboard', label: 'Dashboard', href: '/forensic' },
+      { id: 'benford', label: 'Benford', href: '/forensic-benford' },
+      { id: 'cashflow', label: 'Cash Flow', href: '/forensic-cashflow' },
+      { id: 'heatmap', label: 'Heatmap', href: '/forensic-heatmap' },
+      { id: 'redflag', label: 'Red Flags', href: '/forensic-redflag' },
+      { id: 'report', label: 'Report', href: '/forensic-report' },
+      { id: 'universe', label: 'Universe', href: '/forensic-universe' },
     ],
   },
   {
     id: 'ml',
     label: 'ML Signals',
-    href: '/ml.html',
+    href: '/ml',
     subItems: [
-      { id: 'index', label: 'Hub', href: '/ml.html' },
-      { id: 'signal', label: 'Signal', href: '/ml-signal.html' },
-      { id: 'backtest', label: 'Backtest', href: '/ml-backtest.html' },
-      { id: 'holdings', label: 'Holdings', href: '/ml-holdings.html' },
-      { id: 'positions', label: 'Positions', href: '/ml-positions.html' },
-      { id: 'multibagger', label: 'Multibagger', href: '/ml-multibagger.html' },
-      { id: 'sector_rotation', label: 'Sector Rotation', href: '/ml-sector_rotation.html' },
-      { id: 'exit_urgency', label: 'Exit Urgency', href: '/ml-exit_urgency.html' },
-      { id: 'universe', label: 'Universe', href: '/ml-universe.html' },
-      { id: 'tools', label: 'Tools', href: '/ml-tools.html' },
+      { id: 'index', label: 'Hub', href: '/ml' },
+      { id: 'signal', label: 'Signal', href: '/ml-signal' },
+      { id: 'backtest', label: 'Backtest', href: '/ml-backtest' },
+      { id: 'holdings', label: 'Holdings', href: '/ml-holdings' },
+      { id: 'positions', label: 'Positions', href: '/ml-positions' },
+      { id: 'multibagger', label: 'Multibagger', href: '/ml-multibagger' },
+      { id: 'sector_rotation', label: 'Sector Rotation', href: '/ml-sector_rotation' },
+      { id: 'exit_urgency', label: 'Exit Urgency', href: '/ml-exit_urgency' },
+      { id: 'universe', label: 'Universe', href: '/ml-universe' },
+      { id: 'tools', label: 'Tools', href: '/ml-tools' },
     ],
   },
   {
     id: 'momentum',
     label: 'Momentum',
-    href: '/momentum.html',
+    href: '/momentum',
     subItems: [
-      { id: 'index', label: 'Overview', href: '/momentum.html' },
-      { id: 'portfolio', label: 'Portfolio', href: '/momentum-portfolio.html' },
-      { id: 'rebalance', label: 'Rebalance', href: '/momentum-rebalance.html' },
-      { id: 'universe', label: 'Universe', href: '/momentum-universe.html' },
+      { id: 'index', label: 'Overview', href: '/momentum' },
+      { id: 'portfolio', label: 'Portfolio', href: '/momentum-portfolio' },
+      { id: 'rebalance', label: 'Rebalance', href: '/momentum-rebalance' },
+      { id: 'universe', label: 'Universe', href: '/momentum-universe' },
       // Research artifacts (732-variant grid backtest ledger, year-on-year
       // report) live outside this app as published Claude artifacts, not
       // local screens — mirrors dashboard/static/js/shell.js's momentum
@@ -119,20 +117,32 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    // Unified Backtest & Paper Trading Umbrella (BacktestUmbrellaPlan.md) —
+    // a deliberate top-level sibling section, NOT nested under 'ml' (which
+    // still keeps its own legacy /ml-backtest page, backed by the older
+    // backtest_reports.py passthrough — the two coexist, see that router's
+    // docstring). This section is the new cross-channel run history for
+    // Technical/Fundamental/ML/Momentum backtest, walk-forward, and
+    // (eventually) paper-trading runs.
+    id: 'backtest',
+    label: 'Backtest',
+    href: '/backtest',
+  },
+  {
     id: 'big_investors',
     label: 'Big Investors',
-    href: '/big_investors.html',
+    href: '/big_investors',
     subItems: [
-      { id: 'index', label: 'Overview', href: '/big_investors.html' },
-      { id: 'announcements', label: 'Announcements', href: '/big_investors-announcements.html' },
-      { id: 'mf_holdings', label: 'MF Holdings', href: '/big_investors-mf_holdings.html' },
+      { id: 'index', label: 'Overview', href: '/big_investors' },
+      { id: 'announcements', label: 'Announcements', href: '/big_investors-announcements' },
+      { id: 'mf_holdings', label: 'MF Holdings', href: '/big_investors-mf_holdings' },
     ],
   },
   {
     id: 'ops',
     label: 'Ops',
-    href: '/ops.html',
-    subItems: [{ id: 'index', label: 'Overview', href: '/ops.html' }],
+    href: '/ops',
+    subItems: [{ id: 'index', label: 'Overview', href: '/ops' }],
   },
   {
     // Split out from Ops into its own top-level section — was a sub-tab
@@ -140,6 +150,6 @@ export const NAV_SECTIONS: NavSection[] = [
     // pipeline/job monitoring.
     id: 'macro',
     label: 'Macro',
-    href: '/macro.html',
+    href: '/macro',
   },
 ]

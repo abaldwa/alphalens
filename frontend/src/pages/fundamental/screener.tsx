@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink } from '@/lib/ui'
+import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { FAScreenerResponse } from './types'
 
@@ -22,8 +22,8 @@ interface TickerRow {
 }
 
 const columns: ColumnDef<TickerRow, unknown>[] = [
-  { accessorKey: 'rank', header: '#' },
-  { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
+  { accessorKey: 'rank', header: '#', meta: { align: 'right' } },
+  tickerColumn<TickerRow>(),
 ]
 
 export function FundamentalScreenerPage() {

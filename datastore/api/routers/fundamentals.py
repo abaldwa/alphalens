@@ -62,7 +62,11 @@ from features.fundamental_composites import (
     select_peers,
 )
 from features.fundamental_quality_gate import validate_and_annotate
-from features.fundamental_source_priority import SOURCE_PRIORITY, build_priority_update_clause
+from features.fundamental_source_priority import (
+    SOURCE_PRIORITY,
+    append_fundamentals_history,
+    build_priority_update_clause,
+)
 from features.governance import GOVERNANCE_FEATURES
 
 logger = logging.getLogger(__name__)
@@ -513,6 +517,9 @@ async def write_fundamentals(record: FundamentalsWrite) -> FundamentalsWriteResu
 
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(_INSERT_SQL, values)
+        # 2026-07-20 Gap #2 fix: append a real snapshot into the append-only
+        # fundamentals_history table — see append_fundamentals_history's docstring.
+        append_fundamentals_history(conn, record.ticker, record.fiscal_year, record.quarter)
 
     logger.info(f"fundamentals.write: {record.ticker} FY{record.fiscal_year}Q{record.quarter}")
     return FundamentalsWriteResult(
@@ -549,6 +556,10 @@ async def write_fundamentals_batch(body: FundamentalsWriteBatch) -> Fundamentals
     if all_values:
         with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
             conn.executemany(_INSERT_SQL, all_values)
+            # 2026-07-20 Gap #2 fix: one history snapshot per written row.
+            ticker_idx, fy_idx, q_idx = _COLUMNS.index("ticker"), _COLUMNS.index("fiscal_year"), _COLUMNS.index("quarter")
+            for row in all_values:
+                append_fundamentals_history(conn, row[ticker_idx], row[fy_idx], row[q_idx])
 
     logger.info(f"fundamentals.write_batch: {len(all_values)} written, {failed} failed of {len(body.records)}")
     return FundamentalsWriteBatchResult(written=len(all_values), failed=failed)

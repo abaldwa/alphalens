@@ -19,6 +19,7 @@ const columns: ColumnDef<Record<string, unknown>, unknown>[] = [
         <InfoTooltip>The MultibaggerModel's probability estimate, carried forward from ml_multibagger's most recent (typically weekly) run. Not a return multiplier prediction.</InfoTooltip>
       </span>
     ),
+    meta: { align: 'right' },
     cell: (i) => fmtPct(i.getValue()),
   },
   {
@@ -39,6 +40,7 @@ const columns: ColumnDef<Record<string, unknown>, unknown>[] = [
         <InfoTooltip>A categorical label for the type of setup the model associates with this ticker (e.g. small-cap breakout, turnaround).</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low' },
     cell: (i) => String(i.getValue() ?? '—'),
   },
   {
@@ -49,12 +51,13 @@ const columns: ColumnDef<Record<string, unknown>, unknown>[] = [
         <InfoTooltip>The model's estimated probability the position survives (doesn't hit a defined failure condition) 6 months out.</InfoTooltip>
       </span>
     ),
+    meta: { priority: 'low', align: 'right' },
     cell: (i) => fmtPct(i.getValue()),
   },
-  { accessorKey: 'survival_12m', header: '12m', cell: (i) => fmtPct(i.getValue()) },
-  { accessorKey: 'survival_18m', header: '18m', cell: (i) => fmtPct(i.getValue()) },
-  { accessorKey: 'survival_24m', header: '24m', cell: (i) => fmtPct(i.getValue()) },
-  { accessorKey: 'survival_36m', header: '36m', cell: (i) => fmtPct(i.getValue()) },
+  { accessorKey: 'survival_12m', header: '12m', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue()) },
+  { accessorKey: 'survival_18m', header: '18m', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue()) },
+  { accessorKey: 'survival_24m', header: '24m', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue()) },
+  { accessorKey: 'survival_36m', header: '36m', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue()) },
 ]
 
 function asOfNote(tickers: Record<string, unknown>[] | undefined): string | undefined {

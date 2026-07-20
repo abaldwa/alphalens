@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-12-30,TTML,BUY,10.5,11,09:15:00,13.897058823529411,15:30:00,2012-01-25,target_achieved,hit,36.903095432823534,0.3195073197647059,,,,,,

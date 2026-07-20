@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-12-29,KTKBANK,BUY,65.05,13,09:15:00,85.45,15:30:00,2012-01-24,target_achieved,hit,261.79871790020013,0.3095828272928518,,,,,,

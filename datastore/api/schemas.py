@@ -1149,10 +1149,14 @@ class TAWatchlistRow(BaseModel):
     ticker: str
     company_name: Optional[str] = None
     sector: Optional[str] = None
+    market_cap_cr: Optional[float] = None
+    market_cap_rank: Optional[int] = None
     recommendation_date: Optional[str] = None
     recommended_price: Optional[float] = None
     current_price: Optional[float] = None
     template_name: str
+    template_description: Optional[str] = None
+    template_strategy_description: Optional[str] = None
     category: str
     score: float
     rationale: str

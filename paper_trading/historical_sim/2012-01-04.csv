@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-01-04,WHIRLPOOL,BUY,143.58902868503782,1,09:15:00,187.9575417008644,15:30:00,2012-02-15,target_achieved,hit,43.79098473226472,0.30497444779238764,,,,,,
+2012-01-04,GSFC,BUY,66.92999999999999,1,09:15:00,87.73,15:30:00,2012-04-02,target_achieved,hit,20.530801382440018,0.30675035682713314,,,,,,

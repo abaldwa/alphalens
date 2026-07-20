@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import {
   ChevronDown,
   Menu,
@@ -39,13 +40,8 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
 
 const SIDEBAR_COLLAPSED_KEY = 'alphalens.sidebarCollapsed'
 
-function currentPath(): string {
-  if (typeof window === 'undefined') return ''
-  return window.location.pathname
-}
-
 function isActive(href: string, pathname: string): boolean {
-  return pathname === href || (href === '/index.html' && (pathname === '/' || pathname === ''))
+  return pathname === href
 }
 
 /** A section is "active" (and its sub-menu auto-expanded) if the current
@@ -89,8 +85,8 @@ function NavList({
           return (
             <Tooltip key={s.id}>
               <TooltipTrigger asChild>
-                <a
-                  href={s.href}
+                <Link
+                  to={s.href}
                   onClick={onNavigate}
                   aria-label={s.label}
                   className={cn(
@@ -101,7 +97,7 @@ function NavList({
                   )}
                 >
                   <Icon className="size-4.5 shrink-0" />
-                </a>
+                </Link>
               </TooltipTrigger>
               <TooltipContent side="right">{s.label}</TooltipContent>
             </Tooltip>
@@ -111,8 +107,8 @@ function NavList({
         return (
           <div key={s.id} className="flex flex-col">
             <div className="flex items-center">
-              <a
-                href={s.href}
+              <Link
+                to={s.href}
                 onClick={onNavigate}
                 className={cn(
                   'flex flex-1 items-center gap-2.5 rounded-[var(--radius-token)] px-3 py-2 text-sm font-medium transition-colors',
@@ -123,7 +119,7 @@ function NavList({
               >
                 <Icon className="size-4 shrink-0" />
                 <span className="truncate">{s.label}</span>
-              </a>
+              </Link>
               {hasSub ? (
                 <button
                   type="button"
@@ -139,22 +135,29 @@ function NavList({
               <div className="ml-3 flex flex-col gap-0.5 border-l border-white/10 pl-2">
                 {s.subItems!.map((si) => {
                   const subActive = isActive(si.href, pathname)
+                  const linkClassName = cn(
+                    'rounded-[var(--radius-token)] px-3 py-1.5 text-xs font-medium transition-colors',
+                    subActive
+                      ? 'bg-white/10 text-white'
+                      : 'text-sidebar-foreground/60 hover:bg-white/5 hover:text-sidebar-foreground',
+                  )
+                  if (si.external) {
+                    return (
+                      <a
+                        key={si.id}
+                        href={si.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={linkClassName}
+                      >
+                        {si.label}
+                      </a>
+                    )
+                  }
                   return (
-                    <a
-                      key={si.id}
-                      href={si.href}
-                      onClick={si.external ? undefined : onNavigate}
-                      target={si.external ? '_blank' : undefined}
-                      rel={si.external ? 'noopener noreferrer' : undefined}
-                      className={cn(
-                        'rounded-[var(--radius-token)] px-3 py-1.5 text-xs font-medium transition-colors',
-                        subActive
-                          ? 'bg-white/10 text-white'
-                          : 'text-sidebar-foreground/60 hover:bg-white/5 hover:text-sidebar-foreground',
-                      )}
-                    >
+                    <Link key={si.id} to={si.href} onClick={onNavigate} className={linkClassName}>
                       {si.label}
-                    </a>
+                    </Link>
                   )
                 })}
               </div>
@@ -184,7 +187,7 @@ export interface AppShellProps {
  * page-specific code, so every Vite entry's page composes it the same way.
  */
 export function AppShell({ title, description, actions, children }: AppShellProps) {
-  const pathname = currentPath()
+  const { pathname } = useLocation()
   const [open, setOpen] = React.useState(false)
   const [collapsed, setCollapsed] = React.useState(
     () => typeof window !== 'undefined' && window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1',
@@ -203,7 +206,7 @@ export function AppShell({ title, description, actions, children }: AppShellProp
     <div className="flex min-h-screen w-full bg-background text-foreground">
       {/* Desktop sidebar rail — collapses to an icon-only strip to free up
           screen width for data-dense pages (screeners, wide tables). State
-          persists across page loads (multi-page app, no client router) via
+          persists across route navigation via
           localStorage. */}
       <aside
         className={cn(

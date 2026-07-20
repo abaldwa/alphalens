@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-05-19,CANBK,BUY,85.70221273425474,1,09:15:00,78.80046436262997,15:30:00,2011-07-28,thesis_broken,miss,-7.246450555845527,-0.08455383268008852,,,,,,

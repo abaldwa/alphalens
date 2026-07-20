@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-05-04,BAJAJHIND,BUY,118.44999999999999,8292,09:15:00,112.60000000000001,15:30:00,2010-05-07,thesis_broken,miss,-52458.648084040615,-0.05341001939552535,,,,,,

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip, PriceChart, type PriceChartMarker } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip, PriceChart, type PriceChartMarker, Table, TableBody, TableRow, TableCell } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type {
   EventRow,
@@ -285,21 +285,21 @@ export function TechnicalChartPage() {
             {!indicators.data?.available ? (
               <p className="text-sm text-muted-foreground">No indicator data for {ticker}</p>
             ) : (
-              <table className="w-full text-sm">
-                <tbody>
+              <Table>
+                <TableBody>
                   {CURATED_INDICATORS.map(([key, label, kind]) => (
-                    <tr key={key}>
-                      <td className="py-1 text-muted-foreground">
+                    <TableRow key={key}>
+                      <TableCell className="text-muted-foreground">
                         <span className="inline-flex items-center gap-1">
                           {label}
                           {INDICATOR_TOOLTIPS[key] && <InfoTooltip>{INDICATOR_TOOLTIPS[key]}</InfoTooltip>}
                         </span>
-                      </td>
-                      <td className="py-1 text-right font-mono-data">{fmtIndicator(indicators.data?.indicators[key], kind)}</td>
-                    </tr>
+                      </TableCell>
+                      <TableCell className="text-right font-mono-data">{fmtIndicator(indicators.data?.indicators[key], kind)}</TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>

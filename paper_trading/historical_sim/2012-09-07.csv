@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-09-07,ACE,BUY,17.863130620332267,29834,09:15:00,27.787092076072415,15:30:00,2012-09-11,target_achieved,hit,293927.97805535235,0.5515334635555553,,,,,,
+2012-09-07,PATELENG,BUY,66.55,16015,09:15:00,63.2,15:30:00,2012-09-13,thesis_broken,miss,-57936.98861493904,-0.05436018366040574,,,,,,

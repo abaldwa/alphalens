@@ -43,17 +43,20 @@ class _RecordingClient:
         return _FakeResponse()
 
 
-def _train_small_signal_model(cls, seed, n=200, **kwargs):
+def _train_small_signal_model(cls, seed, n=80, **kwargs):
+    """Uses train() (no HPO / SMOTETomek / quantile heads), not train_full() —
+    this test only exercises ensemble-combination wiring downstream of
+    predict()/predict_proba(), both of which train() fits identically to
+    train_full(). train_full()'s extra Optuna + quantile-regressor fits were
+    measured to cause unbounded native-memory growth (CatBoost/XGBoost) across
+    the module fixture's 3 sequential model trainings, OOM-killing this test
+    twice — this is a test-cost fix, not a change to production training."""
     rng = np.random.default_rng(seed)
     X = pd.DataFrame(rng.normal(size=(n, len(CORE_TECHNICAL_FEATURES))), columns=CORE_TECHNICAL_FEATURES)
     score = X.iloc[:, 0] - 0.5 * X.iloc[:, 1] + rng.normal(scale=0.5, size=n)
     y = pd.Series(np.where(score > 0.5, 1, np.where(score < -0.5, -1, 0)))
-    returns = pd.Series(score * 0.02 + rng.normal(scale=0.01, size=n))
-    model = cls(optuna_trials=2, random_state=seed, **kwargs)
-    model.train_full(
-        X.iloc[: n // 2], y.iloc[: n // 2], X.iloc[n // 2:], y.iloc[n // 2:],
-        returns_train=returns.iloc[: n // 2], returns_val=returns.iloc[n // 2:],
-    )
+    model = cls(random_state=seed, **kwargs)
+    model.train(X, y)
     return model, X
 
 

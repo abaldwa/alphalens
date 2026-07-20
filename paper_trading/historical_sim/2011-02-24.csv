@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-02-24,DBREALTY,BUY,105.35,9601,09:15:00,83.55,15:30:00,2011-03-28,thesis_broken,miss,-213370.0066925122,-0.21095137534124347,,,,,,
+2011-02-24,JYOTISTRUC,BUY,81.9,1,09:15:00,76.35,15:30:00,2011-05-16,thesis_broken,miss,-5.879409334800016,-0.07178765976556796,,,,,,
+2011-02-24,ASHOKLEY,BUY,10.476265602597772,1,09:15:00,9.722334565676132,15:30:00,2011-12-20,thesis_broken,miss,-0.796067540991725,-0.07598772035660553,,,,,,

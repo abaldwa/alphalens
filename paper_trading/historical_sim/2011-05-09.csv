@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-05-09,WHIRLPOOL,BUY,253.59114270187993,4150,09:15:00,240.02719639357014,15:30:00,2011-05-18,thesis_broken,miss,-60523.239840763854,-0.057509552815047035,,,,,,

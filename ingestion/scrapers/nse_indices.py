@@ -61,6 +61,41 @@ TRACKED_INDICES = [
     "Nifty Media",
 ]
 
+# 2026-07-20: NSE renamed every CNX-prefixed index to its current Nifty-
+# prefixed name around 2015-11-06 (confirmed live against the real
+# ind_close_all archive: "CNX Nifty"/"CNX Bank"/etc. still present
+# 2015-11-03, fully replaced by "Nifty 50"/"Nifty Bank"/etc. by
+# 2016-01-04); "Nifty 50" itself carried an even earlier name, "S&P CNX
+# Nifty", back to the start of the archive (~2012-03-12). Without mapping
+# these, download_index_ohlcv's TRACKED_INDICES filter silently dropped
+# every pre-rename row — real historical data was reachable but never
+# actually stored under a name any consumer queries for. Each entry here
+# was verified against a real historical CSV, not guessed — see
+# BacktestUmbrellaPlan.md's 2026-07-20 index-history entry.
+#
+# "Nifty Healthcare Index" and "Nifty Oil & Gas" have no entry: neither
+# appeared under any CNX-era name in the real 2012-2015 archives checked
+# (both indices launched later) — left unmapped rather than guessed, so
+# they simply have no data before their real launch date, same as today.
+HISTORICAL_INDEX_ALIASES = {
+    "Nifty 50": ["CNX Nifty", "S&P CNX Nifty"],
+    "Nifty 500": ["CNX 500", "S&P CNX 500"],
+    "Nifty Auto": ["CNX Auto"],
+    "Nifty Bank": ["CNX Bank"],
+    "Nifty IT": ["CNX IT"],
+    "Nifty FMCG": ["CNX FMCG"],
+    "Nifty Metal": ["CNX Metal"],
+    "Nifty Realty": ["CNX Realty"],
+    "Nifty Energy": ["CNX Energy"],
+    "Nifty PSE": ["CNX PSE"],
+    "Nifty Financial Services": ["CNX Finance"],
+    "Nifty Pharma": ["CNX Pharma"],
+    "Nifty Media": ["CNX Media"],
+}
+_ALIAS_TO_CANONICAL = {
+    alias: canonical for canonical, aliases in HISTORICAL_INDEX_ALIASES.items() for alias in aliases
+}
+
 REQUIRED_COLUMNS = ["date", "index_name", "open", "high", "low", "close", "volume"]
 
 
@@ -143,9 +178,19 @@ def download_index_ohlcv(date: str) -> pd.DataFrame:
     # gap doesn't silently duplicate the prior trading day's index OHLCV
     # under today's date.
     if "Index Date" in raw.columns:
-        returned_dates = pd.to_datetime(
-            raw["Index Date"].astype(str).str.strip(), format="%d-%b-%Y", errors="coerce"
-        )
+        index_date_str = raw["Index Date"].astype(str).str.strip()
+        # 2026-07-20: historical archive files (pre-~2016) stamp this column
+        # "DD-MM-YYYY" (e.g. "05-01-2015"), not the "DD-Mon-YYYY" format
+        # ("15-Jan-2025") current files use — parsing only the current
+        # format left this staleness check silently inert (every row
+        # parsed to NaT, so `mismatched` was always empty) for any
+        # historical backfill date. Try both, current format first.
+        returned_dates = pd.to_datetime(index_date_str, format="%d-%b-%Y", errors="coerce")
+        still_unparsed = returned_dates.isna()
+        if still_unparsed.any():
+            returned_dates = returned_dates.where(
+                ~still_unparsed, pd.to_datetime(index_date_str, format="%d-%m-%Y", errors="coerce")
+            )
         mismatched = returned_dates.dropna().dt.date.astype(str)
         mismatched = mismatched[mismatched != date]
         if not mismatched.empty:
@@ -154,6 +199,14 @@ def download_index_ohlcv(date: str) -> pd.DataFrame:
                 f"(NSE archive likely served a stale/cached file — the requested date "
                 f"may be an undeclared holiday; check config/nse_holidays.py)"
             )
+
+    # 2026-07-20 fix: canonicalize known historical NSE index names (see
+    # HISTORICAL_INDEX_ALIASES) to their current name BEFORE filtering to
+    # TRACKED_INDICES — otherwise every pre-rename row (e.g. "CNX Nifty"
+    # before NSE's ~2015-11-06 rename to "Nifty 50") was silently dropped
+    # by the isin() filter below, even though the real data was right
+    # there in the fetched CSV.
+    raw["Index Name"] = raw["Index Name"].replace(_ALIAS_TO_CANONICAL)
 
     raw = raw[raw["Index Name"].isin(TRACKED_INDICES)].reset_index(drop=True)
 

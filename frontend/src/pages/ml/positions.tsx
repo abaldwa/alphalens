@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, ResponsiveChartCard, StatCard, TickerLink } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, ResponsiveChartCard, StatCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, formatCurrencyINR, numericCellClass, sectorColumn, tickerColumn } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 import type {
   EquityCurveResponse,
@@ -17,9 +17,7 @@ import type {
 function fmtPct(v: number | null | undefined) {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
-function fmtMoney(v: number | null | undefined) {
-  return v == null ? '—' : `₹${v.toLocaleString('en-IN')}`
-}
+const fmtMoney = formatCurrencyINR
 function pnlTone(v: number | null | undefined) {
   if (v == null) return undefined
   return v >= 0 ? 'text-green' : 'text-red'
@@ -71,33 +69,36 @@ export function MlPositionsPage() {
   })
 
   const positionColumns: ColumnDef<PaperTradingPosition, unknown>[] = [
-    { accessorKey: 'ticker', header: 'Ticker', cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
-    { accessorKey: 'company_name', header: 'Name', cell: (i) => i.getValue<string | null>() ?? '—' },
-    { accessorKey: 'sector', header: 'Sector', cell: (i) => i.getValue<string>() ?? '—' },
-    { accessorKey: 'entry_date', header: 'Entry Date' },
-    { accessorKey: 'entry_price', header: 'Entry Price', cell: (i) => fmtMoney(i.getValue<number>()) },
-    { accessorKey: 'quantity', header: 'Qty' },
-    { accessorKey: 'current_price', header: 'Current', cell: (i) => fmtMoney(i.getValue<number | null>()) },
+    tickerColumn<PaperTradingPosition>(),
+    { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
+    sectorColumn<PaperTradingPosition>(),
+    { accessorKey: 'entry_date', header: 'Entry Date', meta: { priority: 'low' } },
+    { accessorKey: 'entry_price', header: 'Entry Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number>()) },
+    { accessorKey: 'quantity', header: 'Qty', meta: { priority: 'low', align: 'right' } },
+    { accessorKey: 'current_price', header: 'Current', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
     {
       accessorKey: 'unrealised_pnl_pct',
       header: 'Unrealised P&L',
+      meta: { align: 'right' },
       cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
     },
-    { accessorKey: 'buy_prob_entry', header: 'Buy Prob (Entry)', cell: (i) => fmtPct(i.getValue<number | null>()) },
-    { accessorKey: 'buy_prob_current', header: 'Buy Prob (Now)', cell: (i) => fmtPct(i.getValue<number | null>()) },
-    { accessorKey: 'target_price', header: 'Target Price', cell: (i) => fmtMoney(i.getValue<number | null>()) },
-    { accessorKey: 'target_date', header: 'Target Date', cell: (i) => i.getValue<string | null>() ?? '—' },
+    { accessorKey: 'buy_prob_entry', header: 'Buy Prob (Entry)', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+    { accessorKey: 'buy_prob_current', header: 'Buy Prob (Now)', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+    { accessorKey: 'target_price', header: 'Target Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+    { accessorKey: 'target_date', header: 'Target Date', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
     {
       accessorKey: 'stock_gain_pct',
       header: 'Stock Gain',
+      meta: { priority: 'low', align: 'right' },
       cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
     },
     {
       accessorKey: 'nifty_gain_pct',
       header: 'Nifty Gain',
+      meta: { priority: 'low', align: 'right' },
       cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
     },
-    { accessorKey: 'exit_criterion', header: 'Exit Criterion', cell: (i) => i.getValue<string | null>() ?? '—' },
+    { accessorKey: 'exit_criterion', header: 'Exit Criterion', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
     {
       id: 'action',
       header: 'Action',
@@ -229,44 +230,42 @@ export function MlPositionsPage() {
             ) : !trades.data?.trades.length ? (
               <p className="text-sm text-muted-foreground">No closed trades yet.</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr>
-                      {['Ticker', 'Entry', 'Exit', 'Exit Type', 'P&L', 'P&L %'].map((h) => (
-                        <th key={h} className="p-2 text-left text-xs font-semibold uppercase text-muted-foreground">
-                          {h === 'Exit Type' ? (
-                            <span className="inline-flex items-center gap-1 normal-case">
-                              {h}
-                              <InfoTooltip>The specific rule that triggered the exit (thesis_broken / momentum_exhaustion / risk_management / target_achieved / opportunity_cost / pnd_exit).</InfoTooltip>
-                            </span>
-                          ) : (
-                            h
-                          )}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trades.data.trades.slice(0, 50).map((t, i) => (
-                      <tr key={i} className="border-t border-border">
-                        <td className="p-2 font-semibold">{t.ticker}</td>
-                        <td className="p-2 font-mono-data">
-                          {fmtMoney(t.entry_price)} ({t.date})
-                        </td>
-                        <td className="p-2 font-mono-data">
-                          {t.exit_price != null ? fmtMoney(t.exit_price) : '—'} ({t.exit_date ?? '—'})
-                        </td>
-                        <td className="p-2">
-                          <Badge variant="outline">{t.exit_type ?? '—'}</Badge>
-                        </td>
-                        <td className={`p-2 font-mono-data ${pnlTone(t.pnl)}`}>{t.pnl != null ? fmtMoney(t.pnl) : '—'}</td>
-                        <td className={`p-2 font-mono-data ${pnlTone(t.pnl_pct)}`}>{fmtPct(t.pnl_pct)}</td>
-                      </tr>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {['Ticker', 'Entry', 'Exit', 'Exit Type', 'P&L', 'P&L %'].map((h) => (
+                      <TableHead key={h}>
+                        {h === 'Exit Type' ? (
+                          <span className="inline-flex items-center gap-1 normal-case">
+                            {h}
+                            <InfoTooltip>The specific rule that triggered the exit (thesis_broken / momentum_exhaustion / risk_management / target_achieved / opportunity_cost / pnd_exit).</InfoTooltip>
+                          </span>
+                        ) : (
+                          h
+                        )}
+                      </TableHead>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {trades.data.trades.slice(0, 50).map((t, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="font-semibold">{t.ticker}</TableCell>
+                      <TableCell className={numericCellClass}>
+                        {fmtMoney(t.entry_price)} ({t.date})
+                      </TableCell>
+                      <TableCell className={numericCellClass}>
+                        {t.exit_price != null ? fmtMoney(t.exit_price) : '—'} ({t.exit_date ?? '—'})
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{t.exit_type ?? '—'}</Badge>
+                      </TableCell>
+                      <TableCell className={`${numericCellClass} ${pnlTone(t.pnl)}`}>{t.pnl != null ? fmtMoney(t.pnl) : '—'}</TableCell>
+                      <TableCell className={`${numericCellClass} ${pnlTone(t.pnl_pct)}`}>{fmtPct(t.pnl_pct)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>

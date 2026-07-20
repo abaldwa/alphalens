@@ -53,7 +53,9 @@ def run(years_back: int, grace_values: List[int]) -> Dict:
     start_date = date(end_date.year - years_back, end_date.month, end_date.day)
 
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
-        yearly_rankings = all_yearly_full_rankings(conn, start_date.isoformat(), end_date.isoformat())
+        yearly_rankings = all_yearly_full_rankings(
+            conn, start_date.isoformat(), end_date.isoformat(), include_delisted=True,
+        )  # 2026-07-20 survivorship-bias fix — BacktestUmbrellaPlan.md Gap #1
         candidate_tickers = _union_tickers(yearly_rankings)
         price_panel = load_price_panel(conn, candidate_tickers, start_date.isoformat(), end_date.isoformat())
 

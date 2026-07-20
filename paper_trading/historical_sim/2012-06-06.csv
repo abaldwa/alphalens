@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-06-06,HTMEDIA,BUY,99.65,38,09:15:00,93.7,15:30:00,2012-07-19,thesis_broken,miss,-241.3304557764004,-0.06373107343502268,,,,,,

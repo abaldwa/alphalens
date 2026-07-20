@@ -135,6 +135,14 @@ def _run_single_model(
         watchlist_tickers=watchlist_tickers,
     )
     results = engine.run_full_backtest(model_name, folds=folds)
+
+    from backtest.adapters.ml_dual_write import dual_write_ml_run
+
+    dual_write_ml_run(
+        results, strategy_id=model_name, horizon_days=horizon_days, ohlcv=ohlcv,
+        initial_capital=1_000_000.0, random_seed=seed,
+    )
+
     return results.to_dict()
 
 
@@ -213,7 +221,7 @@ def run_phase3_backtest(
 
     # ── Comparison table ───────────────────────────────────────────────────
     comparison: Dict[str, Any] = {}
-    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_mean", "win_rate_mean"):
+    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_worst", "win_rate_mean"):
         v2 = phase2["aggregate"].get(key)
         v3 = phase3["aggregate"].get(key)
         comparison[key] = {"phase2_baseline": v2, "phase3_signal21d": v3}
@@ -224,7 +232,7 @@ def run_phase3_backtest(
     print("=" * 70)
     print(f"  {'Metric':<28}{'Phase 2 Baseline':<22}{'Phase 3 Signal21D'}")
     print("  " + "-" * 68)
-    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_mean"):
+    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_worst"):
         v2 = phase2["aggregate"].get(key)
         v3 = phase3["aggregate"].get(key)
         print(f"  {key:<28}{str(round(v2, 4) if v2 else 'N/A'):<22}"

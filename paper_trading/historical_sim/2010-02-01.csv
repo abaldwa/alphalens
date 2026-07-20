@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-02-01,GODREJIND,BUY,147.52104877061797,6978,09:15:00,140.0714808592778,15:30:00,2010-02-05,thesis_broken,miss,-56123.43394491309,-0.05452043087043187,,,,,,

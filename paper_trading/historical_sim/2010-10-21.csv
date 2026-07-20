@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-10-21,GALLANTT,BUY,25.437124498398255,1315,09:15:00,22.45621147124221,15:30:00,2010-11-26,thesis_broken,miss,-4054.4388789668337,-0.12120959199999996,,,,,,

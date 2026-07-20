@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-16,EVEREADY,BUY,17.65,1,09:15:00,23.35,15:30:00,2012-10-09,target_achieved,hit,5.629010076200004,0.318924083637394,,,,,,

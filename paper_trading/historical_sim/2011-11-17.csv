@@ -1,0 +1,5 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-11-17,PRAKASH,BUY,39.45,24102,09:15:00,36.7,15:30:00,2011-11-18,thesis_broken,miss,-70104.80120159884,-0.07373058376172374,,,,,,
+2011-11-17,WELCORP,BUY,69.74701798895052,2237,09:15:00,61.433650930365346,15:30:00,2011-11-23,thesis_broken,miss,-19224.545310978778,-0.12321524603422987,,,,,,
+2011-11-17,LYKALABS,BUY,11.55,6,09:15:00,10.35,15:30:00,2011-11-24,thesis_broken,miss,-7.4787309756000155,-0.1079181958961041,,,,,,
+2011-11-17,DISHTV,BUY,63.3,15021,09:15:00,59.15,15:30:00,2011-12-12,thesis_broken,miss,-66161.47292089555,-0.06958291348499206,,,,,,

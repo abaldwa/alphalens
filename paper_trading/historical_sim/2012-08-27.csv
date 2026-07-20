@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-08-27,JPPOWER,BUY,28.5,36040,09:15:00,26.8,15:30:00,2012-08-28,thesis_broken,miss,-65399.25157687999,-0.06367121480701754,,,,,,
+2012-08-27,IFCI,BUY,25.661276102088166,40027,09:15:00,23.801763341067286,15:30:00,2012-08-31,thesis_broken,miss,-78561.98454254249,-0.07648586011594205,,,,,,
+2012-08-27,GMRAIRPORT,BUY,17.95,1789,09:15:00,24.58,15:30:00,2012-09-21,target_achieved,hit,11731.9103695454,0.36533723947632313,,,,,,

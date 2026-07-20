@@ -142,6 +142,64 @@ class TestYearlyBandUniverses:
         assert universes["2027-01-04"] == ["AAA"]
 
 
+class TestYearlyBandUniversesIncludeDelisted:
+    """2026-07-20 survivorship-bias fix: yearly_band_universes() previously
+    had NO way to opt into include_delisted at all — every caller was
+    silently stuck on the current-snapshot universe regardless of intent.
+    ZZZ below is a real, seeded delisted ticker with a real historical
+    price and market cap on the as_of date, absent from the (monkeypatched)
+    current-snapshot raw_universe fixture — proving it only appears when
+    include_delisted=True is actually threaded all the way through."""
+
+    def _seed_delisted(self, db_path, ticker, delisting_date="2026-06-01"):
+        with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
+            conn.execute(
+                "INSERT INTO delisted_companies (ticker, delisting_date) VALUES (?, ?)",
+                [ticker, delisting_date],
+            )
+
+    def test_default_excludes_delisted_ticker(self, normalised_db, raw_universe, monkeypatch):
+        monkeypatch.setattr("config.universe.load_universe_raw", lambda: pd.DataFrame({"ticker": raw_universe}))
+        self._seed_delisted(normalised_db, "ZZZ")
+        _seed_fundamentals(normalised_db, "ZZZ", "2025-12-01", 1_000_000)
+        _seed_ohlcv(normalised_db, "ZZZ", "2026-01-02", 500.0)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            universes = mu.yearly_band_universes(conn, "2026-01-01", "2026-12-31", 1, 1)
+
+        assert "ZZZ" not in universes.get("2026-01-02", [])
+
+    def test_include_delisted_true_surfaces_the_delisted_ticker(self, normalised_db, raw_universe, monkeypatch):
+        monkeypatch.setattr("config.universe.load_universe_raw", lambda: pd.DataFrame({"ticker": raw_universe}))
+        self._seed_delisted(normalised_db, "ZZZ")
+        _seed_fundamentals(normalised_db, "ZZZ", "2025-12-01", 1_000_000)
+        _seed_ohlcv(normalised_db, "ZZZ", "2026-01-02", 500.0)  # highest close -> rank 1 if included
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            universes = mu.yearly_band_universes(
+                conn, "2026-01-01", "2026-12-31", 1, 1, include_delisted=True,
+            )
+
+        assert universes["2026-01-02"] == ["ZZZ"]
+
+    def test_reuses_the_supplied_connection_no_second_conflicting_connection(
+        self, normalised_db, raw_universe, monkeypatch
+    ):
+        """Regression test for the real bug this fix uncovered: opening a
+        SECOND connection (build_historical_universe_from_delisted's old
+        behavior) to a file already open read_only=True/persist=False
+        raises 'Connection Error: Can't open a connection to same database
+        file with a different configuration than existing connections'."""
+        monkeypatch.setattr("config.universe.load_universe_raw", lambda: pd.DataFrame({"ticker": raw_universe}))
+        self._seed_delisted(normalised_db, "ZZZ")
+        _seed_fundamentals(normalised_db, "ZZZ", "2025-12-01", 1_000_000)
+        _seed_ohlcv(normalised_db, "ZZZ", "2026-01-02", 500.0)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            # Must not raise — this exact call previously conflicted.
+            mu.yearly_band_universes(conn, "2026-01-01", "2026-12-31", 1, 1, include_delisted=True)
+
+
 class TestApproximationFlagsThreading:
     """2026-07-19 full-codebase-review Fix 6: yearly_band_approximation_flags_from_rankings
     preserves the shares_outstanding_is_approximated flag that
@@ -171,3 +229,62 @@ class TestApproximationFlagsThreading:
             rankings = mu.all_yearly_full_rankings(conn, "2026-01-01", "2026-12-31")
             flags = mu.yearly_band_approximation_flags_from_rankings(rankings, 1, 2)
         assert flags == {}
+
+
+class TestNifty500ProxyUniverse:
+    """2026-07-20 (BacktestUmbrellaPlan.md Truthful Review Gap #5, decided
+    methodology): rank the full candidate pool by real PIT market cap and
+    take the top 500 as the historical-membership proxy, since real
+    historical Nifty500 constituent lists aren't sourceable here."""
+
+    def test_ranks_by_market_cap_and_defaults_to_including_delisted(self, normalised_db, raw_universe, monkeypatch):
+        monkeypatch.setattr("config.universe.load_universe_raw", lambda: pd.DataFrame({"ticker": raw_universe}))
+        with get_duckdb_connection(normalised_db, persist=False, read_only=False) as conn:
+            conn.execute(
+                "INSERT INTO delisted_companies (ticker, delisting_date) VALUES (?, ?)", ["ZZZ", "2026-06-01"],
+            )
+        _seed_fundamentals(normalised_db, "AAA", "2025-12-01", 1_000_000)
+        _seed_fundamentals(normalised_db, "ZZZ", "2025-12-01", 1_000_000)
+        _seed_ohlcv(normalised_db, "AAA", "2026-01-02", 100.0)
+        _seed_ohlcv(normalised_db, "ZZZ", "2026-01-02", 999.0)  # highest close -> rank 1
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            top = mu.nifty500_proxy_universe(conn, "2026-01-02")
+
+        assert top[0] == "ZZZ"  # default include_delisted=True surfaces it, ranked correctly
+        assert "AAA" in top
+
+    def test_exceeds_the_200_cap_used_by_the_narrower_rank_bands(self, normalised_db, monkeypatch):
+        tickers = [f"T{i:03d}" for i in range(250)]
+        monkeypatch.setattr(mu, "load_universe_raw", lambda: pd.DataFrame({"ticker": tickers}))
+        with get_duckdb_connection(normalised_db, persist=False, read_only=False) as conn:
+            for i, t in enumerate(tickers):
+                conn.execute(
+                    "INSERT INTO fundamentals (ticker, fiscal_year, quarter, quarter_end_date, "
+                    "announcement_date, shares_outstanding) VALUES (?, 2025, 1, '2025-12-01', '2025-12-01', ?)",
+                    [t, 1_000_000],
+                )
+                conn.execute(
+                    "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, "
+                    "delivery_qty, delivery_pct) VALUES ('2026-01-02', ?, ?, ?, ?, ?, 1000, 500, 50.0)",
+                    [t, float(i), float(i), float(i), float(i)],
+                )
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            top = mu.nifty500_proxy_universe(conn, "2026-01-02", include_delisted=False)
+
+        assert len(top) == 250  # every seeded ticker ranked -> proves the 200 cap doesn't truncate this
+        assert top[0] == "T249"  # highest close -> rank 1
+
+    def test_yearly_variant_fixes_one_list_per_year(self, normalised_db, raw_universe, monkeypatch):
+        # yearly_nifty500_proxy_universes defaults include_delisted=True, which
+        # routes through config.universe.load_universe_raw (not mu.load_universe_raw)
+        # for the "active" half of the candidate union — patch both.
+        monkeypatch.setattr("config.universe.load_universe_raw", lambda: pd.DataFrame({"ticker": raw_universe}))
+        _seed_fundamentals(normalised_db, "AAA", "2025-12-01", 1_000_000)
+        _seed_ohlcv(normalised_db, "AAA", "2026-01-02", 100.0)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            yearly = mu.yearly_nifty500_proxy_universes(conn, "2026-01-01", "2026-12-31")
+
+        assert "AAA" in yearly["2026-01-02"]

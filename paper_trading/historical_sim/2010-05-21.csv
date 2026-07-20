@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-05-21,HINDZINC,BUY,34.865194109821594,26864,09:15:00,33.234703985608675,15:30:00,2010-05-25,thesis_broken,miss,-47568.652772670146,-0.05078764618211787,,,,,,
+2010-05-21,JMFINANCIL,BUY,21.362303617640528,22498,09:15:00,30.08524426151041,15:30:00,2010-06-01,target_achieved,hit,194315.66456223873,0.4043112413333334,,,,,,
+2010-05-21,KOTARISUG,BUY,6.55,1,09:15:00,8.85,15:30:00,2010-08-10,target_achieved,hit,2.2736552974000004,0.347122946167939,,,,,,

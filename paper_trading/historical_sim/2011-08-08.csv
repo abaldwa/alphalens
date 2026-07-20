@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-08-08,GAEL,BUY,12.3,78943,09:15:00,11.375,15:30:00,2011-08-17,thesis_broken,miss,-76927.72190769878,-0.07922534403252031,,,,,,
+2011-08-08,MADHUCON,BUY,72.55,12864,09:15:00,66.2,15:30:00,2011-08-18,thesis_broken,miss,-85440.15089245432,-0.09154793624534795,,,,,,
+2011-08-08,JPPOWER,BUY,37.05,1,09:15:00,32.9,15:30:00,2011-08-25,thesis_broken,miss,-4.2990185086,-0.11603288822132253,,,,,,
