@@ -464,6 +464,7 @@
       <ol>
         <li><a href="#pipeline">The pipeline</a></li>
         <li><a href="#one-module">One module, all trades</a></li>
+        <li><a href="#strategy-id">Strategy ID &amp; horizon defaults</a></li>
         <li><a href="#backtest">1 · Backtesting</a></li>
         <li><a href="#backtest-metrics">Backtest metrics</a></li>
         <li><a href="#whatif">What-if analysis</a></li>
@@ -524,6 +525,34 @@
 
         <div class="callout">
           <strong>Hard constraint:</strong> no cross-channel capital pooling, anywhere. Each strategy — a (channel, horizon-bucket) pair such as "Technical 21-day" or "Momentum MultiBagger" — runs its own independent backtest, walk-forward, and paper-trading cycle against its own dedicated capital base. <code>core/portfolio.py</code> is not allowed to grow a shared-pool concept, even later.
+        </div>
+      </section>
+
+      <section class="module" id="strategy-id">
+        <div class="module-head">
+          <span class="module-tag">backtest/strategy_id.py</span>
+          <h2>Strategy ID &amp; horizon defaults</h2>
+        </div>
+        <p class="module-sub">Every backtest, orchestrator trigger, and queued job carries a codified <code>strategy_id</code> instead of a hand-typed free-text label, so runs are identifiable and comparable by construction.</p>
+
+        <p>Format: <code>{channel}_{descriptor}_{horizon_code}_{YYYYMMDD}</code> — e.g. <code>ta_e2_63d_20260722</code> is a Technical run of the <strong>E2</strong> template at a 63-day horizon, launched 2026-07-22. <code>parse_strategy_id()</code> recovers channel, descriptor, horizon, and run date straight back out of the string, no database lookup required.</p>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Horizon defaults by channel — used whenever horizon_bucket is left blank</caption>
+            <thead><tr><th>Channel</th><th>Keyed by</th><th>Default</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">Technical</td><td class="desc">Template style — see the <a href="/explain/technical.html#screener">strategy definitions</a> page</td><td class="desc">Mean Reversion → 5d · Momentum/Volatility → 21d · Trend Following → 63d</td></tr>
+              <tr><td class="metric">Fundamental</td><td class="desc">Screener preset</td><td class="desc">quality_compounder → 1y · garp / turnaround → 63d</td></tr>
+              <tr><td class="metric">Momentum</td><td class="desc">Lookback window</td><td class="desc">≤3mo → 21d · ≤9mo → 63d · longer → 1y</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Both <code>strategy_id</code> and <code>horizon_bucket</code> are optional on the CLI, the <code>/orchestrator/trigger</code> API, and the Backtest page's trigger panel — leave them blank and the backend resolves both from the table above. This is a naming convention, not a uniqueness key: older free-text ids (e.g. <code>signal_5d_metalabeler_retrain</code>) keep working unchanged.</p>
+
+        <div class="callout">
+          <strong>Run several strategies unattended:</strong> <code>run_strategy_queue.py</code> (and the Backtest page's "Schedule a Strategy Queue" panel) chains multiple orchestrator/iterative-retrain jobs into one sequential, memory-gated submission — no manual re-triggering between runs.
         </div>
       </section>
 

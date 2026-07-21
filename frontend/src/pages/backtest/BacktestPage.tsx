@@ -722,7 +722,17 @@ function OrchestratorTriggerPanel({ onCompleted }: { onCompleted: () => void }) 
 
           {channel === 'technical' ? (
             <div>
-              <span className="block text-xs font-semibold uppercase text-muted-foreground">Screener Template</span>
+              <span className="block text-xs font-semibold uppercase text-muted-foreground">
+                Screener Template{' '}
+                <a
+                  href="/explain/technical.html#screener"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-normal normal-case text-primary underline"
+                >
+                  (strategy definitions)
+                </a>
+              </span>
               <select
                 className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
                 value={templateName}
