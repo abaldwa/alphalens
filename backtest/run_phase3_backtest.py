@@ -48,13 +48,19 @@ import argparse
 import json
 import logging
 import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from backtest.core.feature_log import FeatureLogWriter
 from backtest.engine import BacktestEngine
 from backtest.report_utils import write_per_horizon_reports
+from config.settings import BACKTEST_DUCKDB_PATH
+from datastore.api.db import get_duckdb_connection
+from datastore.schema.create_backtest import create_backtest_schema
 from backtest.run_phase1_backtest import (
     _fetch_historical_tickers,
     _fetch_real_benchmark,
@@ -111,8 +117,11 @@ def _run_single_model(
     seed: int,
     model_name: str,
     watchlist_tickers: Optional[set] = None,
+    feature_log_writer: Optional[FeatureLogWriter] = None,
+    run_id: Optional[str] = None,
 ) -> dict:
     """Run one walk-forward backtest with BacktestEngine. Returns results.to_dict()."""
+    variant_started = time.monotonic()
     pnd, exit_model = _build_pnd_and_exit(seed)
     engine = BacktestEngine(
         ohlcv=ohlcv,
@@ -133,8 +142,12 @@ def _run_single_model(
         universe_tickers=universe_tickers,
         historical_tickers=historical_tickers,
         watchlist_tickers=watchlist_tickers,
+        feature_log_writer=feature_log_writer,
+        run_id=run_id,
     )
     results = engine.run_full_backtest(model_name, folds=folds)
+    variant_runtime_seconds = time.monotonic() - variant_started
+    logger.info(f"{model_name}: runtime {variant_runtime_seconds:.1f}s")
 
     from backtest.adapters.ml_dual_write import dual_write_ml_run
 
@@ -143,7 +156,9 @@ def _run_single_model(
         initial_capital=1_000_000.0, random_seed=seed,
     )
 
-    return results.to_dict()
+    result_dict = results.to_dict()
+    result_dict["runtime_seconds"] = variant_runtime_seconds
+    return result_dict
 
 
 # ── Main backtest function ────────────────────────────────────────────────────
@@ -175,6 +190,7 @@ def run_phase3_backtest(
     SPEC-MODEL-013: Phase 3 Sharpe gate >= 0.10.
     """
     run_date = now_ist()
+    run_started = time.monotonic()
 
     # ── Load data ──────────────────────────────────────────────────────────
     logger.info("Phase 3 backtest: REAL data via DataStoreClient")
@@ -184,27 +200,37 @@ def run_phase3_backtest(
     universe_tickers = set(get_tickers())
     historical_tickers = _fetch_historical_tickers()
 
-    # ── Phase 2 baseline: Signal5D ─────────────────────────────────────────
-    logger.info("Running Phase 2 baseline (Signal5D)...")
-    phase2 = _run_single_model(
-        ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
-        signal_model_cls=Signal5DModel,
-        horizon_days=5, profit_multiplier=2.0, stop_multiplier=1.0,
-        folds=folds, optuna_trials=optuna_trials, seed=seed,
-        model_name="signal_5d_p2baseline",
-    )
+    # Feature capture (backtest_feature_log) — shared writer across both
+    # variants, each getting its own run_id (see run_phase2_backtest.py).
+    base_run_id = f"phase3_{run_date.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    create_backtest_schema(BACKTEST_DUCKDB_PATH)
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as feature_log_conn:
+        feature_log_writer = FeatureLogWriter(feature_log_conn)
 
-    # ── Phase 3 variant: Signal21D ─────────────────────────────────────────
-    logger.info("Running Phase 3 variant (Signal21D, 21d horizon, wider barriers)...")
-    phase3 = _run_single_model(
-        ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
-        signal_model_cls=Signal21DModel,
-        horizon_days=21,
-        profit_multiplier=_SIGNAL21D_PROFIT_MULTIPLIER,
-        stop_multiplier=_SIGNAL21D_STOP_MULTIPLIER,
-        folds=folds, optuna_trials=optuna_trials, seed=seed,
-        model_name="signal_21d_p3variant",
-    )
+        # ── Phase 2 baseline: Signal5D ─────────────────────────────────────
+        logger.info("Running Phase 2 baseline (Signal5D)...")
+        phase2 = _run_single_model(
+            ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
+            signal_model_cls=Signal5DModel,
+            horizon_days=5, profit_multiplier=2.0, stop_multiplier=1.0,
+            folds=folds, optuna_trials=optuna_trials, seed=seed,
+            model_name="signal_5d_p2baseline",
+            feature_log_writer=feature_log_writer, run_id=f"{base_run_id}_signal_5d_p2baseline",
+        )
+
+        # ── Phase 3 variant: Signal21D ──────────────────────────────────────
+        logger.info("Running Phase 3 variant (Signal21D, 21d horizon, wider barriers)...")
+        phase3 = _run_single_model(
+            ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
+            signal_model_cls=Signal21DModel,
+            horizon_days=21,
+            profit_multiplier=_SIGNAL21D_PROFIT_MULTIPLIER,
+            stop_multiplier=_SIGNAL21D_STOP_MULTIPLIER,
+            folds=folds, optuna_trials=optuna_trials, seed=seed,
+            model_name="signal_21d_p3variant",
+            feature_log_writer=feature_log_writer, run_id=f"{base_run_id}_signal_21d_p3variant",
+        )
+    logger.info(f"Feature vectors captured to backtest_feature_log under run_id prefix={base_run_id}")
 
     baseline_sharpe = phase2["aggregate"].get("sharpe_mean", 0.0) or 0.0
     variant_sharpe = phase3["aggregate"].get("sharpe_mean", 0.0) or 0.0
@@ -243,9 +269,14 @@ def run_phase3_backtest(
     print(f"  {'All 9 integrity rules':<28}{'PASSED' if integrity_ok else 'FAILED'}")
     print("=" * 70)
 
+    runtime_seconds = time.monotonic() - run_started
+    print(f"\n  Total runtime: {runtime_seconds:.1f}s "
+          f"(phase2={phase2['runtime_seconds']:.1f}s, phase3={phase3['runtime_seconds']:.1f}s)")
+
     # ── Save report ────────────────────────────────────────────────────────
     report = {
         "generated_at": run_date.isoformat(),
+        "runtime_seconds": runtime_seconds,
         "phase3_gate_threshold": _PHASE3_SHARPE_GATE,
         "sharpe_improvement": sharpe_improvement,
         "gate_passed": gate_passed,

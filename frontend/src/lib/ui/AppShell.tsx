@@ -15,6 +15,7 @@ import {
   Users,
   Settings,
   Landmark,
+  BookOpen,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -36,6 +37,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   big_investors: Users,
   ops: Settings,
   macro: Landmark,
+  explain: BookOpen,
 }
 
 const SIDEBAR_COLLAPSED_KEY = 'alphalens.sidebarCollapsed'
@@ -82,44 +84,57 @@ function NavList({
         const Icon = SECTION_ICONS[s.id] ?? LayoutDashboard
 
         if (collapsed) {
+          const collapsedClassName = cn(
+            'flex items-center justify-center rounded-[var(--radius-token)] p-2.5 transition-colors',
+            active
+              ? 'bg-white/10 text-white'
+              : 'text-sidebar-foreground/70 hover:bg-white/5 hover:text-sidebar-foreground',
+          )
           return (
             <Tooltip key={s.id}>
               <TooltipTrigger asChild>
-                <Link
-                  to={s.href}
-                  onClick={onNavigate}
-                  aria-label={s.label}
-                  className={cn(
-                    'flex items-center justify-center rounded-[var(--radius-token)] p-2.5 transition-colors',
-                    active
-                      ? 'bg-white/10 text-white'
-                      : 'text-sidebar-foreground/70 hover:bg-white/5 hover:text-sidebar-foreground',
-                  )}
-                >
-                  <Icon className="size-4.5 shrink-0" />
-                </Link>
+                {s.external ? (
+                  <a
+                    href={s.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={s.label}
+                    className={collapsedClassName}
+                  >
+                    <Icon className="size-4.5 shrink-0" />
+                  </a>
+                ) : (
+                  <Link to={s.href} onClick={onNavigate} aria-label={s.label} className={collapsedClassName}>
+                    <Icon className="size-4.5 shrink-0" />
+                  </Link>
+                )}
               </TooltipTrigger>
               <TooltipContent side="right">{s.label}</TooltipContent>
             </Tooltip>
           )
         }
 
+        const topLinkClassName = cn(
+          'flex flex-1 items-center gap-2.5 rounded-[var(--radius-token)] px-3 py-2 text-sm font-medium transition-colors',
+          active
+            ? 'bg-white/10 text-white'
+            : 'text-sidebar-foreground/70 hover:bg-white/5 hover:text-sidebar-foreground',
+        )
+
         return (
           <div key={s.id} className="flex flex-col">
             <div className="flex items-center">
-              <Link
-                to={s.href}
-                onClick={onNavigate}
-                className={cn(
-                  'flex flex-1 items-center gap-2.5 rounded-[var(--radius-token)] px-3 py-2 text-sm font-medium transition-colors',
-                  active
-                    ? 'bg-white/10 text-white'
-                    : 'text-sidebar-foreground/70 hover:bg-white/5 hover:text-sidebar-foreground',
-                )}
-              >
-                <Icon className="size-4 shrink-0" />
-                <span className="truncate">{s.label}</span>
-              </Link>
+              {s.external ? (
+                <a href={s.href} target="_blank" rel="noopener noreferrer" className={topLinkClassName}>
+                  <Icon className="size-4 shrink-0" />
+                  <span className="truncate">{s.label}</span>
+                </a>
+              ) : (
+                <Link to={s.href} onClick={onNavigate} className={topLinkClassName}>
+                  <Icon className="size-4 shrink-0" />
+                  <span className="truncate">{s.label}</span>
+                </Link>
+              )}
               {hasSub ? (
                 <button
                   type="button"

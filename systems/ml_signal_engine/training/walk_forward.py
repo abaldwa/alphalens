@@ -54,24 +54,45 @@ class WalkForwardValidator:
     """
     SPEC-MODEL-003: expanding-window walk-forward validation. Never a
     random split (SPEC-BT-001 rule 1) — every fold's test set is a later
-    calendar year than every row in that fold's train set.
+    fiscal year than every row in that fold's train set.
+
+    "Year" here means the Indian equity fiscal year (1-April to
+    31-March), not the calendar year — matches the fiscal-year windows
+    backtest/run_phase*_backtest.py report against and how Indian
+    fundamentals/corporate actions are naturally periodized, rather than
+    splitting a single fiscal year's data across two folds at the
+    calendar-year boundary. Configurable via `fiscal_year_start_month`
+    (default 4 = April) in case a non-Indian dataset ever needs this.
     """
 
-    def __init__(self, n_folds: int = 5, date_col: str = "date") -> None:
+    def __init__(self, n_folds: int = 5, date_col: str = "date", fiscal_year_start_month: int = 4) -> None:
         if n_folds < 1:
             raise ValueError("n_folds must be >= 1")
+        if not 1 <= fiscal_year_start_month <= 12:
+            raise ValueError("fiscal_year_start_month must be between 1 and 12")
         self.n_folds = n_folds
         self.date_col = date_col
+        self.fiscal_year_start_month = fiscal_year_start_month
+
+    def _fiscal_years(self, dates: pd.Series) -> pd.Series:
+        """Maps each timestamp to the calendar year its fiscal year STARTS in
+        (e.g. 2026-02-15 with fiscal_year_start_month=4 -> FY2025, i.e.
+        FY2025-26; 2026-04-15 -> FY2026, i.e. FY2026-27)."""
+        month = self.fiscal_year_start_month
+        if month == 1:
+            return dates.dt.year
+        return dates.dt.year - (dates.dt.month < month).astype(int)
 
     def split_data(self, df: pd.DataFrame, n_folds: Optional[int] = None) -> List[Tuple[pd.DataFrame, pd.DataFrame]]:
         """
-        Expanding-window calendar-year splits.
+        Expanding-window fiscal-year splits.
 
         Parameters
         ----------
         df : pd.DataFrame
-            Must contain `self.date_col`. Every row's year is used to
-            assign it to a fold's train or test set.
+            Must contain `self.date_col`. Every row's fiscal year (see
+            `_fiscal_years`) is used to assign it to a fold's train or
+            test set.
         n_folds : int, optional
             Overrides the instance default for this call.
 
@@ -79,10 +100,11 @@ class WalkForwardValidator:
         -------
         list of (train_df, test_df)
             n_folds tuples, train always strictly precedes test in time
-            (fold i's train set is every row with year < test_year_i;
-            fold i's test set is every row with year == test_year_i).
-            The final fold's test set may be a partial year if `df`'s
-            most recent year isn't complete (e.g. "today" is mid-year).
+            (fold i's train set is every row with fiscal_year <
+            test_fy_i; fold i's test set is every row with fiscal_year
+            == test_fy_i). The final fold's test set may be a partial
+            fiscal year if `df`'s most recent fiscal year isn't complete
+            (e.g. "today" is mid-fiscal-year).
 
         Spec References
         ----------------
@@ -91,21 +113,22 @@ class WalkForwardValidator:
         Raises
         ------
         ValueError
-            If `df` lacks `self.date_col`, or has too few distinct years
-            to produce `n_folds` folds (need > n_folds distinct years —
-            at least one full year of pure training data before the
-            first test year).
+            If `df` lacks `self.date_col`, or has too few distinct fiscal
+            years to produce `n_folds` folds (need > n_folds distinct
+            fiscal years — at least one full fiscal year of pure training
+            data before the first test fiscal year).
         """
         n_folds = n_folds if n_folds is not None else self.n_folds
         if self.date_col not in df.columns:
             raise ValueError(f"df is missing required column: {self.date_col}")
 
         dates = pd.to_datetime(df[self.date_col])
-        years = sorted(dates.dt.year.unique())
+        fiscal_years = self._fiscal_years(dates)
+        years = sorted(fiscal_years.unique())
         if len(years) <= n_folds:
             raise ValueError(
-                f"need more than {n_folds} distinct years of data to produce {n_folds} "
-                f"expanding folds; got {len(years)} years ({years})"
+                f"need more than {n_folds} distinct fiscal years of data to produce {n_folds} "
+                f"expanding folds; got {len(years)} fiscal years ({years})"
             )
 
         min_train_years = len(years) - n_folds
@@ -113,11 +136,11 @@ class WalkForwardValidator:
 
         folds = []
         for test_year in test_years:
-            train_df = df.loc[dates.dt.year < test_year].copy()
-            test_df = df.loc[dates.dt.year == test_year].copy()
+            train_df = df.loc[fiscal_years < test_year].copy()
+            test_df = df.loc[fiscal_years == test_year].copy()
             folds.append((train_df, test_df))
 
-        logger.info(f"split_data: {len(folds)} folds, test years {test_years}")
+        logger.info(f"split_data: {len(folds)} folds, test fiscal years {test_years} (FYstart month={self.fiscal_year_start_month})")
         return folds
 
     def get_train_validation_split(

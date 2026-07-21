@@ -40,6 +40,8 @@ def _bare_engine(**attrs):
         exit_model=None,
         universe_tickers={"A", "B"},
         historical_tickers={"A", "B"},
+        _feature_log_writer=None,
+        _run_id=None,
     )
     defaults.update(attrs)
     for k, v in defaults.items():

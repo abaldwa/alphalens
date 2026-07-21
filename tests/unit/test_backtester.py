@@ -49,9 +49,13 @@ class TestSplitData:
             # Expanding window: each fold's train set is >= the previous fold's.
             assert len(train_df) >= prev_train_size
             prev_train_size = len(train_df)
-            # Test set is exactly the year immediately after the training cutoff.
-            assert test_df["date"].dt.year.nunique() == 1
-            assert train_df["date"].max().year < test_df["date"].min().year
+            # Test set is exactly the fiscal year (Apr-Mar) immediately after
+            # the training cutoff.
+            assert validator._fiscal_years(test_df["date"]).nunique() == 1
+            assert (
+                validator._fiscal_years(train_df["date"]).max()
+                < validator._fiscal_years(test_df["date"]).min()
+            )
 
     def test_no_overlap_between_train_and_test(self):
         df = _daily_df("2020-01-01", 2400)

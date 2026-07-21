@@ -16,6 +16,9 @@ export interface NavSection {
   label: string
   href: string
   subItems?: NavSubItem[]
+  /** External link (e.g. a published research artifact) — opened in a new tab
+   * instead of being treated as an internal Vite-entry route. */
+  external?: boolean
 }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -137,6 +140,14 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'announcements', label: 'Announcements', href: '/big_investors-announcements' },
       { id: 'mf_holdings', label: 'MF Holdings', href: '/big_investors-mf_holdings' },
     ],
+  },
+  {
+    // Reference docs published as Claude artifacts, not local screens —
+    // same external-link pattern as momentum's backtest_ledger/yoy_report.
+    id: 'explain',
+    label: 'Explain',
+    href: 'https://claude.ai/code/artifact/62aef89d-1f8c-4d7b-8c9b-31ca03f9a9b4',
+    external: true,
   },
   {
     id: 'ops',

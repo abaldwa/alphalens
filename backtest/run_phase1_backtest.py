@@ -30,16 +30,22 @@ then writes backtest/reports/phase1_YYYYMMDD.json.
 import argparse
 import json
 import logging
+import time
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Dict, Optional
 
 import pandas as pd
 
+from backtest.core.feature_log import FeatureLogWriter
 from backtest.engine import BacktestEngine
+from config.settings import BACKTEST_DUCKDB_PATH
 from config.timezone import now_ist
 from config.universe import get_tickers, load_universe
+from datastore.api.db import get_duckdb_connection
 from datastore.client import DataStoreClient
+from datastore.schema.create_backtest import create_backtest_schema
 from features.technical import BENCHMARK_TICKERS
 from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel, load_exit_training_data_from_db
 from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector, load_pnd_training_data_from_db
@@ -189,6 +195,7 @@ def run_phase1_backtest(
     min_history_days: int = 252, api_base_url: Optional[str] = None,
 ) -> dict:
     run_date = now_ist()
+    run_started = time.monotonic()
 
     logger.info("Phase 1 backtest starting: REAL data (config.universe.get_tickers() via DataStoreClient)")
     ohlcv = _fetch_real_universe(max_real_tickers, min_history_days, api_base_url)
@@ -212,15 +219,38 @@ def run_phase1_backtest(
     exit_diag = exit_model.train_full(exit_X, urgency, exit_type, duration, event)
     logger.info(f"Exit signal model trained: {exit_diag}")
 
-    engine = BacktestEngine(
-        ohlcv=ohlcv, pnd_detector=pnd_detector, exit_model=exit_model, signal_model_cls=Signal5DModel,
-        sector_map=sector_map, initial_capital=1_000_000.0, sizing_mode="equal_weight",
-        n_target_positions=n_target_positions, optuna_trials=optuna_trials, random_state=seed, n_folds=folds,
-        **engine_kwargs,
-    )
-    logger.info(f"Feature/label dataset built: {engine._combined.shape}")
+    # Feature capture (backtest_feature_log): every candidate a fold
+    # considers is recorded, not just the ones acted on, so a later
+    # model-finetuning pass can query "what did the model see for stocks
+    # it passed on." Skipped in --check-only mode (fast gate check, no
+    # full run/report to attach the log to).
+    run_id = f"phase1_{run_date.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    if check_only:
+        engine = BacktestEngine(
+            ohlcv=ohlcv, pnd_detector=pnd_detector, exit_model=exit_model, signal_model_cls=Signal5DModel,
+            sector_map=sector_map, initial_capital=1_000_000.0, sizing_mode="equal_weight",
+            n_target_positions=n_target_positions, optuna_trials=optuna_trials, random_state=seed, n_folds=folds,
+            **engine_kwargs,
+        )
+        logger.info(f"Feature/label dataset built: {engine._combined.shape}")
+        results = engine.run_full_backtest("signal_5d", folds=folds)
+    else:
+        create_backtest_schema(BACKTEST_DUCKDB_PATH)
+        with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as feature_log_conn:
+            feature_log_writer = FeatureLogWriter(feature_log_conn)
+            engine = BacktestEngine(
+                ohlcv=ohlcv, pnd_detector=pnd_detector, exit_model=exit_model, signal_model_cls=Signal5DModel,
+                sector_map=sector_map, initial_capital=1_000_000.0, sizing_mode="equal_weight",
+                n_target_positions=n_target_positions, optuna_trials=optuna_trials, random_state=seed, n_folds=folds,
+                feature_log_writer=feature_log_writer, run_id=run_id,
+                **engine_kwargs,
+            )
+            logger.info(f"Feature/label dataset built: {engine._combined.shape}")
+            results = engine.run_full_backtest("signal_5d", folds=folds)
+        logger.info(f"Feature vectors captured to backtest_feature_log under run_id={run_id}")
 
-    results = engine.run_full_backtest("signal_5d", folds=folds)
+    runtime_seconds = time.monotonic() - run_started
+    logger.info(f"Phase 1 backtest runtime: {runtime_seconds:.1f}s")
 
     print("\n=== Backtest Integrity Checks ===")
     print(f"  PASSED: {results.integrity_passed}")
@@ -232,7 +262,9 @@ def run_phase1_backtest(
         # results only, skip the full fold/aggregate metrics printout and
         # the JSON report write — this is a fast pass/fail check, not a
         # full backtest run.
-        return results.to_dict()
+        result_dict = results.to_dict()
+        result_dict["runtime_seconds"] = runtime_seconds
+        return result_dict
 
     print("\n=== Per-Fold Metrics ===")
     for f in results.fold_results:
@@ -254,10 +286,14 @@ def run_phase1_backtest(
     for k, v in results.aggregate.items():
         print(f"  {k}: {v}")
 
+    result_dict = results.to_dict()
+    result_dict["runtime_seconds"] = runtime_seconds
+    print(f"\n  Runtime: {runtime_seconds:.1f}s")
+
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = REPORTS_DIR / f"phase1_{run_date.strftime('%Y%m%d')}.json"
     with open(report_path, "w") as fh:
-        json.dump(results.to_dict(), fh, indent=2, default=str)
+        json.dump(result_dict, fh, indent=2, default=str)
     print(f"\nReport written to {report_path}")
 
     from backtest.adapters.ml_dual_write import dual_write_ml_run
@@ -267,7 +303,7 @@ def run_phase1_backtest(
         initial_capital=1_000_000.0, random_seed=seed,
     )
 
-    return results.to_dict()
+    return result_dict
 
 
 def main() -> None:

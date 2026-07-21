@@ -45,6 +45,8 @@ from features.technical import CORE_TECHNICAL_FEATURES, compute_technical_featur
 from systems.ml_signal_engine.models.signal.meta_labeler import MetaLabeler
 from systems.ml_signal_engine.training.labeling import TripleBarrierLabeler
 from systems.ml_signal_engine.training.walk_forward import WalkForwardValidator
+from backtest.core.feature_log import FeatureLogWriter
+from backtest.core.horizon import HorizonBucket
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +248,8 @@ class BacktestEngine:
         historical_tickers: Optional[set] = None,
         watchlist_tickers: Optional[set] = None,
         benchmark_index: Optional[pd.DataFrame] = None,
+        feature_log_writer: Optional[FeatureLogWriter] = None,
+        run_id: Optional[str] = None,
     ) -> None:
         self.ohlcv = ohlcv
         self.pnd_detector = pnd_detector
@@ -281,6 +285,18 @@ class BacktestEngine:
         # index_ohlcv data via run_phase1_backtest.py's
         # _fetch_real_benchmark_index() when available.
         self.benchmark_index = benchmark_index
+        # Optional per-decision feature-vector capture (backtest_feature_log,
+        # backtest/core/feature_log.py) — records the full feature vector for
+        # EVERY candidate a fold considers (bought, skipped, held, sold), not
+        # just the ones acted on, so a later model-finetuning pass can query
+        # "what did the model see for stocks it passed on." None (default)
+        # keeps existing callers' behavior unchanged; run_phase1/2/3_backtest.py
+        # pass a real writer + run_id to capture every run.
+        self._feature_log_writer = feature_log_writer
+        self._run_id = run_id
+        self._horizon_bucket = {
+            5: HorizonBucket.D5, 21: HorizonBucket.D21, 63: HorizonBucket.D63,
+        }.get(horizon_days, HorizonBucket.CUSTOM)
         # universe_tickers / historical_tickers both default to the ohlcv
         # panel's own ticker set (the degenerate case where there's no
         # meaningful distinction between "currently investable" and "ever
@@ -424,6 +440,18 @@ class BacktestEngine:
 
         return portfolio
 
+    def _log_feature(
+        self, ticker: str, d, feature_vector: Dict[str, Any], decision_taken: str,
+        signal_output: Optional[str] = None,
+    ) -> None:
+        if self._feature_log_writer is None or self._run_id is None:
+            return
+        as_of = d.date() if hasattr(d, "date") else d
+        self._feature_log_writer.record(
+            run_id=self._run_id, ticker=ticker, as_of_date=as_of, horizon_bucket=self._horizon_bucket,
+            feature_vector=feature_vector, decision_taken=decision_taken, signal_output=signal_output,
+        )
+
     def _apply_exits(self, portfolio: PortfolioSimulator, d, prices_today: Dict[str, float]) -> None:
         held = [t for t in portfolio.positions if t in prices_today]
         if not held:
@@ -450,7 +478,12 @@ class BacktestEngine:
         exit_ctx = pd.DataFrame(rows).set_index("ticker")[EXIT_CONTEXT_COLUMNS]
         exit_out = self.exit_model.predict_full(exit_ctx)
         for t in held:
-            portfolio.apply_exit_signal(t, float(exit_out.loc[t, "exit_urgency"]), prices_today[t], d)
+            urgency = float(exit_out.loc[t, "exit_urgency"])
+            trade = portfolio.apply_exit_signal(t, urgency, prices_today[t], d)
+            decision = "sold" if trade is not None else "held"
+            self._log_feature(
+                t, d, exit_ctx.loc[t].to_dict(), decision, signal_output=f"exit_urgency={urgency:.4f}",
+            )
 
     def _apply_entries(
         self, portfolio: PortfolioSimulator, day_rows: pd.DataFrame, d, prices_today: Dict[str, float],
@@ -464,22 +497,31 @@ class BacktestEngine:
         feat_block = candidates.set_index("ticker")[CORE_TECHNICAL_FEATURES]
 
         blocked = self._pnd_blocked(d, list(feat_block.index))
+        blocked_tickers = feat_block.index[blocked.to_numpy()]
+        for t in blocked_tickers:
+            self._log_feature(t, d, feat_block.loc[t].to_dict(), "skipped_pnd_blocked")
         feat_block = feat_block.loc[~blocked.to_numpy()]
         if feat_block.empty:
             return
 
         directions = signal_model.predict(feat_block)
-        buy_tickers = feat_block.index[directions.to_numpy() == 1]
+        is_buy = directions.to_numpy() == 1
+        buy_tickers = feat_block.index[is_buy]
+        for t in feat_block.index[~is_buy]:
+            self._log_feature(t, d, feat_block.loc[t].to_dict(), "skipped_no_signal")
         if len(buy_tickers) == 0:
             return
 
         if meta_model is not None:
-            acts = meta_model.predict(feat_block.loc[buy_tickers])
-            buy_tickers = buy_tickers[acts.to_numpy().astype(bool)]
+            acts = meta_model.predict(feat_block.loc[buy_tickers]).to_numpy().astype(bool)
+            for t in buy_tickers[~acts]:
+                self._log_feature(t, d, feat_block.loc[t].to_dict(), "skipped_meta_veto")
+            buy_tickers = buy_tickers[acts]
 
         for ticker in buy_tickers:
             price = prices_today.get(ticker)
             if price is None or price <= 0:
+                self._log_feature(ticker, d, feat_block.loc[ticker].to_dict(), "skipped_no_price")
                 continue
             # atr_14_pct (CORE_TECHNICAL_FEATURES, features/technical.py) is
             # ATR(14)/close * 100 — divide back to a plain fraction of price
@@ -490,6 +532,7 @@ class BacktestEngine:
                 ticker, self.sector_map.get(ticker, "UNKNOWN"), price, d, prices_today,
                 entry_atr_pct=entry_atr_pct,
             )
+            self._log_feature(ticker, d, feat_block.loc[ticker].to_dict(), "bought")
 
     def _run_integrity_check(self, train_fold: pd.DataFrame, test_fold: pd.DataFrame) -> Dict[str, Any]:
         checker = BacktestIntegrityChecker(
@@ -559,7 +602,7 @@ class BacktestEngine:
             raise ValueError("no rows in the requested date range")
 
         validator = WalkForwardValidator(n_folds=folds)
-        n_folds_data = combined["date"].dt.year.nunique() - 1
+        n_folds_data = validator._fiscal_years(combined["date"]).nunique() - 1
         if n_folds_data < 1:
             train_fold, test_fold = validator.get_train_validation_split(combined, val_fraction=0.3)
             date_folds = [(train_fold, test_fold)]
@@ -678,6 +721,9 @@ class BacktestEngine:
             aggregate["sharpe_mean_full_periods_only"] = None
 
         oof_df = pd.concat(oof_rows, ignore_index=True) if oof_rows else None
+
+        if self._feature_log_writer is not None:
+            self._feature_log_writer.flush()
 
         return BacktestResults(
             model_name=model_name, from_date=from_date, to_date=to_date,
