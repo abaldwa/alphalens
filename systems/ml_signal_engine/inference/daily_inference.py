@@ -57,7 +57,7 @@ from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel
 from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy
 from systems.ml_signal_engine.models.hmm.regime_detector import compute_hmm_observables
 from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector
-from systems.ml_signal_engine.models.signal.base_signal_model import CLASS_NAMES, BaseSignalModel
+from systems.ml_signal_engine.models.signal.base_signal_model import CLASS_NAMES, CLASS_ORDER, BaseSignalModel
 from systems.ml_signal_engine.models.deep.stacking import StackingMetaLearner
 from systems.ml_signal_engine.models.signal.meta_labeler import MetaLabeler
 from systems.ml_signal_engine.models.signal.signal_5d import Signal5DModel
@@ -628,16 +628,35 @@ def _step_signals_and_meta(
                     ].to_numpy(),
                 }
                 ensemble_out = ensemble_model.predict_ensemble(base_predictions)
-                for i, ticker in enumerate(Xc.index):
+                ensemble_classes = ensemble_out.predict_class()
+                # `ensemble_idx` (not `i`) deliberately — this loop must never
+                # shadow the outer chunk-cursor `i` from the enclosing `while
+                # i < len(tickers)` loop; a prior version did, and an
+                # exception raised partway through this loop left the outer
+                # `i` holding whatever value this loop's `i` had reached,
+                # corrupting (and sometimes reversing) the chunk cursor and
+                # turning the outer loop into a genuine infinite loop.
+                for ensemble_idx, ticker in enumerate(Xc.index):
+                    # predict_class() returns a dense argmax POSITION in
+                    # {0,1,2} for [Sell,Hold,Buy] (per its own docstring),
+                    # not a model class LABEL — CLASS_NAMES is keyed by the
+                    # actual labels {-1,0,1} (base_signal_model.py's
+                    # DIRECTION_SELL/HOLD/BUY). Indexing CLASS_NAMES with the
+                    # raw position directly crashed with KeyError on every
+                    # Buy prediction (position 2 isn't a valid CLASS_NAMES
+                    # key) and silently mislabeled Sell/Hold predictions
+                    # (position 0/1 coincide with the HOLD/BUY label values
+                    # by accident) — CLASS_ORDER maps position -> label.
+                    class_label = CLASS_ORDER[int(ensemble_classes[ensemble_idx])]
                     _write_signal(
                         client, api_base_url,
                         {
                             "date": run_date.isoformat(), "ticker": ticker,
                             "model_name": STACKING_ENSEMBLE_MODEL_NAME, "model_version": "1.0",
-                            "signal_direction": CLASS_NAMES[int(ensemble_out.predict_class()[i])],
-                            "buy_prob": float(ensemble_out.final_buy_prob[i]),
-                            "hold_prob": float(ensemble_out.final_hold_prob[i]),
-                            "sell_prob": float(ensemble_out.final_sell_prob[i]),
+                            "signal_direction": CLASS_NAMES[class_label],
+                            "buy_prob": float(ensemble_out.final_buy_prob[ensemble_idx]),
+                            "hold_prob": float(ensemble_out.final_hold_prob[ensemble_idx]),
+                            "sell_prob": float(ensemble_out.final_sell_prob[ensemble_idx]),
                         },
                     )
             except Exception as exc:

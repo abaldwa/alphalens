@@ -56,6 +56,21 @@ _FUNDAMENTALS_DERIVED_PATTERNS = (
     "_ratio", "roe", "roce", "pledge", "promoter", "eps", "pat", "ebitda",
     "book_value", "debt_to_equity", "interest_coverage", "altman_z",
     "quality_flag", "shareholding",
+    # [BUG FIX, 2026-07-21 full-codebase-review REV7] Broadened per real
+    # column names confirmed present in features/forensic_classical.py
+    # and features/fundamental*.py that the original list missed —
+    # e.g. `cfo_to_net_income`, `m_score`/`f_score`/`o_score`,
+    # `dechow_f_score`/`piotroski_f_score`, `capex_to_cfo_ratio` (this one
+    # already matched `_ratio`, kept for clarity), `revenue_concentration`,
+    # `channel_stuffing_indicator` — all fundamentals-statement-derived and
+    # PIT-sensitive (only knowable after the underlying filing), none of
+    # which contain "_ratio"/"roe"/etc. Still deliberately not exhaustive —
+    # see this module's docstring for why a full features/registry.py
+    # cross-check isn't viable yet (registry.py's own names predate
+    # matrix_builder.py's current ALL_FEATURE_COLUMNS and don't match it).
+    "cfo", "accrual", "revenue", "m_score", "f_score", "o_score",
+    "dechow", "piotroski", "beneish", "capex", "cash_flow", "receivable",
+    "channel_stuffing", "tax_paid", "fcf_",
 )
 
 

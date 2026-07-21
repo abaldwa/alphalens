@@ -500,18 +500,51 @@ def load_pnd_training_data_from_db(
     df = df[~df["ticker"].isin(sebi_tickers)]
 
     features = compute_pnd_features(df) if not df.empty else pd.DataFrame(columns=["date", "ticker"] + PND_FEATURES)
+
+    # Negatives: one row per ticker (its most recent trading day) — the
+    # general "what does normal trading look like today" pool, unchanged.
     last_per_ticker = (
         features.sort_values("date").groupby("ticker", sort=False).tail(1) if not features.empty else features
     )
 
     known_pnd_set = set(KNOWN_PND_TICKERS) - sebi_tickers  # sebi_tickers use the real-event path instead
-    y = last_per_ticker["ticker"].isin(known_pnd_set).astype(int) if not last_per_ticker.empty else pd.Series(dtype=int)
-    if not last_per_ticker.empty:
-        y.index = last_per_ticker.index
-    X = last_per_ticker[PND_FEATURES] if not last_per_ticker.empty else pd.DataFrame(columns=PND_FEATURES)
 
-    # Real sebi_enforcement_orders positives: one row per event, always
-    # labeled 1, each scored on its own real event window.
+    # [BUG FIX, 2026-07-21 full-codebase-review] Positives (both the
+    # KNOWN_PND_TICKERS fallback below and the sebi_enforcement_orders
+    # event windows further down) previously kept only the LAST day of
+    # each ticker/event window via `.tail(1)` — discarding every other
+    # real, non-fabricated day inside a confirmed manipulation window.
+    # With only 20 KNOWN_PND_TICKERS (and typically far fewer actually
+    # resolving to real ohlcv_adjusted rows), this structurally capped
+    # the model at a handful of positive training examples regardless of
+    # how many real manipulation-days were actually available — measured
+    # to produce a LightGBM component that couldn't distinguish a
+    # textbook P&D pattern from normal trading (near-zero predicted
+    # probability on both, confirmed via tests/regression/test_known_pnd.py
+    # scoring 26-30 instead of the expected >=70/>=80). Using every real
+    # day within each known-positive ticker's window multiplies the real,
+    # non-synthetic positive training signal without fabricating anything
+    # — each day's features are computed causally from real OHLCV, same
+    # as any other row.
+    known_features = features[features["ticker"].isin(known_pnd_set)] if not features.empty else features
+    other_features = features[~features["ticker"].isin(known_pnd_set)] if not features.empty else features
+    last_per_ticker = (
+        other_features.sort_values("date").groupby("ticker", sort=False).tail(1)
+        if not other_features.empty else other_features
+    )
+    X_neg = last_per_ticker[PND_FEATURES] if not last_per_ticker.empty else pd.DataFrame(columns=PND_FEATURES)
+    y_neg = pd.Series([0] * len(X_neg))
+
+    X_known_pos = known_features[PND_FEATURES] if not known_features.empty else pd.DataFrame(columns=PND_FEATURES)
+    y_known_pos = pd.Series([1] * len(X_known_pos))
+
+    X_parts = [f.reset_index(drop=True) for f in (X_neg, X_known_pos) if not f.empty]
+    y_parts = [s.reset_index(drop=True) for s in (y_neg, y_known_pos) if not s.empty]
+    X = pd.concat(X_parts, ignore_index=True) if X_parts else pd.DataFrame(columns=PND_FEATURES)
+    y = pd.concat(y_parts, ignore_index=True) if y_parts else pd.Series(dtype=int)
+
+    # Real sebi_enforcement_orders positives: EVERY real trading day within
+    # the confirmed event window (not just the last one), always labeled 1.
     event_rows = []
     for event_df in event_frames:
         event_df = event_df.copy()
@@ -521,8 +554,7 @@ def load_pnd_training_data_from_db(
         event_features = compute_pnd_features(event_df)
         if event_features.empty:
             continue
-        last_row = event_features.sort_values("date").tail(1)
-        event_rows.append(last_row[PND_FEATURES])
+        event_rows.append(event_features.sort_values("date")[PND_FEATURES])
 
     if event_rows:
         X_events = pd.concat(event_rows, ignore_index=True)

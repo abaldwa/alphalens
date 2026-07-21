@@ -81,6 +81,13 @@ REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 
 # Phase 3 gate: minimum Sharpe improvement over Phase 2 baseline
 _PHASE3_SHARPE_GATE: float = 0.10
+# [BUG FIX, 2026-07-21 full-codebase-review REV6] Deflated Sharpe Ratio
+# significance threshold (Bailey & Lopez de Prado 2014's own convention):
+# DSR >= 0.95 means the observed Sharpe is very unlikely to be the best of
+# many noisy configurations. Both phase2 baseline and phase3 variant are
+# themselves each the winner of their own Optuna HPO search, so neither
+# side's raw Sharpe should be trusted without this correction.
+_PHASE3_DSR_GATE: float = 0.95
 
 # Signal21D barrier widths (02_models.md: "21d = 3× ATR")
 _SIGNAL21D_PROFIT_MULTIPLIER: float = 3.0
@@ -181,7 +188,12 @@ def run_phase3_backtest(
       phase2         : Phase 2 baseline results
       phase3         : Phase 3 Signal21D results
       comparison     : Metric-by-metric comparison table
-      gate_passed    : bool — True if Sharpe improvement >= 0.10
+      gate_passed    : bool — True if Sharpe improvement >= 0.10 AND
+                       Phase 3's deflated Sharpe ratio >= 0.95 (2026-07-21
+                       full-codebase-review REV6: a raw Sharpe delta alone
+                       can't distinguish genuine improvement from the
+                       "best of N" noise both variants' own Optuna HPO
+                       search can produce)
       sharpe_improvement : float
 
     Spec References
@@ -232,11 +244,33 @@ def run_phase3_backtest(
         )
     logger.info(f"Feature vectors captured to backtest_feature_log under run_id prefix={base_run_id}")
 
-    baseline_sharpe = phase2["aggregate"].get("sharpe_mean", 0.0) or 0.0
-    variant_sharpe = phase3["aggregate"].get("sharpe_mean", 0.0) or 0.0
+    # [BUG FIX, 2026-07-21 full-codebase-review REV5] Use
+    # sharpe_mean_full_periods_only (excludes a short trailing partial-year
+    # fold that can otherwise skew the plain mean once annualized off a
+    # handful of trades — engine.py's own aggregate already computes this)
+    # rather than the possibly partial-fold-skewed sharpe_mean, falling
+    # back to sharpe_mean only if no full-year fold exists in this run.
+    baseline_sharpe = (
+        phase2["aggregate"].get("sharpe_mean_full_periods_only")
+        if phase2["aggregate"].get("sharpe_mean_full_periods_only") is not None
+        else phase2["aggregate"].get("sharpe_mean", 0.0)
+    ) or 0.0
+    variant_sharpe = (
+        phase3["aggregate"].get("sharpe_mean_full_periods_only")
+        if phase3["aggregate"].get("sharpe_mean_full_periods_only") is not None
+        else phase3["aggregate"].get("sharpe_mean", 0.0)
+    ) or 0.0
     sharpe_improvement = variant_sharpe - baseline_sharpe
 
-    gate_passed = sharpe_improvement >= _PHASE3_SHARPE_GATE
+    # [BUG FIX, 2026-07-21 full-codebase-review REV6] Deflated Sharpe Ratio
+    # is now computed inside BacktestEngine.run_full_backtest (real
+    # per-period fold returns, n_trials=optuna_trials) — require the
+    # PHASE 3 variant's DSR to clear the significance threshold too, not
+    # just the raw Sharpe delta, since a raw delta alone can't distinguish
+    # genuine improvement from noise across an HPO search.
+    variant_dsr = phase3["aggregate"].get("deflated_sharpe_ratio")
+    dsr_ok = variant_dsr is not None and variant_dsr >= _PHASE3_DSR_GATE
+    gate_passed = sharpe_improvement >= _PHASE3_SHARPE_GATE and dsr_ok
 
     # ── Phase 3 integrity checks ───────────────────────────────────────────
     # Individual integrity checks run inside BacktestEngine per fold.
@@ -265,7 +299,11 @@ def run_phase3_backtest(
               f"{str(round(v3, 4) if v3 else 'N/A')}")
     print("  " + "-" * 68)
     print(f"  {'Sharpe improvement (Phase 3 - 2)':<28}{sharpe_improvement:+.4f}")
-    print(f"  {'Gate >= 0.10':<28}{'PASSED' if gate_passed else 'FAILED'}")
+    print(f"  {'Gate >= 0.10':<28}{'PASSED' if sharpe_improvement >= _PHASE3_SHARPE_GATE else 'FAILED'}")
+    print(f"  {'Deflated Sharpe Ratio (Phase 3)':<28}"
+          f"{str(round(variant_dsr, 4)) if variant_dsr is not None else 'N/A'}")
+    print(f"  {'DSR >= 0.95':<28}{'PASSED' if dsr_ok else 'FAILED'}")
+    print(f"  {'Overall gate (Sharpe delta AND DSR)':<28}{'PASSED' if gate_passed else 'FAILED'}")
     print(f"  {'All 9 integrity rules':<28}{'PASSED' if integrity_ok else 'FAILED'}")
     print("=" * 70)
 
@@ -278,7 +316,10 @@ def run_phase3_backtest(
         "generated_at": run_date.isoformat(),
         "runtime_seconds": runtime_seconds,
         "phase3_gate_threshold": _PHASE3_SHARPE_GATE,
+        "phase3_dsr_gate_threshold": _PHASE3_DSR_GATE,
         "sharpe_improvement": sharpe_improvement,
+        "deflated_sharpe_ratio": variant_dsr,
+        "dsr_gate_passed": dsr_ok,
         "gate_passed": gate_passed,
         "integrity_passed": integrity_ok,
         "comparison": comparison,

@@ -308,8 +308,13 @@ class TestWatchlistCurrent:
         response = client.get("/api/v1/watchlist/current")
         body = response.json()
         assert body["implemented"] is True
-        tickers = [t["ticker"] for t in body["tickers"]]
-        assert tickers == ["HIGHCO", "LOWCO"]  # descending by mb_probability, latest date only
+        # HIGHCO/LOWCO aren't real universe tickers, so they have no ADTV
+        # figure; filter_recommendable treats unknown ADTV as non-recommendable
+        # (ML24/ML27), so they land in low_liquidity_tickers, not tickers —
+        # still ranked descending by mb_probability within that list.
+        low_liq_tickers = [t["ticker"] for t in body["low_liquidity_tickers"]]
+        assert low_liq_tickers == ["HIGHCO", "LOWCO"]
+        assert body["tickers"] == []
 
 
 def test_close_all_connections_after_module():

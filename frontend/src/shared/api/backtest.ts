@@ -3,7 +3,7 @@
 // BacktestUmbrellaPlan.md at the repo root). Distinct from the existing
 // legacy backtest_reports.py passthrough (still used by src/pages/ml/backtest.tsx)
 // — this module is the new cross-channel run listing/detail/feature-log API.
-import { apiGet } from './client'
+import { apiGet, apiPost } from './client'
 
 export type BacktestChannel = 'technical' | 'fundamental' | 'ml' | 'momentum'
 export type BacktestMode = 'backtest' | 'walk_forward' | 'paper'
@@ -89,4 +89,66 @@ export function getBacktestRunLineage(runId: string) {
 
 export function getBacktestRunFeatureLog(runId: string) {
   return apiGet<FeatureLogResponse>(`/api/v1/backtest/runs/${runId}/feature_log`)
+}
+
+// Iterative MetaLabeler retrain loop (datastore/api/routers/backtest_runs.py's
+// /iterative/trigger + /iterative/status/{job_id}) — the one deliberate
+// exception to this API being read-only, see that router's module docstring.
+export interface IterativeRetrainTriggerResponse {
+  job_id: string
+  status: string
+}
+
+export interface IterativeRetrainIteration {
+  iteration: number
+  run_id: string
+  hyperparams: Record<string, unknown>
+  sharpe_mean: number
+  win_rate_mean: number
+  dsr: number
+  random_feature_accuracy: number | null
+  promoted: boolean
+  rejection_reason: string | null
+  runtime_seconds: number
+  dropped_candidates: Record<string, number>
+}
+
+export interface IterativeRetrainReport {
+  generated_at: string
+  loop_run_id: string
+  runtime_seconds: number
+  stopped_reason: string
+  holdout_selection: {
+    holdout_start: string
+    holdout_end: string
+    skipped_fiscal_years: number[]
+    explanation: string
+  }
+  excluded_buffer_rows: number
+  iterations: IterativeRetrainIteration[]
+  best_iteration_index: number | null
+  best_hyperparams: Record<string, unknown> | null
+  holdout_run_id: string | null
+  holdout_runtime_seconds: number | null
+  holdout_aggregate: Record<string, unknown> | null
+}
+
+export interface IterativeRetrainStatusResponse {
+  job_id: string
+  status: 'running' | 'completed' | 'failed' | 'unknown'
+  report: IterativeRetrainReport | null
+  log_tail: string | null
+}
+
+export function triggerIterativeRetrain(params?: { horizon_days?: number; folds?: number; max_iterations?: number }) {
+  const query = new URLSearchParams()
+  if (params?.horizon_days !== undefined) query.set('horizon_days', String(params.horizon_days))
+  if (params?.folds !== undefined) query.set('folds', String(params.folds))
+  if (params?.max_iterations !== undefined) query.set('max_iterations', String(params.max_iterations))
+  const qs = query.toString()
+  return apiPost<IterativeRetrainTriggerResponse>(`/api/v1/backtest/iterative/trigger${qs ? `?${qs}` : ''}`)
+}
+
+export function getIterativeRetrainStatus(jobId: string) {
+  return apiGet<IterativeRetrainStatusResponse>(`/api/v1/backtest/iterative/status/${jobId}`)
 }

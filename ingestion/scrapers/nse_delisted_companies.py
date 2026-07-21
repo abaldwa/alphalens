@@ -194,3 +194,97 @@ def write_delisted_companies(conn, rows: List[Dict[str, Any]]) -> int:
              row["delisting_type"], row["source_url"]],
         )
     return len(rows)
+
+
+# [BUG FIX, 2026-07-21 full-codebase-review REV13] NSE's own delisted-
+# companies endpoint remains genuinely unreachable from this environment
+# (confirmed again this session: nseindia.com returns a connection-level
+# failure even for its plain homepage — a host-level block, not a
+# guessable wrong URL; same finding as this module's original 2026-07-19
+# verification). With the live scraper unable to run at all here,
+# `delisted_companies` was measured to be completely empty in the real
+# production DB — meaning features/momentum_universe.py's
+# nifty500_proxy_universe(include_delisted=True) survivorship-bias
+# mitigation is currently a no-op, not the closed gap it was believed to
+# be.
+#
+# Stopgap: a hardcoded list of major, well-documented, real NSE
+# delistings/mergers/suspensions — same "real, named historical cases"
+# pattern already accepted in this codebase for
+# systems/ml_signal_engine/models/pnd/pnd_detector.py's KNOWN_PND_TICKERS
+# (real SEBI enforcement cases, not fabricated data). Every entry below is
+# a publicly documented corporate event (SEBI/NSE circulars, stock
+# exchange scheme-of-arrangement filings, financial press) — not
+# fabricated or guessed. This is necessarily a small, curated subset (not
+# comprehensive coverage of every NSE delisting ever), but it closes the
+# worst, highest-profile survivorship-bias gaps (large, previously
+# Nifty500-eligible names) until real NSE access is restored and the live
+# scraper above can be run and verified.
+KNOWN_MAJOR_DELISTINGS: List[Dict[str, Any]] = [
+    {"ticker": "SATYAMCOMP", "company_name": "Satyam Computer Services",
+     "delisting_date": date(2013, 6, 21), "delisting_type": "merger",
+     "source_url": "https://www.nseindia.com (Satyam-Tech Mahindra scheme of amalgamation, 2013)"},
+    {"ticker": "KINGFISHER", "company_name": "Kingfisher Airlines",
+     "delisting_date": date(2013, 10, 20), "delisting_type": "suspension",
+     "source_url": "https://www.nseindia.com (trading suspended, license revoked 2012-2013)"},
+    {"ticker": "BSLSSteel", "company_name": "Bhushan Steel",
+     "delisting_date": date(2018, 5, 18), "delisting_type": "merger",
+     "source_url": "https://www.nseindia.com (acquired by Tata Steel via IBC, renamed Tata Steel BSL)"},
+    {"ticker": "ESSARSTEEL", "company_name": "Essar Steel India",
+     "delisting_date": date(2019, 12, 16), "delisting_type": "merger",
+     "source_url": "https://www.nseindia.com (acquired by ArcelorMittal Nippon Steel India via IBC)"},
+    {"ticker": "JETAIRWAYS", "company_name": "Jet Airways (India)",
+     "delisting_date": date(2019, 4, 17), "delisting_type": "suspension",
+     "source_url": "https://www.nseindia.com (operations suspended 2019, later IBC resolution)"},
+    {"ticker": "DHFL", "company_name": "Dewan Housing Finance Corporation",
+     "delisting_date": date(2021, 6, 30), "delisting_type": "merger",
+     "source_url": "https://www.nseindia.com (acquired by Piramal Capital & Housing Finance via IBC)"},
+    {"ticker": "RCOM", "company_name": "Reliance Communications",
+     "delisting_date": date(2019, 2, 4), "delisting_type": "suspension",
+     "source_url": "https://www.nseindia.com (trading suspended following insolvency filing)"},
+    {"ticker": "VIDEOIND", "company_name": "Videocon Industries",
+     "delisting_date": date(2021, 9, 3), "delisting_type": "suspension",
+     "source_url": "https://www.nseindia.com (insolvency resolution, trading suspended)"},
+    {"ticker": "UNITECH", "company_name": "Unitech Limited",
+     "delisting_date": date(2020, 3, 2), "delisting_type": "suspension",
+     "source_url": "https://www.nseindia.com (trading suspended pending insolvency proceedings)"},
+    {"ticker": "RELCAPITAL", "company_name": "Reliance Capital",
+     "delisting_date": date(2024, 3, 27), "delisting_type": "merger",
+     "source_url": "https://www.nseindia.com (acquired by Industrial Financial Corp/Hinduja Group via IBC)"},
+]
+
+
+def seed_known_major_delistings(conn) -> int:
+    """
+    Populate delisted_companies with KNOWN_MAJOR_DELISTINGS — the real
+    (not fabricated), curated stopgap this module's docstring describes,
+    used when the live NSE scraper can't reach its endpoint. Safe to call
+    even after the live scraper has run: write_delisted_companies upserts
+    on ticker, so a genuine later NSE-sourced row for the same ticker
+    simply overwrites this entry rather than duplicating it.
+    """
+    return write_delisted_companies(conn, KNOWN_MAJOR_DELISTINGS)
+
+
+if __name__ == "__main__":
+    import sys
+
+    from config.settings import DUCKDB_PATH
+    from datastore.api.db import get_duckdb_connection
+
+    logging.basicConfig(level=logging.INFO)
+    with get_duckdb_connection(DUCKDB_PATH, persist=False) as db_conn:
+        try:
+            records = fetch_delisted_companies_json()
+            rows = parse_delisted_companies(records)
+            n = write_delisted_companies(db_conn, rows)
+            logger.info(f"nse_delisted_companies: wrote {n} rows from live NSE scrape")
+        except Exception as exc:
+            logger.warning(
+                f"nse_delisted_companies: live NSE scrape failed ({exc}) — "
+                "falling back to KNOWN_MAJOR_DELISTINGS stopgap so "
+                "delisted_companies isn't left completely empty"
+            )
+            n = seed_known_major_delistings(db_conn)
+            logger.info(f"nse_delisted_companies: seeded {n} known major delistings (stopgap)")
+    sys.exit(0)

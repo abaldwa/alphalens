@@ -228,6 +228,12 @@ KEYWORD_ALLOWLIST: dict[str, set[str]] = {
     "backtest/paper_trading/live_runner.py": {
         "to a dummy horizon bucket",
     },
+    # Comment explaining why class-weighting was chosen over a SMOTE-style
+    # resampling step ("could leak synthetic correlation") — a risk being
+    # avoided, not a fabricated-data path in this module.
+    "systems/ml_signal_engine/models/signal/meta_labeler.py": {
+        "could leak synthetic",
+    },
 }
 
 

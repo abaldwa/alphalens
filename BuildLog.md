@@ -14716,8 +14716,21 @@ native-memory leak, not thread oversubscription). Fixed by switching
 the test's model-training helper from `train_full()` to the lighter
 `train()` path (no HPO/SMOTETomek/quantile heads — unneeded for this
 test, which only exercises `predict()`/`predict_proba()` downstream of
-training) and shrinking `n` from 200 to 80. Final pass/fail result for
-this specific file pending a clean completed run in this environment.
+training) and shrinking `n` from 200 to 80. Even after this fix, 2
+further attempts failed in this sandbox (1 more OOM-signature kill, 1
+appearing to fail before pytest even started, likely shell starvation
+during residual swap pressure from the prior kill) — this sandbox's
+available headroom (~14GB total, frequently <1GB free under this
+session's combined load) is simply insufficient to reliably run this
+one integration test, a resource-availability finding, not a code
+defect. **Not resolved this session**: `test_stacking_ensemble_wiring.py`
+itself has never completed a clean run end-to-end here. The underlying
+A3 wiring is not in doubt — `test_stacking.py` and
+`test_daily_inference_chunking.py` exercise the identical
+`daily_inference.py` code paths A3 modifies and both pass cleanly.
+Recommend running this one file on a machine with more free headroom
+(CI, or a workstation without other concurrent sessions) rather than
+retrying further in this environment.
 
 ### Files changed
 `features/deep_forensic.py`, `features/forensic_classical.py`,

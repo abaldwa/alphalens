@@ -42,6 +42,14 @@ def _bare_engine(**attrs):
         historical_tickers={"A", "B"},
         _feature_log_writer=None,
         _run_id=None,
+        # Real (2026-07-21 REV2/REV3) ADTV wiring — default to "abundantly
+        # liquid" for every ticker so these pre-existing tests (which
+        # exercise P&D/signal/meta routing, not liquidity filtering) keep
+        # their original behavior. Set as a plain callable, not a
+        # pd.Series, so `object.__new__`-built instances (which never run
+        # __init__'s real _build_adtv_lookup) don't need a real OHLCV
+        # panel; tests exercising the liquidity floor itself override this.
+        _adtv_cr=lambda d, tickers: pd.Series(1e9, index=tickers),
     )
     defaults.update(attrs)
     for k, v in defaults.items():
@@ -374,7 +382,8 @@ class TestRunIntegrityCheck:
             universe_tickers={"A"},
             historical_tickers={"A", "DELISTED1"},
         )
-        result = eng._run_integrity_check(train, test)
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        result = eng._run_integrity_check(train, test, portfolio)
         assert result["passed"] is True
         assert result["detail"]["critical_failures"] == []
 
@@ -387,7 +396,8 @@ class TestRunIntegrityCheck:
             universe_tickers={"A"},
             historical_tickers={"A"},
         )
-        result = eng._run_integrity_check(train, leaked_test)
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        result = eng._run_integrity_check(train, leaked_test, portfolio)
         assert result["passed"] is False
         assert len(result["detail"]["critical_failures"]) >= 1
 

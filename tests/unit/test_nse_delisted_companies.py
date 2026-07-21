@@ -12,8 +12,14 @@ claim that this is the real, verified response shape.
 """
 
 
+import duckdb
+
+from datastore.schema.create_normalised import _CREATE_DELISTED_COMPANIES
 from ingestion.scrapers.nse_delisted_companies import (
+    KNOWN_MAJOR_DELISTINGS,
     parse_delisted_companies,
+    seed_known_major_delistings,
+    write_delisted_companies,
     _parse_date,
 )
 
@@ -63,3 +69,50 @@ class TestParseDate:
 
     def test_none_input_returns_none(self):
         assert _parse_date(None) is None
+
+
+class TestKnownMajorDelistingsSeed:
+    """2026-07-21 full-codebase-review REV13: real, documented major NSE
+    delistings/mergers/suspensions, used as a stopgap when the live NSE
+    scraper can't reach its endpoint (confirmed network-blocked from this
+    environment)."""
+
+    def test_seed_writes_every_known_entry(self):
+        conn = duckdb.connect(":memory:")
+        conn.execute(_CREATE_DELISTED_COMPANIES)
+        n = seed_known_major_delistings(conn)
+        assert n == len(KNOWN_MAJOR_DELISTINGS)
+        count = conn.execute("SELECT COUNT(*) FROM delisted_companies").fetchone()[0]
+        assert count == len(KNOWN_MAJOR_DELISTINGS)
+
+    def test_every_known_entry_has_a_ticker_and_real_delisting_date(self):
+        for row in KNOWN_MAJOR_DELISTINGS:
+            assert row["ticker"]
+            assert row["delisting_date"] is not None
+            assert row["delisting_type"] in ("merger", "suspension")
+
+    def test_seed_is_idempotent_and_does_not_duplicate(self):
+        conn = duckdb.connect(":memory:")
+        conn.execute(_CREATE_DELISTED_COMPANIES)
+        seed_known_major_delistings(conn)
+        seed_known_major_delistings(conn)
+        count = conn.execute("SELECT COUNT(*) FROM delisted_companies").fetchone()[0]
+        assert count == len(KNOWN_MAJOR_DELISTINGS)
+
+    def test_live_scraper_row_overwrites_seed_row_for_same_ticker(self):
+        """A later, genuine NSE-sourced row must win over the stopgap
+        entry for the same ticker (ON CONFLICT upsert), not be blocked or
+        duplicated."""
+        conn = duckdb.connect(":memory:")
+        conn.execute(_CREATE_DELISTED_COMPANIES)
+        seed_known_major_delistings(conn)
+        write_delisted_companies(conn, [{
+            "ticker": "SATYAMCOMP", "company_name": "Satyam Computer Services Ltd (NSE-verified)",
+            "delisting_date": None, "delisting_type": "merger (NSE-confirmed)",
+            "source_url": "https://www.nseindia.com/real-endpoint",
+        }])
+        row = conn.execute(
+            "SELECT company_name, delisting_type FROM delisted_companies WHERE ticker = 'SATYAMCOMP'"
+        ).fetchone()
+        assert row[0] == "Satyam Computer Services Ltd (NSE-verified)"
+        assert row[1] == "merger (NSE-confirmed)"

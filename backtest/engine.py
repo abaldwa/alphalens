@@ -37,8 +37,11 @@ import numpy as np
 import pandas as pd
 import talib
 
+from backtest.costs import IndianTransactionCosts
 from backtest.integrity_checker import BacktestIntegrityChecker
+from backtest.overfit_checks import deflated_sharpe_ratio, random_feature_test
 from backtest.portfolio import PortfolioSimulator
+from config.settings import MIN_ADT_INR
 from config.timezone import now_ist
 from features.pnd_features import PND_FEATURES, compute_pnd_features
 from features.technical import CORE_TECHNICAL_FEATURES, compute_technical_features
@@ -51,6 +54,11 @@ from backtest.core.horizon import HorizonBucket
 logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 252
+# Trailing window (trading days) for the real ADTV (average daily traded
+# value, INR crore) computation this engine now feeds into both slippage
+# costing and the liquidity floor — matches backtest/momentum_backtest.py's
+# own adtv_lookback_days default.
+ADTV_LOOKBACK_DAYS = 20
 # Position-context columns ExitSignalModel.predict_full() expects, matching
 # exit_signal.load_exit_training_data_from_db()'s schema so a model trained
 # on that real historical archive can score real backtest positions, plus
@@ -120,6 +128,10 @@ class BacktestResults:
     # correction. None for every other caller — default keeps existing
     # behavior unchanged.
     fold_returns: Optional[pd.Series] = None
+    # Per-fold MetaLabeler hyperparams + chronological 80/20 meta-training
+    # split, populated only when run_full_backtest(collect_fold_models=True)
+    # is used — see that method's docstring. None for every other caller.
+    fold_models: Optional[List[Dict[str, Any]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -332,6 +344,38 @@ class BacktestEngine:
         self._pnd_features = compute_pnd_features(ohlcv).set_index(["date", "ticker"])
         self._price_lookup = ohlcv.set_index(["date", "ticker"])["close"]
         self._momentum = self._build_momentum()
+        self._adtv_lookup = self._build_adtv_lookup()
+
+    # [BUG FIX, 2026-07-21 full-codebase-review REV2/REV3] Real trailing
+    # ADTV (average daily traded value, INR crore) per (date, ticker) —
+    # price*volume, ADTV_LOOKBACK_DAYS trailing mean, same real-gap NaN
+    # handling as backtest/momentum_backtest.py's own `_adtv_cr` (no
+    # forward-fill of volume itself). Previously this engine never
+    # computed or threaded ADTV anywhere: `_apply_entries` had no
+    # liquidity floor (check_06_liquidity's "applied_min_adt_inr" was a
+    # hardcoded literal, not a real enforced value — see
+    # _run_integrity_check), and `portfolio.buy`/`apply_exit_signal` were
+    # never passed `adtv_cr`, so `IndianTransactionCosts._slippage_pct`
+    # always used the default (non-small-cap) slippage rate even for
+    # illiquid names, understating costs for exactly the low-liquidity
+    # tickers SPEC-BT-002's 0.30% small-cap slippage bump exists for.
+    def _build_adtv_lookup(self) -> pd.Series:
+        df = self.ohlcv[["date", "ticker", "close", "volume"]].copy()
+        df["_traded_value_cr"] = (df["close"] * df["volume"]) / 1e7
+        df = df.sort_values(["ticker", "date"])
+        df["_adtv_cr"] = df.groupby("ticker", sort=False)["_traded_value_cr"].transform(
+            lambda s: s.rolling(ADTV_LOOKBACK_DAYS, min_periods=1).mean()
+        )
+        return df.set_index(["date", "ticker"])["_adtv_cr"]
+
+    def _adtv_cr(self, d, tickers: List[str]) -> pd.Series:
+        keys = [(d, t) for t in tickers]
+        present = [k for k in keys if k in self._adtv_lookup.index]
+        if not present:
+            return pd.Series(np.nan, index=tickers)
+        vals = self._adtv_lookup.loc[present]
+        vals.index = [k[1] for k in present]
+        return vals.reindex(tickers)
 
     def _build_dataset(self) -> pd.DataFrame:
         if self.benchmark is None:
@@ -492,9 +536,12 @@ class BacktestEngine:
             )
         exit_ctx = pd.DataFrame(rows).set_index("ticker")[EXIT_CONTEXT_COLUMNS]
         exit_out = self.exit_model.predict_full(exit_ctx)
+        adtv_today = self._adtv_cr(d, held)
         for t in held:
             urgency = float(exit_out.loc[t, "exit_urgency"])
-            trade = portfolio.apply_exit_signal(t, urgency, prices_today[t], d)
+            adtv_cr = adtv_today.get(t)
+            adtv_cr = float(adtv_cr) if pd.notna(adtv_cr) else None
+            trade = portfolio.apply_exit_signal(t, urgency, prices_today[t], d, adtv_cr=adtv_cr)
             decision = "sold" if trade is not None else "held"
             self._log_feature(
                 t, d, exit_ctx.loc[t].to_dict(), decision, signal_output=f"exit_urgency={urgency:.4f}",
@@ -510,6 +557,21 @@ class BacktestEngine:
         if candidates.empty:
             return
         feat_block = candidates.set_index("ticker")[CORE_TECHNICAL_FEATURES]
+
+        # [BUG FIX, 2026-07-21 full-codebase-review REV3] SPEC-BT-001 rule 5 /
+        # check_06_liquidity claims a MIN_ADT_INR liquidity floor is enforced
+        # on entries, but nothing in this method ever called
+        # IndianTransactionCosts.is_liquid_enough()/checked MIN_ADT_INR — an
+        # illiquid ticker could be bought at full simulated size with no
+        # floor at all. Entry filter stacks before the model, same position
+        # as the P&D pre-filter and watchlist filter above.
+        adtv_at_entry = self._adtv_cr(d, list(feat_block.index))
+        illiquid = adtv_at_entry.index[adtv_at_entry.isna() | (adtv_at_entry * 1e7 < MIN_ADT_INR)]
+        for t in illiquid:
+            self._log_feature(t, d, feat_block.loc[t].to_dict(), "skipped_illiquid")
+        feat_block = feat_block.loc[~feat_block.index.isin(illiquid)]
+        if feat_block.empty:
+            return
 
         blocked = self._pnd_blocked(d, list(feat_block.index))
         blocked_tickers = feat_block.index[blocked.to_numpy()]
@@ -549,15 +611,47 @@ class BacktestEngine:
             )
             self._log_feature(ticker, d, feat_block.loc[ticker].to_dict(), "bought")
 
-    def _run_integrity_check(self, train_fold: pd.DataFrame, test_fold: pd.DataFrame) -> Dict[str, Any]:
+    def _real_applied_roundtrip_cost_pct(self, portfolio: PortfolioSimulator) -> float:
+        """
+        [BUG FIX, 2026-07-21 full-codebase-review REV1] Real mean applied
+        cost % measured from this fold's actual closed trades (cost_inr /
+        entry turnover), not a hardcoded literal — a hardcoded value
+        compared against itself in check_05_costs can never fail no
+        matter what the simulation actually charged.
+
+        Falls back to a real (not fabricated) representative rate — the
+        same IndianTransactionCosts rate table computation
+        `validate_against_settings` uses for its own sanity check — only
+        when this fold closed zero trades, so check_05_costs still has a
+        real, table-driven value to validate rather than nothing.
+        """
+        trades = portfolio.trades_df
+        if trades.empty:
+            return IndianTransactionCosts().compute_roundtrip_cost_pct(price=1000.0, quantity=100)
+        turnover = trades["entry_price"] * trades["quantity"]
+        applied_pct = (trades["cost_inr"] / turnover).replace([np.inf, -np.inf], np.nan).dropna()
+        if applied_pct.empty:
+            return IndianTransactionCosts().compute_roundtrip_cost_pct(price=1000.0, quantity=100)
+        return float(applied_pct.mean())
+
+    def _run_integrity_check(
+        self, train_fold: pd.DataFrame, test_fold: pd.DataFrame, portfolio: PortfolioSimulator,
+    ) -> Dict[str, Any]:
         checker = BacktestIntegrityChecker(
             folds=[(train_fold, test_fold)],
             feature_df=self._combined[["date"]],
             ohlcv_df=self.ohlcv,
             universe_tickers=self.universe_tickers,
             historical_tickers=self.historical_tickers,
-            applied_roundtrip_cost_pct=0.4,
-            applied_min_adt_inr=1_000_000,
+            # [BUG FIX, 2026-07-21 full-codebase-review REV1] Real values,
+            # not hardcoded literals: the cost % actually measured from
+            # this fold's trades (see _real_applied_roundtrip_cost_pct),
+            # and MIN_ADT_INR itself now that _apply_entries (REV3, above)
+            # genuinely enforces it as the entry liquidity floor — so
+            # reporting MIN_ADT_INR here is an honest statement of what
+            # was actually enforced this fold, not an assumed constant.
+            applied_roundtrip_cost_pct=self._real_applied_roundtrip_cost_pct(portfolio),
+            applied_min_adt_inr=float(MIN_ADT_INR),
             # SPEC-MODEL-003: Optuna HPO is scoped to the train/validation split
             # only (see signal_model.train_full's train_df/val_df args below) —
             # already true in the implementation, just reported here so
@@ -576,7 +670,7 @@ class BacktestEngine:
 
     def run_full_backtest(
         self, model_name: str, from_date: Optional[Any] = None, to_date: Optional[Any] = None, folds: int = 5,
-        collect_oof: bool = False, collect_fold_returns: bool = False,
+        collect_oof: bool = False, collect_fold_returns: bool = False, collect_fold_models: bool = False,
     ) -> BacktestResults:
         """
         Run the full P&D -> Signal -> MetaLabel -> Exit walk-forward
@@ -598,6 +692,20 @@ class BacktestEngine:
             (M-13) to build genuine out-of-fold training data for the
             stacking meta-learner. Default False preserves the exact
             existing behavior/return shape for all other callers.
+        collect_fold_models : bool
+            When True, accumulate each fold's MetaLabeler hyperparameters
+            plus a chronological 80/20 train/test split of that fold's
+            meta-training data (val_df's CORE_TECHNICAL_FEATURES rows) into
+            BacktestResults.fold_models — used by
+            backtest/iterative_retrain.py's promotion gate to run
+            overfit_checks.random_feature_test per fold without
+            re-deriving the split itself. The split is independent of
+            (and never touches) the meta_model actually used for this
+            fold's simulation — random_feature_test mutates the model
+            it's given by re-training it on shuffled data, so callers
+            must construct a fresh MetaLabeler from the collected
+            lgbm_params rather than reuse a fold's production model.
+            Default False preserves existing behavior/return shape.
 
         Returns
         -------
@@ -635,6 +743,13 @@ class BacktestEngine:
         fold_integrity_results: List[Dict[str, Any]] = []
         oof_rows: List[pd.DataFrame] = []
         fold_return_series: List[pd.Series] = []
+        fold_models: List[Dict[str, Any]] = []
+        # [BUG FIX, 2026-07-21 full-codebase-review REV4] Real per-fold
+        # random-feature-test accuracy, fed into the aggregate integrity
+        # check below — previously check_10_random_feature never received
+        # a value at all (permanently "failed for lack of context", not a
+        # genuine noise-fitting signal).
+        fold_random_feature_accuracies: List[float] = []
 
         for i, (train_fold, test_fold) in enumerate(date_folds):
             train_df, val_df = validator.get_train_validation_split(train_fold, val_fraction=0.2)
@@ -656,6 +771,40 @@ class BacktestEngine:
                 meta_model.train(meta_X[meta_mask], meta_labels[meta_mask])
             else:
                 logger.warning("fold %d: too few Act-labeled rows to train MetaLabeler — entries unfiltered by meta", i)
+
+            if meta_model is not None:
+                meta_train_X = meta_X[meta_mask].reset_index(drop=True)
+                meta_train_y = meta_labels[meta_mask].reset_index(drop=True)
+                split_idx = int(len(meta_train_X) * 0.8)
+                if split_idx > 0 and split_idx < len(meta_train_X):
+                    if collect_fold_models:
+                        fold_models.append(
+                            {
+                                "fold_index": i, "lgbm_params": dict(meta_model._lgbm_params),
+                                "X_train": meta_train_X.iloc[:split_idx], "y_train": meta_train_y.iloc[:split_idx],
+                                "X_test": meta_train_X.iloc[split_idx:], "y_test": meta_train_y.iloc[split_idx:],
+                            }
+                        )
+                    # Real random-feature test (backtest/overfit_checks.py):
+                    # a FRESH MetaLabeler (never the fold's production
+                    # model — random_feature_test mutates whatever it's
+                    # given by retraining it on shuffled features) on this
+                    # fold's own real chronological 80/20 meta-training
+                    # split. n_repeats=5 (not the default 10) to keep the
+                    # per-fold cost bounded across a multi-fold/multi-model
+                    # phase gate run — still a genuine, non-fabricated
+                    # measurement, just fewer shuffle repeats averaged.
+                    try:
+                        rf_model = MetaLabeler(random_state=self.random_state, lgbm_params=dict(meta_model._lgbm_params))
+                        rf_accuracy = random_feature_test(
+                            rf_model,
+                            meta_train_X.iloc[:split_idx], meta_train_y.iloc[:split_idx],
+                            meta_train_X.iloc[split_idx:], meta_train_y.iloc[split_idx:],
+                            feature_cols=list(meta_train_X.columns), n_repeats=5, random_state=self.random_state,
+                        )
+                        fold_random_feature_accuracies.append(rf_accuracy)
+                    except Exception as exc:
+                        logger.warning("fold %d: random_feature_test failed, skipping for this fold (%s)", i, exc)
 
             if collect_oof:
                 proba = signal_model.predict_proba(test_fold[CORE_TECHNICAL_FEATURES])
@@ -679,9 +828,14 @@ class BacktestEngine:
                 portfolio.equity_curve, portfolio.trades_df, self.initial_capital,
                 benchmark_equity_curve=benchmark_curve,
             )
-            if collect_fold_returns:
-                equity = portfolio.equity_curve.set_index("date")["equity"]
-                fold_return_series.append(equity.pct_change().dropna())
+            # Always accumulated internally now (real, cheap — just the
+            # equity curve's own pct_change) so deflated_sharpe_ratio below
+            # has a real per-period return series to compute a genuine
+            # skew/kurtosis-corrected standard error from, regardless of
+            # whether the caller wants the raw series back via
+            # collect_fold_returns (BacktestResults.fold_returns).
+            equity = portfolio.equity_curve.set_index("date")["equity"]
+            fold_return_series.append(equity.pct_change().dropna())
 
             fold_results.append(
                 FoldResult(
@@ -691,7 +845,7 @@ class BacktestEngine:
                     **metrics,
                 )
             )
-            fold_integrity = self._run_integrity_check(train_fold, test_fold)
+            fold_integrity = self._run_integrity_check(train_fold, test_fold, portfolio)
             fold_integrity["fold_index"] = i
             fold_integrity_results.append(fold_integrity)
 
@@ -746,8 +900,62 @@ class BacktestEngine:
             aggregate["cagr_mean_full_periods_only"] = None
             aggregate["sharpe_mean_full_periods_only"] = None
 
+        # [BUG FIX, 2026-07-21 full-codebase-review REV4] check_08_fold_stability
+        # / check_09_benchmarks / check_10_random_feature are aggregate-level
+        # signals (need every fold's Sharpe/return, not one fold's) — the
+        # per-fold _run_integrity_check call above never had this context to
+        # give them, so they always failed "for lack of context," which is
+        # not the same as a genuine fold-stability/benchmark/noise failure.
+        # Run them here, once, with the real values this loop already
+        # computed (fold Sharpes, paired fold/benchmark returns, real
+        # per-fold random-feature-test accuracy). Non-critical (warn-only,
+        # per CRITICAL_CHECKS), so this never raises — it only makes these
+        # checks structurally capable of failing, matching the other 7.
+        fold_sharpes = [f.sharpe for f in fold_results]
+        paired_returns = [(f.cagr, f.benchmark_cagr) for f in fold_results if f.benchmark_cagr is not None]
+        aggregate_checker = BacktestIntegrityChecker(
+            fold_sharpes=fold_sharpes or None,
+            fold_returns=[p[0] for p in paired_returns] or None,
+            benchmark_returns=[p[1] for p in paired_returns] or None,
+            random_feature_accuracy=(
+                float(np.mean(fold_random_feature_accuracies)) if fold_random_feature_accuracies else None
+            ),
+        )
+        for check_name in ("check_08_fold_stability", "check_09_benchmarks", "check_10_random_feature"):
+            result = getattr(aggregate_checker, check_name)()
+            aggregate[f"integrity_{check_name}"] = {"passed": result.passed, "detail": result.detail}
+            if not result.passed:
+                logger.warning("Backtest quality check failed (non-critical): %s: %s", result.name, result.detail)
+
+        # [BUG FIX, 2026-07-21 full-codebase-review REV6] Deflated Sharpe
+        # Ratio (SPEC-BT-001 rule 8) was built (backtest/overfit_checks.py)
+        # but never actually invoked by any phase-gate caller — a raw
+        # Sharpe-improvement gate with no multiple-comparisons correction
+        # is exactly the "best of N configurations" failure mode DSR
+        # exists to catch, given each candidate is itself the winner of
+        # its own Optuna HPO search (self.optuna_trials trials). Computed
+        # here (real fold_returns/n_obs from this run) so callers like
+        # run_phase3_backtest.py can use it directly instead of a bare
+        # Sharpe delta.
+        _all_fold_returns = pd.concat(fold_return_series) if fold_return_series else None
+        if _all_fold_returns is not None and len(_all_fold_returns) >= 3 and aggregate["sharpe_mean"] is not None:
+            try:
+                aggregate["deflated_sharpe_ratio"] = deflated_sharpe_ratio(
+                    sharpe=aggregate["sharpe_mean"], n_trials=max(self.optuna_trials, 1),
+                    n_obs=len(_all_fold_returns), returns=_all_fold_returns,
+                )
+            except ValueError as exc:
+                logger.warning("deflated_sharpe_ratio computation failed: %s", exc)
+                aggregate["deflated_sharpe_ratio"] = None
+        else:
+            aggregate["deflated_sharpe_ratio"] = None
+
         oof_df = pd.concat(oof_rows, ignore_index=True) if oof_rows else None
-        fold_returns = pd.concat(fold_return_series) if fold_return_series else None
+        # BacktestResults.fold_returns keeps its exact prior opt-in
+        # behavior (collect_fold_returns=True only) — the series is now
+        # always computed internally (above) for deflated_sharpe_ratio,
+        # but only returned to the caller when explicitly requested.
+        fold_returns = _all_fold_returns if collect_fold_returns else None
 
         if self._feature_log_writer is not None:
             self._feature_log_writer.flush()
@@ -757,4 +965,5 @@ class BacktestEngine:
             fold_results=fold_results, aggregate=aggregate,
             integrity_passed=integrity["passed"], integrity_detail=integrity["detail"],
             oof_df=oof_df, fold_returns=fold_returns,
+            fold_models=fold_models if collect_fold_models else None,
         )

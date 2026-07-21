@@ -431,7 +431,10 @@ def build_full_nse_universe_from_db(
 
     ADTV is computed from the trailing `active_days` window in ohlcv_adjusted.
     market_cap_cr is left as 0 (same documented gap as build_universe_csv).
-    is_fno_eligible is left as False (same documented gap as build_universe_csv).
+    is_fno_eligible (2026-07-21 full-codebase-review REV14 fix) is now
+    real, computed from fno_data's actual STO/STF trading activity in the
+    trailing `active_days` window — see this function's Step 1 for detail
+    — falling back to False only if fno_data isn't available at all.
 
     Parameters
     ----------
@@ -482,6 +485,40 @@ def build_full_nse_universe_from_db(
 
     logger.info("ohlcv_adjusted: %d active tickers (active_days=%d)", len(active_df), active_days)
 
+    # [BUG FIX, 2026-07-21 full-codebase-review REV14] is_fno_eligible was
+    # hardcoded False for every row because the standalone NSE
+    # fo_mktlots.csv lot-size list this module's docstring describes is
+    # broken (serves a PDF, not CSV). Real F&O eligibility doesn't need
+    # that separate list at all: fno_db_path_for's fno_data table (real
+    # NSE F&O bhavcopy, already ingested by ingestion/scrapers/fno.py —
+    # confirmed 120M+ real rows spanning 2015-2026 in production) already
+    # records every ticker with actual stock-option/stock-future trading
+    # activity (instrument in STO/STF; IDO/IDF are index derivatives, not
+    # per-ticker). Any ticker with real STO/STF rows in the trailing
+    # window IS F&O eligible — a strictly better, always-available source
+    # than a static lot-size list.
+    fno_eligible_tickers: set = set()
+    try:
+        from datastore.api.db import fno_db_path_for
+
+        fno_path = fno_db_path_for(str(db_path))
+        if fno_path.exists():
+            with get_duckdb_connection(fno_path, persist=False, read_only=True) as fno_conn:
+                fno_df = fno_conn.execute(
+                    """
+                    SELECT DISTINCT ticker FROM fno_data
+                    WHERE instrument IN ('STO', 'STF')
+                      AND trade_date >= CURRENT_DATE - INTERVAL (?) DAY
+                    """,
+                    [active_days],
+                ).df()
+            fno_eligible_tickers = set(fno_df["ticker"])
+            logger.info("fno_data: %d F&O-eligible tickers (active_days=%d)", len(fno_eligible_tickers), active_days)
+        else:
+            logger.warning("fno_data not found at %s — is_fno_eligible left False for every ticker", fno_path)
+    except Exception as exc:
+        logger.warning("Could not read fno_data for is_fno_eligible (%s) — left False for every ticker", exc)
+
     # --- Step 2: fetch Nifty 500 constituent list for enrichment ---
     try:
         nifty500 = _fetch_index_csv(NSE_NIFTY500_URL)
@@ -527,7 +564,7 @@ def build_full_nse_universe_from_db(
     merged["sector"] = merged["sector"].fillna("")
     merged["isin"] = merged["isin"].fillna("")
     merged["market_cap_cr"] = 0
-    merged["is_fno_eligible"] = False
+    merged["is_fno_eligible"] = merged["ticker"].isin(fno_eligible_tickers)
 
     out = merged[OUTPUT_COLUMNS].drop_duplicates(subset="ticker").reset_index(drop=True)
 

@@ -1130,8 +1130,8 @@ async def write_ta_signals(body: TASignalWriteRequest) -> Dict[str, int]:
     SPEC-TA-006, SPEC-TA-008: ta_signals schema/upsert
     """
     from systems.technical_analysis.alerts.daily_alert_checker import (
+        _BULK_UPSERT_SQL,
         _CREATE_TA_SIGNALS_SQL,
-        _INSERT_SQL,
     )
 
     if not body.rows:
@@ -1145,11 +1145,19 @@ async def write_ta_signals(body: TASignalWriteRequest) -> Dict[str, int]:
         )
         for r in body.rows
     ]
+    batch_df = pd.DataFrame(rows, columns=[
+        "date", "ticker", "template_name", "category", "score",
+        "matched_conditions", "total_conditions", "key_values",
+    ])
 
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(_CREATE_TA_SIGNALS_SQL)
-        conn.executemany(_INSERT_SQL, rows)
+        conn.register("_ta_signals_upsert_batch", batch_df)
+        try:
+            conn.execute(_BULK_UPSERT_SQL)
+        finally:
+            conn.unregister("_ta_signals_upsert_batch")
     return {"written": len(rows)}
 
 

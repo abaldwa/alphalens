@@ -23,6 +23,8 @@ import {
   listBacktestRuns,
   getBacktestRunLineage,
   getBacktestRunFeatureLog,
+  triggerIterativeRetrain,
+  getIterativeRetrainStatus,
   type BacktestChannel,
   type BacktestMode,
   type BacktestRunSummary,
@@ -434,6 +436,159 @@ function RunDetail({ run }: { run: BacktestRunSummary }) {
   )
 }
 
+function IterativeRetrainPanel() {
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [horizonDays, setHorizonDays] = useState('5')
+
+  const status = useQuery({
+    queryKey: ['iterative-retrain-status', jobId],
+    queryFn: () => getIterativeRetrainStatus(jobId!),
+    enabled: !!jobId,
+    // Poll while the loop is running (each iteration is a full walk-forward
+    // backtest — this can run for a while); stop once it lands on a
+    // terminal status so we're not polling forever.
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 5000 : false),
+  })
+
+  async function handleTrigger() {
+    const numericHorizon = Number(horizonDays)
+    const res = await triggerIterativeRetrain({
+      horizon_days: Number.isFinite(numericHorizon) && numericHorizon > 0 ? numericHorizon : undefined,
+    })
+    setJobId(res.job_id)
+  }
+
+  const report = status.data?.status === 'completed' ? status.data.report : null
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle>Iterative Retrain (MetaLabeler)</CardTitle>
+        <CardDescription>
+          Repeatedly retrains the entry-filter model over a small fixed hyperparameter grid, promoting only
+          deflated-Sharpe-cleared improvements, then evaluates the winner exactly once on an untouched holdout
+          fiscal year — never tuned toward a target win-rate/CAGR.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">Horizon (days)</span>
+            <Input
+              type="number"
+              value={horizonDays}
+              onChange={(e) => setHorizonDays(e.target.value)}
+              className="w-28"
+            />
+          </div>
+          <Button onClick={handleTrigger} disabled={status.data?.status === 'running'}>
+            {status.data?.status === 'running' ? 'Running…' : 'Trigger Iterative Retrain'}
+          </Button>
+          {jobId ? <span className="text-xs text-muted-foreground">job_id: {jobId}</span> : null}
+        </div>
+
+        {status.data ? (
+          <div className="mt-4">
+            <Badge
+              variant={
+                status.data.status === 'completed' ? 'default' : status.data.status === 'failed' ? 'outline' : 'outline'
+              }
+            >
+              {status.data.status}
+            </Badge>
+
+            {status.data.status === 'failed' && status.data.log_tail ? (
+              <pre className="mt-2 max-h-48 overflow-auto rounded-[var(--radius-token)] border border-border p-2 text-xs">
+                {status.data.log_tail}
+              </pre>
+            ) : null}
+
+            {report ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-[var(--radius-token)] border border-border p-3 text-sm">
+                  <span className="text-xs font-semibold uppercase text-muted-foreground">
+                    Holdout selection (explainability)
+                  </span>
+                  <p className="mt-1">{report.holdout_selection.explanation}</p>
+                  <p className="mt-1 text-muted-foreground">
+                    Rows excluded entirely (too-recent-to-resolve buffer): {report.excluded_buffer_rows}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <StatCard label="Iterations run" value={String(report.iterations.length)} />
+                  <StatCard label="Stopped" value={report.stopped_reason} />
+                  <StatCard
+                    label="Best Sharpe"
+                    value={report.best_iteration_index !== null ? report.iterations[report.best_iteration_index].sharpe_mean.toFixed(3) : '—'}
+                  />
+                  <StatCard label="Total runtime" value={`${report.runtime_seconds.toFixed(0)}s`} />
+                </div>
+
+                <div>
+                  <span className="text-xs font-semibold uppercase text-muted-foreground">Iterations</span>
+                  <Table className="mt-1">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>#</TableHead>
+                        <TableHead>Sharpe</TableHead>
+                        <TableHead>Win Rate</TableHead>
+                        <TableHead>DSR</TableHead>
+                        <TableHead>Random-Feature Acc.</TableHead>
+                        <TableHead>Runtime</TableHead>
+                        <TableHead>Outcome</TableHead>
+                        <TableHead>Dropped candidates (explainability)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {report.iterations.map((it) => (
+                        <TableRow key={it.iteration}>
+                          <TableCell>{it.iteration}</TableCell>
+                          <TableCell className="font-mono-data">{it.sharpe_mean.toFixed(3)}</TableCell>
+                          <TableCell className="font-mono-data">{(it.win_rate_mean * 100).toFixed(1)}%</TableCell>
+                          <TableCell className="font-mono-data">{it.dsr.toFixed(3)}</TableCell>
+                          <TableCell className="font-mono-data">
+                            {it.random_feature_accuracy !== null ? it.random_feature_accuracy.toFixed(3) : '—'}
+                          </TableCell>
+                          <TableCell className="font-mono-data">{it.runtime_seconds.toFixed(1)}s</TableCell>
+                          <TableCell>
+                            <Badge variant={it.promoted ? 'default' : 'outline'}>
+                              {it.promoted ? 'promoted' : 'dropped'}
+                            </Badge>
+                            {!it.promoted && it.rejection_reason ? (
+                              <div className="mt-1 text-xs text-muted-foreground">{it.rejection_reason}</div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            {Object.entries(it.dropped_candidates)
+                              .map(([k, v]) => `${k}=${v}`)
+                              .join(', ') || '—'}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {report.holdout_aggregate ? (
+                  <div className="rounded-[var(--radius-token)] border border-border p-3 text-sm">
+                    <span className="text-xs font-semibold uppercase text-muted-foreground">
+                      Holdout evaluation (one-shot, never seen during tuning)
+                    </span>
+                    <pre className="mt-1 overflow-auto text-xs">{JSON.stringify(report.holdout_aggregate, null, 2)}</pre>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No iteration was promoted — no holdout evaluation was run.</p>
+                )}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function BacktestPage() {
   const [channel, setChannel] = useState<BacktestChannel | ''>('')
   const [mode, setMode] = useState<BacktestMode | ''>('')
@@ -539,6 +694,7 @@ export function BacktestPage() {
 
       {selectedRun ? <RunDetail run={selectedRun} /> : null}
 
+      <IterativeRetrainPanel />
       <PaperTradingPanel />
     </AppShell>
   )

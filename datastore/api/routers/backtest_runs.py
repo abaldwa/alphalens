@@ -21,16 +21,29 @@ initiative, it is left untouched. The two routers coexist under the same
 prefix; Phase 4's frontend cutover (not this phase) decides whether/how
 to eventually retire the legacy one.
 
-No write endpoints here: runs are written by backtest/core/run_store.py,
-called from wherever a BacktestOrchestrator/WalkForwardRunner run is
-kicked off (a script today; Phase 5/6's background job runner later) —
-not from an API request. This keeps "who can trigger a potentially
-expensive multi-year backtest" a deliberate, out-of-band decision rather
-than an open HTTP endpoint.
+No general write endpoints here: runs are written by
+backtest/core/run_store.py, called from wherever a
+BacktestOrchestrator/WalkForwardRunner run is kicked off (a script
+today; Phase 5/6's background job runner later) — not from an API
+request. This keeps "who can trigger a potentially expensive multi-year
+backtest" a deliberate, out-of-band decision rather than an open HTTP
+endpoint.
+
+The one exception is /iterative/trigger below: a single, specifically
+named job (backtest/run_iterative_backtest.py's MetaLabeler retrain
+loop), not a general "run any backtest" endpoint — same
+deliberate-single-purpose-trigger pattern datastore/api/routers/ops.py's
+POST /steps/{step_name}/force already uses for other expensive jobs, run
+as a detached background subprocess so the request returns immediately
+and progress is polled via /iterative/status/{job_id}.
 """
 
 import logging
-from typing import List, Optional
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -43,6 +56,9 @@ from datastore.api.db import get_duckdb_connection
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["Backtest"])
+
+_REPORTS_DIR = Path(__file__).resolve().parents[3] / "backtest" / "reports"
+_TRIGGER_LOGS_DIR = _REPORTS_DIR / "iterative_trigger_logs"
 
 
 class BacktestRunSummary(BaseModel):
@@ -137,3 +153,74 @@ async def get_backtest_run_feature_log(run_id: str) -> FeatureLogResponse:
     for r in rows:
         r["as_of_date"] = str(r["as_of_date"])
     return FeatureLogResponse(run_id=run_id, rows=[FeatureLogRow(**r) for r in rows])
+
+
+class IterativeRetrainTriggerResponse(BaseModel):
+    job_id: str
+    status: str = "started"
+
+
+class IterativeRetrainStatusResponse(BaseModel):
+    job_id: str
+    status: str  # "running" | "completed" | "failed" | "unknown"
+    report: Optional[Dict[str, Any]] = None
+    log_tail: Optional[str] = None
+
+
+@router.post("/iterative/trigger", response_model=IterativeRetrainTriggerResponse)
+async def trigger_iterative_retrain(
+    horizon_days: int = Query(5),
+    folds: int = Query(4),
+    max_iterations: Optional[int] = Query(None),
+) -> IterativeRetrainTriggerResponse:
+    """
+    Menu-triggered launch of backtest/run_iterative_backtest.py's
+    MetaLabeler retrain loop (see module docstring for why this is the
+    one deliberate exception to "no write/trigger endpoints here"). Runs
+    as a detached subprocess — this request returns immediately with a
+    job_id; poll GET /iterative/status/{job_id} for progress/results.
+    """
+    job_id = uuid.uuid4().hex[:12]
+    _TRIGGER_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _TRIGGER_LOGS_DIR / f"{job_id}.log"
+
+    cmd = [
+        sys.executable, "-m", "backtest.run_iterative_backtest",
+        "--horizon-days", str(horizon_days), "--folds", str(folds), "--report-suffix", job_id,
+    ]
+    if max_iterations is not None:
+        cmd += ["--max-iterations", str(max_iterations)]
+
+    logger.info(f"backtest_runs.trigger_iterative_retrain: job_id={job_id} cmd={' '.join(cmd)}")
+    with open(log_path, "w") as log_fh:
+        subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, start_new_session=True)
+
+    return IterativeRetrainTriggerResponse(job_id=job_id)
+
+
+@router.get("/iterative/status/{job_id}", response_model=IterativeRetrainStatusResponse)
+async def get_iterative_retrain_status(job_id: str) -> IterativeRetrainStatusResponse:
+    """Polled by the frontend after /iterative/trigger — "completed" once
+    backtest/reports/iterative_retrain_{job_id}.json exists (written as
+    the very last step of run_iterative_backtest.py's run), "failed" if
+    the log shows the process exited without writing that report,
+    "running" otherwise."""
+    import json
+
+    report_path = _REPORTS_DIR / f"iterative_retrain_{job_id}.json"
+    log_path = _TRIGGER_LOGS_DIR / f"{job_id}.log"
+
+    if report_path.exists():
+        with open(report_path) as fh:
+            report = json.load(fh)
+        return IterativeRetrainStatusResponse(job_id=job_id, status="completed", report=report)
+
+    if not log_path.exists():
+        return IterativeRetrainStatusResponse(job_id=job_id, status="unknown")
+
+    log_tail = "".join(log_path.read_text(errors="replace").splitlines(keepends=True)[-40:])
+    # A traceback in the log with no report file means the subprocess
+    # died before writing one — surfaced as failed rather than an
+    # indefinite "running".
+    status = "failed" if "Traceback (most recent call last)" in log_tail else "running"
+    return IterativeRetrainStatusResponse(job_id=job_id, status=status, log_tail=log_tail)

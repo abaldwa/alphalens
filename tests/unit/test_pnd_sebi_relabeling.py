@@ -115,6 +115,13 @@ class TestSebiEventWindowRelabeling:
 
         X, y = load_pnd_training_data_from_db(db_path=normalised_db, lookback_days=180, min_rows_per_ticker=30)
 
-        # Exactly one positive row for PNDCO3 (from its event window), not
-        # a second (incorrectly negative) row from the general pool.
-        assert (y == 1).sum() == 1
+        # 2026-07-21 full-codebase-review fix: load_pnd_training_data_from_db
+        # now scores EVERY real trading day within a known-positive ticker's
+        # window (not just the window's last day, per that fix's own
+        # docstring) — so PNDCO3 legitimately contributes many positive
+        # rows, not exactly one. What this test actually guards against is
+        # PNDCO3 ALSO appearing as a (incorrectly-labeled 0) negative from
+        # the general most-recent-lookback_days pool — i.e. the only
+        # negative row present should be NORMALCO3's.
+        assert (y == 1).sum() > 1
+        assert (y == 0).sum() == 1
