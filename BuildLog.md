@@ -14618,3 +14618,123 @@ package (`__init__.py`, `strategy_spec.py`, `known_fields.py`,
 `frontend/src/lib/ui/CopilotPanel.tsx`;
 `frontend/src/lib/ui/AppShell.tsx` + `frontend/src/lib/ui/index.ts`
 (mount/export); 6 new test files under `tests/unit/`.
+
+## Momentum/Forensic/ML-Signals Deep-Fix Pass + New-Strategy Backtests (2026-07-19/20)
+
+Follow-on to the full-codebase review: a dedicated deeper pass on
+Momentum, Forensic, and ML Signals surfaced 5 further findings, and all
+6 previously-proposed new strategies (Section 5 of the review) were
+implemented with real backtest coverage, per the approved plan
+(`optimized-snacking-aurora.md`).
+
+### Fixes (Part A)
+- **A1** `features/deep_forensic.py`/`features/forensic_classical.py`:
+  Altman Z's X4 term no longer masks negative total liabilities with
+  `abs()` (silently flipped sign — now returns `NaN`); added a
+  financial-services sector guard (reusing
+  `damodaran_valuation/lifecycle/classifier.py`'s
+  `_FINANCIAL_SERVICES_SECTORS`) since Z-Score's liability/working-capital
+  ratios don't apply to banks/NBFCs/insurers. Threaded through
+  `score_forensic.py` via a `sector_map` built from `config/universe`.
+- **A2** `config/settings.py`: `FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS`
+  (flat 45) replaced with
+  `FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER = {1:45, 2:45, 3:45,
+  4:60}` per SEBI LODR Reg. 33 (60-day annual/Q4 deadline). Wired into
+  `screener.py`/`tijori.py`'s announcement-date computation — a real PIT
+  correctness bug, changes future Q4 filtering.
+- **A3** Wired the previously dead-code `StackingMetaLearner` into
+  `daily_inference.py`: after `signal_5d/21d/63d` are scored, a
+  `stacking_ensemble` row is combined and written if a trained
+  `stacking_meta_v*.pkl` artifact is found (glob-based loader,
+  `_load_stacking_ensemble`), else skipped silently — never blocks the
+  existing pipeline. Narrowed `STACKING_ENSEMBLE_BASE_MODELS` to the 3
+  models actually scored at inference time (signal_5d/21d/63d only —
+  meta_labeler is binary not 3-class, tft/bilstm are never loaded here).
+  Deliberately inference-time-only, no new training trigger, respecting
+  the existing 2026-07-10 OOM-history decision documented in
+  `stacking.py`'s own docstring.
+- **A4** New `ingestion/scrapers/nse_delisted_companies.py` +
+  `config/build_universe.py`'s `build_historical_universe_from_delisted()`
+  closes `momentum_universe.py`'s survivorship-bias gap (the CSV universe
+  is a current-day snapshot; delisted tickers were invisible to
+  backtests). NSE returned HTTP 403 for every endpoint tried in this
+  sandbox (host-level block) — built against best-guess response
+  structure, explicitly flagged unverified, fails loudly on an
+  unexpected shape rather than parsing garbage.
+- **A5** New `ingestion/scrapers/sebi_enforcement_orders.py`, live-verified
+  against SEBI's real "Orders of AO" page (25 real orders parsed, 2
+  correctly fuzzy-resolved to real tickers via `difflib`,
+  cutoff=0.85). Replaced the PnD detector's undated
+  `KNOWN_PND_TICKERS`/"last 180 days" mislabeling with real event-window
+  scoring off `manipulation_start_date`/`manipulation_end_date` (or
+  `order_date - lookback` fallback).
+
+### New strategies with real backtest coverage (Part B)
+All added as opt-in `MomentumBacktester` params (`None`/`False` default
+preserves existing behavior):
+- **B1** `volume_weighted`: dollar-volume-weighted position sizing at
+  buy time instead of equal-weighted top-N (`_volume_weights`, reuses
+  the existing `load_volume_panel`).
+- **B2** `regime_series`/`disable_in_regimes`: new
+  `features/regime_signal.py` (`compute_realized_vol_regime`) classifies
+  HIGH_VOL/NORMAL via rolling-percentile-rank of trailing realized vol;
+  new buys are skipped (not force-liquidated) on regime-disabled
+  rebalance dates.
+- **B3** `orthogonalize_vs_size_beta`: cross-sectional OLS residualization
+  of momentum vs. log(market_cap) and beta
+  (`orthogonalize_momentum_vs_factors`, `np.linalg.lstsq`) to strip out
+  disguised small-cap/high-beta bets before ranking.
+- **B4** `backtest/overfit_checks.py`'s `deflated_sharpe_ratio` completed
+  with the full Bailey & López de Prado (2014) formula: Euler-Mascheroni-
+  corrected expected-max-Sharpe term plus skewness/kurtosis-adjusted
+  standard error (previously a simplified version missing both
+  correction terms).
+- **B5** `quality_gate`: Piotroski F-Score / Beneish M-Score pre-buy
+  screen sourced from the already-correct, already-wired
+  `ml_forensic` table — no new scoring logic, just a new selection-pool
+  filter.
+- **B6** `systems/damodaran_valuation/dcf/models.py`: DCF equity bridge
+  now subtracts `minority_interest` (sourced from the existing
+  `non_controlling_interest` fundamentals column) between EV and equity
+  value — previously ignored entirely.
+
+### Verification
+`pytest tests/unit/ -k "momentum or forensic or deep_forensic or
+damodaran or sebi or nse_delisted or build_historical_universe or
+overfit or backtester"` — 332 passed, 3 skipped (unrelated), no
+regressions. `test_stacking.py` + `test_daily_inference_chunking.py`
+(covering `StackingMetaLearner` in isolation and `daily_inference.py`'s
+chunked-scoring path A3 sits inside) — 33/33 passing.
+
+`tests/unit/test_stacking_ensemble_wiring.py` (the end-to-end A3
+integration test, training 3 real signal models in-process) repeatedly
+drove this sandbox into OOM via `train_full()`'s Optuna+quantile-head
+fit count across CatBoost/XGBoost (confirmed via `free -h`/`ps`
+monitoring across 3 separate kills, RSS climbing unbounded to 5-8GB+
+regardless of `OMP_NUM_THREADS=1`-style thread pinning — a genuine
+native-memory leak, not thread oversubscription). Fixed by switching
+the test's model-training helper from `train_full()` to the lighter
+`train()` path (no HPO/SMOTETomek/quantile heads — unneeded for this
+test, which only exercises `predict()`/`predict_proba()` downstream of
+training) and shrinking `n` from 200 to 80. Final pass/fail result for
+this specific file pending a clean completed run in this environment.
+
+### Files changed
+`features/deep_forensic.py`, `features/forensic_classical.py`,
+`systems/ml_signal_engine/inference/score_forensic.py`,
+`config/settings.py`, `ingestion/scrapers/screener.py`,
+`ingestion/scrapers/tijori.py`, `ingestion/scrapers/amfi_holdings.py`
+(comment only); `backtest/overfit_checks.py`,
+`backtest/strategy_confidence.py`; `backtest/momentum_backtest.py`,
+`features/momentum_signal.py`, new `features/regime_signal.py`; new
+`ingestion/scrapers/nse_delisted_companies.py`, new
+`ingestion/scrapers/sebi_enforcement_orders.py`,
+`datastore/schema/create_normalised.py` (2 new tables),
+`config/build_universe.py`, `features/momentum_universe.py`,
+`systems/ml_signal_engine/models/pnd/pnd_detector.py`;
+`systems/damodaran_valuation/dcf/models.py`,
+`systems/damodaran_valuation/valuation_engine.py`;
+`systems/ml_signal_engine/models/deep/stacking.py`,
+`systems/ml_signal_engine/inference/daily_inference.py`; 12 new/modified
+test files under `tests/unit/` (see plan file
+`optimized-snacking-aurora.md` for full list).
