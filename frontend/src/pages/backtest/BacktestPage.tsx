@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
@@ -25,9 +25,15 @@ import {
   getBacktestRunFeatureLog,
   triggerIterativeRetrain,
   getIterativeRetrainStatus,
+  triggerOrchestratorBacktest,
+  getOrchestratorStatus,
+  listScreenerTemplates,
+  triggerStrategyQueue,
+  getStrategyQueueStatus,
   type BacktestChannel,
   type BacktestMode,
   type BacktestRunSummary,
+  type StrategyQueueJob,
 } from '@/shared/api/backtest'
 import {
   listPendingActions,
@@ -589,10 +595,456 @@ function IterativeRetrainPanel() {
   )
 }
 
+const ORCHESTRATOR_CHANNELS = ['technical', 'fundamental', 'momentum'] as const
+type OrchestratorChannel = (typeof ORCHESTRATOR_CHANNELS)[number]
+const FUNDAMENTAL_PRESETS = ['quality_compounder', 'garp', 'turnaround'] as const
+
+function OrchestratorTriggerPanel({ onCompleted }: { onCompleted: () => void }) {
+  const [channel, setChannel] = useState<OrchestratorChannel>('technical')
+  // Both left blank by default = "auto" — the backend codifies strategy_id
+  // ({channel}_{descriptor}_{horizon}_{YYYYMMDD}) and defaults horizon_bucket
+  // per the Explainer's published style table (backtest/strategy_id.py) so
+  // an operator doesn't have to pick either by hand. Still overridable.
+  const [strategyId, setStrategyId] = useState('')
+  const [horizonBucket, setHorizonBucket] = useState<string>('')
+  const [startDate, setStartDate] = useState('2023-01-01')
+  const [endDate, setEndDate] = useState(todayIso())
+  const [initialCapital, setInitialCapital] = useState('1000000')
+  const [templateName, setTemplateName] = useState('')
+  const [preset, setPreset] = useState<string>(FUNDAMENTAL_PRESETS[0])
+  const [topN, setTopN] = useState('10')
+  const [lookbackMonths, setLookbackMonths] = useState('6')
+  const [runId, setRunId] = useState<string | null>(null)
+
+  const templates = useQuery({
+    queryKey: ['screener-templates'],
+    queryFn: listScreenerTemplates,
+    enabled: channel === 'technical',
+  })
+
+  const status = useQuery({
+    queryKey: ['orchestrator-status', runId],
+    queryFn: () => getOrchestratorStatus(runId!),
+    enabled: !!runId,
+    refetchInterval: (query) => (query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 4000 : false),
+  })
+
+  useEffect(() => {
+    if (status.data?.status === 'completed') onCompleted()
+  }, [status.data?.status, onCompleted])
+
+  async function handleTrigger() {
+    const numericCapital = Number(initialCapital)
+    const res = await triggerOrchestratorBacktest({
+      channel,
+      strategy_id: strategyId || undefined,
+      horizon_bucket: horizonBucket || undefined,
+      start_date: startDate,
+      end_date: endDate,
+      initial_capital: Number.isFinite(numericCapital) && numericCapital > 0 ? numericCapital : undefined,
+      top_n: Number(topN) || undefined,
+      lookback_months: channel === 'momentum' ? Number(lookbackMonths) || undefined : undefined,
+      template_name: channel === 'technical' ? templateName || undefined : undefined,
+      preset: channel === 'fundamental' ? preset : undefined,
+    })
+    setRunId(res.run_id)
+  }
+
+  const canTrigger =
+    !!startDate && !!endDate && (channel !== 'technical' || !!templateName) && status.data?.status !== 'running'
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle>Run a Backtest (Orchestrator)</CardTitle>
+        <CardDescription>
+          Drives backtest/core/engine.py's BacktestOrchestrator — the shared, channel-agnostic engine every
+          Technical/Fundamental/Momentum adapter plugs into — against real data. Results land in the Runs table
+          above once complete.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">Channel</span>
+            <select
+              className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+              value={channel}
+              onChange={(e) => setChannel(e.target.value as OrchestratorChannel)}
+            >
+              {ORCHESTRATOR_CHANNELS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">Strategy ID</span>
+            <Input
+              value={strategyId}
+              onChange={(e) => setStrategyId(e.target.value)}
+              className="w-40"
+              placeholder="auto (e.g. ta_e2_63d_20260722)"
+            />
+          </div>
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">Horizon</span>
+            <select
+              className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+              value={horizonBucket}
+              onChange={(e) => setHorizonBucket(e.target.value)}
+            >
+              <option value="">Auto (per Explainer)</option>
+              {HORIZON_BUCKETS.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">Start</span>
+            <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-40" />
+          </div>
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">End</span>
+            <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-40" />
+          </div>
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">Initial Capital (₹)</span>
+            <Input type="number" value={initialCapital} onChange={(e) => setInitialCapital(e.target.value)} className="w-36" />
+          </div>
+          <div>
+            <span className="block text-xs font-semibold uppercase text-muted-foreground">Top N</span>
+            <Input type="number" value={topN} onChange={(e) => setTopN(e.target.value)} className="w-20" />
+          </div>
+
+          {channel === 'technical' ? (
+            <div>
+              <span className="block text-xs font-semibold uppercase text-muted-foreground">Screener Template</span>
+              <select
+                className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+              >
+                <option value="">Select a template…</option>
+                {templates.data?.templates.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.name} — {t.category}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+          {channel === 'fundamental' ? (
+            <div>
+              <span className="block text-xs font-semibold uppercase text-muted-foreground">Screener Preset</span>
+              <select
+                className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+                value={preset}
+                onChange={(e) => setPreset(e.target.value)}
+              >
+                {FUNDAMENTAL_PRESETS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+          {channel === 'momentum' ? (
+            <div>
+              <span className="block text-xs font-semibold uppercase text-muted-foreground">Lookback (months)</span>
+              <Input type="number" value={lookbackMonths} onChange={(e) => setLookbackMonths(e.target.value)} className="w-24" />
+            </div>
+          ) : null}
+
+          <Button onClick={handleTrigger} disabled={!canTrigger}>
+            {status.data?.status === 'running' ? 'Running…' : 'Trigger Backtest'}
+          </Button>
+        </div>
+
+        {runId ? (
+          <div className="mt-4">
+            <span className="text-xs text-muted-foreground">run_id: {runId}</span>
+            {status.data ? (
+              <div className="mt-1">
+                <Badge variant={status.data.status === 'completed' ? 'default' : 'outline'}>{status.data.status}</Badge>
+                {status.data.status === 'completed' && status.data.run ? (
+                  <>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      strategy_id: <span className="font-mono-data">{status.data.run.strategy_id}</span> · horizon:{' '}
+                      <span className="font-mono-data">{status.data.run.horizon_bucket}</span>
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      <StatCard label="CAGR" value={fmtPct(status.data.run.metrics?.cagr)} />
+                      <StatCard label="Final Capital" value={fmtInr(status.data.run.metrics?.final_capital)} />
+                      <StatCard label="Max DD" value={fmtPct(status.data.run.metrics?.max_drawdown)} />
+                      <StatCard label="Trades" value={String(status.data.run.metrics?.n_trades ?? '—')} />
+                    </div>
+                  </>
+                ) : null}
+                {status.data.status === 'failed' && status.data.log_tail ? (
+                  <pre className="mt-2 max-h-48 overflow-auto rounded-[var(--radius-token)] border border-border p-2 text-xs">
+                    {status.data.log_tail}
+                  </pre>
+                ) : null}
+                {status.data.status === 'completed' ? (
+                  <div className="mt-2">
+                    <Button variant="outline" onClick={onCompleted}>
+                      Refresh Runs table
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function emptyQueueJob(): StrategyQueueJob {
+  return { kind: 'orchestrator', channel: 'technical', start_date: '2023-01-01', end_date: todayIso(), top_n: 10 }
+}
+
+function StrategyQueuePanel({ onCompleted }: { onCompleted: () => void }) {
+  const [jobs, setJobs] = useState<StrategyQueueJob[]>([emptyQueueJob()])
+  const [queueId, setQueueId] = useState<string | null>(null)
+
+  const status = useQuery({
+    queryKey: ['strategy-queue-status', queueId],
+    queryFn: () => getStrategyQueueStatus(queueId!),
+    enabled: !!queueId,
+    refetchInterval: (query) => (query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 5000 : false),
+  })
+
+  useEffect(() => {
+    if (status.data?.status === 'completed') onCompleted()
+  }, [status.data?.status, onCompleted])
+
+  function updateJob(index: number, patch: Partial<StrategyQueueJob>) {
+    setJobs((prev) => prev.map((j, i) => (i === index ? { ...j, ...patch } : j)))
+  }
+
+  function addJob() {
+    setJobs((prev) => [...prev, emptyQueueJob()])
+  }
+
+  function removeJob(index: number) {
+    setJobs((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  function addRetrainJob() {
+    setJobs((prev) => [...prev, { kind: 'iterative_retrain', horizon_days: 5, folds: 4 }])
+  }
+
+  async function handleTrigger() {
+    const res = await triggerStrategyQueue(jobs)
+    setQueueId(res.queue_id)
+  }
+
+  const isRunning = status.data?.status === 'running'
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle>Schedule a Strategy Queue</CardTitle>
+        <CardDescription>
+          Queue up several strategies — and optionally an iterative MetaLabeler retrain — to run sequentially in one
+          go (backtest/run_strategy_queue.py). No manual one-at-a-time triggering: submit the queue, walk away, come
+          back to every result. Runs are isolated subprocesses, memory-gated between jobs, exactly like the
+          single-strategy trigger above.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {jobs.map((job, i) => (
+            <div key={i} className="flex flex-wrap items-end gap-2 rounded-[var(--radius-token)] border border-border p-2">
+              <span className="text-xs text-muted-foreground">#{i + 1}</span>
+              <select
+                className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-2 text-sm"
+                value={job.kind}
+                onChange={(e) => updateJob(i, { kind: e.target.value as StrategyQueueJob['kind'] })}
+              >
+                <option value="orchestrator">Backtest</option>
+                <option value="iterative_retrain">Iterative Retrain</option>
+              </select>
+
+              {job.kind === 'orchestrator' ? (
+                <>
+                  <select
+                    className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-2 text-sm"
+                    value={job.channel}
+                    onChange={(e) => updateJob(i, { channel: e.target.value as StrategyQueueJob['channel'] })}
+                  >
+                    {ORCHESTRATOR_CHANNELS.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                  {job.channel === 'technical' ? (
+                    <Input
+                      placeholder="template (e.g. E2)"
+                      value={job.template_name ?? ''}
+                      onChange={(e) => updateJob(i, { template_name: e.target.value })}
+                      className="w-32"
+                    />
+                  ) : null}
+                  {job.channel === 'fundamental' ? (
+                    <select
+                      className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-2 text-sm"
+                      value={job.preset ?? FUNDAMENTAL_PRESETS[0]}
+                      onChange={(e) => updateJob(i, { preset: e.target.value })}
+                    >
+                      {FUNDAMENTAL_PRESETS.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  {job.channel === 'momentum' ? (
+                    <Input
+                      type="number"
+                      placeholder="lookback months"
+                      value={job.lookback_months ?? ''}
+                      onChange={(e) => updateJob(i, { lookback_months: Number(e.target.value) || undefined })}
+                      className="w-28"
+                    />
+                  ) : null}
+                  <Input
+                    type="number"
+                    placeholder="top N"
+                    value={job.top_n ?? ''}
+                    onChange={(e) => updateJob(i, { top_n: Number(e.target.value) || undefined })}
+                    className="w-20"
+                  />
+                  <Input
+                    type="date"
+                    value={job.start_date ?? ''}
+                    onChange={(e) => updateJob(i, { start_date: e.target.value })}
+                    className="w-40"
+                  />
+                  <Input
+                    type="date"
+                    value={job.end_date ?? ''}
+                    onChange={(e) => updateJob(i, { end_date: e.target.value })}
+                    className="w-40"
+                  />
+                  <select
+                    className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-2 text-sm"
+                    value={job.horizon_bucket ?? ''}
+                    onChange={(e) => updateJob(i, { horizon_bucket: e.target.value || undefined })}
+                  >
+                    <option value="">Auto horizon</option>
+                    {HORIZON_BUCKETS.map((h) => (
+                      <option key={h} value={h}>
+                        {h}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              ) : (
+                <>
+                  <Input
+                    type="number"
+                    placeholder="horizon days"
+                    value={job.horizon_days ?? ''}
+                    onChange={(e) => updateJob(i, { horizon_days: Number(e.target.value) || undefined })}
+                    className="w-28"
+                  />
+                  <Input
+                    type="number"
+                    placeholder="folds"
+                    value={job.folds ?? ''}
+                    onChange={(e) => updateJob(i, { folds: Number(e.target.value) || undefined })}
+                    className="w-20"
+                  />
+                </>
+              )}
+
+              <Button variant="outline" onClick={() => removeJob(i)} disabled={jobs.length <= 1}>
+                Remove
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button variant="outline" onClick={addJob}>
+            + Add backtest
+          </Button>
+          <Button variant="outline" onClick={addRetrainJob}>
+            + Add iterative retrain
+          </Button>
+          <Button onClick={handleTrigger} disabled={isRunning}>
+            {isRunning ? 'Running…' : `Trigger Queue (${jobs.length} job${jobs.length === 1 ? '' : 's'})`}
+          </Button>
+        </div>
+
+        {queueId ? (
+          <div className="mt-4">
+            <span className="text-xs text-muted-foreground">queue_id: {queueId}</span>
+            {status.data ? (
+              <div className="mt-1">
+                <Badge variant={status.data.status === 'completed' ? 'default' : 'outline'}>{status.data.status}</Badge>
+                {status.data.summary ? (
+                  <>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      {status.data.summary.jobs_run}/{status.data.summary.total_jobs} job(s) ran in{' '}
+                      {status.data.summary.runtime_seconds.toFixed(0)}s
+                    </p>
+                    <Table className="mt-1">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>#</TableHead>
+                          <TableHead>Kind</TableHead>
+                          <TableHead>Result</TableHead>
+                          <TableHead>Runtime</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {status.data.summary.results.map((r) => (
+                          <TableRow key={r.job_index}>
+                            <TableCell>{r.job_index + 1}</TableCell>
+                            <TableCell>{r.kind}</TableCell>
+                            <TableCell>
+                              <Badge variant={r.returncode === 0 ? 'default' : 'outline'}>
+                                {r.returncode === 0 ? 'ok' : `exit ${r.returncode}`}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="font-mono-data">{r.elapsed_s.toFixed(1)}s</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                ) : null}
+                {status.data.status === 'failed' && status.data.log_tail && !status.data.summary ? (
+                  <pre className="mt-2 max-h-48 overflow-auto rounded-[var(--radius-token)] border border-border p-2 text-xs">
+                    {status.data.log_tail}
+                  </pre>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function BacktestPage() {
   const [channel, setChannel] = useState<BacktestChannel | ''>('')
   const [mode, setMode] = useState<BacktestMode | ''>('')
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const queryClient = useQueryClient()
 
   const runs = useQuery({
     queryKey: ['backtest-runs', channel, mode],
@@ -694,6 +1146,8 @@ export function BacktestPage() {
 
       {selectedRun ? <RunDetail run={selectedRun} /> : null}
 
+      <OrchestratorTriggerPanel onCompleted={() => queryClient.invalidateQueries({ queryKey: ['backtest-runs'] })} />
+      <StrategyQueuePanel onCompleted={() => queryClient.invalidateQueries({ queryKey: ['backtest-runs'] })} />
       <IterativeRetrainPanel />
       <PaperTradingPanel />
     </AppShell>

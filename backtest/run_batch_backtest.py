@@ -60,6 +60,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from backtest.batch_common import wait_for_headroom
 from ingestion.scheduler.resource_guard import current_rss_mb
 
 logger = logging.getLogger(__name__)
@@ -87,34 +88,6 @@ _PHASE_ARG_MAP = {
     "2": {"max_tickers": "--max-real-tickers", "min_history": "--min-history-days"},
     "3": {"max_tickers": "--max-tickers", "min_history": "--min-history"},
 }
-
-
-def _available_mb() -> Optional[float]:
-    try:
-        import psutil
-
-        return psutil.virtual_memory().available / (1024 * 1024)
-    except ImportError:  # pragma: no cover - psutil is a hard dependency elsewhere in the repo
-        return None
-
-
-def _wait_for_headroom(min_free_mb: float, wait_timeout_s: float, poll_interval_s: float = 10.0) -> None:
-    """Blocks until system-available memory clears `min_free_mb`, or raises after `wait_timeout_s`."""
-    available = _available_mb()
-    if available is None:
-        logger.warning("run_batch_backtest: psutil unavailable — skipping the pre-flight memory check")
-        return
-
-    deadline = time.monotonic() + wait_timeout_s
-    while available < min_free_mb:
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"run_batch_backtest: only {available:.0f}MB free after waiting {wait_timeout_s:.0f}s "
-                f"(need >= {min_free_mb:.0f}MB) — aborting the remainder of the batch rather than risk an OOM kill"
-            )
-        logger.info(f"run_batch_backtest: {available:.0f}MB free, below {min_free_mb:.0f}MB floor — waiting...")
-        time.sleep(poll_interval_s)
-        available = _available_mb()
 
 
 def _run_phase(phase: str, common_args: Dict[str, Optional[int]], extra_args: List[str]) -> Dict:
@@ -161,7 +134,7 @@ def run_batch(
 
     results = []
     for phase in ordered:
-        _wait_for_headroom(min_free_mb, wait_timeout_s)
+        wait_for_headroom(min_free_mb, wait_timeout_s, label="run_batch_backtest")
         result = _run_phase(phase, common_args, extra_args=[])
         results.append(result)
         if result["returncode"] != 0:

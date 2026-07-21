@@ -152,3 +152,123 @@ export function triggerIterativeRetrain(params?: { horizon_days?: number; folds?
 export function getIterativeRetrainStatus(jobId: string) {
   return apiGet<IterativeRetrainStatusResponse>(`/api/v1/backtest/iterative/status/${jobId}`)
 }
+
+// BacktestOrchestrator trigger (datastore/api/routers/backtest_runs.py's
+// /orchestrator/trigger + /orchestrator/status/{run_id}) — the second
+// deliberate exception to this API being read-only. Drives
+// backtest/core/engine.py's BacktestOrchestrator for the Technical/
+// Fundamental/Momentum channels against real data.
+export interface OrchestratorTriggerParams {
+  channel: 'technical' | 'fundamental' | 'momentum'
+  // Both optional — the backend defaults strategy_id to the codified
+  // {channel}_{descriptor}_{horizon}_{YYYYMMDD} form and horizon_bucket
+  // per the Explainer's published style table (backtest/strategy_id.py).
+  strategy_id?: string
+  horizon_bucket?: string
+  start_date: string
+  end_date: string
+  capital_mode?: 'lump' | 'sip'
+  initial_capital?: number
+  sip_amount?: number
+  universe_spec?: string
+  max_tickers?: number
+  min_history_days?: number
+  template_name?: string
+  preset?: string
+  top_n?: number
+  lookback_months?: number
+}
+
+export interface OrchestratorTriggerResponse {
+  run_id: string
+  status: string
+}
+
+export interface OrchestratorStatusResponse {
+  run_id: string
+  status: 'running' | 'completed' | 'failed' | 'unknown'
+  run: BacktestRunSummary | null
+  log_tail: string | null
+}
+
+export function triggerOrchestratorBacktest(params: OrchestratorTriggerParams) {
+  const query = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) query.set(k, String(v))
+  }
+  return apiPost<OrchestratorTriggerResponse>(`/api/v1/backtest/orchestrator/trigger?${query.toString()}`)
+}
+
+export function getOrchestratorStatus(runId: string) {
+  return apiGet<OrchestratorStatusResponse>(`/api/v1/backtest/orchestrator/status/${runId}`)
+}
+
+export interface TATemplateInfo {
+  name: string
+  category: string
+  description: string
+  condition_count: number
+}
+
+export function listScreenerTemplates() {
+  return apiGet<{ templates: TATemplateInfo[]; count: number }>('/api/v1/ta/screener/templates')
+}
+
+// Strategy queue (datastore/api/routers/backtest_runs.py's /queue/trigger
+// + /queue/status/{queue_id}) — schedule several strategies (backtests
+// and/or an iterative retrain) to run sequentially from one submission,
+// instead of triggering each one by hand (backtest/run_strategy_queue.py).
+export interface StrategyQueueJob {
+  kind: 'orchestrator' | 'iterative_retrain'
+  channel?: 'technical' | 'fundamental' | 'momentum'
+  strategy_id?: string
+  horizon_bucket?: string
+  start_date?: string
+  end_date?: string
+  template_name?: string
+  preset?: string
+  top_n?: number
+  lookback_months?: number
+  horizon_days?: number
+  folds?: number
+}
+
+export interface StrategyQueueTriggerResponse {
+  queue_id: string
+  status: string
+}
+
+export interface StrategyQueueJobResult {
+  job_index: number
+  kind: string
+  job: StrategyQueueJob
+  returncode: number
+  elapsed_s: number
+}
+
+export interface StrategyQueueSummary {
+  generated_at: string
+  total_jobs: number
+  jobs_run: number
+  results: StrategyQueueJobResult[]
+  all_passed: boolean
+  runtime_seconds: number
+}
+
+export interface StrategyQueueStatusResponse {
+  queue_id: string
+  status: 'running' | 'completed' | 'failed' | 'unknown'
+  summary: StrategyQueueSummary | null
+  log_tail: string | null
+}
+
+export function triggerStrategyQueue(jobs: StrategyQueueJob[], continueOnFailure = false) {
+  return apiPost<StrategyQueueTriggerResponse>('/api/v1/backtest/queue/trigger', {
+    jobs,
+    continue_on_failure: continueOnFailure,
+  })
+}
+
+export function getStrategyQueueStatus(queueId: string) {
+  return apiGet<StrategyQueueStatusResponse>(`/api/v1/backtest/queue/status/${queueId}`)
+}
