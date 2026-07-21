@@ -469,8 +469,6 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
     })),
   })
 
-  if (!jobs.length) return null
-
   type Bucket = 'queued' | 'in_progress' | 'completed'
   const buckets: Record<Bucket, { job: ActiveJob; status: string }[]> = { queued: [], in_progress: [], completed: [] }
 
@@ -493,7 +491,9 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
       <CardHeader>
         <CardTitle>Active Strategies</CardTitle>
         <CardDescription>
-          Everything triggered from this page this session, moved automatically as each strategy progresses.
+          {jobs.length
+            ? 'Everything triggered from this page, moved automatically as each strategy progresses.'
+            : 'Nothing triggered yet — use one of the panels below and it will show up here immediately.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4 sm:grid-cols-3">
@@ -1173,12 +1173,29 @@ function StrategyQueuePanel({
   )
 }
 
+const ACTIVE_JOBS_STORAGE_KEY = 'alphalens.backtest.active-jobs'
+
+function loadStoredActiveJobs(): ActiveJob[] {
+  try {
+    const raw = localStorage.getItem(ACTIVE_JOBS_STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as ActiveJob[]) : []
+  } catch {
+    return []
+  }
+}
+
 export function BacktestPage() {
   const [channel, setChannel] = useState<BacktestChannel | ''>('')
   const [mode, setMode] = useState<BacktestMode | ''>('')
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
-  const [activeJobs, setActiveJobs] = useState<ActiveJob[]>([])
+  // Persisted so an in-flight trigger (a backtest can run for minutes) survives
+  // a page reload instead of silently vanishing from the board.
+  const [activeJobs, setActiveJobs] = useState<ActiveJob[]>(loadStoredActiveJobs)
   const queryClient = useQueryClient()
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_JOBS_STORAGE_KEY, JSON.stringify(activeJobs))
+  }, [activeJobs])
 
   function registerJob(job: ActiveJob) {
     setActiveJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)])
