@@ -14738,3 +14738,137 @@ this specific file pending a clean completed run in this environment.
 `systems/ml_signal_engine/inference/daily_inference.py`; 12 new/modified
 test files under `tests/unit/` (see plan file
 `optimized-snacking-aurora.md` for full list).
+
+## TA Strategy Confidence Framework: build, historical backfill, and two production memory bugs (2026-07-19/21)
+
+Follow-on to a `/model-review` that unanimously rejected the original
+touch-based TA screener win/loss feature (structurally couldn't score
+breakout signals as wins, no cost model, 19-date single-regime sample,
+no multiple-comparison correction). Replaced it with a general,
+reusable strategy-confidence evaluator, then ran it against 20 years of
+real historical data end to end.
+
+### Core module — `backtest/strategy_confidence.py`
+General-purpose evaluator (not TA-specific — designed for reuse by
+momentum/ML signal callers too): a "win" is cost-adjusted forward net
+return over a threshold (`IndianTransactionCosts`), not a price
+touching a level; win rate reported as a Wilson score interval;
+sample size is independent trading DATES, not signal-row count; every
+number compared against a same-rule random-buy baseline; results split
+by market regime (`ml_signals`, `hmm_market`); Deflated Sharpe Ratio
+correction (`backtest/overfit_checks.py`) for comparing 42 templates
+side by side. Three tiers: `INSUFFICIENT_DATA` (hidden), `PRELIMINARY`
+(caveated), `VALIDATED` (needs >=60 independent dates, >=2 regimes with
+>=15 dates each, DSR >= 0.95). `systems/technical_analysis/screener/
+outcomes.py` is the thin TA-specific adapter (`build_signal_events` +
+`compute_and_store_ta_confidence`); `scripts/compute_strategy_
+confidence.py` is the CLI driver.
+
+### Historical backfill — `scripts/backfill_ta_signals.py`
+The framework needed far more than 19 real trading dates to say
+anything, so re-ran `DailyAlertChecker` (all 42 templates) against
+already-computed feature Parquet back to 2007-01-03 (4,837 files,
+no recompute needed) instead of waiting months for organic
+accumulation. Found and fixed two real perf bugs in
+`systems/technical_analysis/alerts/daily_alert_checker.py` while
+building it: (1) `evaluate()` re-read the same date's feature Parquet
+42 times (once per template) — now loads once, reused via
+`_screen_df`; (2) the `ta_signals` upsert used
+`conn.executemany()` (one prepared statement per row) — measured ~7s
+for ~5,000 rows vs ~0.03s for the equivalent `conn.register(df) +
+INSERT...SELECT...ON CONFLICT` bulk statement (~250x), replaced with
+`_BULK_UPSERT_SQL`/`_write_all_results()`. Result: full 20-year
+backfill (4,837 dates, ~19.4M signal rows) completed in ~745s. Same
+executemany-vs-bulk-register fix later reused in
+`strategy_confidence.py::persist_detail` and
+`scripts/backfill_hmm_regime.py::_persist`.
+
+### Historical HMM regime backfill — `scripts/backfill_hmm_regime.py`
+`ml_signals`'s `hmm_market` regime table only had ~12 real rows
+(2026-07-02 onward) against ~4,800 signal dates, so no template could
+ever clear VALIDATED's regime-diversity gate. NOT a naive "call
+`predict_regime()` for every historical date with one all-history
+fit" — that would leak later-history statistics into early regime
+labels (the production model is fit once on a trailing window and
+reused until the next scheduled retrain,
+`DEFAULT_TRAINING_INTERVAL_DAYS`=28). Instead walks forward: refits a
+fresh `HMMRegimeDetector` every 28 trading dates on NIFTYBEES data
+strictly on/before that refit date (trailing ~5y), decodes only the
+following block with that fixed model — replaying production's own
+retrain cadence historically. Leakage-safety verified with a test that
+corrupts observations after the decode window and asserts the decoded
+labels are unchanged. Backfilled 4,834 dates (2007-2026); all 4
+regimes well represented (bearish 670, bullish 1048, sideways 1550,
+volatile 1566).
+
+### Two production memory bugs found via live OOM (2026-07-19)
+1. **Decode-then-persist, not persist-as-you-go.** First version of
+   `backfill_hmm_regime.py` computed the *entire* 20-year walk-forward
+   decode (all ~170 refits) before writing anything to disk — a kill
+   mid-run lost all compute, not just the in-flight chunk. Fixed by
+   threading an `on_block_decoded` callback into
+   `_walk_forward_decode()` so each refit block is persisted
+   immediately as it's computed.
+2. **Chunked writes, but unbounded chunk retention.** The real OOM
+   (confirmed via `dmesg`: `python3` killed at anon-rss 7.17GB,
+   `strategy_confidence_summary` recompute over 19M rows/242 chunks).
+   `evaluate_signals_chunked` persisted each chunk to
+   `strategy_confidence_outcomes` correctly, but also kept every
+   chunk's raw per-signal DataFrame in a Python list for the final
+   win-rate aggregation — by the last chunk it held the full
+   multi-million-row detail set in memory anyway, identical to not
+   chunking. Fixed by collapsing each chunk to a compact
+   per-(strategy_id, regime, date) aggregate immediately after
+   persisting (`_aggregate_chunk_for_summary`) and discarding the raw
+   rows; `build_confidence_results_from_agg` reproduces byte-identical
+   win-rate/Wilson/DSR numbers from the aggregate (win rate, Wilson
+   interval, and DSR only ever depended on per-date win/loss/pending
+   counts and per-date mean net return, never on individual ticker
+   rows) — verified via `test_chunked_matches_unchunked_results`.
+   Re-run held flat at ~4.7GB RSS through all 242 chunks. Default
+   `chunk_size_dates` lowered 60 -> 20 and exposed as
+   `--chunk-size-dates` on the CLI.
+3. **Stale summary rows never deleted.** `persist_summary` only ever
+   `INSERT ... ON CONFLICT DO UPDATE` — a regime bucket a strategy
+   stops producing (e.g. the `unknown` bucket, once real regime
+   history existed for every date) silently kept its last value
+   forever instead of disappearing. Caught live: A4's `unknown` row
+   had a `computed_at` from a stale pre-HMM-backfill run and was
+   making it look artificially close to VALIDATED. Fixed by deleting
+   each strategy's existing summary rows before inserting the fresh
+   set; regression test covers the exact scenario (regime disappears
+   between two runs of the same strategy).
+
+### Result
+Full 20-year recompute (2007-2026, 19.4M signal rows): 27 of 41
+templates PRELIMINARY (stable win rates around the ~0.44 baseline;
+A4/D2/S003 show the largest edges), 14 still `INSUFFICIENT_DATA`
+(templates that simply don't fire against pre-2021 feature data — a
+real finding, not a bug). Zero templates reach VALIDATED — every
+template now has real multi-regime coverage, so the remaining gate is
+purely the Deflated Sharpe Ratio (e.g. A4's pooled DSR is 0.02 against
+a 0.95 threshold): an honest result that no TA template's edge
+currently survives correction for comparing 42 strategies side by
+side.
+
+### Verification
+`pytest tests/unit/test_strategy_confidence.py tests/unit/
+test_backfill_hmm_regime.py tests/unit/test_ta_screener.py -q` — 60
+passed. `tests/quality/test_no_stub_or_synthetic_data.py` — 4 passed
+(one pre-existing unrelated failure in `features/regime_signal.py`,
+not touched by this pass).
+
+### Files changed
+New: `backtest/strategy_confidence.py`,
+`systems/technical_analysis/screener/outcomes.py` (rewritten),
+`scripts/backfill_ta_signals.py`, `scripts/backfill_hmm_regime.py`,
+`scripts/compute_strategy_confidence.py`,
+`tests/unit/test_strategy_confidence.py`,
+`tests/unit/test_backfill_hmm_regime.py`. Modified:
+`systems/technical_analysis/alerts/daily_alert_checker.py`,
+`config/settings.py` (`CONFIDENCE_MIN_INDEPENDENT_DATES`,
+`CONFIDENCE_MIN_DATES_PER_REGIME`, `CONFIDENCE_DSR_THRESHOLD`),
+`datastore/api/routers/technical.py`, `datastore/api/schemas.py`,
+`frontend/src/pages/technical/screener.tsx`,
+`tests/unit/test_ta_screener.py`,
+`tests/quality/test_no_stub_or_synthetic_data.py`.
