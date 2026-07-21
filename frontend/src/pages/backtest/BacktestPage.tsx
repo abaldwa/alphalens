@@ -725,7 +725,7 @@ function OrchestratorTriggerPanel({ onCompleted }: { onCompleted: () => void }) 
               <span className="block text-xs font-semibold uppercase text-muted-foreground">
                 Screener Template{' '}
                 <a
-                  href="/explain/technical.html#screener"
+                  href="/explain/backtest-guide.html#technical-strategies"
                   target="_blank"
                   rel="noreferrer"
                   className="font-normal normal-case text-primary underline"

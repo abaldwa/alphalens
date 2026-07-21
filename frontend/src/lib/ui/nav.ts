@@ -165,6 +165,12 @@ export const NAV_SECTIONS: NavSection[] = [
         external: true,
       },
       {
+        id: 'backtest_guide',
+        label: 'Backtest Module & Strategy Reference',
+        href: '/explain/backtest-guide.html',
+        external: true,
+      },
+      {
         id: 'technical',
         label: 'Technical Analysis',
         href: '/explain/technical.html',
