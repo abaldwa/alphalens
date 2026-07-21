@@ -63,7 +63,17 @@ export function TechnicalAlertsPage() {
   ]
 
   return (
-    <AppShell title="Technical — Alerts" description="TA-9 Alert Manager: watch a ticker/template combination for triggers.">
+    <AppShell
+      title="Technical — Alerts"
+      description="TA-9 Alert Manager: watch a ticker/template combination for triggers."
+      actions={
+        <Button asChild variant="outline" size="sm">
+          <a href="/explain/backtest-guide.html#technical-strategies" target="_blank" rel="noreferrer">
+            📖 Strategy reference (all 42 templates)
+          </a>
+        </Button>
+      }
+    >
       <Card>
         <CardHeader>
           <CardTitle>Create alert</CardTitle>

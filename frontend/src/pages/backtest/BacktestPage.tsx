@@ -660,7 +660,15 @@ function OrchestratorTriggerPanel({ onCompleted }: { onCompleted: () => void }) 
         <CardDescription>
           Drives backtest/core/engine.py's BacktestOrchestrator — the shared, channel-agnostic engine every
           Technical/Fundamental/Momentum adapter plugs into — against real data. Results land in the Runs table
-          above once complete.
+          above once complete.{' '}
+          <a
+            href="/explain/backtest-guide.html"
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary underline"
+          >
+            📖 Backtest module &amp; strategy reference guide
+          </a>
         </CardDescription>
       </CardHeader>
       <CardContent>

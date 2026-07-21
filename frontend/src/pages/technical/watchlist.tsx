@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink, formatCurrencyINR } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink, formatCurrencyINR } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { TAStrategyWinRateResponse, TAStrategyWinRateRow, TAWatchlistResponse, TAWatchlistRow } from './types'
 
@@ -249,6 +249,13 @@ export function TechnicalWatchlistPage() {
         watchlist.data?.date
           ? `Best template match per stock, pooled across the trailing 5 trading days ending ${watchlist.data.date}`
           : 'Weekly TA WatchList'
+      }
+      actions={
+        <Button asChild variant="outline" size="sm">
+          <a href="/explain/backtest-guide.html#technical-strategies" target="_blank" rel="noreferrer">
+            📖 Strategy reference (all 42 templates)
+          </a>
+        </Button>
       }
     >
       <Card>
