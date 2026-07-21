@@ -458,6 +458,32 @@ python3 -m backtest.run_orchestrator_backtest \
         </div>
       </div>
 
+      <h3>Which panel do I start with?</h3>
+      <p>The three trigger panels aren't interchangeable starting points — each depends on the one before it having
+      already earned your trust:</p>
+
+      <div class="kv">
+        <dt>1. Run a Backtest</dt>
+        <dd>Always first. It's the only panel that actually executes a strategy end-to-end (real signals, real
+        portfolio, real metrics) — you need at least one clean run per template before there's anything to compare
+        or automate. Starting with Technical? Trigger your highest-conviction templates standalone first — e.g.
+        <a class="tpl-name-link" href="#tpl-E2">E2</a> (Minervini SEPA) or <a class="tpl-name-link" href="#tpl-B1">B1</a>
+        (Weinstein Stage 2) — and sanity-check the output (CAGR, drawdown, data gaps) before queuing anything.</dd>
+        <dt>2. Schedule a Strategy Queue</dt>
+        <dd>Once you trust individual runs and want to batch several templates — or the same template across
+        date ranges — without babysitting each trigger. It's a scheduling convenience, not a different kind of
+        test: it chains step 1 across multiple templates sequentially, nothing more.</dd>
+        <dt>3. Iterative Retrain</dt>
+        <dd>Last, and only when you're ready for it — it's ML-specific, not Technical. It retrains and tunes the
+        MetaLabeler used in the ML signal stack (<code>backtest/engine.py</code>), a separate engine from the
+        Technical/Fundamental/Momentum orchestrator the other two panels drive. If you're validating Technical
+        templates, you likely don't need this panel yet at all.</dd>
+      </div>
+
+      <p class="callout"><strong>Technical-first path:</strong> Run a Backtest on your top templates →
+      Schedule a Strategy Queue once you're running several confidently → skip Iterative Retrain until you're
+      specifically validating the ML channel.</p>
+
       <p class="callout"><strong>Every path writes to the same place:</strong> every run — CLI, queued, or
       UI-triggered — lands in the <code>backtest_runs</code> table via <code>save_run_result()</code>, so
       <code>GET /api/v1/backtest/runs</code> and the Runs table always show the full picture regardless of how a run

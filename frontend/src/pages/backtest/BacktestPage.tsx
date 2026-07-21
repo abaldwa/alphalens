@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
   AppShell,
@@ -442,7 +442,106 @@ function RunDetail({ run }: { run: BacktestRunSummary }) {
   )
 }
 
-function IterativeRetrainPanel() {
+// Tracks everything triggered from this page in the current session so the
+// operator has live feedback the moment they hit "Trigger" — the persisted
+// Runs table below only gains a row once a run actually finishes, which
+// otherwise looks like nothing happened for however long the backtest takes.
+type ActiveJobKind = 'orchestrator' | 'queue' | 'iterative_retrain'
+interface ActiveJob {
+  id: string
+  kind: ActiveJobKind
+  label: string
+}
+
+function fetchActiveJobStatus(job: ActiveJob) {
+  if (job.kind === 'orchestrator') return getOrchestratorStatus(job.id)
+  if (job.kind === 'queue') return getStrategyQueueStatus(job.id)
+  return getIterativeRetrainStatus(job.id)
+}
+
+function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (id: string) => void }) {
+  const results = useQueries({
+    queries: jobs.map((job) => ({
+      queryKey: ['active-job-status', job.kind, job.id],
+      queryFn: () => fetchActiveJobStatus(job),
+      refetchInterval: (query: { state: { data?: { status?: string } } }) =>
+        query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 4000 : false,
+    })),
+  })
+
+  if (!jobs.length) return null
+
+  type Bucket = 'queued' | 'in_progress' | 'completed'
+  const buckets: Record<Bucket, { job: ActiveJob; status: string }[]> = { queued: [], in_progress: [], completed: [] }
+
+  jobs.forEach((job, i) => {
+    const data = results[i]?.data
+    let bucket: Bucket = 'queued'
+    let status = 'queued'
+    if (data) {
+      status = data.status
+      if (status === 'running') bucket = 'in_progress'
+      else if (status === 'completed' || status === 'failed') bucket = 'completed'
+    }
+    buckets[bucket].push({ job, status })
+  })
+
+  const BUCKET_LABELS: Record<Bucket, string> = { queued: 'Queued', in_progress: 'In Progress', completed: 'Completed' }
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle>Active Strategies</CardTitle>
+        <CardDescription>
+          Everything triggered from this page this session, moved automatically as each strategy progresses.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4 sm:grid-cols-3">
+        {(['queued', 'in_progress', 'completed'] as const).map((bucket) => (
+          <div key={bucket}>
+            <span className="mb-2 block text-xs font-semibold uppercase text-muted-foreground">
+              {BUCKET_LABELS[bucket]} ({buckets[bucket].length})
+            </span>
+            <div className="space-y-2">
+              {buckets[bucket].length === 0 ? (
+                <p className="text-xs text-muted-foreground">—</p>
+              ) : (
+                buckets[bucket].map(({ job, status }) => (
+                  <div
+                    key={job.id}
+                    className="flex items-center justify-between gap-2 rounded-[var(--radius-token)] border border-border p-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{job.label}</div>
+                      <div className="truncate font-mono-data text-muted-foreground">{job.id}</div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Badge variant={status === 'failed' ? 'destructive' : status === 'completed' ? 'default' : 'outline'}>
+                        {status}
+                      </Badge>
+                      {bucket === 'completed' ? (
+                        <button
+                          type="button"
+                          onClick={() => onDismiss(job.id)}
+                          aria-label="Dismiss"
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function IterativeRetrainPanel({ onTriggered }: { onTriggered: (job: ActiveJob) => void }) {
   const [jobId, setJobId] = useState<string | null>(null)
   const [horizonDays, setHorizonDays] = useState('5')
 
@@ -462,6 +561,7 @@ function IterativeRetrainPanel() {
       horizon_days: Number.isFinite(numericHorizon) && numericHorizon > 0 ? numericHorizon : undefined,
     })
     setJobId(res.job_id)
+    onTriggered({ id: res.job_id, kind: 'iterative_retrain', label: 'Iterative Retrain (MetaLabeler)' })
   }
 
   const report = status.data?.status === 'completed' ? status.data.report : null
@@ -599,7 +699,13 @@ const ORCHESTRATOR_CHANNELS = ['technical', 'fundamental', 'momentum'] as const
 type OrchestratorChannel = (typeof ORCHESTRATOR_CHANNELS)[number]
 const FUNDAMENTAL_PRESETS = ['quality_compounder', 'garp', 'turnaround'] as const
 
-function OrchestratorTriggerPanel({ onCompleted }: { onCompleted: () => void }) {
+function OrchestratorTriggerPanel({
+  onCompleted,
+  onTriggered,
+}: {
+  onCompleted: () => void
+  onTriggered: (job: ActiveJob) => void
+}) {
   const [channel, setChannel] = useState<OrchestratorChannel>('technical')
   // Both left blank by default = "auto" — the backend codifies strategy_id
   // ({channel}_{descriptor}_{horizon}_{YYYYMMDD}) and defaults horizon_bucket
@@ -648,6 +754,8 @@ function OrchestratorTriggerPanel({ onCompleted }: { onCompleted: () => void }) 
       preset: channel === 'fundamental' ? preset : undefined,
     })
     setRunId(res.run_id)
+    const descriptor = channel === 'technical' ? templateName : channel === 'fundamental' ? preset : `top${topN}_${lookbackMonths}m`
+    onTriggered({ id: res.run_id, kind: 'orchestrator', label: `${channel} · ${descriptor || 'orchestrator'}` })
   }
 
   const canTrigger =
@@ -830,7 +938,13 @@ function emptyQueueJob(): StrategyQueueJob {
   return { kind: 'orchestrator', channel: 'technical', start_date: '2023-01-01', end_date: todayIso(), top_n: 10 }
 }
 
-function StrategyQueuePanel({ onCompleted }: { onCompleted: () => void }) {
+function StrategyQueuePanel({
+  onCompleted,
+  onTriggered,
+}: {
+  onCompleted: () => void
+  onTriggered: (job: ActiveJob) => void
+}) {
   const [jobs, setJobs] = useState<StrategyQueueJob[]>([emptyQueueJob()])
   const [queueId, setQueueId] = useState<string | null>(null)
 
@@ -864,6 +978,7 @@ function StrategyQueuePanel({ onCompleted }: { onCompleted: () => void }) {
   async function handleTrigger() {
     const res = await triggerStrategyQueue(jobs)
     setQueueId(res.queue_id)
+    onTriggered({ id: res.queue_id, kind: 'queue', label: `Strategy queue (${jobs.length} job${jobs.length === 1 ? '' : 's'})` })
   }
 
   const isRunning = status.data?.status === 'running'
@@ -1062,7 +1177,16 @@ export function BacktestPage() {
   const [channel, setChannel] = useState<BacktestChannel | ''>('')
   const [mode, setMode] = useState<BacktestMode | ''>('')
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [activeJobs, setActiveJobs] = useState<ActiveJob[]>([])
   const queryClient = useQueryClient()
+
+  function registerJob(job: ActiveJob) {
+    setActiveJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)])
+  }
+
+  function dismissJob(id: string) {
+    setActiveJobs((prev) => prev.filter((j) => j.id !== id))
+  }
 
   const runs = useQuery({
     queryKey: ['backtest-runs', channel, mode],
@@ -1162,11 +1286,19 @@ export function BacktestPage() {
         </CardContent>
       </Card>
 
+      <RunsStatusBoard jobs={activeJobs} onDismiss={dismissJob} />
+
       {selectedRun ? <RunDetail run={selectedRun} /> : null}
 
-      <OrchestratorTriggerPanel onCompleted={() => queryClient.invalidateQueries({ queryKey: ['backtest-runs'] })} />
-      <StrategyQueuePanel onCompleted={() => queryClient.invalidateQueries({ queryKey: ['backtest-runs'] })} />
-      <IterativeRetrainPanel />
+      <OrchestratorTriggerPanel
+        onCompleted={() => queryClient.invalidateQueries({ queryKey: ['backtest-runs'] })}
+        onTriggered={registerJob}
+      />
+      <StrategyQueuePanel
+        onCompleted={() => queryClient.invalidateQueries({ queryKey: ['backtest-runs'] })}
+        onTriggered={registerJob}
+      />
+      <IterativeRetrainPanel onTriggered={registerJob} />
       <PaperTradingPanel />
     </AppShell>
   )
