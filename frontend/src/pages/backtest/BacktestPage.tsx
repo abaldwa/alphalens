@@ -544,6 +544,7 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
 function IterativeRetrainPanel({ onTriggered }: { onTriggered: (job: ActiveJob) => void }) {
   const [jobId, setJobId] = useState<string | null>(null)
   const [horizonDays, setHorizonDays] = useState('5')
+  const [triggerError, setTriggerError] = useState<string | null>(null)
 
   const status = useQuery({
     queryKey: ['iterative-retrain-status', jobId],
@@ -556,12 +557,17 @@ function IterativeRetrainPanel({ onTriggered }: { onTriggered: (job: ActiveJob) 
   })
 
   async function handleTrigger() {
-    const numericHorizon = Number(horizonDays)
-    const res = await triggerIterativeRetrain({
-      horizon_days: Number.isFinite(numericHorizon) && numericHorizon > 0 ? numericHorizon : undefined,
-    })
-    setJobId(res.job_id)
-    onTriggered({ id: res.job_id, kind: 'iterative_retrain', label: 'Iterative Retrain (MetaLabeler)' })
+    setTriggerError(null)
+    try {
+      const numericHorizon = Number(horizonDays)
+      const res = await triggerIterativeRetrain({
+        horizon_days: Number.isFinite(numericHorizon) && numericHorizon > 0 ? numericHorizon : undefined,
+      })
+      setJobId(res.job_id)
+      onTriggered({ id: res.job_id, kind: 'iterative_retrain', label: 'Iterative Retrain (MetaLabeler)' })
+    } catch (err) {
+      setTriggerError(err instanceof Error ? err.message : 'Failed to trigger iterative retrain.')
+    }
   }
 
   const report = status.data?.status === 'completed' ? status.data.report : null
@@ -592,6 +598,12 @@ function IterativeRetrainPanel({ onTriggered }: { onTriggered: (job: ActiveJob) 
           </Button>
           {jobId ? <span className="text-xs text-muted-foreground">job_id: {jobId}</span> : null}
         </div>
+
+        {triggerError ? (
+          <p className="mt-3 rounded-[var(--radius-token)] border border-red/40 bg-red/10 p-2 text-sm text-red">
+            {triggerError}
+          </p>
+        ) : null}
 
         {status.data ? (
           <div className="mt-4">
@@ -721,6 +733,7 @@ function OrchestratorTriggerPanel({
   const [topN, setTopN] = useState('10')
   const [lookbackMonths, setLookbackMonths] = useState('6')
   const [runId, setRunId] = useState<string | null>(null)
+  const [triggerError, setTriggerError] = useState<string | null>(null)
 
   const templates = useQuery({
     queryKey: ['screener-templates'],
@@ -740,22 +753,27 @@ function OrchestratorTriggerPanel({
   }, [status.data?.status, onCompleted])
 
   async function handleTrigger() {
-    const numericCapital = Number(initialCapital)
-    const res = await triggerOrchestratorBacktest({
-      channel,
-      strategy_id: strategyId || undefined,
-      horizon_bucket: horizonBucket || undefined,
-      start_date: startDate,
-      end_date: endDate,
-      initial_capital: Number.isFinite(numericCapital) && numericCapital > 0 ? numericCapital : undefined,
-      top_n: Number(topN) || undefined,
-      lookback_months: channel === 'momentum' ? Number(lookbackMonths) || undefined : undefined,
-      template_name: channel === 'technical' ? templateName || undefined : undefined,
-      preset: channel === 'fundamental' ? preset : undefined,
-    })
-    setRunId(res.run_id)
-    const descriptor = channel === 'technical' ? templateName : channel === 'fundamental' ? preset : `top${topN}_${lookbackMonths}m`
-    onTriggered({ id: res.run_id, kind: 'orchestrator', label: `${channel} · ${descriptor || 'orchestrator'}` })
+    setTriggerError(null)
+    try {
+      const numericCapital = Number(initialCapital)
+      const res = await triggerOrchestratorBacktest({
+        channel,
+        strategy_id: strategyId || undefined,
+        horizon_bucket: horizonBucket || undefined,
+        start_date: startDate,
+        end_date: endDate,
+        initial_capital: Number.isFinite(numericCapital) && numericCapital > 0 ? numericCapital : undefined,
+        top_n: Number(topN) || undefined,
+        lookback_months: channel === 'momentum' ? Number(lookbackMonths) || undefined : undefined,
+        template_name: channel === 'technical' ? templateName || undefined : undefined,
+        preset: channel === 'fundamental' ? preset : undefined,
+      })
+      setRunId(res.run_id)
+      const descriptor = channel === 'technical' ? templateName : channel === 'fundamental' ? preset : `top${topN}_${lookbackMonths}m`
+      onTriggered({ id: res.run_id, kind: 'orchestrator', label: `${channel} · ${descriptor || 'orchestrator'}` })
+    } catch (err) {
+      setTriggerError(err instanceof Error ? err.message : 'Failed to trigger backtest.')
+    }
   }
 
   const canTrigger =
@@ -893,6 +911,12 @@ function OrchestratorTriggerPanel({
           </Button>
         </div>
 
+        {triggerError ? (
+          <p className="mt-3 rounded-[var(--radius-token)] border border-red/40 bg-red/10 p-2 text-sm text-red">
+            {triggerError}
+          </p>
+        ) : null}
+
         {runId ? (
           <div className="mt-4">
             <span className="text-xs text-muted-foreground">run_id: {runId}</span>
@@ -947,6 +971,7 @@ function StrategyQueuePanel({
 }) {
   const [jobs, setJobs] = useState<StrategyQueueJob[]>([emptyQueueJob()])
   const [queueId, setQueueId] = useState<string | null>(null)
+  const [triggerError, setTriggerError] = useState<string | null>(null)
 
   const status = useQuery({
     queryKey: ['strategy-queue-status', queueId],
@@ -976,9 +1001,14 @@ function StrategyQueuePanel({
   }
 
   async function handleTrigger() {
-    const res = await triggerStrategyQueue(jobs)
-    setQueueId(res.queue_id)
-    onTriggered({ id: res.queue_id, kind: 'queue', label: `Strategy queue (${jobs.length} job${jobs.length === 1 ? '' : 's'})` })
+    setTriggerError(null)
+    try {
+      const res = await triggerStrategyQueue(jobs)
+      setQueueId(res.queue_id)
+      onTriggered({ id: res.queue_id, kind: 'queue', label: `Strategy queue (${jobs.length} job${jobs.length === 1 ? '' : 's'})` })
+    } catch (err) {
+      setTriggerError(err instanceof Error ? err.message : 'Failed to trigger strategy queue.')
+    }
   }
 
   const isRunning = status.data?.status === 'running'
@@ -1120,6 +1150,12 @@ function StrategyQueuePanel({
             {isRunning ? 'Running…' : `Trigger Queue (${jobs.length} job${jobs.length === 1 ? '' : 's'})`}
           </Button>
         </div>
+
+        {triggerError ? (
+          <p className="mt-3 rounded-[var(--radius-token)] border border-red/40 bg-red/10 p-2 text-sm text-red">
+            {triggerError}
+          </p>
+        ) : null}
 
         {queueId ? (
           <div className="mt-4">

@@ -12,11 +12,23 @@ export class ApiError extends Error {
   status: number
   url: string
 
-  constructor(status: number, statusText: string, url: string) {
-    super(`${status} ${statusText} — ${url}`)
+  constructor(status: number, statusText: string, url: string, detail?: string) {
+    // Prefer the backend's own explanation (e.g. main.py's DuckDB lock-conflict
+    // handler: "Database is temporarily locked by another process...") over the
+    // generic HTTP status text, which tells an operator nothing actionable.
+    super(detail || `${status} ${statusText} — ${url}`)
     this.name = 'ApiError'
     this.status = status
     this.url = url
+  }
+}
+
+async function errorDetail(resp: Response): Promise<string | undefined> {
+  try {
+    const body = await resp.clone().json()
+    return typeof body?.detail === 'string' ? body.detail : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -30,42 +42,51 @@ function buildUrl(path: string, params?: Record<string, string | number | boolea
   return url.toString()
 }
 
+async function doFetch(url: string, init?: RequestInit): Promise<Response> {
+  let resp: Response
+  try {
+    resp = await fetch(url, init)
+  } catch {
+    // fetch() itself throws (not an HTTP error response) when the API is
+    // unreachable entirely — refused connection, server down/restarting.
+    throw new ApiError(0, 'Network Error', url, `Could not reach the API at ${url} — is the backend running?`)
+  }
+  if (!resp.ok) throw new ApiError(resp.status, resp.statusText, url, await errorDetail(resp))
+  return resp
+}
+
 export async function apiGet<T>(
   path: string,
   params?: Record<string, string | number | boolean | undefined>,
 ): Promise<T> {
   const url = buildUrl(path, params)
-  const resp = await fetch(url)
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText, url)
+  const resp = await doFetch(url)
   return (await resp.json()) as T
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   const url = buildUrl(path)
-  const resp = await fetch(url, {
+  const resp = await doFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText, url)
   return (await resp.json()) as T
 }
 
 export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   const url = buildUrl(path)
-  const resp = await fetch(url, {
+  const resp = await doFetch(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText, url)
   return (await resp.json()) as T
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
   const url = buildUrl(path)
-  const resp = await fetch(url, { method: 'DELETE' })
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText, url)
+  const resp = await doFetch(url, { method: 'DELETE' })
   return (await resp.json()) as T
 }
 
