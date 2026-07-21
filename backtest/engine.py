@@ -112,6 +112,14 @@ class BacktestResults:
     # is used (see scripts/train_stacking.py). None for every other caller
     # (run_phase1/2/3_backtest.py) — default keeps their behavior unchanged.
     oof_df: Optional[pd.DataFrame] = None
+    # Concatenated per-fold daily-return series (test windows only, in
+    # fold order), populated only when run_full_backtest(collect_fold_
+    # returns=True) is used — backtest/iterative_retrain.py's promotion
+    # gate needs a real return series (not just the scalar sharpe_mean)
+    # to feed overfit_checks.deflated_sharpe_ratio's skew/kurtosis
+    # correction. None for every other caller — default keeps existing
+    # behavior unchanged.
+    fold_returns: Optional[pd.Series] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -250,6 +258,7 @@ class BacktestEngine:
         benchmark_index: Optional[pd.DataFrame] = None,
         feature_log_writer: Optional[FeatureLogWriter] = None,
         run_id: Optional[str] = None,
+        meta_labeler_params: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.ohlcv = ohlcv
         self.pnd_detector = pnd_detector
@@ -297,6 +306,12 @@ class BacktestEngine:
         self._horizon_bucket = {
             5: HorizonBucket.D5, 21: HorizonBucket.D21, 63: HorizonBucket.D63,
         }.get(horizon_days, HorizonBucket.CUSTOM)
+        # Per-fold MetaLabeler hyperparameters — None (default) preserves
+        # existing behavior (MetaLabeler's own __init__ defaults). Lets
+        # backtest/iterative_retrain.py's tuning loop vary the entry-filter
+        # model's hyperparameters between iterations without touching this
+        # class's fold-retrain loop.
+        self._meta_labeler_params = meta_labeler_params
         # universe_tickers / historical_tickers both default to the ohlcv
         # panel's own ticker set (the degenerate case where there's no
         # meaningful distinction between "currently investable" and "ever
@@ -561,7 +576,7 @@ class BacktestEngine:
 
     def run_full_backtest(
         self, model_name: str, from_date: Optional[Any] = None, to_date: Optional[Any] = None, folds: int = 5,
-        collect_oof: bool = False,
+        collect_oof: bool = False, collect_fold_returns: bool = False,
     ) -> BacktestResults:
         """
         Run the full P&D -> Signal -> MetaLabel -> Exit walk-forward
@@ -607,11 +622,19 @@ class BacktestEngine:
             train_fold, test_fold = validator.get_train_validation_split(combined, val_fraction=0.3)
             date_folds = [(train_fold, test_fold)]
         else:
-            date_folds = validator.split_data(combined, n_folds=min(folds, n_folds_data))
+            # embargo_days=self.horizon_days: same source of truth
+            # TripleBarrierLabeler(max_holding=self.horizon_days) uses in
+            # _build_dataset — a trade opened within horizon_days of a fold
+            # boundary can still resolve after it (see split_data's
+            # docstring), so the embargo must match the label horizon.
+            date_folds = validator.split_data(
+                combined, n_folds=min(folds, n_folds_data), embargo_days=self.horizon_days,
+            )
 
         fold_results: List[FoldResult] = []
         fold_integrity_results: List[Dict[str, Any]] = []
         oof_rows: List[pd.DataFrame] = []
+        fold_return_series: List[pd.Series] = []
 
         for i, (train_fold, test_fold) in enumerate(date_folds):
             train_df, val_df = validator.get_train_validation_split(train_fold, val_fraction=0.2)
@@ -629,7 +652,7 @@ class BacktestEngine:
             meta_mask = meta_labels.notna()
             meta_model: Optional[MetaLabeler] = None
             if meta_mask.sum() >= self.meta_min_rows:
-                meta_model = MetaLabeler(random_state=self.random_state)
+                meta_model = MetaLabeler(random_state=self.random_state, lgbm_params=self._meta_labeler_params)
                 meta_model.train(meta_X[meta_mask], meta_labels[meta_mask])
             else:
                 logger.warning("fold %d: too few Act-labeled rows to train MetaLabeler — entries unfiltered by meta", i)
@@ -656,6 +679,9 @@ class BacktestEngine:
                 portfolio.equity_curve, portfolio.trades_df, self.initial_capital,
                 benchmark_equity_curve=benchmark_curve,
             )
+            if collect_fold_returns:
+                equity = portfolio.equity_curve.set_index("date")["equity"]
+                fold_return_series.append(equity.pct_change().dropna())
 
             fold_results.append(
                 FoldResult(
@@ -721,6 +747,7 @@ class BacktestEngine:
             aggregate["sharpe_mean_full_periods_only"] = None
 
         oof_df = pd.concat(oof_rows, ignore_index=True) if oof_rows else None
+        fold_returns = pd.concat(fold_return_series) if fold_return_series else None
 
         if self._feature_log_writer is not None:
             self._feature_log_writer.flush()
@@ -729,5 +756,5 @@ class BacktestEngine:
             model_name=model_name, from_date=from_date, to_date=to_date,
             fold_results=fold_results, aggregate=aggregate,
             integrity_passed=integrity["passed"], integrity_detail=integrity["detail"],
-            oof_df=oof_df,
+            oof_df=oof_df, fold_returns=fold_returns,
         )

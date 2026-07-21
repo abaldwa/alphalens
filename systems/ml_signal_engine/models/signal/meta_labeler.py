@@ -68,11 +68,24 @@ MIN_RECALL_FLOOR = 0.05
 class MetaLabeler(IClassificationModel):
     """M-04: binary Act(1)/Don't-Act(0) filter on top of a primary signal model's direction call."""
 
-    def __init__(self, random_state: int = 42, lgbm_params: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self, random_state: int = 42, lgbm_params: Optional[Dict[str, Any]] = None,
+        use_class_weight: bool = True,
+    ) -> None:
         self.random_state = random_state
+        # use_class_weight defaults True: real Act/Don't-Act labels skew
+        # toward the minority "Act" class (a strategy with e.g. a 25% win
+        # rate has few profitable-after-cost calls to learn from) —
+        # LightGBM's native "balanced" class_weight (inverse-frequency
+        # re-weighting at fit time) fixes this without introducing a
+        # separate resampling/SMOTE step that could leak synthetic
+        # correlation across the train/val boundary. Only applied when the
+        # caller hasn't already supplied their own lgbm_params (an explicit
+        # lgbm_params dict is assumed to already encode the caller's choice).
         self._lgbm_params = lgbm_params or {
             "n_estimators": 200, "max_depth": 5, "learning_rate": 0.05,
             "random_state": random_state, "verbose": -1,
+            "class_weight": "balanced" if use_class_weight else None,
         }
         self._lgbm: Optional[lgb.LGBMClassifier] = None
         self._feature_names: Optional[List[str]] = None

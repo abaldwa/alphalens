@@ -142,12 +142,71 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    // Reference docs published as Claude artifacts, not local screens —
-    // same external-link pattern as momentum's backtest_ledger/yoy_report.
+    // Reference docs, one static HTML page per app/module, shipped with the
+    // app itself (frontend/public/explain/*.html — plain files, not SPA
+    // routes, so they're linked as external hrefs the same way Momentum
+    // links its research artifacts, just same-origin instead of claude.ai).
+    // Pages cross-link to each other via relative hrefs inside the HTML.
     id: 'explain',
     label: 'Explain',
-    href: 'https://claude.ai/code/artifact/62aef89d-1f8c-4d7b-8c9b-31ca03f9a9b4',
+    href: '/explain/backtest-paper-trading.html',
     external: true,
+    subItems: [
+      {
+        id: 'backtest_paper_trading',
+        label: 'Backtest, Paper Trading & Forward Testing',
+        href: '/explain/backtest-paper-trading.html',
+        external: true,
+      },
+      {
+        id: 'backtest_features',
+        label: 'Features Captured in Backtest',
+        href: '/explain/backtest-features.html',
+        external: true,
+      },
+      {
+        id: 'technical',
+        label: 'Technical Analysis',
+        href: '/explain/technical.html',
+        external: true,
+      },
+      {
+        id: 'fundamental',
+        label: 'Fundamental Analysis',
+        href: '/explain/fundamental.html',
+        external: true,
+      },
+      {
+        id: 'forensic',
+        label: 'Forensic Accounting',
+        href: '/explain/forensic.html',
+        external: true,
+      },
+      {
+        id: 'valuation',
+        label: 'Valuation',
+        href: '/explain/valuation.html',
+        external: true,
+      },
+      {
+        id: 'big_investors',
+        label: 'Big Investors',
+        href: '/explain/big-investors.html',
+        external: true,
+      },
+      {
+        id: 'ml_models',
+        label: 'Machine Learning Models',
+        href: '/explain/ml-models.html',
+        external: true,
+      },
+      {
+        id: 'momentum',
+        label: 'Momentum',
+        href: '/explain/momentum.html',
+        external: true,
+      },
+    ],
   },
   {
     id: 'ops',
