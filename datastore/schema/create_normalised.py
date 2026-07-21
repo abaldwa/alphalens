@@ -1073,6 +1073,41 @@ _DROP_ORPHAN_COLUMNS = {
 }
 
 
+def _sync_fundamentals_history_columns(conn) -> None:
+    """
+    REV11 (2026-07-21 review): fundamentals_history was created once via
+    `SELECT * FROM fundamentals WHERE 1=0` and never re-synced afterward —
+    every subsequent `_MIGRATE_ADDED_COLUMNS["fundamentals"]` entry above
+    grows `fundamentals` but not this table. append_fundamentals_history()'s
+    `INSERT INTO fundamentals_history SELECT ..., f.* FROM fundamentals f`
+    matches columns by POSITION, not name, so the next time a column is
+    added to `fundamentals` this insert would fail with a column-count
+    mismatch. Diff information_schema and ALTER ADD COLUMN for whatever's
+    missing, in `fundamentals`'s own column order, so positions stay
+    aligned — same self-healing pattern as _migrate_dropped_columns below.
+    """
+    if not conn.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'fundamentals_history'"
+    ).fetchone():
+        return  # table not created yet this call (shouldn't happen after _ALL_TABLES loop, but be safe)
+
+    fundamentals_cols = conn.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_name = 'fundamentals' ORDER BY ordinal_position"
+    ).fetchall()
+    history_cols = {
+        row[0]
+        for row in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'fundamentals_history'"
+        ).fetchall()
+    }
+    for col_name, data_type in fundamentals_cols:
+        if col_name in history_cols:
+            continue
+        conn.execute(f'ALTER TABLE fundamentals_history ADD COLUMN "{col_name}" {data_type}')
+        logger.info(f"Synced missing column onto fundamentals_history: {col_name} {data_type}")
+
+
 def _migrate_dropped_columns(conn) -> None:
     """Drop any columns that were removed from the schema in a later phase."""
     for table_name, cols in _DROP_ORPHAN_COLUMNS.items():
@@ -1140,6 +1175,7 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
         conn.execute(fno_ddl)
         logger.info("Ensured table exists: fno_data")
         _migrate_added_columns(conn)
+        _sync_fundamentals_history_columns(conn)
         _migrate_dropped_columns(conn)
 
     logger.info(f"Normalised schema ready at {db_path if db_path else ':memory:'}")

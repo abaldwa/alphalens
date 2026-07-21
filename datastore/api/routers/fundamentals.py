@@ -519,7 +519,16 @@ async def write_fundamentals(record: FundamentalsWrite) -> FundamentalsWriteResu
         conn.execute(_INSERT_SQL, values)
         # 2026-07-20 Gap #2 fix: append a real snapshot into the append-only
         # fundamentals_history table — see append_fundamentals_history's docstring.
-        append_fundamentals_history(conn, record.ticker, record.fiscal_year, record.quarter)
+        # REV11 (2026-07-21 review): the primary upsert above already committed;
+        # a history-append failure (e.g. a schema-sync race) must never 500 the
+        # whole write on top of an already-successful upsert.
+        try:
+            append_fundamentals_history(conn, record.ticker, record.fiscal_year, record.quarter)
+        except Exception:
+            logger.exception(
+                f"fundamentals.write: append_fundamentals_history failed for "
+                f"{record.ticker} FY{record.fiscal_year}Q{record.quarter} — primary upsert already committed"
+            )
 
     logger.info(f"fundamentals.write: {record.ticker} FY{record.fiscal_year}Q{record.quarter}")
     return FundamentalsWriteResult(
@@ -559,7 +568,13 @@ async def write_fundamentals_batch(body: FundamentalsWriteBatch) -> Fundamentals
             # 2026-07-20 Gap #2 fix: one history snapshot per written row.
             ticker_idx, fy_idx, q_idx = _COLUMNS.index("ticker"), _COLUMNS.index("fiscal_year"), _COLUMNS.index("quarter")
             for row in all_values:
-                append_fundamentals_history(conn, row[ticker_idx], row[fy_idx], row[q_idx])
+                try:
+                    append_fundamentals_history(conn, row[ticker_idx], row[fy_idx], row[q_idx])
+                except Exception:
+                    logger.exception(
+                        f"fundamentals.write_batch: append_fundamentals_history failed for "
+                        f"{row[ticker_idx]} FY{row[fy_idx]}Q{row[q_idx]} — primary upsert already committed"
+                    )
 
     logger.info(f"fundamentals.write_batch: {len(all_values)} written, {failed} failed of {len(body.records)}")
     return FundamentalsWriteBatchResult(written=len(all_values), failed=failed)

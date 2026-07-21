@@ -93,6 +93,11 @@ class BacktestRunResult:
     # which stretch — [{"as_of_date": ..., "model_version": ...}, ...]. Empty for
     # plain backtest/paper runs that never call adapter.refit().
     refit_log: List[Dict[str, Any]] = field(default_factory=list)
+    # REV17 (2026-07-21 review): the same-day-close vs. next-day-open fill
+    # convention used to be an undocumented, silent simplification — now an
+    # explicit, recorded choice (OrchestratorConfig.execution_timing) so
+    # every report states which produced it.
+    execution_timing: str = "same_day_close"
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)

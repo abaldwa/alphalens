@@ -691,3 +691,23 @@ if SNAPSHOT_RETENTION_N <= 0:
 # DuckDB connection to the same file is unsafe). Separate lock file since
 # publish can run outside the daily pipeline (e.g. a manual backfill).
 PUBLISH_RUN_LOCK_PATH = NORMALISED_DIR / ".publish_run.lock"
+
+# ---------------------------------------------------------------------------
+# REV27 (2026-07-21 review): DuckDB lock-conflict retry budget
+# (datastore/api/db.py::_connect_with_retry, SPEC-SCHED-013). Previously
+# hardcoded (4 attempts, 0.5s base -> ~3.5s worst-case wait). Moved here,
+# env-overridable, so an operator can extend the budget for a known-long
+# write (a full backfill, a universe-wide compute_features run) without a
+# code change. Default attempts raised 4 -> 6 (worst case ~15.5s:
+# 0.5+1+2+4+8) — still short enough not to hang an API request badly, long
+# enough to ride out more real write-step handoffs than before.
+#
+# This is a bounded retry, not a guarantee: a write step that holds the
+# write lock LONGER than this budget will still hard-fail a concurrent read
+# (the same failure class that crashed the scheduler once — see BuildLog.md
+# project memory). Operational rule: avoid starting a long write (full
+# backfill, universe-wide compute_features) while API read traffic is
+# expected, rather than relying on this retry alone.
+# ---------------------------------------------------------------------------
+DUCKDB_LOCK_RETRY_ATTEMPTS = int(os.environ.get("DUCKDB_LOCK_RETRY_ATTEMPTS", "6"))
+DUCKDB_LOCK_RETRY_BASE_DELAY_S = float(os.environ.get("DUCKDB_LOCK_RETRY_BASE_DELAY_S", "0.5"))

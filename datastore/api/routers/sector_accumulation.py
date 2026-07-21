@@ -47,6 +47,8 @@ class SectorAccumulationRow(BaseModel):
     delivery_volume: float
     sector_shares_outstanding: float
     n_stocks_included: int
+    n_stocks_total_in_sector: int
+    low_coverage: bool
 
 
 class SectorAccumulationDrilldownRow(BaseModel):

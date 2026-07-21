@@ -184,6 +184,22 @@ class TestAlertsToday:
         assert r.status_code == 200
         assert r.json()["count"] == 0
 
+    def test_unexpected_non_duckdb_exception_propagates_as_500(self, client, monkeypatch):
+        """REV12 (2026-07-21 review): only a real duckdb.Error should be
+        swallowed into an empty response — anything else is a genuine bug
+        and must surface as a 500, not a silently-clean empty dashboard."""
+
+        def _boom(*args, **kwargs):
+            raise ValueError("simulated unexpected non-DuckDB failure")
+
+        monkeypatch.setattr(technical_router, "get_duckdb_connection", _boom)
+        # raise_server_exceptions=False: we want to assert the HTTP-level 500
+        # response FastAPI's default handler produces, not have the test
+        # runner re-raise the underlying ValueError itself.
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        r = no_raise_client.get("/api/v1/ta/alerts/today")
+        assert r.status_code == 500
+
 
 class TestAlertsForTicker:
     def test_no_table_returns_empty(self, client):

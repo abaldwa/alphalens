@@ -48,25 +48,45 @@ class TestMaxDrawdown:
 
 
 class TestSortinoRatio:
-    def test_no_downside_returns_none(self):
+    def test_no_downside_returns_none_with_reason(self):
         returns = pd.Series([0.01, 0.02, 0.015])
-        assert sortino_ratio(returns) is None
+        value, reason = sortino_ratio(returns)
+        assert value is None
+        assert reason == "no_downside_periods"
 
     def test_positive_with_some_downside(self):
         returns = pd.Series([0.02, -0.01, 0.03, -0.02, 0.01])
-        result = sortino_ratio(returns)
-        assert result is not None
+        value, reason = sortino_ratio(returns)
+        assert value is not None
+        assert reason is None
+
+    def test_insufficient_returns_reason(self):
+        value, reason = sortino_ratio(pd.Series([0.01]))
+        assert value is None
+        assert reason == "insufficient_returns"
+
+    def test_zero_downside_std_reason(self):
+        returns = pd.Series([0.01, -0.02, 0.015, -0.02, 0.03])  # identical downside values -> std 0
+        value, reason = sortino_ratio(returns)
+        assert value is None
+        assert reason == "zero_downside_std"
 
 
 class TestCalmarRatio:
     def test_ratio_of_cagr_to_abs_drawdown(self):
-        assert calmar_ratio(0.20, -0.10) == pytest.approx(2.0)
+        value, reason = calmar_ratio(0.20, -0.10)
+        assert value == pytest.approx(2.0)
+        assert reason is None
 
     def test_none_when_cagr_is_none(self):
-        assert calmar_ratio(None, -0.10) is None
+        value, reason = calmar_ratio(None, -0.10)
+        assert value is None
+        assert reason == "no_cagr"
 
     def test_none_when_drawdown_is_zero(self):
-        assert calmar_ratio(0.20, 0.0) is None
+        value, reason = calmar_ratio(0.20, 0.0)
+        assert value is None
+        assert reason == "zero_or_undefined_drawdown"
 
 
 class TestWinRateAndProfitFactor:

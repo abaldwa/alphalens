@@ -43,7 +43,9 @@ class BacktestMetrics:
     win_rate: Optional[float]
     profit_factor: Optional[float]
     sortino: Optional[float]
+    sortino_none_reason: Optional[str]  # REV19: why sortino is None, when it is
     calmar: Optional[float]
+    calmar_none_reason: Optional[str]  # None when a real value was computed
     n_distinct_tickers_traded: int
     turnover_ratio: Optional[float]
     n_trades: int
@@ -88,26 +90,37 @@ def max_drawdown(equity_curve: pd.Series) -> float:
     return float(drawdown.min())
 
 
-def sortino_ratio(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> Optional[float]:
+def sortino_ratio(
+    returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> Tuple[Optional[float], Optional[str]]:
     """Like Sharpe but only penalizes downside deviation — recommended addition
     (BacktestUmbrellaPlan.md Truthful Review #8) since small/mid-cap Indian
-    equity strategies have fat left tails that Sharpe alone under-penalizes."""
+    equity strategies have fat left tails that Sharpe alone under-penalizes.
+
+    Returns (value, none_reason) — REV19 (2026-07-21 review): a bare `None`
+    doesn't distinguish "genuinely no downside, excellent run" from "too few
+    observations to compute a real ratio"; none_reason makes that explicit
+    for any caller aggregating many runs.
+    """
     if len(returns) < 2:
-        return None
+        return None, "insufficient_returns"
     downside = returns[returns < 0]
     if len(downside) == 0:
-        return None
+        return None, "no_downside_periods"
     downside_std = downside.std()
     if downside_std == 0 or np.isnan(downside_std):
-        return None
+        return None, "zero_downside_std"
     mean_return = returns.mean()
-    return float((mean_return * periods_per_year) / (downside_std * np.sqrt(periods_per_year)))
+    return float((mean_return * periods_per_year) / (downside_std * np.sqrt(periods_per_year))), None
 
 
-def calmar_ratio(cagr_value: Optional[float], mdd: float) -> Optional[float]:
-    if cagr_value is None or mdd == 0:
-        return None
-    return cagr_value / abs(mdd)
+def calmar_ratio(cagr_value: Optional[float], mdd: float) -> Tuple[Optional[float], Optional[str]]:
+    """Returns (value, none_reason) — see sortino_ratio's docstring for why."""
+    if cagr_value is None:
+        return None, "no_cagr"
+    if mdd == 0:
+        return None, "zero_or_undefined_drawdown"
+    return cagr_value / abs(mdd), None
 
 
 def win_rate_and_profit_factor(trade_pnls: List[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -181,6 +194,8 @@ def compute_metrics(
     bench_cagr, excess_return, bench_status = benchmark_metrics(
         cagr_value, benchmark_equity_curve, start_date, end_date
     )
+    sortino_value, sortino_reason = sortino_ratio(returns)
+    calmar_value, calmar_reason = calmar_ratio(cagr_value, mdd)
 
     return BacktestMetrics(
         cagr=cagr_value,
@@ -191,8 +206,10 @@ def compute_metrics(
         max_drawdown=mdd,
         win_rate=win_rate,
         profit_factor=profit_factor,
-        sortino=sortino_ratio(returns),
-        calmar=calmar_ratio(cagr_value, mdd),
+        sortino=sortino_value,
+        sortino_none_reason=sortino_reason,
+        calmar=calmar_value,
+        calmar_none_reason=calmar_reason,
         n_distinct_tickers_traded=len(set(distinct_tickers)),
         turnover_ratio=turnover_ratio(trade_values, float(equity_curve.mean()) if len(equity_curve) else 0.0),
         n_trades=len(trade_pnls),

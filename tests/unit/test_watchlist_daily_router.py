@@ -10,6 +10,8 @@ test_technical_router.py, since `filter_recommendable` keys off its real
 adtv_cr column) via TestClient(app) — no mocks.
 """
 
+import numpy as np
+import pandas as pd
 from fastapi.testclient import TestClient
 
 from config.universe import load_universe_raw
@@ -52,6 +54,21 @@ def _insert_price(db_path, ticker, d, close):
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             [ticker, d, close, close, close, close, 1_000_000],
         )
+
+
+class TestBuildPriceMap:
+    """REV26 (2026-07-21 review): a NaN `close` (as fetchdf() would surface
+    a NULL float, were ohlcv_adjusted.close ever not schema-NOT-NULL) must
+    be cast to None before reaching DailyWatchlistRow's float fields."""
+
+    def test_nan_close_becomes_none(self):
+        df = pd.DataFrame({"ticker": ["A", "B"], "close": [100.0, np.nan]})
+        price_map = watchlist_router._build_price_map(df)
+        assert price_map == {"A": 100.0, "B": None}
+
+    def test_empty_df_returns_empty_map(self):
+        df = pd.DataFrame({"ticker": [], "close": []})
+        assert watchlist_router._build_price_map(df) == {}
 
 
 class TestDailyWatchlist:

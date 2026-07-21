@@ -14885,3 +14885,237 @@ New: `backtest/strategy_confidence.py`,
 `frontend/src/pages/technical/screener.tsx`,
 `tests/unit/test_ta_screener.py`,
 `tests/quality/test_no_stub_or_synthetic_data.py`.
+
+## Full-Codebase Review Fixes: Backtest Integrity, PnD Starvation, Stacking-Ensemble Hang, F&O/Delisted Data Gaps + Coverage Push (2026-07-21)
+
+Follow-up to the 2026-07-21 full-codebase review (see `FeatureBacklog.md`
+REV1-27): fixed every hardcoded stand-in and pre-existing regression the
+user flagged as unacceptable, rather than leaving them documented only.
+
+### Backtest integrity checks were checking hardcoded values against
+themselves (REV1-7)
+`check_05_costs`/`check_06_liquidity` in `backtest/integrity_checker.py`
+were being fed literal constants (`0.4`, `1_000_000`) instead of real
+per-fold measurements, so they could never fail. Fixed
+`backtest/engine.py` to compute real per-fold trade costs from
+`portfolio.trades_df` and a real ADTV-based liquidity floor
+(`_build_adtv_lookup`/`_adtv_cr`, `MIN_ADT_INR`), and wired real ADTV
+into both entry filtering (illiquid names skipped, logged) and exit
+slippage tiering. Checks 08/09/10 (fold stability, benchmark comparison,
+random-feature test) previously received no data and always
+short-circuited; now always compute real per-fold Sharpes, paired
+fold/benchmark returns, and a real `random_feature_test` per fold, fed
+into a real `BacktestIntegrityChecker` pass after the fold loop. Added a
+real `deflated_sharpe_ratio` (Bailey & Lopez de Prado) computation into
+the aggregate results, and changed `run_phase3_backtest.py`'s promotion
+gate to require DSR ≥ 0.95 in addition to the raw Sharpe delta, using
+`sharpe_mean_full_periods_only` (falls back to `sharpe_mean`) as the
+baseline instead of a figure that undercounted valid folds.
+
+### Stacking-ensemble infinite hang, root-caused (not a resource issue)
+`test_stacking_ensemble_wiring.py` had been assumed to be an environment
+resource problem in an earlier session (see the `test_stacking.py` OOM
+entry above). It was actually two real bugs in
+`systems/ml_signal_engine/inference/daily_inference.py`: the per-ticker
+ensemble loop reused loop variable `i`, shadowing the outer chunk-cursor
+`i` and corrupting the outer loop's position (genuine infinite loop, not
+slowness); and the ensemble's dense class-index output (`{0,1,2}`) was
+indexed directly into `CLASS_NAMES` (keyed by `{-1,0,1}`) instead of
+first mapping through `CLASS_ORDER`, which would have mislabeled every
+live Buy/Sell signal in production had it ever run to completion. Fixed
+both; all 4 tests in the file now pass in ~17s.
+
+### PnD detector training-data starvation
+`load_pnd_training_data_from_db` in
+`systems/ml_signal_engine/models/pnd/pnd_detector.py` only used
+`.tail(1)` per positive ticker/event window, yielding just 8 usable
+positive training rows total. Changed to use every real trading day in
+each known-P&D-ticker's and SEBI-enforcement-event's window; positive
+rows went 8 → 767, all real data, no fabrication. This also exposed that
+`tests/regression/test_known_pnd.py`'s synthetic fixture prices were
+unrealistic for the penny-stock P&D pattern being tested (base prices of
+₹30-50 vs the real SEBI-confirmed targets' sub-₹2 illiquid range,
+confirmed by comparing `price_impact_ratio` distributions against real
+training data) — fixed fixture prices/volumes to match; all 5 regression
+tests pass.
+
+### Real data instead of empty/stubbed sources (REV13/REV14)
+`delisted_companies` was empty (0 rows) because live NSE delisted-list
+scraping is genuinely blocked from this environment (verified via direct
+`curl`, not assumed) — this silently disabled survivorship-bias
+mitigation. Added `KNOWN_MAJOR_DELISTINGS` (10 real, individually
+documented NSE delistings with tickers/dates/sources) and
+`seed_known_major_delistings()` to `nse_delisted_companies.py`, run as a
+fallback when the live scrape fails; verified against the real
+production DB (0 → 10 rows). `config/build_universe.py`'s
+`is_fno_eligible` was hardcoded `False` for every ticker; changed to
+derive it from the real `fno_data` table (STO/STF instrument activity,
+already fully ingested) — verified 215 tickers now correctly flagged.
+`datastore/api/routers/technical.py`'s `write_ta_signals` referenced a
+nonexistent `_INSERT_SQL` symbol (would have raised `NameError` the
+first time any code path called it in production); fixed to use the
+real `_BULK_UPSERT_SQL` bulk-upsert pattern already proven in
+`daily_alert_checker.py`.
+
+### Test coverage push
+Corrected an inaccurate coverage baseline (two test files had been run
+with `--no-cov` during earlier bug verification and silently dropped
+from the cumulative `--cov-append` total) to a true 72.87%, then added 8
+new test files (90 tests) targeting previously-untested real modules —
+gainer-model signal/ranker classes, gainer walk-forward validators and
+checkpoint utilities, the TA screener's outcomes/confidence pipeline,
+and the fundamentals router's screener/sector/peers/scores endpoints —
+raising coverage to 75.07%. The remaining gap to the requested 80%
+(~1,200 statements) is concentrated in large ML-training CLI scripts,
+backtest orchestrators, and network-dependent scrapers; closing it
+without violating this project's no-mock-business-logic testing
+convention needs either substantially more time per module or an
+explicit scope decision to accept lower coverage on that category of
+code, logged as an open item rather than forced through with mocks.
+
+### Verification
+Full clean batched re-run of the entire suite (all light batches,
+integration/regression/hitl/quality, heavy ML tests, all 8 new files)
+confirmed 75.07% coverage with zero regressions.
+
+### Files changed
+`backtest/engine.py`, `backtest/integrity_checker.py`,
+`backtest/run_phase3_backtest.py`, `backtest/run_phase2_backtest.py`,
+`config/build_universe.py`,
+`datastore/api/routers/backtest_runs.py`,
+`datastore/api/routers/technical.py`, `datastore/api/routers/sector_accumulation.py`,
+`ingestion/scrapers/nse_delisted_companies.py`,
+`systems/ml_signal_engine/inference/daily_inference.py`,
+`systems/ml_signal_engine/models/pnd/pnd_detector.py`,
+`tests/unit/test_backtest_engine_internals.py`,
+`tests/unit/test_nse_delisted_companies.py`,
+`tests/regression/test_known_pnd.py`,
+`tests/unit/test_pnd_sebi_relabeling.py`. New:
+`tests/unit/test_build_universe_fno_eligible.py`,
+`tests/unit/test_fundamentals_router_screener.py`,
+`tests/unit/test_gainer_checkpoint_utils.py`,
+`tests/unit/test_gainer_signal_models.py`,
+`tests/unit/test_gainer_signal_ranker.py`,
+`tests/unit/test_gainer_walk_forward.py`,
+`tests/unit/test_ta_screener_outcomes.py`.
+
+## Remaining Actionable Review Defects Closed: REV11/12/15/16/17/18/19/26/27 (2026-07-21)
+
+Follow-up to the two 2026-07-21 sessions above: closed every remaining
+actionable item from FeatureBacklog.md's REV1-27 list. The only ones left
+untouched (F1, F2, FO1-FO4, CA5) are genuinely blocked on external data
+or a product decision, not something a code change can close.
+
+### Backtest correctness/robustness (REV15, REV17, REV18, REV19)
+- **REV18** (`backtest/integrity_checker.py`): `check_04_survivorship` used
+  to pass on ANY non-empty delisted-ticker set, even 1 out of 500 —
+  clearly implausible. Added `min_delisted_ratio: float = 0.01` and a real
+  ratio check; existing tests (1/3, 1/2 ratios) stay comfortably above the
+  floor.
+- **REV19** (`backtest/core/metrics.py`): `sortino_ratio`/`calmar_ratio`
+  silently returned bare `None` on degenerate inputs. Changed both to
+  return `(value, none_reason)` — `insufficient_returns`/
+  `no_downside_periods`/`zero_downside_std` for Sortino,
+  `no_cagr`/`zero_or_undefined_drawdown` for Calmar — surfaced as new
+  `sortino_none_reason`/`calmar_none_reason` fields on `BacktestMetrics`.
+  (Discovered mid-fix: this module computes metrics once per run, not per
+  fold — no fold-aggregation machinery exists to build a "None-rate across
+  folds" on top of, so fixed the ambiguity at the source instead of
+  inventing that machinery.)
+- **REV15** (`backtest/integrity_checker.py`): a full PIT-joined
+  sector/tier history is a separate data-ingestion project, correctly out
+  of scope for this pass. Implemented the review's own cheaper accepted
+  alternative instead: new non-critical `check_11_sector_tier_lookahead`
+  fails when a `feature_df` carries a `sector`/`tier`/`market_cap_tier`
+  column over a >1-year date range — the exact window where NSE's
+  *current* classification snapshot being applied retroactively becomes a
+  real risk, not just a theoretical one.
+- **REV17** (`backtest/core/engine.py`, `backtest/core/run_context.py`,
+  `backtest/walk_forward/runner.py`): the same-day-close fill convention
+  was silent and undocumented. Added `OrchestratorConfig.execution_timing:
+  Literal["same_day_close", "next_day_open"]` (default unchanged,
+  zero behavior change for existing callers). `"next_day_open"` fills
+  buy/sell signals at the next trading day's price instead of the signal
+  day's — falling back to same-day with a logged `DataGap` at the last
+  rebalance date, where no later day exists to look up. Every
+  `BacktestRunResult` now records `execution_timing`, so which convention
+  produced a given run's numbers is no longer implicit. Note: this engine
+  has one generic per-adapter `price_lookup`, not a separate open/close
+  pair, so "next_day_open" means "priced at the next trading day" in
+  whatever convention that adapter's own `price_lookup` uses — not a
+  literal intraday open tick.
+
+### DataStore API robustness (REV11, REV12, REV26, REV27)
+- **REV11** (`datastore/schema/create_normalised.py`,
+  `datastore/api/routers/fundamentals.py`): `fundamentals_history` was
+  cloned once from `fundamentals` via `SELECT * WHERE 1=0` and never
+  re-synced afterward — the next real `fundamentals` column addition
+  would have broken `append_fundamentals_history`'s positional `f.*`
+  insert with an uncaught column-count mismatch, 500ing the write
+  endpoint even though the primary upsert had already committed. Fixed
+  both halves: a new `_sync_fundamentals_history_columns()` diffs
+  `information_schema.columns` and self-heals the gap (same pattern as
+  the file's existing `_migrate_dropped_columns`), and both
+  `append_fundamentals_history` call sites are now wrapped in
+  `try/except` so a future append failure logs instead of 500ing on top
+  of an already-successful write.
+- **REV12** (`datastore/api/routers/technical.py`): 7 endpoints caught
+  bare `except Exception` and silently returned an empty "nothing
+  happened today" response — indistinguishable from a real
+  infrastructure failure. Narrowed all 7 to `except duckdb.Error`; any
+  other exception type now surfaces as a real 500.
+- **REV26**: audited all 6 routers the review flagged (`big_investors.py`,
+  `holdings.py`, `momentum.py`, `valuation.py`, `watchlist.py`,
+  `copilot.py`) for the REV25 NaN→Pydantic-float bug class. 5 of 6 build
+  responses only from `.fetchall()` tuples or in-memory dataclasses,
+  where DuckDB NULLs already surface as Python `None` — genuinely no bug
+  there, confirmed by grep rather than assumed. `watchlist.py`'s `/daily`
+  endpoint was the one real `fetchdf()`-sourced path; extracted a
+  `_build_price_map()` helper with an explicit `pd.notna()` guard.
+  Belt-and-suspenders, not a live production bug: `ohlcv_adjusted.close`
+  is schema-NOT-NULL today, confirmed by writing (then deleting, once the
+  schema constraint rejected it) an end-to-end test that tried to insert a
+  NULL close — the guard is tested directly at the DataFrame level
+  instead.
+- **REV27** (`datastore/api/db.py`, `config/settings.py`): the DuckDB
+  lock-conflict retry budget was hardcoded (4 attempts, ~3.5s worst case).
+  Moved to `config.settings` (env-overridable), default attempts raised
+  4 → 6 (~15.5s worst case) so an operator can extend the budget for a
+  known-long write without a code change — plus an explicit documented
+  operational rule (this retry is a bounded mitigation, not a guarantee;
+  don't start a long write while API traffic is expected).
+
+### Features (REV16)
+- **REV16** (`features/sector_accumulation.py`,
+  `datastore/api/routers/sector_accumulation.py`): a sector's accumulation
+  score silently dropped any ticker missing PIT data with no visible
+  floor — a sector missing most of its real constituents on a given date
+  could produce a plausible-looking but misleading score. Added
+  `n_stocks_total_in_sector` (real constituent count from
+  `config.universe.load_universe()`) and a derived `low_coverage` flag
+  (`n_stocks_included < 50%` of total), threaded onto the API response.
+
+### Verification
+Full `tests/unit/` suite (light+heavy batches excluding the
+resource-heavy gainer/multibagger/deep-model files, per
+`feedback_coverage` convention): **2221 passed, 4 skipped, 0 failed** —
+zero regressions. `tests/quality/` gate battery: **5/5 passed**. Every
+touched/new test file also run individually and green.
+
+### Files changed
+`backtest/integrity_checker.py`, `backtest/core/metrics.py`,
+`backtest/core/engine.py`, `backtest/core/run_context.py`,
+`backtest/walk_forward/runner.py`,
+`datastore/schema/create_normalised.py`,
+`datastore/api/routers/fundamentals.py`,
+`datastore/api/routers/technical.py`,
+`datastore/api/routers/watchlist.py`,
+`datastore/api/routers/sector_accumulation.py`, `datastore/api/db.py`,
+`config/settings.py`, `features/sector_accumulation.py`,
+`tests/unit/test_backtester.py`,
+`tests/unit/test_core_metrics.py`, `tests/unit/test_core_engine.py`,
+`tests/unit/test_schema.py`, `tests/unit/test_fundamentals_history.py`,
+`tests/unit/test_technical_router.py`,
+`tests/unit/test_watchlist_daily_router.py`,
+`tests/unit/test_sector_accumulation.py`. New:
+`tests/unit/test_db_lock_retry.py`.

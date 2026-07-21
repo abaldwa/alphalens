@@ -55,6 +55,20 @@ _ATR_MULTIPLIER = 1.5  # realistic-target fallback: horizon-scaled ATR band, use
 # the quantile model has no q50_return for a ticker/date (never a fixed 15%)
 
 
+def _build_price_map(price_df: pd.DataFrame) -> dict:
+    """
+    REV26 (2026-07-21 review): a plain `dict(zip(...))` here would let a
+    NaN `close` (fetchdf() surfaces a NULL float as float('nan'), not None)
+    reach DailyWatchlistRow's float fields — `if price is not None` below
+    doesn't catch NaN. ohlcv_adjusted.close is schema-NOT-NULL today so this
+    isn't reachable via that table alone, but this cast is the same cheap,
+    always-correct belt-and-suspenders pattern already applied in
+    fundamentals.py/sector_accumulation.py wherever a DataFrame's float
+    column feeds a Pydantic response model, in case that ever changes.
+    """
+    return {t: (c if pd.notna(c) else None) for t, c in zip(price_df["ticker"], price_df["close"])}
+
+
 @router.get("/current", response_model=WatchlistResponse)
 async def get_watchlist_current() -> WatchlistResponse:
     """Top 20 tickers by mb_probability, from the most recent ml_multibagger date.
@@ -172,7 +186,7 @@ async def get_daily_watchlist(
                     """,
                     tickers,
                 ).fetchdf()
-            price_map = dict(zip(price_df["ticker"], price_df["close"]))
+            price_map = _build_price_map(price_df)
 
             for ticker, buy_prob, direction, q10, q50, q90 in sig_rows:
                 price = price_map.get(ticker)

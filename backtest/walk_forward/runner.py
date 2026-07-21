@@ -72,6 +72,6 @@ class WalkForwardRunner:
             trading_days=config.trading_days, universe_provider=config.universe_provider,
             price_lookup=config.price_lookup, sector_lookup=config.sector_lookup,
             is_delisted=config.is_delisted, rebalance_cadence_days=config.rebalance_cadence_days,
-            refit_cadence_days=cadence,
+            refit_cadence_days=cadence, execution_timing=config.execution_timing,
         )
         return self._orchestrator.run(run, adapter, effective_config)

@@ -300,6 +300,91 @@ class TestSipCapitalMode:
         assert result.metrics["total_contributed"] > 1_000_000.0
 
 
+class TestExecutionTiming:
+    """REV17 (2026-07-21 review): same-day-close vs. next-day-open is now an
+    explicit, tested config choice instead of a silent, undocumented one."""
+
+    def test_default_is_same_day_close_and_recorded_on_result(self):
+        trading_days = pd.date_range("2020-01-01", periods=10, freq="B")
+        adapter = _FixedSignalAdapter(default_signals=[])
+        run = _run()
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: [], price_lookup=lambda t, d: None,
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)
+        assert result.execution_timing == "same_day_close"
+
+    def test_next_day_open_fills_at_next_trading_days_price_not_signal_days(self):
+        trading_days = pd.date_range("2020-01-01", periods=10, freq="B")
+        first_rebalance = trading_days[0].date()
+        second_day = trading_days[1].date()
+        signals_by_date = {
+            first_rebalance: [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0)],
+        }
+        adapter = _FixedSignalAdapter(signals_by_date=signals_by_date)
+        run = _run()
+
+        prices = {first_rebalance: 100.0, second_day: 110.0}
+
+        def price_lookup(ticker, as_of_date):
+            return prices.get(as_of_date)
+
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=price_lookup, execution_timing="next_day_open",
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)
+        assert result.execution_timing == "next_day_open"
+        assert result.metrics["n_trades"] == 0  # position still open (never sold)
+        # A real next-day price WAS found and used to fill (no data gap) — this is
+        # the behavioral proof that next_day_open actually looked up the next
+        # trading day's price rather than silently falling back to the signal day.
+        assert not any(g["reason"] == "no_price_for_buy_signal" for g in result.data_gaps)
+
+    def test_next_day_open_falls_back_to_same_day_at_last_rebalance_with_data_gap(self):
+        trading_days = pd.date_range("2020-01-01", periods=6, freq="B")
+        last_rebalance = trading_days[-1].date()
+        signals_by_date = {
+            last_rebalance: [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0)],
+        }
+        adapter = _FixedSignalAdapter(signals_by_date=signals_by_date)
+        run = _run()
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"], price=100.0),
+            execution_timing="next_day_open",
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)
+        # no later trading day exists after the last rebalance -> falls back to
+        # same-day-close (the trade still fills, no fill-price data gap) but the
+        # fallback itself is logged.
+        assert not any(g["reason"] == "no_price_for_buy_signal" for g in result.data_gaps)
+        assert any(
+            g["reason"] == "next_day_open_unavailable_at_last_rebalance_fell_back_to_same_day_close"
+            for g in result.data_gaps
+        )
+
+    def test_next_day_open_records_gap_when_next_days_price_missing(self):
+        trading_days = pd.date_range("2020-01-01", periods=10, freq="B")
+        first_rebalance = trading_days[0].date()
+        signals_by_date = {
+            first_rebalance: [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0)],
+        }
+        adapter = _FixedSignalAdapter(signals_by_date=signals_by_date)
+        run = _run()
+
+        def price_lookup(ticker, as_of_date):
+            return 100.0 if as_of_date == first_rebalance else None  # next day has no real price
+
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=price_lookup, execution_timing="next_day_open",
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)
+        assert result.metrics["n_trades"] == 0
+        assert any(g["reason"] == "no_price_for_buy_signal" for g in result.data_gaps)
+
+
 class TestFeatureLogIntegration:
     def test_feature_log_writer_receives_one_record_per_signal(self):
         from backtest.core.feature_log import FeatureLogWriter

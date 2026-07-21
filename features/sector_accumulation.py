@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 90
 
+_ACCUMULATION_COLUMNS = [
+    "date", "sector", "accumulation_score", "delivery_volume", "sector_shares_outstanding",
+    "n_stocks_included", "n_stocks_total_in_sector", "low_coverage",
+]
+
 
 def _latest_shares_outstanding_asof(
     normalised_conn: Any, tickers: List[str]
@@ -120,14 +125,18 @@ def compute_sector_accumulation(
         Columns: date, sector, accumulation_score, delivery_volume,
         sector_shares_outstanding, n_stocks_included (constituents with
         real shares_outstanding data on that date — the ones actually
-        summed into sector_shares_outstanding/accumulation_score).
+        summed into sector_shares_outstanding/accumulation_score),
+        n_stocks_total_in_sector (real sector constituent count from the
+        universe, regardless of data availability), low_coverage (REV16,
+        2026-07-21 review: True when n_stocks_included covers less than
+        half of n_stocks_total_in_sector — a sector where most
+        constituents lack PIT data can otherwise produce a plausible-
+        looking but misleading score with no visible warning).
         Empty if no real ohlcv_adjusted rows exist for the universe.
     """
     universe = load_universe()
     if universe.empty:
-        return pd.DataFrame(
-            columns=["date", "sector", "accumulation_score", "delivery_volume", "sector_shares_outstanding", "n_stocks_included"]
-        )
+        return pd.DataFrame(columns=_ACCUMULATION_COLUMNS)
     tickers = universe["ticker"].tolist()
 
     if end_date is None:
@@ -138,18 +147,14 @@ def compute_sector_accumulation(
             tickers,
         ).fetchone()[0]
         if latest is None:
-            return pd.DataFrame(
-                columns=["date", "sector", "accumulation_score", "delivery_volume", "sector_shares_outstanding", "n_stocks_included"]
-            )
+            return pd.DataFrame(columns=_ACCUMULATION_COLUMNS)
         end_date = pd.Timestamp(latest).date().isoformat()
     if start_date is None:
         start_date = (pd.Timestamp(end_date) - pd.Timedelta(days=lookback_days)).date().isoformat()
 
     ohlcv = _ohlcv_delivery_volume(normalised_conn, tickers, start_date, end_date)
     if ohlcv.empty:
-        return pd.DataFrame(
-            columns=["date", "sector", "accumulation_score", "delivery_volume", "sector_shares_outstanding", "n_stocks_included"]
-        )
+        return pd.DataFrame(columns=_ACCUMULATION_COLUMNS)
 
     fundamentals = _latest_shares_outstanding_asof(normalised_conn, tickers)
 
@@ -179,9 +184,7 @@ def compute_sector_accumulation(
     # volume/delivery_pct — no partial/guessed contribution.
     known = ohlcv.dropna(subset=["shares_outstanding", "volume", "delivery_pct"]).copy()
     if known.empty:
-        return pd.DataFrame(
-            columns=["date", "sector", "accumulation_score", "delivery_volume", "sector_shares_outstanding", "n_stocks_included"]
-        )
+        return pd.DataFrame(columns=_ACCUMULATION_COLUMNS)
 
     known["delivery_volume"] = known["delivery_pct"] / 100.0 * known["volume"]
 
@@ -192,8 +195,15 @@ def compute_sector_accumulation(
     ).reset_index()
     grouped["accumulation_score"] = grouped["delivery_volume"] / grouped["sector_shares_outstanding"]
     grouped["date"] = grouped["date"].dt.date.astype(str)
+
+    # REV16: real per-sector constituent count (universe membership, regardless
+    # of data availability that date) — the denominator low_coverage flags against.
+    n_total_per_sector = universe.groupby("sector")["ticker"].nunique()
+    grouped["n_stocks_total_in_sector"] = grouped["sector"].map(n_total_per_sector)
+    grouped["low_coverage"] = grouped["n_stocks_included"] < 0.5 * grouped["n_stocks_total_in_sector"]
+
     grouped = grouped.sort_values(["date", "accumulation_score"], ascending=[True, False]).reset_index(drop=True)
-    return grouped[["date", "sector", "accumulation_score", "delivery_volume", "sector_shares_outstanding", "n_stocks_included"]]
+    return grouped[_ACCUMULATION_COLUMNS]
 
 
 def sector_accumulation_drilldown(

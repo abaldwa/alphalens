@@ -8,12 +8,15 @@ does not leak into that backtest, using real INSERT/append_fundamentals_history
 calls, not fabricated rows.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
+from fastapi.testclient import TestClient
 
 from datastore.api.db import close_all_connections, get_duckdb_connection
+from datastore.api.main import app
 from datastore.api.pit import get_fundamentals_pit
+from datastore.api.routers import fundamentals as fundamentals_router
 from datastore.schema import create_normalised
 from features.fundamental_source_priority import append_fundamentals_history
 
@@ -136,3 +139,47 @@ class TestGetFundamentalsPit:
         with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
             with pytest.raises(ValueError):
                 get_fundamentals_pit(conn, ["RELIANCE"], "2020-01-01")
+
+
+class TestWriteEndpointSurvivesHistoryAppendFailure:
+    """REV11 (2026-07-21 review): the primary fundamentals upsert already
+    commits before append_fundamentals_history runs — a history-append
+    failure (e.g. a schema-drift race) must be logged, not turned into a
+    500 on top of an already-successful write."""
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "history_failure_test.duckdb"
+        create_normalised.create_schema(db_path=db_path)
+        close_all_connections()
+        monkeypatch.setattr(fundamentals_router, "DUCKDB_PATH", db_path)
+        return TestClient(app)
+
+    def _row(self, ticker, fy, q):
+        return {
+            "ticker": ticker, "fiscal_year": fy, "quarter": q,
+            "quarter_end_date": date(2026, 3, 31).isoformat(),
+            "announcement_date": date(2026, 5, 15).isoformat(),
+            "revenue": 100.0,
+        }
+
+    def test_write_returns_200_even_if_history_append_raises(self, client, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated schema-drift failure")
+
+        monkeypatch.setattr(fundamentals_router, "append_fundamentals_history", _boom)
+        resp = client.post("/api/v1/fundamentals/write", json=self._row("AAA", 2026, 1))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["written"] is True
+
+    def test_write_batch_returns_200_even_if_history_append_raises(self, client, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated schema-drift failure")
+
+        monkeypatch.setattr(fundamentals_router, "append_fundamentals_history", _boom)
+        resp = client.post(
+            "/api/v1/fundamentals/write_batch",
+            json={"records": [self._row("AAA", 2026, 1), self._row("BBB", 2026, 1)]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["written"] == 2

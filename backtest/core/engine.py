@@ -31,7 +31,7 @@ BacktestRunResult.data_gaps — never interpolated or defaulted.
 import logging
 from dataclasses import dataclass, field
 from datetime import date as date_type
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Literal, Optional, Protocol
 
 import pandas as pd
 
@@ -126,6 +126,15 @@ class OrchestratorConfig:
     corporate_action_lookup: Optional[CorporateActionLookup] = None
     rebalance_cadence_days: Optional[int] = None  # None -> use horizon_bucket's default
     refit_cadence_days: Optional[int] = None  # Walk-Forward retrain cadence; None -> never refit (plain backtest)
+    # REV17 (2026-07-21 review): signals generated at as_of_date were always
+    # filled at that SAME day's own close — an undocumented, silent
+    # simplification that overstates fill quality (the signal couldn't
+    # actually have been acted on until the price was already known).
+    # Default unchanged (same_day_close) for full backward compatibility;
+    # "next_day_open" is the explicit, tested alternative this review asked
+    # for, so the convention is now a decided, visible choice rather than a
+    # silent one — see _resolve_execution_date below.
+    execution_timing: Literal["same_day_close", "next_day_open"] = "same_day_close"
 
 
 class BacktestOrchestrator:
@@ -253,16 +262,55 @@ class BacktestOrchestrator:
                 self._log_feature(run.run_id, signal.ticker, as_of, run.horizon_bucket, adapter, signal.action)
                 distinct_tickers.append(signal.ticker)
 
+            # REV17 (2026-07-21 review): a signal generated at as_of used to
+            # always fill at that SAME day's own close — overstating fill
+            # quality, since the signal couldn't actually have been acted on
+            # until that price was already known. execution_timing="same_day_close"
+            # (default) preserves this exact prior behavior; "next_day_open"
+            # fills at the NEXT trading day's price_lookup value instead (this
+            # engine has one generic per-adapter price_lookup, not a separate
+            # open/close pair, so "next_day_open" means "priced at the next
+            # trading day", whatever convention that adapter's price_lookup
+            # itself uses). Position-sizing equity valuation (`prices` above)
+            # deliberately stays as_of-priced — sizing is a decision made with
+            # information known at signal time, only the FILL is delayed.
+            execution_date = as_of
+            if config.execution_timing == "next_day_open":
+                later_dates = config.trading_days[config.trading_days > as_of_date]
+                if len(later_dates) > 0:
+                    next_date = later_dates[0]
+                    execution_date = next_date.date() if hasattr(next_date, "date") else next_date
+                else:
+                    data_gaps.append(
+                        DataGap(
+                            "__execution_timing__", as_of,
+                            "next_day_open_unavailable_at_last_rebalance_fell_back_to_same_day_close",
+                        )
+                    )
+
+            fill_prices: Dict[str, float] = {}
+            if signals:
+                fill_tickers = {s.ticker for s in signals}
+                if execution_date == as_of:
+                    fill_prices = {t: prices[t] for t in fill_tickers if t in prices}
+                else:
+                    for ticker in fill_tickers:
+                        price = config.price_lookup(ticker, execution_date)
+                        if price is not None:
+                            fill_prices[ticker] = price
+
             # sells before buys, so freed cash is available for the same rebalance's buys
             for signal in sorted((s for s in signals if s.action == "sell"), key=lambda s: -s.conviction):
-                if signal.ticker not in prices:
-                    data_gaps.append(DataGap(signal.ticker, as_of, "no_price_for_sell_signal"))
+                if signal.ticker not in fill_prices:
+                    data_gaps.append(DataGap(signal.ticker, execution_date, "no_price_for_sell_signal"))
                     continue
-                portfolio.sell(signal.ticker, prices[signal.ticker], as_of, reason="signal", adtv_cr=signal.adtv_cr)
+                portfolio.sell(
+                    signal.ticker, fill_prices[signal.ticker], execution_date, reason="signal", adtv_cr=signal.adtv_cr,
+                )
 
             for signal in sorted((s for s in signals if s.action == "buy"), key=lambda s: -s.conviction):
-                if signal.ticker not in prices:
-                    data_gaps.append(DataGap(signal.ticker, as_of, "no_price_for_buy_signal"))
+                if signal.ticker not in fill_prices:
+                    data_gaps.append(DataGap(signal.ticker, execution_date, "no_price_for_buy_signal"))
                     continue
                 if signal.adtv_cr is None:
                     # 2026-07-20 (Truthful Review Gap #6): core/portfolio.py's
@@ -273,9 +321,9 @@ class BacktestOrchestrator:
                     # never populates Signal.adtv_cr shows up honestly in
                     # results instead of looking like the cap was checked
                     # and passed.
-                    data_gaps.append(DataGap(signal.ticker, as_of, "no_adtv_data_position_sized_uncapped"))
+                    data_gaps.append(DataGap(signal.ticker, execution_date, "no_adtv_data_position_sized_uncapped"))
                 portfolio.buy(
-                    signal.ticker, config.sector_lookup(signal.ticker), prices[signal.ticker], as_of,
+                    signal.ticker, config.sector_lookup(signal.ticker), fill_prices[signal.ticker], execution_date,
                     prices, adtv_cr=signal.adtv_cr,
                 )
 
@@ -284,7 +332,10 @@ class BacktestOrchestrator:
         if self._feature_log_writer is not None:
             self._feature_log_writer.flush()
 
-        return self._finalize(run, portfolio, data_gaps, distinct_tickers, config.trading_days, refit_log)
+        return self._finalize(
+            run, portfolio, data_gaps, distinct_tickers, config.trading_days, refit_log,
+            execution_timing=config.execution_timing,
+        )
 
     def _log_feature(self, run_id, ticker, as_of, horizon_bucket, adapter: StrategyAdapter, action: str) -> None:
         if self._feature_log_writer is None:
@@ -297,6 +348,7 @@ class BacktestOrchestrator:
     def _finalize(
         self, run: BacktestRun, portfolio: StrategyPortfolio, data_gaps: List[DataGap],
         distinct_tickers: List[str], trading_days: pd.DatetimeIndex, refit_log: Optional[List[RefitEvent]] = None,
+        execution_timing: str = "same_day_close",
     ) -> BacktestRunResult:
         tax_flows = fy_tax_cash_flows(portfolio.tax_transactions())
         cash_flows = [(cf["date"], cf["amount"]) for cf in portfolio.cash_flows] + [
@@ -328,4 +380,5 @@ class BacktestOrchestrator:
             metrics=asdict(metrics),
             data_gaps=[{"ticker": g.ticker, "as_of_date": g.as_of_date.isoformat(), "reason": g.reason} for g in data_gaps],
             refit_log=[{"as_of_date": r.as_of_date.isoformat(), "model_version": r.model_version} for r in (refit_log or [])],
+            execution_timing=execution_timing,
         )

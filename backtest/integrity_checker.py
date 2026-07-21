@@ -104,7 +104,17 @@ ALL_CHECK_NAMES = [
     "check_08_fold_stability",
     "check_09_benchmarks",
     "check_10_random_feature",
+    "check_11_sector_tier_lookahead",
 ]
+
+# REV15 (2026-07-21 review): sector/tier columns from config/build_universe.py
+# reflect NSE's CURRENT classification snapshot, not point-in-time membership
+# — conditioning a multi-year backtest on them applies today's label
+# retroactively. A full PIT-joined sector/tier history is a separate
+# data-ingestion project (out of scope here); this is the review's own
+# accepted cheaper alternative — an explicit guardrail flagging the risk
+# rather than silently trusting it.
+_SECTOR_TIER_COLUMN_NAMES = {"sector", "tier", "market_cap_tier"}
 
 
 @dataclass
@@ -136,6 +146,15 @@ class BacktestIntegrityChecker:
     fold_returns: Optional[List[float]] = None
     benchmark_returns: Optional[List[float]] = None
     random_feature_accuracy: Optional[float] = None
+    # REV18 (2026-07-21 review): a non-empty delisted set alone doesn't prove
+    # the universe is survivorship-bias-safe — a near-complete universe
+    # missing just 1-2 delisted names out of hundreds would still pass a
+    # presence-only check. 1% is a conservative floor: real NSE-listed-equity
+    # attrition (delistings/suspensions/mergers) over any multi-year backtest
+    # window is comfortably above this in practice, so a ratio below it is a
+    # signal the delisted-ticker set itself is incomplete, not that the
+    # market genuinely had that few exits.
+    min_delisted_ratio: float = 0.01
 
     _results_cache: Dict[str, CheckResult] = field(default_factory=dict, repr=False, compare=False)
 
@@ -225,7 +244,20 @@ class BacktestIntegrityChecker:
                 "every historical ticker is still in the current universe — no delisted/removed "
                 "names found, survivorship bias risk",
             )
-        return self._result(name, True, f"{len(delisted_seen)} delisted/since-removed tickers included")
+        ratio = len(delisted_seen) / len(self.historical_tickers)
+        if ratio < self.min_delisted_ratio:
+            return self._result(
+                name, False,
+                f"only {len(delisted_seen)}/{len(self.historical_tickers)} historical tickers "
+                f"({ratio:.2%}) are delisted/removed — below the {self.min_delisted_ratio:.2%} "
+                "plausibility floor; the delisted-ticker set is likely incomplete, not that the "
+                "market genuinely had this few exits (REV18)",
+            )
+        return self._result(
+            name, True,
+            f"{len(delisted_seen)}/{len(self.historical_tickers)} historical tickers ({ratio:.2%}) "
+            "delisted/since-removed and included",
+        )
 
     def check_05_costs(self) -> CheckResult:
         """SPEC-BT-001 rule 4 / SPEC-BT-002: TOTAL_ROUNDTRIP_COST actually applied."""
@@ -291,6 +323,38 @@ class BacktestIntegrityChecker:
         passed = 0.48 <= self.random_feature_accuracy <= 0.52
         detail = f"random feature accuracy={self.random_feature_accuracy:.3f} (band [0.48, 0.52])"
         return self._result(name, passed, detail)
+
+    def check_11_sector_tier_lookahead(self) -> CheckResult:
+        """
+        REV15 (2026-07-21 review): sector/tier/market_cap_tier reflect
+        NSE's CURRENT classification snapshot (config/build_universe.py),
+        not point-in-time membership. Using one as a time-varying feature
+        across a multi-year window applies today's label retroactively —
+        classic label look-ahead. Non-critical (a warning, not a hard
+        failure): a backtest that only uses these columns as a same-day
+        filter, or over a short single-year window, isn't necessarily
+        affected — this flags the risk for a human to confirm, rather than
+        halting every run that happens to carry the column.
+        """
+        name = "check_11_sector_tier_lookahead"
+        if self.feature_df is None or "date" not in self.feature_df.columns:
+            return self._result(name, True, "no feature_df/date column to check")
+        suspect_cols = sorted(set(self.feature_df.columns) & _SECTOR_TIER_COLUMN_NAMES)
+        if not suspect_cols:
+            return self._result(name, True, "no sector/tier/market_cap_tier column present")
+        dates = pd.to_datetime(self.feature_df["date"])
+        span_days = (dates.max() - dates.min()).days
+        if span_days > 365:
+            return self._result(
+                name, False,
+                f"{suspect_cols} present alongside a {span_days}-day feature window (> 1 year) — "
+                "these reflect NSE's CURRENT classification snapshot, not point-in-time membership; "
+                "using them as a time-varying feature over a multi-year window applies today's "
+                "label retroactively (REV15)",
+            )
+        return self._result(
+            name, True, f"{suspect_cols} present but feature window is only {span_days} days (<= 1 year)",
+        )
 
     def run_all_checks(self) -> Dict[str, bool]:
         """

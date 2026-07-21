@@ -202,7 +202,7 @@ class TestIntegrityChecker:
         assert set(results) == {
             "check_01_walk_forward", "check_02_pit", "check_03_corp_actions", "check_04_survivorship",
             "check_05_costs", "check_06_liquidity", "check_07_no_hpo_on_test", "check_08_fold_stability",
-            "check_09_benchmarks", "check_10_random_feature",
+            "check_09_benchmarks", "check_10_random_feature", "check_11_sector_tier_lookahead",
         }
 
     def test_no_critical_failure_does_not_raise_even_if_noncritical_fails(self):
@@ -230,6 +230,24 @@ class TestIntegrityChecker:
         result = checker.check_04_survivorship()
         assert result.passed is False
 
+    def test_survivorship_check_flags_implausibly_low_delisted_ratio(self):
+        """REV18: presence-only was not enough — a near-complete universe missing
+        just 1 of 500 historical tickers should still fail as an implausible ratio."""
+        universe = {f"T{i:04d}" for i in range(499)}
+        historical = universe | {"DELISTED1"}
+        checker = BacktestIntegrityChecker(universe_tickers=universe, historical_tickers=historical)
+        result = checker.check_04_survivorship()
+        assert result.passed is False
+        assert "0.20%" in result.detail or "below" in result.detail
+
+    def test_survivorship_check_passes_above_ratio_floor(self):
+        """A plausible delisted fraction (well above the 1% floor) should pass."""
+        universe = {f"T{i:04d}" for i in range(90)}
+        historical = universe | {f"DELISTED{i}" for i in range(10)}  # 10/100 = 10%
+        checker = BacktestIntegrityChecker(universe_tickers=universe, historical_tickers=historical)
+        result = checker.check_04_survivorship()
+        assert result.passed is True
+
     def test_costs_check_flags_understated_costs(self):
         checker = BacktestIntegrityChecker(applied_roundtrip_cost_pct=0.0001)
         result = checker.check_05_costs()
@@ -237,6 +255,35 @@ class TestIntegrityChecker:
 
     def test_random_feature_check_band(self):
         assert BacktestIntegrityChecker(random_feature_accuracy=0.50).check_10_random_feature().passed is True
+
+    def test_sector_tier_lookahead_fails_over_multi_year_window(self):
+        """REV18/REV15: sector/tier reflect NSE's CURRENT snapshot, not PIT
+        membership — flag when used across a window long enough for that
+        drift to matter."""
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({
+                "date": pd.date_range("2020-01-01", periods=3, freq="18ME"),  # ~3 years span
+                "sector": ["IT", "IT", "IT"],
+            })
+        )
+        result = checker.check_11_sector_tier_lookahead()
+        assert result.passed is False
+        assert result.critical is False  # non-critical, same tier as checks 08-10
+
+    def test_sector_tier_lookahead_passes_within_one_year_window(self):
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({
+                "date": pd.date_range("2020-01-01", periods=3, freq="30D"),  # ~2 months span
+                "tier": ["large_cap", "large_cap", "mid_cap"],
+            })
+        )
+        assert checker.check_11_sector_tier_lookahead().passed is True
+
+    def test_sector_tier_lookahead_passes_when_column_absent(self):
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({"date": pd.date_range("2020-01-01", periods=1000)})
+        )
+        assert checker.check_11_sector_tier_lookahead().passed is True
         assert BacktestIntegrityChecker(random_feature_accuracy=0.80).check_10_random_feature().passed is False
 
 

@@ -25,6 +25,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+import duckdb
 import pandas as pd
 import talib
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -320,7 +321,10 @@ async def get_alerts_today(
                     """,
                     [target_date, buffer_limit],
                 ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("alerts/today DB query failed: %s", exc)
         return TAAlertResponse(count=0)
 
@@ -403,7 +407,10 @@ async def get_alerts_for_ticker(
                 """,
                 [ticker_upper, target_date],
             ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("alerts/%s DB query failed: %s", ticker, exc)
         return TAAlertResponse(count=0)
 
@@ -555,7 +562,10 @@ async def get_ta_daily_watchlist(
                 # ML24 (2026-07-11): over-fetch, ADTV-gate below, then trim.
                 window_dates + [limit * 5],
             ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("watchlist/daily TA query failed: %s", exc)
         return TAWatchlistResponse(count=0)
 
@@ -731,7 +741,10 @@ async def get_ta_ticker_recommendations(
                     """,
                     [ticker, target_date],
                 ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("ta/%s/recommendations query failed: %s", ticker, exc)
         return TARecommendationResponse(ticker=ticker, count=0)
 
@@ -828,7 +841,10 @@ async def get_ta_ticker_strategy_history(ticker: str) -> TAStrategyHistoryRespon
                 """,
                 [ticker],
             ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("ta/%s/strategy_history query failed: %s", ticker, exc)
         return TAStrategyHistoryResponse(ticker=ticker, count=0)
 
@@ -895,7 +911,10 @@ async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
                     """
                 ).fetchdf()
                 summaries = {str(r["strategy_id"]): r for _, r in df.iterrows()}
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("ta/strategies/win_rates query failed: %s", exc)
 
     styles: Dict[str, List[TAStrategyWinRateRow]] = {s: [] for s in STRATEGY_STYLES}
@@ -970,7 +989,10 @@ async def get_ta_consensus(
                 """,
                 [target_date, limit],
             ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("consensus/daily TA query failed: %s", exc)
         return TAConsensusResponse(count=0)
 
