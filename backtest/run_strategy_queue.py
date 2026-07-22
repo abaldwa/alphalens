@@ -111,6 +111,36 @@ def _run_job(job: Dict[str, Any], job_index: int, report_suffix: str) -> Dict[st
     return {"job_index": job_index, "kind": job.get("kind"), "job": job, "returncode": proc.returncode, "elapsed_s": elapsed_s}
 
 
+def _job_label(job: Dict[str, Any]) -> str:
+    """Human-readable label for the Queued/In Progress/Completed board —
+    mirrors what OrchestratorTriggerPanel derives client-side for a
+    UI-triggered job, so a queue job reads the same way regardless of how
+    it was launched."""
+    if job.get("kind") == "iterative_retrain":
+        return "Iterative Retrain (MetaLabeler)"
+    channel = job.get("channel", "")
+    descriptor = job.get("template_name") or job.get("preset")
+    if not descriptor and channel == "momentum":
+        descriptor = f"top{job.get('top_n', '?')}_{job.get('lookback_months', '?')}m"
+    return f"{channel} · {descriptor}" if descriptor else (channel or "job")
+
+
+def _write_progress(path: Path, jobs: List[Dict[str, Any]], statuses: List[str]) -> None:
+    """Per-job Queued/Running/Completed/Failed/Skipped snapshot, rewritten
+    after every state change — lets the API's /queue/status/{queue_id}
+    (and the Backtest page's status board) show which specific strategies
+    are still queued vs. actively running vs. done, instead of only
+    knowing "the whole queue is running somewhere." """
+    payload = {
+        "generated_at": datetime.now().isoformat(),
+        "jobs": [
+            {"job_index": i, "kind": j.get("kind"), "label": _job_label(j), "status": s}
+            for i, (j, s) in enumerate(zip(jobs, statuses))
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2, default=str))
+
+
 def run_queue(
     jobs: List[Dict[str, Any]], min_free_mb: float = 2048.0, wait_timeout_s: float = 600.0,
     stop_on_failure: bool = True, report_suffix: Optional[str] = None,
@@ -120,16 +150,28 @@ def run_queue(
 
     run_started = time.monotonic()
     suffix = report_suffix or datetime.now().strftime("%Y%m%d_%H%M%S")
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    progress_path = REPORTS_DIR / f"strategy_queue_progress_{suffix}.json"
+
+    statuses = ["queued"] * len(jobs)
+    _write_progress(progress_path, jobs, statuses)
 
     results = []
     for i, job in enumerate(jobs):
         wait_for_headroom(min_free_mb, wait_timeout_s, label="run_strategy_queue")
+        statuses[i] = "running"
+        _write_progress(progress_path, jobs, statuses)
         result = _run_job(job, i, suffix)
+        statuses[i] = "completed" if result["returncode"] == 0 else "failed"
+        _write_progress(progress_path, jobs, statuses)
         results.append(result)
         if result["returncode"] != 0:
             logger.error(f"run_strategy_queue: job[{i}] failed (exit {result['returncode']})")
             if stop_on_failure:
                 logger.error("run_strategy_queue: stopping the remainder of the queue")
+                for j in range(i + 1, len(jobs)):
+                    statuses[j] = "skipped"
+                _write_progress(progress_path, jobs, statuses)
                 break
 
     summary = {

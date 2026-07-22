@@ -284,11 +284,22 @@ export interface StrategyQueueSummary {
   runtime_seconds: number
 }
 
+// Per-job Queued/Running/Completed breakdown while a queue is still in
+// progress (backtest/run_strategy_queue.py's progress file) — [] once
+// `summary` is populated (final per-job state is in summary.results then).
+export interface StrategyQueueJobStatus {
+  job_index: number
+  kind: string
+  label: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'skipped'
+}
+
 export interface StrategyQueueStatusResponse {
   queue_id: string
   status: 'running' | 'completed' | 'failed' | 'unknown'
   summary: StrategyQueueSummary | null
   log_tail: string | null
+  jobs: StrategyQueueJobStatus[]
 }
 
 export function triggerStrategyQueue(jobs: StrategyQueueJob[], continueOnFailure = false) {
@@ -300,6 +311,17 @@ export function triggerStrategyQueue(jobs: StrategyQueueJob[], continueOnFailure
 
 export function getStrategyQueueStatus(queueId: string) {
   return apiGet<StrategyQueueStatusResponse>(`/api/v1/backtest/queue/status/${queueId}`)
+}
+
+// Discovers queues still running regardless of how/where they were
+// triggered (CLI, curl, a different browser session) — so the Backtest
+// page's status board isn't limited to only what THIS session triggered.
+export interface ActiveQueuesResponse {
+  queue_ids: string[]
+}
+
+export function listActiveQueues() {
+  return apiGet<ActiveQueuesResponse>('/api/v1/backtest/queue/active')
 }
 
 // Market regime timeline (datastore/api/routers/regime.py's

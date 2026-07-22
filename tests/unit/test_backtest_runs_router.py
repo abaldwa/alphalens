@@ -139,3 +139,75 @@ class TestFeatureLog:
         assert len(rows) == 1
         assert rows[0]["ticker"] == "RELIANCE"
         assert rows[0]["feature_vector"] == {"rsi_14": 55.0}
+
+
+class TestQueueStatusAndDiscovery:
+    def _patch_queue_dirs(self, tmp_path, monkeypatch):
+        reports_dir = tmp_path / "reports"
+        logs_dir = reports_dir / "queue_trigger_logs"
+        logs_dir.mkdir(parents=True)
+        monkeypatch.setattr(backtest_runs_router, "_REPORTS_DIR", reports_dir)
+        monkeypatch.setattr(backtest_runs_router, "_QUEUE_LOGS_DIR", logs_dir)
+        return reports_dir, logs_dir
+
+    def test_status_unknown_when_nothing_exists(self, client, tmp_path, monkeypatch):
+        self._patch_queue_dirs(tmp_path, monkeypatch)
+        resp = client.get("/api/v1/backtest/queue/status/queue_missing")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "unknown"
+        assert resp.json()["jobs"] == []
+
+    def test_status_running_surfaces_per_job_progress(self, client, tmp_path, monkeypatch):
+        import json
+
+        reports_dir, logs_dir = self._patch_queue_dirs(tmp_path, monkeypatch)
+        (logs_dir / "queue_abc.log").write_text("some log output\n")
+        progress = {
+            "generated_at": "2026-07-22T00:00:00",
+            "jobs": [
+                {"job_index": 0, "kind": "orchestrator", "label": "technical · E2", "status": "completed"},
+                {"job_index": 1, "kind": "orchestrator", "label": "technical · B1", "status": "running"},
+                {"job_index": 2, "kind": "iterative_retrain", "label": "Iterative Retrain (MetaLabeler)", "status": "queued"},
+            ],
+        }
+        (reports_dir / "strategy_queue_progress_queue_abc.json").write_text(json.dumps(progress))
+
+        resp = client.get("/api/v1/backtest/queue/status/queue_abc")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "running"
+        assert [j["status"] for j in body["jobs"]] == ["completed", "running", "queued"]
+        assert body["jobs"][1]["label"] == "technical · B1"
+
+    def test_status_completed_ignores_progress_file(self, client, tmp_path, monkeypatch):
+        import json
+
+        reports_dir, logs_dir = self._patch_queue_dirs(tmp_path, monkeypatch)
+        (logs_dir / "queue_done.log").write_text("done\n")
+        (reports_dir / "strategy_queue_queue_done.json").write_text(
+            json.dumps({"all_passed": True, "results": [], "total_jobs": 0, "jobs_run": 0})
+        )
+        resp = client.get("/api/v1/backtest/queue/status/queue_done")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "completed"
+        assert resp.json()["jobs"] == []
+
+    def test_active_queues_excludes_completed(self, client, tmp_path, monkeypatch):
+        import json
+
+        reports_dir, logs_dir = self._patch_queue_dirs(tmp_path, monkeypatch)
+        (logs_dir / "queue_running.log").write_text("still going\n")
+        (logs_dir / "queue_finished.log").write_text("done\n")
+        (reports_dir / "strategy_queue_queue_finished.json").write_text(json.dumps({"all_passed": True}))
+
+        resp = client.get("/api/v1/backtest/queue/active")
+        assert resp.status_code == 200
+        assert resp.json()["queue_ids"] == ["queue_running"]
+
+    def test_active_queues_empty_when_no_logs_dir(self, client, tmp_path, monkeypatch):
+        reports_dir = tmp_path / "reports_empty"
+        monkeypatch.setattr(backtest_runs_router, "_REPORTS_DIR", reports_dir)
+        monkeypatch.setattr(backtest_runs_router, "_QUEUE_LOGS_DIR", reports_dir / "queue_trigger_logs")
+        resp = client.get("/api/v1/backtest/queue/active")
+        assert resp.status_code == 200
+        assert resp.json()["queue_ids"] == []

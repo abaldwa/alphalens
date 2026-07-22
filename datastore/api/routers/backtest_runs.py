@@ -402,11 +402,23 @@ class StrategyQueueTriggerResponse(BaseModel):
     status: str = "started"
 
 
+class StrategyQueueJobStatus(BaseModel):
+    job_index: int
+    kind: str
+    label: str
+    status: str  # "queued" | "running" | "completed" | "failed" | "skipped"
+
+
 class StrategyQueueStatusResponse(BaseModel):
     queue_id: str
     status: str  # "running" | "completed" | "failed" | "unknown"
     summary: Optional[Dict[str, Any]] = None
     log_tail: Optional[str] = None
+    # Per-job Queued/Running/Completed breakdown (backtest/run_strategy_
+    # queue.py's progress file) — [] for a queue triggered before this
+    # field existed, or once `summary` is populated (jobs' final state is
+    # in summary.results by then; this is for while it's still running).
+    jobs: List[StrategyQueueJobStatus] = []
 
 
 @router.post("/queue/trigger", response_model=StrategyQueueTriggerResponse)
@@ -462,10 +474,39 @@ async def get_strategy_queue_status(queue_id: str) -> StrategyQueueStatusRespons
         status = "completed" if summary.get("all_passed") else "failed"
         return StrategyQueueStatusResponse(queue_id=queue_id, status=status, summary=summary)
 
+    progress_path = _REPORTS_DIR / f"strategy_queue_progress_{queue_id}.json"
+    jobs: List[StrategyQueueJobStatus] = []
+    if progress_path.exists():
+        with open(progress_path) as fh:
+            progress = json_module.load(fh)
+        jobs = [StrategyQueueJobStatus(**j) for j in progress.get("jobs", [])]
+
     log_path = _QUEUE_LOGS_DIR / f"{queue_id}.log"
     if not log_path.exists():
-        return StrategyQueueStatusResponse(queue_id=queue_id, status="unknown")
+        return StrategyQueueStatusResponse(queue_id=queue_id, status="unknown", jobs=jobs)
 
     log_tail = "".join(log_path.read_text(errors="replace").splitlines(keepends=True)[-40:])
     status = "failed" if "Traceback (most recent call last)" in log_tail else "running"
-    return StrategyQueueStatusResponse(queue_id=queue_id, status=status, log_tail=log_tail)
+    return StrategyQueueStatusResponse(queue_id=queue_id, status=status, log_tail=log_tail, jobs=jobs)
+
+
+class ActiveQueuesResponse(BaseModel):
+    queue_ids: List[str]
+
+
+@router.get("/queue/active", response_model=ActiveQueuesResponse)
+async def list_active_queues(limit: int = Query(10, le=50)) -> ActiveQueuesResponse:
+    """Queue_ids still running (a trigger log exists with no final summary
+    yet), most-recently-triggered first — lets the Backtest page discover
+    and display a queue's progress even if it was triggered from a
+    different browser session, the CLI, or an API call rather than this
+    page's own panel (which otherwise only knows about queues it
+    personally triggered, via client-side state)."""
+    if not _QUEUE_LOGS_DIR.exists():
+        return ActiveQueuesResponse(queue_ids=[])
+    log_files = sorted(_QUEUE_LOGS_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    active = [
+        p.stem for p in log_files
+        if not (_REPORTS_DIR / f"strategy_queue_{p.stem}.json").exists()
+    ]
+    return ActiveQueuesResponse(queue_ids=active[:limit])

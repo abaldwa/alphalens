@@ -5,9 +5,11 @@ Unit tests for backtest/run_strategy_queue.py's _job_to_cmd — the pure
 job-dict -> subprocess-argv mapping (no subprocess actually launched).
 """
 
+import json
+
 import pytest
 
-from backtest.run_strategy_queue import _job_to_cmd
+from backtest.run_strategy_queue import _job_label, _job_to_cmd, _write_progress
 
 
 class TestJobToCmd:
@@ -44,3 +46,39 @@ class TestJobToCmd:
     def test_unknown_field_for_kind_raises(self):
         with pytest.raises(ValueError):
             _job_to_cmd({"kind": "iterative_retrain", "template_name": "E2"}, job_index=0, report_suffix="q1")
+
+
+class TestJobLabel:
+    def test_iterative_retrain_label(self):
+        assert _job_label({"kind": "iterative_retrain"}) == "Iterative Retrain (MetaLabeler)"
+
+    def test_technical_uses_template_name(self):
+        assert _job_label({"kind": "orchestrator", "channel": "technical", "template_name": "E2"}) == "technical · E2"
+
+    def test_fundamental_uses_preset(self):
+        assert _job_label(
+            {"kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder"}
+        ) == "fundamental · quality_compounder"
+
+    def test_momentum_falls_back_to_topn_lookback(self):
+        label = _job_label({"kind": "orchestrator", "channel": "momentum", "top_n": 10, "lookback_months": 6})
+        assert label == "momentum · top10_6m"
+
+    def test_no_descriptor_falls_back_to_channel(self):
+        assert _job_label({"kind": "orchestrator", "channel": "technical"}) == "technical"
+
+
+class TestWriteProgress:
+    def test_writes_expected_job_statuses(self, tmp_path):
+        jobs = [
+            {"kind": "orchestrator", "channel": "technical", "template_name": "E2"},
+            {"kind": "iterative_retrain"},
+        ]
+        path = tmp_path / "progress.json"
+        _write_progress(path, jobs, ["running", "queued"])
+
+        payload = json.loads(path.read_text())
+        assert [j["status"] for j in payload["jobs"]] == ["running", "queued"]
+        assert payload["jobs"][0]["label"] == "technical · E2"
+        assert payload["jobs"][1]["label"] == "Iterative Retrain (MetaLabeler)"
+        assert payload["jobs"][0]["job_index"] == 0

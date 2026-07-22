@@ -28,6 +28,7 @@ import {
   getBacktestRunLineage,
   getBacktestRunFeatureLog,
   getMarketRegimes,
+  listActiveQueues,
   triggerIterativeRetrain,
   getIterativeRetrainStatus,
   triggerOrchestratorBacktest,
@@ -570,6 +571,65 @@ function fetchActiveJobStatus(job: ActiveJob) {
   return getIterativeRetrainStatus(job.id)
 }
 
+function describeQueueJob(job: StrategyQueueJob): string {
+  if (job.kind === 'iterative_retrain') return 'Iterative Retrain (MetaLabeler)'
+  const descriptor =
+    job.template_name || job.preset || (job.channel === 'momentum' ? `top${job.top_n ?? '?'}_${job.lookback_months ?? '?'}m` : undefined)
+  return descriptor ? `${job.channel} · ${descriptor}` : job.channel || 'job'
+}
+
+type Bucket = 'queued' | 'in_progress' | 'completed'
+
+interface BoardItem {
+  key: string
+  label: string
+  idLabel: string
+  status: string
+  dismissId: string | null // set only on the item that should own the dismiss button
+}
+
+function bucketForStatus(status: string): Bucket {
+  if (status === 'running') return 'in_progress'
+  if (status === 'completed' || status === 'failed' || status === 'skipped') return 'completed'
+  return 'queued'
+}
+
+// A "queue" job expands into one board item per strategy inside it (so 42
+// queued templates show as 42 rows, not one opaque "queue" blob) — using
+// the live per-job progress while running, or the final summary once done.
+function expandJob(job: ActiveJob, data: unknown): BoardItem[] {
+  if (job.kind !== 'queue') {
+    const status = (data as { status?: string } | undefined)?.status ?? 'queued'
+    return [{ key: job.id, label: job.label, idLabel: job.id, status, dismissId: job.id }]
+  }
+
+  const queueData = data as
+    | { status: string; jobs?: { job_index: number; label: string; status: string }[]; summary?: { results: { job_index: number; kind: string; job: StrategyQueueJob; returncode: number }[] } | null }
+    | undefined
+
+  if (queueData?.jobs?.length) {
+    return queueData.jobs.map((j) => ({
+      key: `${job.id}#${j.job_index}`,
+      label: j.label,
+      idLabel: `${job.id} · job ${j.job_index + 1}`,
+      status: j.status,
+      dismissId: null,
+    }))
+  }
+  if (queueData?.summary?.results.length) {
+    return queueData.summary.results.map((r) => ({
+      key: `${job.id}#${r.job_index}`,
+      label: describeQueueJob(r.job),
+      idLabel: `${job.id} · job ${r.job_index + 1}`,
+      status: r.returncode === 0 ? 'completed' : 'failed',
+      dismissId: null,
+    }))
+  }
+  // No breakdown available yet (just submitted, or an older queue that
+  // predates per-job progress tracking) — show the whole queue as one row.
+  return [{ key: job.id, label: job.label, idLabel: job.id, status: queueData?.status ?? 'queued', dismissId: job.id }]
+}
+
 function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (id: string) => void }) {
   const results = useQueries({
     queries: jobs.map((job) => ({
@@ -580,19 +640,11 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
     })),
   })
 
-  type Bucket = 'queued' | 'in_progress' | 'completed'
-  const buckets: Record<Bucket, { job: ActiveJob; status: string }[]> = { queued: [], in_progress: [], completed: [] }
-
+  const buckets: Record<Bucket, BoardItem[]> = { queued: [], in_progress: [], completed: [] }
   jobs.forEach((job, i) => {
-    const data = results[i]?.data
-    let bucket: Bucket = 'queued'
-    let status = 'queued'
-    if (data) {
-      status = data.status
-      if (status === 'running') bucket = 'in_progress'
-      else if (status === 'completed' || status === 'failed') bucket = 'completed'
+    for (const item of expandJob(job, results[i]?.data)) {
+      buckets[bucketForStatus(item.status)].push(item)
     }
-    buckets[bucket].push({ job, status })
   })
 
   const BUCKET_LABELS: Record<Bucket, string> = { queued: 'Queued', in_progress: 'In Progress', completed: 'Completed' }
@@ -603,7 +655,7 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
         <CardTitle>Active Strategies</CardTitle>
         <CardDescription>
           {jobs.length
-            ? 'Everything triggered from this page, moved automatically as each strategy progresses.'
+            ? 'Everything triggered from this page (or discovered running elsewhere), moved automatically as each strategy progresses. Queues are expanded into one row per strategy.'
             : 'Nothing triggered yet — use one of the panels below and it will show up here immediately.'}
         </CardDescription>
       </CardHeader>
@@ -613,27 +665,29 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
             <span className="mb-2 block text-xs font-semibold uppercase text-muted-foreground">
               {BUCKET_LABELS[bucket]} ({buckets[bucket].length})
             </span>
-            <div className="space-y-2">
+            <div className="max-h-96 space-y-2 overflow-y-auto">
               {buckets[bucket].length === 0 ? (
                 <p className="text-xs text-muted-foreground">—</p>
               ) : (
-                buckets[bucket].map(({ job, status }) => (
+                buckets[bucket].map((item) => (
                   <div
-                    key={job.id}
+                    key={item.key}
                     className="flex items-center justify-between gap-2 rounded-[var(--radius-token)] border border-border p-2 text-xs"
                   >
                     <div className="min-w-0">
-                      <div className="truncate font-medium">{job.label}</div>
-                      <div className="truncate font-mono-data text-muted-foreground">{job.id}</div>
+                      <div className="truncate font-medium">{item.label}</div>
+                      <div className="truncate font-mono-data text-muted-foreground">{item.idLabel}</div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      <Badge variant={status === 'failed' ? 'destructive' : status === 'completed' ? 'default' : 'outline'}>
-                        {status}
+                      <Badge
+                        variant={item.status === 'failed' ? 'destructive' : item.status === 'completed' ? 'default' : 'outline'}
+                      >
+                        {item.status}
                       </Badge>
-                      {bucket === 'completed' ? (
+                      {bucket === 'completed' && item.dismissId ? (
                         <button
                           type="button"
-                          onClick={() => onDismiss(job.id)}
+                          onClick={() => onDismiss(item.dismissId!)}
                           aria-label="Dismiss"
                           className="text-muted-foreground hover:text-foreground"
                         >
@@ -1472,6 +1526,25 @@ export function BacktestPage() {
   function dismissJob(id: string) {
     setActiveJobs((prev) => prev.filter((j) => j.id !== id))
   }
+
+  // Discovers queues running elsewhere (a different browser session, the
+  // CLI, a direct API call) and pulls them into this board — the
+  // Queued/In Progress/Completed board otherwise only knows about jobs
+  // triggered from this exact page load. Checked once on mount, not
+  // polled continuously — an already-registered queue keeps updating via
+  // RunsStatusBoard's own per-job status queries regardless.
+  useEffect(() => {
+    listActiveQueues().then((res) => {
+      setActiveJobs((prev) => {
+        const known = new Set(prev.map((j) => j.id))
+        const discovered = res.queue_ids
+          .filter((id) => !known.has(id))
+          .map((id): ActiveJob => ({ id, kind: 'queue', label: 'Strategy queue (discovered)' }))
+        return discovered.length ? [...discovered, ...prev] : prev
+      })
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const runColumns = useMemo(
     () => buildRunColumns(selectedRunId, (runId) => setSelectedRunId((prev) => (prev === runId ? null : runId))),
