@@ -95,7 +95,7 @@ export function MomentumRebalancePage() {
       ),
       cell: (i) => <Badge variant={actionVariant(i.getValue<string>())}>{i.getValue<string>().toUpperCase()}</Badge>,
     },
-    tickerColumn<MomentumSuggestion>(),
+    tickerColumn<MomentumSuggestion>('momentum'),
     {
       accessorKey: 'momentum_rank',
       header: () => (

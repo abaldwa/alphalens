@@ -111,7 +111,7 @@ export function MlHoldingsPage() {
   }
 
   const columns: ColumnDef<HoldingRow, unknown>[] = [
-    tickerColumn<HoldingRow>(),
+    tickerColumn<HoldingRow>('ml'),
     { accessorKey: 'qty', header: 'Qty', meta: { priority: 'low', align: 'right' } },
     { accessorKey: 'purchase_date', header: 'Buy Date', meta: { priority: 'low' } },
     { accessorKey: 'purchase_price', header: 'Buy Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },

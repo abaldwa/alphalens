@@ -1,6 +1,7 @@
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { TickerLink } from '@/lib/ui/TickerLink'
+import { DeepDiveLink, type DeepDivePillar } from '@/lib/ui/DeepDiveLink'
 import { formatCurrencyINR } from '@/lib/ui/table-utils'
 
 /** Whole calendar days between an ISO entry date and today — used by
@@ -29,13 +30,26 @@ function daysSince(entryDateIso: string): number {
 
 /** The ticker/symbol column — every table with a `ticker: string` field
  * should use this instead of a local `accessorKey: 'ticker'` def, so the
- * header always reads "Ticker" (not "Stock"/"Symbol") at a fixed width. */
-export function tickerColumn<TData extends { ticker: string }>(): ColumnDef<TData, unknown> {
+ * header always reads "Ticker" (not "Stock"/"Symbol") at a fixed width.
+ * `pillar` determines where the row's microscope icon links — pass the
+ * pillar the page belongs to so "Deep Dive" always lands on the right
+ * pillar's deep-dive page. Omit it (as forensic/big-investors pages do)
+ * for pages with no corresponding deep-dive page yet — no microscope
+ * icon renders in that case. */
+export function tickerColumn<TData extends { ticker: string }>(pillar?: DeepDivePillar): ColumnDef<TData, unknown> {
   return {
     accessorKey: 'ticker',
     header: 'Ticker',
-    size: 100,
-    cell: (i) => <TickerLink ticker={i.getValue<string>()} />,
+    size: 110,
+    cell: (i) => {
+      const ticker = i.getValue<string>()
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          <TickerLink ticker={ticker} />
+          <DeepDiveLink pillar={pillar} ticker={ticker} />
+        </span>
+      )
+    },
   }
 }
 

@@ -7,7 +7,7 @@ import { apiGet } from '@/shared/api/client'
 import type { TACompareResponse, TACompareTickerRow } from './types'
 
 const columns: ColumnDef<TACompareTickerRow, unknown>[] = [
-  tickerColumn<TACompareTickerRow>(),
+  tickerColumn<TACompareTickerRow>('technical'),
   {
     accessorKey: 'rs_vs_nifty500_21d',
     header: () => (

@@ -23,7 +23,7 @@ interface TickerRow {
 
 const columns: ColumnDef<TickerRow, unknown>[] = [
   { accessorKey: 'rank', header: '#', meta: { align: 'right' } },
-  tickerColumn<TickerRow>(),
+  tickerColumn<TickerRow>('fundamental'),
 ]
 
 export function FundamentalScreenerPage() {

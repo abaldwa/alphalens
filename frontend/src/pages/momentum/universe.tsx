@@ -43,7 +43,7 @@ const columns: ColumnDef<MomentumRankingRow, unknown>[] = [
     ),
     meta: { align: 'right' },
   },
-  tickerColumn<MomentumRankingRow>(),
+  tickerColumn<MomentumRankingRow>('momentum'),
   { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
   { accessorKey: 'price', header: 'Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
   {

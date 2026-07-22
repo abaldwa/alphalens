@@ -9,6 +9,11 @@ export interface NavSubItem {
   /** External link (e.g. a published research artifact) — opened in a new tab
    * instead of being treated as an internal Vite-entry route. */
   external?: boolean
+  /** Optional one-level sub-grouping within a section's sub-menu (e.g.
+   * Technical's "Portfolio" group containing View/Buy/Sell/Watchlist).
+   * Consecutive subItems sharing the same `group` render under one small
+   * group label instead of as flat siblings — see AppShell's NavList. */
+  group?: string
 }
 
 export interface NavSection {
@@ -39,15 +44,18 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     id: 'technical',
     label: 'Technical',
-    href: '/technical-watchlist',
+    href: '/technical-portfolio',
     subItems: [
+      { id: 'portfolio_view', label: 'Portfolio View', href: '/technical-portfolio', group: 'Portfolio' },
+      { id: 'portfolio_buy', label: 'Buy', href: '/technical-portfolio?action=buy', group: 'Portfolio' },
+      { id: 'portfolio_sell', label: 'Sell', href: '/technical-portfolio?action=sell', group: 'Portfolio' },
+      { id: 'watchlist', label: 'Watchlist', href: '/technical-watchlist', group: 'Portfolio' },
+      { id: 'strategies', label: 'Strategies', href: '/technical-screener' },
+      { id: 'deep_dive', label: 'Deep Dive', href: '/technical-deep_dive' },
+      { id: 'chart', label: 'Chart', href: '/technical-chart' },
       { id: 'overview', label: 'Market Overview', href: '/technical-overview' },
-      { id: 'watchlist', label: 'Daily WatchList', href: '/technical-watchlist' },
-      { id: 'screener', label: 'Screener', href: '/technical-screener' },
       { id: 'alerts', label: 'Alerts', href: '/technical-alerts' },
       { id: 'compare', label: 'Compare', href: '/technical-compare' },
-      { id: 'chart', label: 'Chart', href: '/technical-chart' },
-      { id: 'deep_dive', label: 'Deep Dive', href: '/technical-deep_dive' },
     ],
   },
   {

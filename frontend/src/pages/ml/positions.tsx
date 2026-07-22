@@ -1,18 +1,10 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 
 import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, ResponsiveChartCard, StatCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, exitTodayCagrColumn, formatCurrencyINR, numericCellClass, sectorColumn, tickerColumn, tradeDurationColumn } from '@/lib/ui'
-import { apiGet, apiPost } from '@/shared/api/client'
-import type {
-  EquityCurveResponse,
-  GateStatusResponse,
-  PaperTradingPosition,
-  PaperTradingStateResponse,
-  PaperTradingTradesResponse,
-  PendingActionsResponse,
-} from './types'
+import { usePaperTrading } from '@/shared/api/paperTrading'
+import type { PaperTradingPosition } from './types'
 
 function fmtPct(v: number | null | undefined) {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
@@ -29,50 +21,21 @@ function actionVariant(actionType: string) {
 }
 
 export function MlPositionsPage() {
-  const queryClient = useQueryClient()
-
-  const state = useQuery({
-    queryKey: ['paper-trading-state'],
-    queryFn: () => apiGet<PaperTradingStateResponse>('/api/v1/paper_trading/state'),
-  })
-  const gate = useQuery({
-    queryKey: ['paper-trading-gate'],
-    queryFn: () => apiGet<GateStatusResponse>('/api/v1/paper_trading/gate_status'),
-  })
-  const pending = useQuery({
-    queryKey: ['paper-trading-pending'],
-    queryFn: () => apiGet<PendingActionsResponse>('/api/v1/paper_trading/pending'),
-  })
-  const equity = useQuery({
-    queryKey: ['paper-trading-equity'],
-    queryFn: () => apiGet<EquityCurveResponse>('/api/v1/paper_trading/equity_curve'),
-  })
-  const trades = useQuery({
-    queryKey: ['paper-trading-trades'],
-    queryFn: () => apiGet<PaperTradingTradesResponse>('/api/v1/paper_trading/trades'),
-  })
-
-  const decide = useMutation({
-    mutationFn: ({ actionId, decision }: { actionId: string; decision: 'accept' | 'reject' }) =>
-      apiPost<{ executed: boolean; status: string; detail?: string }>(`/api/v1/paper_trading/pending/${actionId}/${decision}`),
-    onSuccess: (result, variables) => {
-      setDecisionResults((prev) => ({ ...prev, [variables.actionId]: result }))
-      queryClient.invalidateQueries({ queryKey: ['paper-trading-pending'] })
-      queryClient.invalidateQueries({ queryKey: ['paper-trading-state'] })
-    },
-  })
+  const { state, gate, pending, equity, trades, decide, sell, realPositions } = usePaperTrading()
   const [decisionResults, setDecisionResults] = useState<Record<string, { executed: boolean; status: string; detail?: string }>>({})
 
-  const sell = useMutation({
-    mutationFn: (ticker: string) => apiPost(`/api/v1/paper_trading/positions/${ticker}/sell`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['paper-trading-state'] }),
-  })
+  const decideAndTrack = (actionId: string, decision: 'accept' | 'reject') => {
+    decide.mutate(
+      { actionId, decision },
+      { onSuccess: (result) => setDecisionResults((prev) => ({ ...prev, [actionId]: result })) },
+    )
+  }
 
   // Column order follows the app-wide convention for actionable positions:
   // current price -> win/loss if exited today -> exit reason -> duration ->
   // CAGR, then supporting strategy/identity detail.
   const positionColumns: ColumnDef<PaperTradingPosition, unknown>[] = [
-    tickerColumn<PaperTradingPosition>(),
+    tickerColumn<PaperTradingPosition>('ml'),
     { accessorKey: 'current_price', header: 'Current', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
     {
       accessorKey: 'unrealised_pnl_pct',
@@ -120,7 +83,6 @@ export function MlPositionsPage() {
     },
   ]
 
-  const realPositions = (state.data?.positions ?? []).filter((p) => p.ticker !== '_HEARTBEAT_')
   const pnl = (state.data?.total_equity ?? 0) - (state.data?.initial_capital ?? 0)
   const gatePct = gate.data ? Math.min(100, (gate.data.days_count / gate.data.gate_threshold) * 100) : 0
 
@@ -185,10 +147,10 @@ export function MlPositionsPage() {
                         </Badge>
                       ) : (
                         <div className="ml-auto flex gap-2">
-                          <Button size="sm" disabled={decide.isPending} onClick={() => decide.mutate({ actionId: a.action_id, decision: 'accept' })}>
+                          <Button size="sm" disabled={decide.isPending} onClick={() => decideAndTrack(a.action_id, 'accept')}>
                             Accept
                           </Button>
-                          <Button size="sm" variant="destructive" disabled={decide.isPending} onClick={() => decide.mutate({ actionId: a.action_id, decision: 'reject' })}>
+                          <Button size="sm" variant="destructive" disabled={decide.isPending} onClick={() => decideAndTrack(a.action_id, 'reject')}>
                             Reject
                           </Button>
                         </div>

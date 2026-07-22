@@ -38,7 +38,7 @@ export function MlToolsPage() {
   })
 
   const columns: ColumnDef<MLSignalRow, unknown>[] = [
-    tickerColumn<MLSignalRow>(),
+    tickerColumn<MLSignalRow>('ml'),
     {
       accessorKey: 'signal_direction',
       header: 'Direction',

@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 
 import { AppShell, Card, CardContent, ConfidenceMatrix, SymbolPageLayout, TradingViewWidget } from '@/lib/ui'
 import { useTickerStore } from '@/app/tickerStore'
@@ -10,13 +11,22 @@ import type { TAStrategyWinRateResponse } from '@/pages/technical/types'
 /**
  * The /charts route: Signal → Rationale → Proof → Validation for whatever
  * ticker is currently in the global ticker store. TickerLink anywhere in
- * the app writes to that store and routes here, so this page never reads
- * a `?ticker=` query param — see TickerLink.tsx.
+ * the app opens this route with `?ticker=` in a new tab, so on mount we
+ * seed the store from the URL param — this keeps the page linkable/
+ * shareable (a fresh tab has no store state yet) while staying reactive to
+ * store updates for the case where a chart tab is already open.
  */
 export function SymbolOverviewPage() {
+  const [searchParams] = useSearchParams()
   const ticker = useTickerStore((s) => s.ticker)
-  const [input, setInput] = useState(ticker ?? '')
   const setTicker = useTickerStore((s) => s.setTicker)
+  const [input, setInput] = useState(ticker ?? '')
+
+  useEffect(() => {
+    const paramTicker = searchParams.get('ticker')
+    if (paramTicker) setTicker(paramTicker.toUpperCase())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const valuation = useQuery({
     queryKey: ['symbol-overview', 'valuation', ticker],

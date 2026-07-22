@@ -880,6 +880,69 @@ async def get_ta_ticker_strategy_history(ticker: str) -> TAStrategyHistoryRespon
     return TAStrategyHistoryResponse(ticker=ticker, rows=rows, count=len(rows))
 
 
+@router.get("/strategies/recent_outcomes")
+async def get_ta_strategy_recent_outcomes(
+    template: Optional[str] = Query(None, description="Filter by strategy_id/template_name"),
+    ticker: Optional[str] = Query(None, description="Filter by ticker"),
+    limit: int = Query(10, ge=1, le=50),
+) -> Dict[str, Any]:
+    """Individual firing-level rows from strategy_confidence_outcomes
+    (backtest/strategy_confidence.py — the same table /{ticker}/
+    strategy_history aggregates), most recent first. Powers two UI
+    surfaces off one query: the Strategies page's per-template "latest
+    Win/Loss/Open recommendations" drawer (filter by `template`) and Deep
+    Dive's "last N strategies that hit this stock" card (filter by
+    `ticker`). Exactly one of template/ticker should be passed. `outcome`
+    is 'win'/'loss'/'pending' as persisted — the frontend labels 'pending'
+    as "Open". Real per-firing entry/exit prices and dates, no synthetic
+    numbers — if the table doesn't exist yet (no backfill run) or the
+    filter matches nothing, `rows` is simply empty."""
+    if not template and not ticker:
+        raise HTTPException(status_code=400, detail="Provide template or ticker")
+
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'strategy_confidence_outcomes'"
+            ).fetchall()]
+            if not tables:
+                return {"rows": [], "count": 0}
+
+            where_col, where_val = ("strategy_id", template) if template else ("ticker", ticker.upper())
+            df = conn.execute(
+                f"""
+                SELECT date, ticker, strategy_id, entry_price, exit_price, outcome, outcome_date, net_return_pct
+                FROM strategy_confidence_outcomes
+                WHERE {where_col} = ?
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                [where_val, limit],
+            ).fetchdf()
+    except duckdb.Error as exc:
+        logger.warning("ta/strategies/recent_outcomes query failed: %s", exc)
+        return {"rows": [], "count": 0}
+
+    if df.empty:
+        return {"rows": [], "count": 0}
+
+    rows = [
+        {
+            "date": pd.Timestamp(r["date"]).strftime("%Y-%m-%d"),
+            "ticker": str(r["ticker"]),
+            "template_name": str(r["strategy_id"]),
+            "entry_price": None if pd.isna(r["entry_price"]) else float(r["entry_price"]),
+            "exit_price": None if pd.isna(r["exit_price"]) else float(r["exit_price"]),
+            "outcome": "open" if str(r["outcome"]) == "pending" else str(r["outcome"]),
+            "exit_date": None if pd.isna(r["outcome_date"]) else pd.Timestamp(r["outcome_date"]).strftime("%Y-%m-%d"),
+            "return_pct": None if pd.isna(r["net_return_pct"]) else float(r["net_return_pct"]),
+        }
+        for _, r in df.iterrows()
+    ]
+    return {"rows": rows, "count": len(rows)}
+
+
 @router.get("/pillar_summary")
 async def get_ta_pillar_summary() -> Dict[str, Any]:
     """Home page pillar-outcome card: reuses /watchlist/daily (today's

@@ -9,6 +9,7 @@ import { TechnicalAlertsPage } from '@/pages/technical/alerts'
 import { TechnicalComparePage } from '@/pages/technical/compare'
 import { TechnicalChartPage } from '@/pages/technical/chart'
 import { TechnicalDeepDivePage } from '@/pages/technical/deep_dive'
+import { TechnicalPortfolioPage } from '@/pages/technical/portfolio'
 
 import { FundamentalPage } from '@/pages/fundamental/FundamentalPage'
 import { FundamentalScreenerPage } from '@/pages/fundamental/screener'
@@ -16,6 +17,7 @@ import { FundamentalPeersPage } from '@/pages/fundamental/peers'
 import { FundamentalSectorPage } from '@/pages/fundamental/sector'
 import { FundamentalManagementPage } from '@/pages/fundamental/management'
 import { FundamentalThesisPage } from '@/pages/fundamental/thesis'
+import { FundamentalDeepDivePage } from '@/pages/fundamental/deep_dive'
 
 import { ValuationPage } from '@/pages/valuation/ValuationPage'
 import { DcfPage } from '@/pages/valuation/dcf'
@@ -74,6 +76,7 @@ export const router = createBrowserRouter([
   { path: '/technical-compare', element: <TechnicalComparePage /> },
   { path: '/technical-chart', element: <TechnicalChartPage /> },
   { path: '/technical-deep_dive', element: <TechnicalDeepDivePage /> },
+  { path: '/technical-portfolio', element: <TechnicalPortfolioPage /> },
 
   { path: '/fundamental', element: <FundamentalPage /> },
   { path: '/fundamental-screener', element: <FundamentalScreenerPage /> },
@@ -81,6 +84,7 @@ export const router = createBrowserRouter([
   { path: '/fundamental-sector', element: <FundamentalSectorPage /> },
   { path: '/fundamental-management', element: <FundamentalManagementPage /> },
   { path: '/fundamental-thesis', element: <FundamentalThesisPage /> },
+  { path: '/fundamental-deep_dive', element: <FundamentalDeepDivePage /> },
 
   { path: '/valuation', element: <ValuationPage /> },
   { path: '/valuation-dcf', element: <DcfPage /> },

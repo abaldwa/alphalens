@@ -32,7 +32,7 @@ function valuationBadge(mos: number | null | undefined) {
 }
 
 const columns: ColumnDef<ValuationResult, unknown>[] = [
-  tickerColumn<ValuationResult>(),
+  tickerColumn<ValuationResult>('valuation'),
   { id: 'valuation', header: 'Overall Valuation', cell: ({ row }) => valuationBadge(row.original.margin_of_safety) },
   cmpColumn<ValuationResult>('current_price'),
   {

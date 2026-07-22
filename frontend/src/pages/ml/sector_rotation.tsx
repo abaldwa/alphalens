@@ -129,7 +129,7 @@ export function MlSectorRotationPage() {
   ]
 
   const drilldownColumns: ColumnDef<SectorAccumulationDrilldownRow, unknown>[] = [
-    tickerColumn<SectorAccumulationDrilldownRow>(),
+    tickerColumn<SectorAccumulationDrilldownRow>('ml'),
     { accessorKey: 'volume', header: 'Volume', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },
     { accessorKey: 'delivery_pct', header: 'Delivery %', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtPct((i.getValue<number>() ?? 0) / 100)}</span> },
     { accessorKey: 'delivery_volume', header: 'Delivery Volume', meta: { align: 'right' }, cell: (i) => <span className="font-mono-data">{fmtNum(i.getValue<number>())}</span> },

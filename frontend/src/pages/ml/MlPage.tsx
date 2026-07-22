@@ -32,7 +32,7 @@ function regimeVariant(regime: string | null) {
 }
 
 const topBuysColumns: ColumnDef<MLSignalRow, unknown>[] = [
-  tickerColumn<MLSignalRow>(),
+  tickerColumn<MLSignalRow>('ml'),
   {
     id: 'signal',
     header: 'Signal',
@@ -55,7 +55,7 @@ const topBuysColumns: ColumnDef<MLSignalRow, unknown>[] = [
 ]
 
 const watchlistColumns: ColumnDef<DailyWatchlistRow, unknown>[] = [
-  tickerColumn<DailyWatchlistRow>(),
+  tickerColumn<DailyWatchlistRow>('ml'),
   { accessorKey: 'company_name', header: 'Name', cell: (i) => i.getValue<string | null>() ?? '—' },
   sectorColumn<DailyWatchlistRow>(),
   {
@@ -106,7 +106,7 @@ const watchlistColumns: ColumnDef<DailyWatchlistRow, unknown>[] = [
 ]
 
 const multibaggerColumns: ColumnDef<MultibaggerRow, unknown>[] = [
-  tickerColumn<MultibaggerRow>(),
+  tickerColumn<MultibaggerRow>('ml'),
   { accessorKey: 'mb_probability', header: 'MB Prob', meta: { align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
   { accessorKey: 'mb_tier', header: 'Deterministic Probability Band', cell: (i) => <Badge variant="outline">{i.getValue<string | null>() ?? '—'}</Badge> },
   { accessorKey: 'mb_archetype', header: 'Archetype', cell: (i) => i.getValue<string | null>() ?? '—' },

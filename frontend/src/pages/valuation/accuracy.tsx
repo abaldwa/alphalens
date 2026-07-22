@@ -36,7 +36,7 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
 }
 
 const columns: ColumnDef<AccuracyRow, unknown>[] = [
-  tickerColumn<AccuracyRow>(),
+  tickerColumn<AccuracyRow>('valuation'),
   { accessorKey: 'signal_date', header: 'Signal Date', meta: { priority: 'low' } },
   { accessorKey: 'lifecycle_stage', header: 'Lifecycle', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
   {

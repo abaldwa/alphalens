@@ -2,9 +2,90 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardHeader, CardTitle, DataTable, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, tickerColumn } from '@/lib/ui'
+import {
+  AppShell,
+  Badge,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  DataTable,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+  tickerColumn,
+} from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { TAScreenerResponse, TAScreenerRow, TAStrategyWinRateResponse, TATemplateListResponse } from './types'
+
+interface RecentOutcomeRow {
+  date: string
+  ticker: string
+  template_name: string
+  entry_price: number | null
+  exit_price: number | null
+  outcome: 'win' | 'loss' | 'open'
+  exit_date: string | null
+  return_pct: number | null
+}
+interface RecentOutcomesResponse {
+  rows: RecentOutcomeRow[]
+  count: number
+}
+
+const OUTCOME_BADGE_VARIANT: Record<string, 'success' | 'destructive' | 'outline'> = {
+  win: 'success',
+  loss: 'destructive',
+  open: 'outline',
+}
+
+function StrategyRecentOutcomesDrawer({ template, onClose }: { template: string | null; onClose: () => void }) {
+  const outcomes = useQuery({
+    queryKey: ['ta-strategy-recent-outcomes', template],
+    queryFn: () => apiGet<RecentOutcomesResponse>('/api/v1/ta/strategies/recent_outcomes', { template: template ?? undefined, limit: 10 }),
+    enabled: !!template,
+  })
+
+  return (
+    <Sheet open={!!template} onOpenChange={(open) => !open && onClose()}>
+      <SheetContent side="right" className="w-full sm:max-w-lg">
+        <SheetHeader>
+          <SheetTitle>{template} — latest recommendations</SheetTitle>
+        </SheetHeader>
+        <div className="mt-4">
+          {outcomes.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : !outcomes.data?.rows.length ? (
+            <p className="text-sm text-muted-foreground">No recorded firings for this template yet.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {outcomes.data.rows.map((r, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-2 rounded-[var(--radius-token)] border border-border p-2 text-sm">
+                  <Badge variant={OUTCOME_BADGE_VARIANT[r.outcome]}>{r.outcome.toUpperCase()}</Badge>
+                  <span className="font-semibold">{r.ticker}</span>
+                  <span className="text-xs text-muted-foreground">
+                    Entry {r.date}
+                    {r.exit_date ? ` → Exit ${r.exit_date}` : ''}
+                  </span>
+                  <span className="ml-auto font-mono-data text-xs">
+                    {r.return_pct != null ? `${(r.return_pct * 100).toFixed(1)}%` : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
 
 function fmtPct(v: number | null): string {
   return v == null ? '—' : `${(v * 100).toFixed(0)}%`
@@ -28,7 +109,7 @@ const TIER_BADGE_VARIANT: Record<string, 'success' | 'outline' | 'destructive'> 
   PRELIMINARY: 'outline',
 }
 
-function StrategyWinRates() {
+function StrategyWinRates({ onSelectTemplate }: { onSelectTemplate: (template: string) => void }) {
   const winRates = useQuery({
     queryKey: ['ta-strategy-win-rates'],
     queryFn: () => apiGet<TAStrategyWinRateResponse>('/api/v1/ta/strategies/win_rates'),
@@ -75,7 +156,12 @@ function StrategyWinRates() {
                     </TableHeader>
                     <TableBody>
                       {rows.map((r) => (
-                        <TableRow key={r.template_name} title={r.reasons.join('; ')}>
+                        <TableRow
+                          key={r.template_name}
+                          title={r.reasons.join('; ')}
+                          className="cursor-pointer hover:bg-white/5"
+                          onClick={() => onSelectTemplate(r.template_name)}
+                        >
                           <TableCell>
                             <span className="inline-flex items-center gap-1.5">
                               <Badge>{r.category}</Badge>
@@ -110,6 +196,7 @@ function StrategyWinRates() {
 
 export function TechnicalScreenerPage() {
   const [selected, setSelected] = useState<string | null>(null)
+  const [drawerTemplate, setDrawerTemplate] = useState<string | null>(null)
 
   const templates = useQuery({
     queryKey: ['ta-screener-templates'],
@@ -127,7 +214,7 @@ export function TechnicalScreenerPage() {
   const columns = useMemo<ColumnDef<TAScreenerRow, unknown>[]>(() => {
     const keyCols = results.data?.rows[0] ? Object.keys(results.data.rows[0].key_values) : []
     return [
-      tickerColumn<TAScreenerRow>(),
+      tickerColumn<TAScreenerRow>('technical'),
       { accessorKey: 'score', header: 'Score', meta: { align: 'right' }, cell: (i) => i.getValue<number>().toFixed(2) },
       {
         id: 'matched',
@@ -148,10 +235,11 @@ export function TechnicalScreenerPage() {
   }, [results.data])
 
   return (
-    <AppShell title="Technical — Screener" description="Run any of the pre-built TA-D strategy screener templates.">
+    <AppShell title="Technical — Strategies" description="Every screener template's win-rate track record — click a strategy for its latest recommendations.">
       <div className="mb-4">
-        <StrategyWinRates />
+        <StrategyWinRates onSelectTemplate={setDrawerTemplate} />
       </div>
+      <StrategyRecentOutcomesDrawer template={drawerTemplate} onClose={() => setDrawerTemplate(null)} />
 
       <Card>
         <CardHeader>

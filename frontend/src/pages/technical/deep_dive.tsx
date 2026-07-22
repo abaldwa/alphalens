@@ -1,9 +1,29 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, InfoTooltip } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { TAPatternsResponse, TASummaryResponse, TAWatchlistResponse } from './types'
+
+interface RecentOutcomeRow {
+  date: string
+  ticker: string
+  template_name: string
+  entry_price: number | null
+  exit_price: number | null
+  outcome: 'win' | 'loss' | 'open'
+  exit_date: string | null
+  return_pct: number | null
+}
+interface RecentOutcomesResponse {
+  rows: RecentOutcomeRow[]
+  count: number
+}
+const OUTCOME_BADGE_VARIANT: Record<string, 'success' | 'destructive' | 'outline'> = {
+  win: 'success',
+  loss: 'destructive',
+  open: 'outline',
+}
 
 interface OpsFreshnessRow {
   source: string
@@ -79,6 +99,12 @@ export function TechnicalDeepDivePage() {
     queryFn: () => apiGet<TAWatchlistResponse>('/api/v1/ta/watchlist/daily', { limit: 100 }),
   })
   const levelsRow = watchlist.data?.rows.find((r) => r.ticker === ticker)
+
+  const recentStrategies = useQuery({
+    queryKey: ['ta-strategy-recent-outcomes-by-ticker', ticker],
+    queryFn: () => apiGet<RecentOutcomesResponse>('/api/v1/ta/strategies/recent_outcomes', { ticker, limit: 10 }),
+    enabled: !!ticker,
+  })
 
   const load = () => {
     setTicker(tickerInput.trim().toUpperCase())
@@ -224,6 +250,37 @@ export function TechnicalDeepDivePage() {
                   <div key={name} className="flex items-center justify-between text-sm">
                     <span>{name}</span>
                     <span className={`font-mono-data ${(v ?? 0) >= 0 ? 'text-green' : 'text-red'}`}>{num(v, 3)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="mt-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Last 10 Strategies</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {!recentStrategies.data?.rows.length ? (
+              <p className="text-sm text-muted-foreground">
+                {recentStrategies.isLoading ? 'Loading…' : `No recorded strategy firings for ${ticker} yet.`}
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {recentStrategies.data.rows.map((r, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-2 rounded-[var(--radius-token)] border border-border p-2 text-sm">
+                    <Badge variant={OUTCOME_BADGE_VARIANT[r.outcome]}>{r.outcome.toUpperCase()}</Badge>
+                    <span className="font-semibold">{r.template_name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      Entry {r.date}
+                      {r.exit_date ? ` → Exit ${r.exit_date}` : ''}
+                    </span>
+                    <span className="ml-auto font-mono-data text-xs">
+                      {r.return_pct != null ? `${(r.return_pct * 100).toFixed(1)}%` : '—'}
+                    </span>
                   </div>
                 ))}
               </div>

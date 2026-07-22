@@ -41,7 +41,7 @@ export function TechnicalAlertsPage() {
   })
 
   const columns: ColumnDef<TAUserAlertRow, unknown>[] = [
-    tickerColumn<TAUserAlertRow>(),
+    tickerColumn<TAUserAlertRow>('technical'),
     { accessorKey: 'template_name', header: 'Template' },
     { accessorKey: 'category', header: 'Category' },
     {

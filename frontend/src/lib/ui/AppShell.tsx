@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/lib/ui/primitives/button'
 import { Sheet, SheetContent, SheetTrigger } from '@/lib/ui/primitives/sheet'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/lib/ui/primitives/tooltip'
-import { NAV_SECTIONS, NAV_TIERS, type NavSection } from '@/lib/ui/nav'
+import { NAV_SECTIONS, NAV_TIERS, type NavSection, type NavSubItem } from '@/lib/ui/nav'
 import { CopilotPanel } from '@/lib/ui/CopilotPanel'
 
 const SECTION_ICONS: Record<string, LucideIcon> = {
@@ -148,33 +148,57 @@ function NavList({
             </div>
             {hasSub && isOpen ? (
               <div className="ml-3 flex flex-col gap-0.5 border-l border-white/10 pl-2">
-                {s.subItems!.map((si) => {
-                  const subActive = isActive(si.href, pathname)
-                  const linkClassName = cn(
-                    'rounded-[var(--radius-token)] px-3 py-1.5 text-xs font-medium transition-colors',
-                    subActive
-                      ? 'bg-white/10 text-white'
-                      : 'text-sidebar-foreground/60 hover:bg-white/5 hover:text-sidebar-foreground',
-                  )
-                  if (si.external) {
-                    return (
-                      <a
-                        key={si.id}
-                        href={si.href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={linkClassName}
-                      >
-                        {si.label}
-                      </a>
-                    )
+                {(() => {
+                  // Consecutive subItems sharing a `group` render together
+                  // under one small group label instead of as flat
+                  // siblings — e.g. Technical's Portfolio View/Buy/Sell/
+                  // Watchlist. Ungrouped items render exactly as before.
+                  const nodes: React.ReactNode[] = []
+                  let i = 0
+                  const items = s.subItems!
+                  while (i < items.length) {
+                    const group = items[i].group
+                    const batch: typeof items = []
+                    while (i < items.length && items[i].group === group) {
+                      batch.push(items[i])
+                      i++
+                    }
+                    const renderItem = (si: NavSubItem) => {
+                      const subActive = isActive(si.href, pathname)
+                      const linkClassName = cn(
+                        'rounded-[var(--radius-token)] px-3 py-1.5 text-xs font-medium transition-colors',
+                        subActive
+                          ? 'bg-white/10 text-white'
+                          : 'text-sidebar-foreground/60 hover:bg-white/5 hover:text-sidebar-foreground',
+                      )
+                      if (si.external) {
+                        return (
+                          <a key={si.id} href={si.href} target="_blank" rel="noopener noreferrer" className={linkClassName}>
+                            {si.label}
+                          </a>
+                        )
+                      }
+                      return (
+                        <Link key={si.id} to={si.href} onClick={onNavigate} className={linkClassName}>
+                          {si.label}
+                        </Link>
+                      )
+                    }
+                    if (group) {
+                      nodes.push(
+                        <div key={`group-${group}-${batch[0].id}`} className="flex flex-col gap-0.5 border-l border-white/10 pl-2">
+                          <div className="px-3 pt-1 text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/40">
+                            {group}
+                          </div>
+                          {batch.map(renderItem)}
+                        </div>,
+                      )
+                    } else {
+                      nodes.push(...batch.map(renderItem))
+                    }
                   }
-                  return (
-                    <Link key={si.id} to={si.href} onClick={onNavigate} className={linkClassName}>
-                      {si.label}
-                    </Link>
-                  )
-                })}
+                  return nodes
+                })()}
               </div>
             ) : null}
           </div>

@@ -24,7 +24,7 @@ function pnlTone(v: number | null | undefined) {
 // exit-today flag -> exit reason -> win/loss if exited today -> duration ->
 // CAGR, then supporting identity/price detail.
 const columns: ColumnDef<ExitUrgencyRow, unknown>[] = [
-  tickerColumn<ExitUrgencyRow>(),
+  tickerColumn<ExitUrgencyRow>('ml'),
   {
     accessorKey: 'exit_urgency',
     header: () => (

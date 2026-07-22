@@ -19,7 +19,7 @@ function zHeader(label: string, extra?: string) {
 }
 
 const columns: ColumnDef<FAPeerRow, unknown>[] = [
-  tickerColumn<FAPeerRow>(),
+  tickerColumn<FAPeerRow>('fundamental'),
   { accessorKey: 'roe', header: zHeader('ROE (z)', 'ROE (Return on Equity): net profit as a % of shareholder equity.'), meta: { align: 'right' }, cell: (i) => i.getValue<number | null>()?.toFixed(2) ?? '—' },
   { accessorKey: 'roce', header: zHeader('ROCE (z)', 'ROCE (Return on Capital Employed): operating profit as a % of total capital employed (equity + debt).'), meta: { align: 'right' }, cell: (i) => i.getValue<number | null>()?.toFixed(2) ?? '—' },
   { accessorKey: 'debt_to_equity', header: zHeader('D/E (z)', 'D/E (Debt-to-Equity): total debt divided by shareholder equity — a leverage measure.'), meta: { align: 'right' }, cell: (i) => i.getValue<number | null>()?.toFixed(2) ?? '—' },

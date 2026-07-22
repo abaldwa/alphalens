@@ -13,7 +13,7 @@ function fmtPct(v: number | null | undefined): string {
 }
 
 const positionColumns: ColumnDef<MomentumTrade, unknown>[] = [
-  tickerColumn<MomentumTrade>(),
+  tickerColumn<MomentumTrade>('momentum'),
   { accessorKey: 'purchase_date', header: 'Purchase Date' },
   { accessorKey: 'qty', header: 'Qty', meta: { align: 'right' } },
   { accessorKey: 'purchase_price', header: 'Purchase Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
