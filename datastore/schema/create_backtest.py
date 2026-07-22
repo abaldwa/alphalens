@@ -61,6 +61,13 @@ _CREATE_BACKTEST_RUNS = """
         data_gaps_json VARCHAR,
         integrity_passed BOOLEAN,
         integrity_detail_json VARCHAR,
+        -- Per-Bull/Bear/Sideways-segment performance breakdown (backtest/
+        -- core/regime_breakdown.py), NULL when the run wasn't given a
+        -- regime_conn — see create_backtest_schema()'s ALTER TABLE below,
+        -- since this column was added after backtest_runs already existed
+        -- in real deployments (CREATE TABLE IF NOT EXISTS alone would not
+        -- reach an already-created table).
+        regime_breakdown_json VARCHAR,
         -- Phase 6 hard boundary (BacktestUmbrellaPlan.md Phase 6 requirement
         -- #6): only a human-approved action may ever set this true. No code
         -- path in the fine-tuning loop is permitted to write TRUE here —
@@ -121,6 +128,7 @@ def create_backtest_schema(db_path: Optional[Path] = None, in_memory: bool = Fal
         for table_name, ddl in _BACKTEST_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS regime_breakdown_json VARCHAR")
 
     logger.info(f"Backtest schema ready at {db_path if db_path else ':memory:'}")
 

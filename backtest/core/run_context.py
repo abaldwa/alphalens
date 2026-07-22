@@ -98,6 +98,12 @@ class BacktestRunResult:
     # explicit, recorded choice (OrchestratorConfig.execution_timing) so
     # every report states which produced it.
     execution_timing: str = "same_day_close"
+    # Per-Bull/Bear/Sideways-segment performance (backtest/core/
+    # regime_breakdown.py) — [{"regime": "bull", "start_date": ..., "cagr":
+    # ..., "win_rate": ..., "n_trades": ..., ...}, ...]. Empty when the
+    # orchestrator wasn't given a regime_conn (regime breakdown is opt-in,
+    # not required for every run).
+    regime_breakdown: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)

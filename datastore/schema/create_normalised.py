@@ -912,7 +912,39 @@ _CREATE_MOMENTUM_REBALANCE_STATE = f"""
     )
 """
 
+# [AS BUILT] Rule-based Bull/Bear/Sideways market-phase segments — see
+# systems/regime/market_regime.py. Deliberately a SEPARATE table/taxonomy
+# from ml_signals' hmm_regime column (bullish/bearish/sideways/volatile
+# daily point-labels from the HMM detector, served at GET /api/v1/macro/
+# regime) — this one stores contiguous DATE-RANGE segments computed by a
+# transparent, deterministic 20%-move rule on an index's close price,
+# purpose-built for "backtest this strategy only within Bull-market dates"
+# rather than "what's today's regime probability."
+_CREATE_MARKET_REGIMES = """
+    CREATE TABLE IF NOT EXISTS market_regimes (
+        index_name VARCHAR NOT NULL,
+        regime VARCHAR NOT NULL,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        -- The date the 20% threshold (or sideways timeout) actually fired,
+        -- confirming this segment — start_date is backdated to the actual
+        -- peak/trough day, which is always <= confirmed_date. PIT-safety:
+        -- a caller must not treat this segment as knowable before
+        -- confirmed_date, even though it technically "started" earlier.
+        confirmed_date DATE NOT NULL,
+        method VARCHAR NOT NULL,
+        -- % move from the trough/peak that anchors this segment's
+        -- start (e.g. 0.223 for a Bull segment that began 22.3% above
+        -- the prior trough) — explainability for why the rule fired here.
+        -- NULL for a still-open trailing segment that hasn't confirmed yet.
+        move_pct DOUBLE,
+        computed_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        PRIMARY KEY (index_name, start_date)
+    )
+"""
+
 _ALL_TABLES = {
+    "market_regimes": _CREATE_MARKET_REGIMES,
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
     "index_ohlcv": _CREATE_INDEX_OHLCV,
     "ohlcv_ca_audit": _CREATE_OHLCV_CA_AUDIT,

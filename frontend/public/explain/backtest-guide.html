@@ -488,6 +488,26 @@ python3 -m backtest.run_orchestrator_backtest \
       UI-triggered — lands in the <code>backtest_runs</code> table via <code>save_run_result()</code>, so
       <code>GET /api/v1/backtest/runs</code> and the Runs table always show the full picture regardless of how a run
       was started.</p>
+
+      <h3>Which market phase does this strategy work in?</h3>
+      <p>Every orchestrator run defaults to a per-<strong>Bull/Bear/Sideways</strong> performance breakdown —
+      <code>systems/regime/market_regime.py</code> classifies the Nifty 500 into contiguous date-range regime
+      segments (a rule-based 20%-move-from-extreme threshold, confirmed with a duration timeout for consolidation
+      stretches — deliberately a different, simpler taxonomy from the existing daily HMM regime probability used
+      elsewhere in the ML pages). A run's trades and equity curve are sliced against whichever segments its date
+      range overlaps, giving segment-local CAGR, max drawdown, win rate, and profit factor — visible in a run's
+      detail panel as soon as it completes, and in the <strong>Market Regime Timeline</strong> chart on this page.</p>
+      <pre><code># Backfill/refresh the regime segments (run once, or after new price data lands)
+python3 -m scripts.backfill_market_regimes --index "Nifty 500"
+
+# Opt out of the breakdown for a specific run, or point it at a different index
+python3 -m backtest.run_orchestrator_backtest --channel technical --template-name E2 \
+  --start-date 2023-01-01 --end-date 2026-07-01 --regime-index ""   # "" = skip</code></pre>
+      <p class="callout"><strong>Retrospective, not a live signal:</strong> the classifier looks at the full price
+      history, including data after any given segment's start — correct for "how did this strategy do across
+      history's Bull/Bear/Sideways stretches," but not something to feed into a live trading decision without
+      gating on <code>confirmed_date</code> (the day the 20% threshold actually fired), not <code>start_date</code>
+      (backdated to the actual peak/trough).</p>
     </section>
 
     <hr class="rule" />

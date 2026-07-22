@@ -39,13 +39,14 @@ def save_run_result(conn, result: BacktestRunResult) -> None:
             (run_id, parent_run_id, channel, strategy_id, horizon_bucket, mode, universe_spec,
              start_date, end_date, capital_mode, initial_capital, sip_amount, sip_cadence_days,
              random_seed, config_hash, config_json, created_at,
-             metrics_json, data_gaps_json, integrity_passed, integrity_detail_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             metrics_json, data_gaps_json, integrity_passed, integrity_detail_json, regime_breakdown_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (run_id) DO UPDATE SET
             metrics_json = excluded.metrics_json,
             data_gaps_json = excluded.data_gaps_json,
             integrity_passed = excluded.integrity_passed,
-            integrity_detail_json = excluded.integrity_detail_json
+            integrity_detail_json = excluded.integrity_detail_json,
+            regime_breakdown_json = excluded.regime_breakdown_json
         """,
         [
             run.run_id, run.parent_run_id, run.channel, run.strategy_id, run.horizon_bucket.value,
@@ -54,6 +55,7 @@ def save_run_result(conn, result: BacktestRunResult) -> None:
             run.config_hash, json.dumps(run.config, default=str), run.created_at,
             json.dumps(result.metrics, default=str), json.dumps(result.data_gaps, default=str),
             result.integrity_passed, json.dumps(result.integrity_detail, default=str),
+            json.dumps(result.regime_breakdown, default=str),
         ],
     )
     logger.info(f"Saved backtest run {run.run_id} ({run.channel}/{run.strategy_id}/{run.horizon_bucket.value})")
@@ -63,7 +65,7 @@ _COLUMNS = (
     "run_id", "parent_run_id", "channel", "strategy_id", "horizon_bucket", "mode", "universe_spec",
     "start_date", "end_date", "capital_mode", "initial_capital", "sip_amount", "sip_cadence_days",
     "random_seed", "config_hash", "config_json", "created_at", "metrics_json", "data_gaps_json",
-    "integrity_passed", "integrity_detail_json", "live_eligible",
+    "integrity_passed", "integrity_detail_json", "live_eligible", "regime_breakdown_json",
 )
 
 
@@ -73,6 +75,7 @@ def _row_to_dict(row: tuple) -> Dict[str, Any]:
     d["metrics"] = json.loads(d.pop("metrics_json")) if d["metrics_json"] else None
     d["data_gaps"] = json.loads(d.pop("data_gaps_json")) if d["data_gaps_json"] else []
     d["integrity_detail"] = json.loads(d.pop("integrity_detail_json")) if d["integrity_detail_json"] else {}
+    d["regime_breakdown"] = json.loads(d.pop("regime_breakdown_json")) if d["regime_breakdown_json"] else []
     for date_field in ("start_date", "end_date", "created_at"):
         if isinstance(d[date_field], (datetime,)):
             d[date_field] = d[date_field].isoformat()

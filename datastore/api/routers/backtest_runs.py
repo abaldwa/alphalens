@@ -99,6 +99,9 @@ class BacktestRunSummary(BaseModel):
     # the Runs table can sort/display it uniformly without a null check.
     buy_signal_count: int = 0
     sell_signal_count: int = 0
+    # Per-Bull/Bear/Sideways-segment performance (backtest/core/
+    # regime_breakdown.py) — [] when the run wasn't given a regime_conn.
+    regime_breakdown: List[dict] = []
 
 
 class BacktestRunListResponse(BaseModel):

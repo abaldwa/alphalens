@@ -41,6 +41,7 @@ separate read path needed.
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import time
@@ -68,7 +69,7 @@ from backtest.strategy_id import (
     default_horizon_for_momentum,
     default_horizon_for_technical,
 )
-from config.settings import BACKTEST_DUCKDB_PATH
+from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
 from config.timezone import now_ist
 from config.universe import get_tickers
 from datastore.api.db import get_duckdb_connection
@@ -191,6 +192,11 @@ def _resolve_horizon_bucket(
     raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
 
 
+@contextlib.contextmanager
+def _no_regime_conn():
+    yield None
+
+
 def run_orchestrator_backtest(
     channel: str, start_date: date_type, end_date: date_type, strategy_id: Optional[str] = None,
     horizon_bucket: Optional[str] = None,
@@ -198,6 +204,7 @@ def run_orchestrator_backtest(
     universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
     lookback_months: int = 6, run_id: Optional[str] = None, report_suffix: Optional[str] = None,
+    regime_index_name: Optional[str] = "Nifty 500",
 ) -> dict:
     horizon = _resolve_horizon_bucket(channel, horizon_bucket, template_name, preset, lookback_months)
 
@@ -249,9 +256,20 @@ def run_orchestrator_backtest(
     )
 
     create_backtest_schema(BACKTEST_DUCKDB_PATH)
-    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn:
+    # market_regimes lives in the normalised-schema DB (DUCKDB_PATH), a
+    # separate file from BACKTEST_DUCKDB_PATH — a second, read-only
+    # connection, opened only when a regime breakdown was actually
+    # requested (regime_index_name=None skips it entirely).
+    regime_cm = (
+        get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False)
+        if regime_index_name
+        else _no_regime_conn()
+    )
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn, regime_cm as regime_conn:
         feature_log_writer = FeatureLogWriter(conn)
-        result = BacktestOrchestrator(feature_log_writer=feature_log_writer).run(run, adapter, config)
+        result = BacktestOrchestrator(
+            feature_log_writer=feature_log_writer, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500"
+        ).run(run, adapter, config)
         feature_log_writer.flush()
         save_run_result(conn, result)
         conn.commit()
@@ -297,6 +315,10 @@ def main() -> None:
     parser.add_argument("--lookback-months", type=int, default=6, help="momentum channel only")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--report-suffix", default=None)
+    parser.add_argument(
+        "--regime-index", default="Nifty 500",
+        help="Index (in market_regimes) for the per-Bull/Bear/Sideways performance breakdown. Pass '' to skip it.",
+    )
     args = parser.parse_args()
 
     run_orchestrator_backtest(
@@ -305,7 +327,7 @@ def main() -> None:
         initial_capital=args.initial_capital, sip_amount=args.sip_amount, universe_spec=args.universe_spec,
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months, run_id=args.run_id,
-        report_suffix=args.report_suffix,
+        report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
     )
 
 

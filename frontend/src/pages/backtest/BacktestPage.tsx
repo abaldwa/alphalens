@@ -27,6 +27,7 @@ import {
   listBacktestRuns,
   getBacktestRunLineage,
   getBacktestRunFeatureLog,
+  getMarketRegimes,
   triggerIterativeRetrain,
   getIterativeRetrainStatus,
   triggerOrchestratorBacktest,
@@ -55,6 +56,69 @@ function todayIso() {
 }
 
 const HORIZON_BUCKETS = ['5_day', '21_day', '63_day', '1_year', 'multibagger', 'custom'] as const
+
+const REGIME_COLOR: Record<string, string> = {
+  bull: 'bg-green/70',
+  bear: 'bg-red/70',
+  sideways: 'bg-muted-foreground/40',
+}
+
+function MarketRegimeTimeline() {
+  const regimes = useQuery({
+    queryKey: ['market-regimes', 'Nifty 500'],
+    queryFn: () => getMarketRegimes('Nifty 500'),
+  })
+
+  const segments = regimes.data?.segments ?? []
+  if (regimes.isLoading || !segments.length) return null
+
+  const start = new Date(segments[0].start_date).getTime()
+  const end = new Date(segments[segments.length - 1].end_date).getTime()
+  const totalMs = Math.max(end - start, 1)
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle>Market Regime Timeline (Nifty 500)</CardTitle>
+        <CardDescription>
+          Bull/Bear/Sideways date-range segments (rule-based, 20% threshold — see the Backtest Explainer) — hover a
+          band for exact dates. The trailing segment is provisional and may still extend or reclassify.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex h-8 w-full overflow-hidden rounded-[var(--radius-token)] border border-border">
+          {segments.map((s, i) => {
+            const segStart = new Date(s.start_date).getTime()
+            const segEnd = new Date(s.end_date).getTime()
+            const widthPct = (Math.max(segEnd - segStart, 1) / totalMs) * 100
+            return (
+              <div
+                key={i}
+                title={`${s.regime} · ${s.start_date} → ${s.end_date}${s.move_pct != null ? ` · ${(s.move_pct * 100).toFixed(1)}%` : ''}`}
+                className={cn('h-full border-r border-border/50 last:border-r-0', REGIME_COLOR[s.regime] ?? 'bg-muted')}
+                style={{ width: `${widthPct}%` }}
+              />
+            )
+          })}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="size-2.5 rounded-full bg-green/70" /> Bull
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2.5 rounded-full bg-red/70" /> Bear
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2.5 rounded-full bg-muted-foreground/40" /> Sideways
+          </span>
+          <span>
+            {segments[0].start_date} → {segments[segments.length - 1].end_date}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
 
 function PaperTradingPanel() {
   const [channel, setChannel] = useState<BacktestChannel>('technical')
@@ -387,6 +451,49 @@ function RunDetail({ run }: { run: BacktestRunSummary }) {
                 ))}
               </TableBody>
             </Table>
+          </div>
+        ) : null}
+
+        {run.regime_breakdown.length ? (
+          <div className="mt-4">
+            <span className="text-xs font-semibold uppercase text-muted-foreground">
+              Performance by market regime — which phase this strategy works in
+            </span>
+            <Table className="mt-1">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Regime</TableHead>
+                  <TableHead>Period</TableHead>
+                  <TableHead>CAGR</TableHead>
+                  <TableHead>Max DD</TableHead>
+                  <TableHead>Win Rate</TableHead>
+                  <TableHead>Profit Factor</TableHead>
+                  <TableHead>Trades</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {run.regime_breakdown.map((r, i) => (
+                  <TableRow key={i}>
+                    <TableCell>
+                      <Badge variant={r.regime === 'bull' ? 'success' : r.regime === 'bear' ? 'destructive' : 'outline'}>
+                        {r.regime}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono-data">
+                      {r.start_date} → {r.end_date}
+                    </TableCell>
+                    <TableCell className="font-mono-data">{fmtPct(r.cagr)}</TableCell>
+                    <TableCell className="font-mono-data">{fmtPct(r.max_drawdown)}</TableCell>
+                    <TableCell className="font-mono-data">{fmtPct(r.win_rate)}</TableCell>
+                    <TableCell className="font-mono-data">{fmtNum(r.profit_factor)}</TableCell>
+                    <TableCell className="font-mono-data">{r.n_trades}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Regimes with no recorded equity/trade activity in this run's window are omitted, not shown as zero.
+            </p>
           </div>
         ) : null}
 
@@ -1434,6 +1541,8 @@ export function BacktestPage() {
           )}
         </CardContent>
       </Card>
+
+      <MarketRegimeTimeline />
 
       <RunsStatusBoard jobs={activeJobs} onDismiss={dismissJob} />
 

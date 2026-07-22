@@ -1,0 +1,132 @@
+{
+  "run": {
+    "channel": "technical",
+    "strategy_id": "regime_smoke_test",
+    "horizon_bucket": "63_day",
+    "mode": "backtest",
+    "universe_spec": "curated",
+    "start_date": "2019-01-01",
+    "end_date": "2020-12-31",
+    "capital_mode": "lump",
+    "initial_capital": 1000000.0,
+    "sip_amount": null,
+    "sip_cadence_days": null,
+    "random_seed": 0,
+    "run_id": "orch_technical_20260722_063339_fd0743c5",
+    "parent_run_id": null,
+    "created_at": "2026-07-22 01:03:42.864394",
+    "config": {
+      "template_name": "E2",
+      "preset": null,
+      "top_n": 5,
+      "lookback_months": 6,
+      "max_tickers": 50,
+      "min_history_days": 60
+    }
+  },
+  "metrics": {
+    "cagr": 0.02172006718749664,
+    "cagr_trading_day_legacy": 3.692870669548011,
+    "xirr": null,
+    "final_capital": 1043881.1896341563,
+    "total_contributed": 1000000.0,
+    "max_drawdown": -0.029108282523131284,
+    "win_rate": 0.5,
+    "profit_factor": 3.4634475327564793,
+    "sortino": 26.43002723095979,
+    "sortino_none_reason": null,
+    "calmar": 0.7461816811155553,
+    "calmar_none_reason": null,
+    "n_distinct_tickers_traded": 4,
+    "turnover_ratio": 0.1491633827505439,
+    "n_trades": 4,
+    "benchmark_cagr": null,
+    "excess_return": null,
+    "benchmark_status": "insufficient_benchmark_history",
+    "cash_position_series": [
+      {
+        "date": "2019-01-01",
+        "cash": 1000000.0
+      },
+      {
+        "date": "2019-04-02",
+        "cash": 960009.3043848446
+      },
+      {
+        "date": "2019-07-05",
+        "cash": 992218.6091709335
+      },
+      {
+        "date": "2019-10-10",
+        "cash": 920766.6939016448
+      },
+      {
+        "date": "2020-01-10",
+        "cash": 1033326.8678637232
+      },
+      {
+        "date": "2020-04-15",
+        "cash": 1059006.3896936404
+      },
+      {
+        "date": "2020-07-15",
+        "cash": 1059006.3896936404
+      },
+      {
+        "date": "2020-10-13",
+        "cash": 1059006.3896936404
+      }
+    ]
+  },
+  "data_gaps": [
+    {
+      "ticker": "ACE",
+      "as_of_date": "2019-04-02",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ABBOTINDIA",
+      "as_of_date": "2019-10-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ADANIGREEN",
+      "as_of_date": "2019-10-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "AAVAS",
+      "as_of_date": "2020-01-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    }
+  ],
+  "integrity_passed": null,
+  "integrity_detail": {},
+  "refit_log": [],
+  "execution_timing": "same_day_close",
+  "regime_breakdown": [
+    {
+      "regime": "bull",
+      "start_date": "2019-01-01",
+      "end_date": "2020-01-16",
+      "cagr": 0.07215689747975285,
+      "max_drawdown": -0.007781390829066513,
+      "win_rate": 0.6666666666666666,
+      "profit_factor": 10.661225032278924,
+      "n_trades": 3,
+      "n_days": 5
+    },
+    {
+      "regime": "bull",
+      "start_date": "2020-03-23",
+      "end_date": "2020-12-31",
+      "cagr": -0.0183950491983228,
+      "max_drawdown": -0.014282444569441806,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "n_trades": 1,
+      "n_days": 3
+    }
+  ],
+  "runtime_seconds": 3.840563548001228
+}

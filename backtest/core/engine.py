@@ -39,6 +39,7 @@ from backtest.core.horizon import HorizonBucket, sizing_for
 from backtest.core.metrics import compute_metrics
 from backtest.core.portfolio import SipConfig, StrategyPortfolio
 from backtest.portfolio import Position
+from backtest.core.regime_breakdown import compute_regime_breakdown
 from backtest.core.run_context import BacktestRun, BacktestRunResult
 from backtest.core.tax import fy_tax_cash_flows
 
@@ -145,11 +146,22 @@ class BacktestOrchestrator:
     StrategyPortfolio created inside run().
     """
 
-    def __init__(self, feature_log_writer=None) -> None:
+    def __init__(self, feature_log_writer=None, regime_conn=None, regime_index_name: str = "Nifty 500") -> None:
         """feature_log_writer: optional backtest.core.feature_log.FeatureLogWriter.
         None is valid — orchestration/metrics tests that don't need a live
-        DuckDB connection can omit it; production callers always supply one."""
+        DuckDB connection can omit it; production callers always supply one.
+
+        regime_conn: optional read-only DuckDB connection to config.settings.
+        DUCKDB_PATH (the normalised-schema DB market_regimes lives in — a
+        DIFFERENT file from BACKTEST_DUCKDB_PATH, so this is deliberately a
+        second connection, not the same one feature_log_writer uses). When
+        given, the result's regime_breakdown is populated
+        (backtest/core/regime_breakdown.py); when None (the default), it's
+        left empty — regime breakdown is opt-in, not required for every run.
+        """
         self._feature_log_writer = feature_log_writer
+        self._regime_conn = regime_conn
+        self._regime_index_name = regime_index_name
 
     def run(self, run: BacktestRun, adapter: StrategyAdapter, config: OrchestratorConfig) -> BacktestRunResult:
         if run.channel != adapter.channel:
@@ -374,6 +386,20 @@ class BacktestOrchestrator:
             cash_position_series=portfolio.cash_position_series,
         )
 
+        regime_breakdown: List[Dict[str, Any]] = []
+        if self._regime_conn is not None:
+            from dataclasses import asdict as _asdict
+
+            from systems.regime.regime_store import list_regime_segments
+
+            segments = list_regime_segments(
+                self._regime_conn, self._regime_index_name, start_date=start_date, end_date=end_date
+            )
+            regime_breakdown = [
+                _asdict(row)
+                for row in compute_regime_breakdown(equity_curve, portfolio.trades, start_date, end_date, segments)
+            ]
+
         from dataclasses import asdict
         return BacktestRunResult(
             run=run,
@@ -381,4 +407,5 @@ class BacktestOrchestrator:
             data_gaps=[{"ticker": g.ticker, "as_of_date": g.as_of_date.isoformat(), "reason": g.reason} for g in data_gaps],
             refit_log=[{"as_of_date": r.as_of_date.isoformat(), "model_version": r.model_version} for r in (refit_log or [])],
             execution_timing=execution_timing,
+            regime_breakdown=regime_breakdown,
         )

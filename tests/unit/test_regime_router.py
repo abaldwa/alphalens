@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from datastore.api.db import close_all_connections, get_duckdb_connection
 from datastore.api.main import app
 from datastore.api.routers import regime as regime_router
-from datastore.schema import create_signals
+from datastore.schema import create_normalised, create_signals
 
 
 def _seed(tmp_path, monkeypatch):
@@ -23,6 +23,23 @@ def _seed(tmp_path, monkeypatch):
     close_all_connections()
     monkeypatch.setattr(regime_router, "SIGNALS_DUCKDB_PATH", duckdb_path)
     return duckdb_path
+
+
+def _seed_market_regimes_db(tmp_path, monkeypatch):
+    duckdb_path = tmp_path / "normalised_test.duckdb"
+    create_normalised.create_schema(db_path=duckdb_path)
+    close_all_connections()
+    monkeypatch.setattr(regime_router, "DUCKDB_PATH", duckdb_path)
+    return duckdb_path
+
+
+def _insert_market_regime(db_path, regime, start_date, end_date, confirmed_date, move_pct, index_name="Nifty 500"):
+    with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
+        conn.execute(
+            "INSERT INTO market_regimes (index_name, regime, start_date, end_date, confirmed_date, method, move_pct) "
+            "VALUES (?, ?, ?, ?, ?, 'test_method', ?)",
+            [index_name, regime, start_date, end_date, confirmed_date, move_pct],
+        )
 
 
 def _insert_regime(db_path, d, regime, prob, stability):
@@ -111,3 +128,68 @@ class TestGetRegimeHistory:
         client = TestClient(app)
         resp = client.get("/api/v1/macro/regime/history", params={"days": 0})
         assert resp.status_code == 422
+
+
+class TestGetMarketRegimes:
+    def test_no_data_returns_empty_segments(self, tmp_path, monkeypatch):
+        _seed_market_regimes_db(tmp_path, monkeypatch)
+        client = TestClient(app)
+        resp = client.get("/api/v1/macro/market_regimes", params={"index_name": "Nifty 500"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["index_name"] == "Nifty 500"
+        assert body["segments"] == []
+
+    def test_returns_segments_ascending_by_start_date(self, tmp_path, monkeypatch):
+        db_path = _seed_market_regimes_db(tmp_path, monkeypatch)
+        _insert_market_regime(db_path, "bear", date(2020, 1, 17), date(2020, 3, 20), date(2020, 4, 17), -0.29)
+        _insert_market_regime(db_path, "bull", date(2016, 2, 25), date(2020, 1, 16), date(2020, 3, 12), 0.74)
+        client = TestClient(app)
+        resp = client.get("/api/v1/macro/market_regimes", params={"index_name": "Nifty 500"})
+        assert resp.status_code == 200
+        segs = resp.json()["segments"]
+        assert [s["regime"] for s in segs] == ["bull", "bear"]
+
+    def test_as_of_excludes_segments_not_yet_confirmed(self, tmp_path, monkeypatch):
+        db_path = _seed_market_regimes_db(tmp_path, monkeypatch)
+        _insert_market_regime(db_path, "bull", date(2016, 2, 25), date(2020, 1, 16), date(2020, 3, 12), 0.74)
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/macro/market_regimes", params={"index_name": "Nifty 500", "as_of": "2018-01-01"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["segments"] == []
+
+        resp2 = client.get(
+            "/api/v1/macro/market_regimes", params={"index_name": "Nifty 500", "as_of": "2020-06-01"}
+        )
+        assert len(resp2.json()["segments"]) == 1
+
+    def test_date_range_filters_to_overlapping_segments(self, tmp_path, monkeypatch):
+        db_path = _seed_market_regimes_db(tmp_path, monkeypatch)
+        _insert_market_regime(db_path, "bull", date(2016, 2, 25), date(2020, 1, 16), date(2020, 3, 12), 0.74)
+        _insert_market_regime(db_path, "bear", date(2020, 1, 17), date(2020, 3, 20), date(2020, 4, 17), -0.29)
+        _insert_market_regime(db_path, "bull", date(2020, 3, 23), date(2026, 7, 21), date(2026, 7, 21), 2.74)
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/macro/market_regimes",
+            params={"index_name": "Nifty 500", "start_date": "2020-02-01", "end_date": "2020-04-01"},
+        )
+        assert resp.status_code == 200
+        segs = resp.json()["segments"]
+        # The first bull segment (2016-02-25 -> 2020-01-16) ends before the
+        # window starts, so only the bear and second bull segment overlap.
+        assert [s["regime"] for s in segs] == ["bear", "bull"]
+
+    def test_only_returns_segments_for_requested_index(self, tmp_path, monkeypatch):
+        db_path = _seed_market_regimes_db(tmp_path, monkeypatch)
+        _insert_market_regime(db_path, "bull", date(2016, 2, 25), date(2020, 1, 16), date(2020, 3, 12), 0.74)
+        _insert_market_regime(
+            db_path, "bear", date(2016, 2, 25), date(2020, 1, 16), date(2020, 3, 12), -0.5, index_name="Nifty 50"
+        )
+        client = TestClient(app)
+        resp = client.get("/api/v1/macro/market_regimes", params={"index_name": "Nifty 500"})
+        assert resp.status_code == 200
+        segs = resp.json()["segments"]
+        assert len(segs) == 1
+        assert segs[0]["regime"] == "bull"

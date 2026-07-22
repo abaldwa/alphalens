@@ -44,6 +44,21 @@ export interface BacktestRunConfig {
   lookback_months?: number | null
 }
 
+// One row per Bull/Bear/Sideways market_regimes segment this run's window
+// overlapped (backtest/core/regime_breakdown.py) — omitted, not zeroed,
+// for a regime with no equity/trade data inside the run's window.
+export interface RegimeBreakdownRow {
+  regime: 'bull' | 'bear' | 'sideways'
+  start_date: string
+  end_date: string
+  cagr: number | null
+  max_drawdown: number
+  win_rate: number | null
+  profit_factor: number | null
+  n_trades: number
+  n_days: number
+}
+
 export interface BacktestRunSummary {
   run_id: string
   parent_run_id: string | null
@@ -63,6 +78,7 @@ export interface BacktestRunSummary {
   live_eligible: boolean
   buy_signal_count: number
   sell_signal_count: number
+  regime_breakdown: RegimeBreakdownRow[]
 }
 
 export interface BacktestRunListResponse {
@@ -284,4 +300,27 @@ export function triggerStrategyQueue(jobs: StrategyQueueJob[], continueOnFailure
 
 export function getStrategyQueueStatus(queueId: string) {
   return apiGet<StrategyQueueStatusResponse>(`/api/v1/backtest/queue/status/${queueId}`)
+}
+
+// Market regime timeline (datastore/api/routers/regime.py's
+// GET /api/v1/macro/market_regimes) — rule-based Bull/Bear/Sideways
+// date-range segments, a separate taxonomy from the HMM daily regime
+// used elsewhere in the ML pages. See systems/regime/market_regime.py.
+export interface MarketRegimeSegment {
+  index_name: string
+  regime: 'bull' | 'bear' | 'sideways'
+  start_date: string
+  end_date: string
+  confirmed_date: string
+  method: string
+  move_pct: number | null
+}
+
+export interface MarketRegimeSegmentListResponse {
+  index_name: string
+  segments: MarketRegimeSegment[]
+}
+
+export function getMarketRegimes(indexName = 'Nifty 500') {
+  return apiGet<MarketRegimeSegmentListResponse>('/api/v1/macro/market_regimes', { index_name: indexName })
 }
