@@ -34,6 +34,16 @@ export interface BacktestDataGap {
   reason: string
 }
 
+// Channel-specific run config, as stored in backtest_runs.config_json —
+// only the fields the Runs table needs to name the actual strategy that
+// ran (e.g. "E2"), not a full mirror of every adapter's config shape.
+export interface BacktestRunConfig {
+  template_name?: string | null
+  preset?: string | null
+  top_n?: number | null
+  lookback_months?: number | null
+}
+
 export interface BacktestRunSummary {
   run_id: string
   parent_run_id: string | null
@@ -46,10 +56,13 @@ export interface BacktestRunSummary {
   capital_mode: 'lump' | 'sip'
   initial_capital: number
   created_at: string
+  config: BacktestRunConfig | null
   metrics: BacktestRunMetrics | null
   data_gaps: BacktestDataGap[]
   integrity_passed: boolean | null
   live_eligible: boolean
+  buy_signal_count: number
+  sell_signal_count: number
 }
 
 export interface BacktestRunListResponse {

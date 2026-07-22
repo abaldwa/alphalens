@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
+
+import { cn } from '@/lib/utils'
 
 import {
   AppShell,
@@ -10,6 +13,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  DataTable,
   Input,
   StatCard,
   Table,
@@ -1220,6 +1224,127 @@ function loadStoredActiveJobs(): ActiveJob[] {
   }
 }
 
+// The actual strategy that ran (e.g. "E2", "quality_compounder") — strategy_id
+// is often a freeform label (or the codified id, which embeds this same info
+// less readably) and shouldn't be the only thing identifying a run.
+function strategyName(r: BacktestRunSummary): string {
+  return (
+    r.config?.template_name ||
+    r.config?.preset ||
+    (r.config?.top_n ? `Top ${r.config.top_n}${r.config.lookback_months ? ` · ${r.config.lookback_months}m` : ''}` : null) ||
+    r.strategy_id
+  )
+}
+
+// DataTable renders its own <TableRow> internally with no row-click hook,
+// so "select a run to show its detail panel below" is wired through the
+// Strategy cell itself (a button) rather than the row — selectedRunId is
+// passed in so the selected run's cell can render as visibly active.
+function buildRunColumns(
+  selectedRunId: string | null,
+  onSelect: (runId: string) => void,
+): ColumnDef<BacktestRunSummary, unknown>[] {
+  return [
+  {
+    id: 'strategy_name',
+    accessorFn: strategyName,
+    header: 'Strategy',
+    size: 150,
+    cell: ({ row }) => (
+      <button
+        type="button"
+        onClick={() => onSelect(row.original.run_id)}
+        className={cn(
+          'block w-full text-left',
+          selectedRunId === row.original.run_id && 'text-primary underline underline-offset-2',
+        )}
+      >
+        <div className="font-medium">{strategyName(row.original)}</div>
+        <div className="truncate font-mono-data text-xs text-muted-foreground">{row.original.strategy_id}</div>
+      </button>
+    ),
+  },
+  {
+    accessorKey: 'channel',
+    header: 'Channel',
+    size: 100,
+    cell: (i) => <Badge variant="outline">{i.getValue<string>()}</Badge>,
+  },
+  { accessorKey: 'horizon_bucket', header: 'Horizon', size: 90, meta: { align: 'right' } },
+  { accessorKey: 'mode', header: 'Mode', size: 90, meta: { priority: 'low' } },
+  {
+    id: 'period',
+    accessorFn: (r) => `${r.start_date} → ${r.end_date}`,
+    header: 'Period',
+    size: 170,
+    meta: { priority: 'low' },
+  },
+  {
+    id: 'cagr',
+    accessorFn: (r) => r.metrics?.cagr ?? null,
+    header: 'CAGR',
+    size: 85,
+    meta: { align: 'right' },
+    cell: ({ getValue }) => fmtPct(getValue<number | null>()),
+  },
+  {
+    id: 'xirr',
+    accessorFn: (r) => r.metrics?.xirr ?? null,
+    header: 'XIRR',
+    size: 85,
+    meta: { align: 'right', priority: 'low' },
+    cell: ({ getValue }) => fmtPct(getValue<number | null>()),
+  },
+  {
+    id: 'final_capital',
+    accessorFn: (r) => r.metrics?.final_capital ?? null,
+    header: 'Final Capital',
+    size: 120,
+    meta: { align: 'right' },
+    cell: ({ getValue }) => fmtInr(getValue<number | null>()),
+  },
+  {
+    id: 'max_drawdown',
+    accessorFn: (r) => r.metrics?.max_drawdown ?? null,
+    header: 'Max DD',
+    size: 90,
+    meta: { align: 'right' },
+    cell: ({ getValue }) => fmtPct(getValue<number | null>()),
+  },
+  {
+    id: 'win_rate',
+    accessorFn: (r) => r.metrics?.win_rate ?? null,
+    header: 'Win Rate %',
+    size: 95,
+    meta: { align: 'right' },
+    cell: ({ getValue }) => {
+      const v = getValue<number | null>()
+      return <span className={v != null && v >= 0.5 ? 'text-green' : v != null ? 'text-red' : undefined}>{fmtPct(v)}</span>
+    },
+  },
+  {
+    id: 'n_trades',
+    accessorFn: (r) => r.metrics?.n_trades ?? null,
+    header: 'Trades',
+    size: 75,
+    meta: { align: 'right', priority: 'low' },
+    cell: ({ getValue }) => fmtNum(getValue<number | null>(), 0),
+  },
+  {
+    accessorKey: 'buy_signal_count',
+    header: 'Buy Signals',
+    size: 95,
+    meta: { align: 'right' },
+  },
+  {
+    accessorKey: 'sell_signal_count',
+    header: 'Sell Signals',
+    size: 95,
+    meta: { align: 'right' },
+  },
+  ]
+}
+
 export function BacktestPage() {
   const [channel, setChannel] = useState<BacktestChannel | ''>('')
   const [mode, setMode] = useState<BacktestMode | ''>('')
@@ -1240,6 +1365,11 @@ export function BacktestPage() {
   function dismissJob(id: string) {
     setActiveJobs((prev) => prev.filter((j) => j.id !== id))
   }
+
+  const runColumns = useMemo(
+    () => buildRunColumns(selectedRunId, (runId) => setSelectedRunId((prev) => (prev === runId ? null : runId))),
+    [selectedRunId],
+  )
 
   const runs = useQuery({
     queryKey: ['backtest-runs', channel, mode],
@@ -1290,51 +1420,17 @@ export function BacktestPage() {
 
           {runs.error ? (
             <p className="mt-4 text-sm text-red">Could not reach GET /api/v1/backtest/runs — {(runs.error as Error).message}</p>
-          ) : runs.data?.runs.length ? (
-            <Table className="mt-4">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Strategy</TableHead>
-                  <TableHead>Channel</TableHead>
-                  <TableHead>Horizon</TableHead>
-                  <TableHead>Mode</TableHead>
-                  <TableHead>Period</TableHead>
-                  <TableHead>CAGR</TableHead>
-                  <TableHead>XIRR</TableHead>
-                  <TableHead>Final Capital</TableHead>
-                  <TableHead>Max DD</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {runs.data.runs.map((r) => (
-                  <TableRow
-                    key={r.run_id}
-                    className="cursor-pointer hover:bg-muted/40"
-                    onClick={() => setSelectedRunId(r.run_id === selectedRunId ? null : r.run_id)}
-                    aria-selected={r.run_id === selectedRunId}
-                  >
-                    <TableCell>{r.strategy_id}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{r.channel}</Badge>
-                    </TableCell>
-                    <TableCell className="font-mono-data">{r.horizon_bucket}</TableCell>
-                    <TableCell>{r.mode}</TableCell>
-                    <TableCell className="font-mono-data">
-                      {r.start_date} → {r.end_date}
-                    </TableCell>
-                    <TableCell className="font-mono-data">{fmtPct(r.metrics?.cagr)}</TableCell>
-                    <TableCell className="font-mono-data">{fmtPct(r.metrics?.xirr)}</TableCell>
-                    <TableCell className="font-mono-data">{fmtInr(r.metrics?.final_capital)}</TableCell>
-                    <TableCell className="font-mono-data">{fmtPct(r.metrics?.max_drawdown)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
           ) : (
-            <p className="mt-4 text-sm text-muted-foreground">
-              No runs yet — runs are written by backtest/core/run_store.py from a BacktestOrchestrator/WalkForwardRunner
-              invocation, not triggered from this page (see BacktestUmbrellaPlan.md Phase 3).
-            </p>
+            <div className="mt-4">
+              <DataTable
+                columns={runColumns}
+                data={runs.data?.runs ?? []}
+                isLoading={runs.isLoading}
+                placeholder="Search strategy, channel, horizon…"
+                emptyMessage="No runs yet — runs are written by backtest/core/run_store.py from a BacktestOrchestrator/WalkForwardRunner invocation (see BacktestUmbrellaPlan.md Phase 3), or triggered from the panels below."
+                maxHeight="600px"
+              />
+            </div>
           )}
         </CardContent>
       </Card>

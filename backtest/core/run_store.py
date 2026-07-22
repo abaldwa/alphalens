@@ -111,6 +111,36 @@ def list_runs(
     return [_row_to_dict(r) for r in rows]
 
 
+def get_signal_counts(conn, run_ids: List[str]) -> Dict[str, Dict[str, int]]:
+    """Buy/sell signal counts per run_id, from backtest_feature_log's
+    decision_taken column ('buy'/'sell' — see core/engine.py's _log_feature
+    call sites). One batched query for a page of runs rather than N+1, and
+    only counts the two decision kinds the Runs table cares about — every
+    other decision_taken value (held/skipped_*) is left out of this
+    aggregate on purpose, it's not a full decision breakdown.
+
+    Returns {run_id: {"buy": n, "sell": n}}; a run with no feature_log rows
+    (an older run predating feature logging, or a channel/mode that never
+    wired a feature_log_writer) is simply absent from the result — callers
+    should default missing entries to 0/0, not treat absence as an error.
+    """
+    if not run_ids:
+        return {}
+    placeholders = ", ".join("?" * len(run_ids))
+    rows = conn.execute(
+        f"""
+        SELECT run_id, decision_taken, COUNT(*) FROM backtest_feature_log
+        WHERE run_id IN ({placeholders}) AND decision_taken IN ('buy', 'sell')
+        GROUP BY run_id, decision_taken
+        """,
+        run_ids,
+    ).fetchall()
+    counts: Dict[str, Dict[str, int]] = {}
+    for run_id, decision, n in rows:
+        counts.setdefault(run_id, {"buy": 0, "sell": 0})[decision] = n
+    return counts
+
+
 def get_run_lineage(conn, run_id: str) -> List[Dict[str, Any]]:
     """Walk parent_run_id back to the root, returning [root, ..., run_id] —
     the feedback-loop "compare to parent run" chain (BacktestUmbrellaPlan.md

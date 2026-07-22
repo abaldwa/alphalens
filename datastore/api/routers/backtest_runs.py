@@ -59,7 +59,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from backtest.core.run_store import get_run, get_run_lineage, list_runs
+from backtest.core.run_store import get_run, get_run_lineage, get_signal_counts, list_runs
 from backtest.core.feature_log import query_feature_log
 from config.settings import BACKTEST_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
@@ -84,10 +84,21 @@ class BacktestRunSummary(BaseModel):
     capital_mode: str
     initial_capital: float
     created_at: str
+    # Channel-specific run config (technical: template_name; fundamental:
+    # preset; momentum: top_n/lookback_months) — surfaced so the Runs table
+    # can show the actual strategy name (e.g. "E2"), not just strategy_id,
+    # which may be a freeform label like "Test1" that says nothing about
+    # which template/preset actually ran.
+    config: Optional[dict] = None
     metrics: Optional[dict] = None
     data_gaps: List[dict] = []
     integrity_passed: Optional[bool] = None
     live_eligible: bool = False
+    # From backtest_feature_log's decision_taken column (core/engine.py's
+    # _log_feature) — 0 for a run predating feature logging, not None, so
+    # the Runs table can sort/display it uniformly without a null check.
+    buy_signal_count: int = 0
+    sell_signal_count: int = 0
 
 
 class BacktestRunListResponse(BaseModel):
@@ -113,8 +124,13 @@ class FeatureLogResponse(BaseModel):
     rows: List[FeatureLogRow]
 
 
-def _summary(row: dict) -> BacktestRunSummary:
-    return BacktestRunSummary(**{k: row[k] for k in BacktestRunSummary.model_fields if k in row})
+def _summary(row: dict, signal_counts: Optional[dict] = None) -> BacktestRunSummary:
+    counts = (signal_counts or {}).get(row["run_id"], {})
+    return BacktestRunSummary(
+        **{k: row[k] for k in BacktestRunSummary.model_fields if k in row},
+        buy_signal_count=counts.get("buy", 0),
+        sell_signal_count=counts.get("sell", 0),
+    )
 
 
 @router.get("/runs", response_model=BacktestRunListResponse)
@@ -128,16 +144,18 @@ async def list_backtest_runs(
     view Phase 4's frontend results table renders."""
     with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
         rows = list_runs(conn, channel=channel, mode=mode, strategy_id=strategy_id, limit=limit)
-    return BacktestRunListResponse(runs=[_summary(r) for r in rows])
+        signal_counts = get_signal_counts(conn, [r["run_id"] for r in rows])
+    return BacktestRunListResponse(runs=[_summary(r, signal_counts) for r in rows])
 
 
 @router.get("/runs/{run_id}", response_model=BacktestRunSummary)
 async def get_backtest_run(run_id: str) -> BacktestRunSummary:
     with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
         row = get_run(conn, run_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return _summary(row)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        signal_counts = get_signal_counts(conn, [run_id])
+    return _summary(row, signal_counts)
 
 
 @router.get("/runs/{run_id}/lineage", response_model=BacktestRunLineageResponse)
@@ -147,9 +165,10 @@ async def get_backtest_run_lineage(run_id: str) -> BacktestRunLineageResponse:
     Feedback Loop section)."""
     with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
         chain = get_run_lineage(conn, run_id)
-    if not chain:
-        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return BacktestRunLineageResponse(run_id=run_id, lineage=[_summary(r) for r in chain])
+        if not chain:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        signal_counts = get_signal_counts(conn, [r["run_id"] for r in chain])
+    return BacktestRunLineageResponse(run_id=run_id, lineage=[_summary(r, signal_counts) for r in chain])
 
 
 @router.get("/runs/{run_id}/feature_log", response_model=FeatureLogResponse)
@@ -323,8 +342,9 @@ async def get_orchestrator_status(run_id: str) -> OrchestratorStatusResponse:
     subprocess's log shows a traceback with no row yet, "running" otherwise."""
     with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
         row = get_run(conn, run_id)
-    if row is not None:
-        return OrchestratorStatusResponse(run_id=run_id, status="completed", run=_summary(row))
+        if row is not None:
+            signal_counts = get_signal_counts(conn, [run_id])
+            return OrchestratorStatusResponse(run_id=run_id, status="completed", run=_summary(row, signal_counts))
 
     log_path = _ORCHESTRATOR_TRIGGER_LOGS_DIR / f"{run_id}.log"
     if not log_path.exists():
