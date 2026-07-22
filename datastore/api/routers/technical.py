@@ -880,6 +880,48 @@ async def get_ta_ticker_strategy_history(ticker: str) -> TAStrategyHistoryRespon
     return TAStrategyHistoryResponse(ticker=ticker, rows=rows, count=len(rows))
 
 
+@router.get("/pillar_summary")
+async def get_ta_pillar_summary() -> Dict[str, Any]:
+    """Home page pillar-outcome card: reuses /watchlist/daily (today's
+    template recommendations) for recommendation_count + avg expected
+    return (same nearest-resistance-vs-CMP arithmetic the frontend already
+    does per-row on the Weekly WatchList page), and /strategies/win_rates
+    (real, confidence-graded — INSUFFICIENT_DATA templates already
+    excluded there) for the single best-performing template's win rate.
+    Technical is the one pillar with a genuine strategy/win-rate table
+    (strategy_confidence_summary) — the other 4 pillar_summary endpoints
+    return null for top_strategy_success_rate_pct because no equivalent
+    table exists for them."""
+    # Calling get_ta_daily_watchlist directly (not through a real HTTP
+    # request) bypasses FastAPI's dependency injection, so its Query(...)
+    # parameter objects never resolve to their defaults — pass the same
+    # literal defaults FastAPI would have used (date=None, limit=20,
+    # lookback_days=5) explicitly.
+    watchlist = await get_ta_daily_watchlist(date=None, limit=20, lookback_days=5)
+    gains = []
+    for row in watchlist.rows:
+        if row.current_price and row.resistance_levels:
+            target = row.resistance_levels[0]
+            gains.append((target - row.current_price) / row.current_price * 100)
+    avg_gain = sum(gains) / len(gains) if gains else None
+
+    win_rates = await get_ta_strategy_win_rates()
+    best_row = None
+    for rows in win_rates.styles.values():
+        for r in rows:
+            if r.win_rate is not None and (best_row is None or r.win_rate > best_row.win_rate):
+                best_row = r
+
+    return {
+        "as_of_date": watchlist.date,
+        "available": watchlist.count > 0,
+        "recommendation_count": watchlist.count,
+        "avg_expected_return_pct": avg_gain,
+        "top_strategy": best_row.template_name if best_row else None,
+        "top_strategy_success_rate_pct": (best_row.win_rate * 100) if best_row and best_row.win_rate is not None else None,
+    }
+
+
 @router.get("/strategies/win_rates", response_model=TAStrategyWinRateResponse)
 async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
     """Every one of the 42 screener templates, grouped by strategy style

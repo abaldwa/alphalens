@@ -150,7 +150,7 @@ async def get_fundamentals_history_by_quarters(
 
     df = pd.DataFrame(rows, columns=_COLUMNS)
     if not df.empty:
-        df["announcement_date"] = pd.to_datetime(df["announcement_date"])
+        df["announcement_date"] = pd.to_datetime(df["announcement_date"], format="mixed")
         # 2026-07-07: same tie-break fix as GET /{ticker} — see that route's
         # comment for the full incident (a Screener row and an NSE-XBRL row
         # for the same real quarter, identical quarter_end_date AND
@@ -207,6 +207,45 @@ async def get_fundamental_screener(
     matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
     matched = matched_df["ticker"].tolist()
     return FAScreenerResponse(preset=preset, date=resolved_date, tickers=matched)
+
+
+@router.get("/pillar_summary")
+async def get_fundamentals_pillar_summary(
+    preset: str = Query(default="quality_compounder", description=f"One of: {', '.join(SCREENER_PRESETS.keys())}"),
+) -> dict:
+    """Home page pillar-outcome card: today's recommendation count for one
+    screener preset. Fundamentals has no `target_price`/expected-return
+    field (its ratios are sector-relative z-scores, not price forecasts)
+    and no strategy/win-rate table exists for this pillar (unlike
+    Technical's strategy_confidence_summary) — those two fields are
+    genuinely null here, not omitted by mistake; fabricating a number for
+    them would violate this project's no-stub-data policy."""
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        return {"as_of_date": None, "available": False, "recommendation_count": 0,
+                "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+    panel = read_feature_day(resolved_date)
+    if panel is None:
+        return {"as_of_date": resolved_date, "available": False, "recommendation_count": 0,
+                "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+    from config.training_universe import filter_recommendable
+
+    matched = [
+        row["ticker"] for _, row in panel.iterrows()
+        if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
+    ]
+    matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
+
+    return {
+        "as_of_date": resolved_date,
+        "available": True,
+        "recommendation_count": len(matched_df),
+        "avg_expected_return_pct": None,
+        "top_strategy": None,
+        "top_strategy_success_rate_pct": None,
+    }
 
 
 @router.get("/sector/{sector}", response_model=FASectorResponse)
@@ -402,14 +441,14 @@ async def get_fundamentals(
         rows = conn.execute(
             f"""
             SELECT {_SELECT_COLS} FROM fundamentals
-            WHERE ticker = ? AND quarter_end_date >= ? AND quarter_end_date <= ?
+            WHERE ticker = ? AND CAST(quarter_end_date AS DATE) >= ? AND CAST(quarter_end_date AS DATE) <= ?
             """,
             [ticker, start_date.date(), end_date.date()],
         ).fetchall()
 
     df = pd.DataFrame(rows, columns=_COLUMNS)
     if not df.empty:
-        df["announcement_date"] = pd.to_datetime(df["announcement_date"])
+        df["announcement_date"] = pd.to_datetime(df["announcement_date"], format="mixed")
         df = enforce_pit_fundamentals(df, as_of=pit_reference, announcement_date_col="announcement_date")
         # 2026-07-07: real tie-break bug caught via NSE XBRL pipeline
         # verification — a Screener-sourced row and an NSE-XBRL-sourced row

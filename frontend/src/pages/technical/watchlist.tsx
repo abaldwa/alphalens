@@ -39,24 +39,15 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
   },
   { accessorKey: 'ticker', header: 'Stock', size: 90, cell: (i) => <TickerLink ticker={i.getValue<string>()} /> },
   {
-    // Grouped with `sector` under 'identity' so both collapse onto one
-    // disclosure line.
-    accessorKey: 'company_name',
-    header: 'Name',
-    meta: { priority: 'low', group: 'identity' },
-    cell: (i) => <span className="text-xs text-muted-foreground">{i.getValue<string | null>() ?? '—'}</span>,
-  },
-  { accessorKey: 'sector', header: 'Sector', meta: { priority: 'low', group: 'identity' }, cell: (i) => i.getValue<string | null>() ?? '—' },
-  {
+    // "Recommendation" — the actionable call itself (which day it fired,
+    // at what price). Leads the row per the app-wide recommendation →
+    // expected return → strategy → success rate column convention.
     accessorKey: 'recommendation_date',
     header: 'Rec. Date',
     size: 75,
     cell: (i) => fmtRecDate(i.getValue<string | null>()),
   },
   {
-    // Always visible in the main row, right before CMP (not low-priority
-    // — unlike Support/Resistance, which still collapse into the 'price'
-    // disclosure group).
     accessorKey: 'recommended_price',
     header: 'Rec. Price',
     size: 100,
@@ -64,16 +55,7 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     cell: (i) => formatCurrencyINR(i.getValue<number | null>()),
   },
   {
-    // Always visible in the main row (not low-priority) — CMP is core,
-    // unlike Support/Resistance which collapse into the 'price' disclosure
-    // group.
-    accessorKey: 'current_price',
-    header: 'CMP',
-    size: 100,
-    meta: { align: 'right' },
-    cell: (i) => formatCurrencyINR(i.getValue<number | null>()),
-  },
-  {
+    // Expected return block: target price + the % gain it implies from CMP.
     // "Target Price" = nearest computed resistance level (the same real
     // resistance_levels[] the low-priority Resistance column shows in
     // full, just surfaced as a single always-visible upside target).
@@ -115,23 +97,7 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     },
   },
   {
-    // Kept as a column for layout/column-set uniformity with the ML
-    // watchlist (which has a real quantile-regression time horizon), but
-    // always blank here — the TA screener templates only produce a match
-    // score, not a time-to-target forecast, so there is no real value to
-    // show and one is not fabricated.
-    id: 'target_days',
-    header: () => (
-      <span className="inline-flex items-center gap-1">
-        Tar Days
-        <InfoTooltip>Not available for template-based signals — this screener produces a match score, not a time-to-target forecast.</InfoTooltip>
-      </span>
-    ),
-    size: 60,
-    meta: { align: 'center' },
-    cell: () => '—',
-  },
-  {
+    // Strategy — the template that fired this recommendation.
     id: 'template',
     accessorFn: (row) => row.template_name,
     header: 'Template',
@@ -162,6 +128,32 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     },
   },
   {
+    // Success rate — the strategy's own win rate, immediately after the
+    // strategy name it belongs to (previously only visible inside the
+    // Template column's tooltip).
+    id: 'win_rate',
+    accessorFn: (row) => winRateByTemplate.get(row.template_name)?.win_rate ?? null,
+    header: () => (
+      <span className="inline-flex items-center gap-1">
+        Win Rate
+        <InfoTooltip>Historical win rate for this template across all its past recommendations (95% Wilson CI shown in the Template tooltip).</InfoTooltip>
+      </span>
+    ),
+    size: 85,
+    meta: { align: 'right' },
+    cell: ({ row }) => {
+      const wr = winRateByTemplate.get(row.original.template_name)
+      return wr?.win_rate != null ? `${(wr.win_rate * 100).toFixed(0)}%` : '—'
+    },
+  },
+  {
+    accessorKey: 'current_price',
+    header: 'CMP',
+    size: 100,
+    meta: { align: 'right' },
+    cell: (i) => formatCurrencyINR(i.getValue<number | null>()),
+  },
+  {
     accessorKey: 'score',
     header: () => (
       <span className="inline-flex items-center gap-1">
@@ -175,8 +167,25 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
       </span>
     ),
     size: 85,
-    meta: { align: 'right' },
+    meta: { align: 'right', priority: 'medium' },
     cell: ({ row }) => `${row.original.score.toFixed(2)} (${row.original.matched_conditions}/${row.original.total_conditions})`,
+  },
+  {
+    // Kept as a column for layout/column-set uniformity with the ML
+    // watchlist (which has a real quantile-regression time horizon), but
+    // always blank here — the TA screener templates only produce a match
+    // score, not a time-to-target forecast, so there is no real value to
+    // show and one is not fabricated.
+    id: 'target_days',
+    header: () => (
+      <span className="inline-flex items-center gap-1">
+        Tar Days
+        <InfoTooltip>Not available for template-based signals — this screener produces a match score, not a time-to-target forecast.</InfoTooltip>
+      </span>
+    ),
+    size: 60,
+    meta: { align: 'center', priority: 'medium' },
+    cell: () => '—',
   },
   {
     accessorKey: 'rationale',
@@ -196,6 +205,15 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     meta: { priority: 'low', group: 'price', align: 'right' },
     cell: (i) => <span className="text-green">{fmtLevels(i.getValue<number[]>())}</span>,
   },
+  {
+    // Grouped with `sector` under 'identity' so both collapse onto one
+    // disclosure line.
+    accessorKey: 'company_name',
+    header: 'Name',
+    meta: { priority: 'low', group: 'identity' },
+    cell: (i) => <span className="text-xs text-muted-foreground">{i.getValue<string | null>() ?? '—'}</span>,
+  },
+  { accessorKey: 'sector', header: 'Sector', meta: { priority: 'low', group: 'identity' }, cell: (i) => i.getValue<string | null>() ?? '—' },
   {
     id: 'deep_dive',
     header: () => (

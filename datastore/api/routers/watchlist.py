@@ -113,6 +113,56 @@ async def get_watchlist_current() -> WatchlistResponse:
     )
 
 
+@router.get("/pillar_summary")
+async def get_ml_pillar_summary() -> dict:
+    """Home page pillar-outcome card: buy-signal count + avg forward
+    q50_return for whichever of the 5d/21d/63d horizon models has the most
+    recent signal date. No win-rate/success-rate table exists for ML
+    signals anywhere in this codebase (unlike Technical's
+    strategy_confidence_summary) — top_strategy/success_rate stay null
+    rather than fabricating a number; per project memory, ml_signals has
+    historically been close to a single-date snapshot, so a small/zero
+    recommendation_count here reflects real data availability, not a bug."""
+    best: Optional[tuple] = None  # (date, model_name, horizon_label)
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+        for model_name, horizon_label, _horizon_days in _HORIZON_MODELS:
+            latest = conn.execute(
+                "SELECT MAX(date) FROM ml_signals WHERE model_name = ? AND buy_prob IS NOT NULL",
+                [model_name],
+            ).fetchone()
+            query_date = latest[0] if latest else None
+            if query_date is not None and (best is None or query_date > best[0]):
+                best = (query_date, model_name, horizon_label)
+
+        if best is None:
+            return {"as_of_date": None, "available": False, "recommendation_count": 0,
+                    "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+        query_date, model_name, horizon_label = best
+        row = conn.execute(
+            """
+            SELECT COUNT(*), AVG(q50_return)
+            FROM ml_signals
+            WHERE date = ? AND model_name = ? AND buy_prob IS NOT NULL
+              AND ticker NOT IN (
+                  SELECT ticker FROM ml_signals
+                  WHERE date = ? AND model_name = 'pnd_detector' AND pnd_block = TRUE
+              )
+            """,
+            [query_date, model_name, query_date],
+        ).fetchone()
+
+    count, avg_return = row if row else (0, None)
+    return {
+        "as_of_date": str(query_date),
+        "available": True,
+        "recommendation_count": int(count or 0),
+        "avg_expected_return_pct": float(avg_return * 100) if avg_return is not None else None,
+        "top_strategy": f"ML {horizon_label} signal",
+        "top_strategy_success_rate_pct": None,
+    }
+
+
 @router.get("/daily", response_model=DailyWatchlistResponse)
 async def get_daily_watchlist(
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to each horizon's latest signal date"),

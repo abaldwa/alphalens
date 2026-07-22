@@ -1584,8 +1584,7 @@ def _write_ta_results_direct(resolved: str, template_results: dict) -> None:
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
         checker._ensure_db_and_table(conn)
-        for template_name, results in template_results.items():
-            checker._write_results_batch(conn, resolved, results)
+        checker._write_all_results(conn, resolved, template_results)
 
 
 def _write_ta_results_via_api(date_str: str, resolved: str, template_results: dict, total_matches: int) -> list:

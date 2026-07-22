@@ -3,6 +3,18 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { TickerLink } from '@/lib/ui/TickerLink'
 import { formatCurrencyINR } from '@/lib/ui/table-utils'
 
+/** Whole calendar days between an ISO entry date and today — used by
+ * `tradeDurationColumn`/`exitTodayCagrColumn` below for "if I exited this
+ * open position today" math. Not a trading-day count (holidays/weekends
+ * aren't excluded) — a lightweight duration for display, not a backtest
+ * metric. */
+function daysSince(entryDateIso: string): number {
+  const entry = new Date(`${entryDateIso}T00:00:00`)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.max(0, Math.round((today.getTime() - entry.getTime()) / 86_400_000))
+}
+
 /**
  * Shared column-definition catalog: one canonical factory per field that
  * recurs across multiple pages' tables (ticker, sector, CMP, etc.), each
@@ -51,5 +63,52 @@ export function cmpColumn<TData>(accessorKey: keyof TData & string): ColumnDef<T
     size: 100,
     meta: { align: 'right' },
     cell: (i) => formatCurrencyINR(i.getValue<number | null>()),
+  }
+}
+
+interface OpenPositionLike {
+  entry_date: string
+  entry_price: number
+  current_price: number | null
+}
+
+/** "Duration" — whole days the position has been open (entry_date to
+ * today). Part of the standard exit-fields tail (exit today? → exit
+ * reason → win/loss if exited today → duration → CAGR) every open-position
+ * table should carry, per the app's recommendation/exit column
+ * convention. */
+export function tradeDurationColumn<TData extends OpenPositionLike>(): ColumnDef<TData, unknown> {
+  return {
+    id: 'duration_days',
+    accessorFn: (row) => daysSince(row.entry_date),
+    header: 'Duration',
+    size: 75,
+    meta: { align: 'right' },
+    cell: (i) => `${i.getValue<number>()}d`,
+  }
+}
+
+/** "CAGR if exited today" — annualized return using `current_price` as a
+ * stand-in exit price, computed client-side from fields every open-
+ * position table already fetches (entry_date/entry_price/current_price) —
+ * no backend change needed. Null until the position has been open at
+ * least a day (annualizing a same-day return is not meaningful). */
+export function exitTodayCagrColumn<TData extends OpenPositionLike>(): ColumnDef<TData, unknown> {
+  return {
+    id: 'cagr_if_exited_today',
+    accessorFn: (row) => {
+      const days = daysSince(row.entry_date)
+      if (days < 1 || row.current_price == null || row.entry_price === 0) return null
+      const totalReturn = row.current_price / row.entry_price
+      return (Math.pow(totalReturn, 365 / days) - 1) * 100
+    },
+    header: 'CAGR (if exited today)',
+    size: 90,
+    meta: { align: 'right' },
+    cell: (i) => {
+      const v = i.getValue<number | null>()
+      if (v == null) return '—'
+      return <span className={v >= 0 ? 'text-green' : 'text-red'}>{v.toFixed(1)}%</span>
+    },
   }
 }

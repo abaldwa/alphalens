@@ -495,6 +495,52 @@ async def get_relative_valuation(
     }
 
 
+@router.get("/pillar_summary")
+async def get_valuation_pillar_summary() -> Dict[str, Any]:
+    """Home page pillar-outcome card: latest `valuation_signals` snapshot.
+    Deliberately does NOT call /accuracy/backtest's hit-rate logic here —
+    that endpoint does a live per-ticker Python-loop join against
+    ohlcv_adjusted, too expensive for a summary card that renders on every
+    Home page load. Valuation also has only one real "strategy" (DCF /
+    margin-of-safety, no multi-strategy leaderboard the way Technical has
+    42 templates), so `top_strategy` names that one method rather than
+    picking among several; `top_strategy_success_rate_pct` stays null
+    rather than paying the live-backtest cost on every page load."""
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+            if "valuation_signals" not in tables:
+                return {"as_of_date": None, "available": False, "recommendation_count": 0,
+                        "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+            latest = conn.execute("SELECT MAX(date) FROM valuation_signals").fetchone()
+            latest_date = latest[0] if latest else None
+            if latest_date is None:
+                return {"as_of_date": None, "available": False, "recommendation_count": 0,
+                        "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+            row = conn.execute(
+                """
+                SELECT COUNT(*), AVG(valuation_gap_pct)
+                FROM valuation_signals
+                WHERE date = ? AND margin_of_safety > 0
+                """,
+                [latest_date],
+            ).fetchone()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"valuation_signals query failed: {exc}")
+
+    count, avg_gap = row if row else (0, None)
+    return {
+        "as_of_date": str(latest_date),
+        "available": True,
+        "recommendation_count": int(count or 0),
+        "avg_expected_return_pct": float(avg_gap) if avg_gap is not None else None,
+        "top_strategy": "DCF (Margin of Safety)",
+        "top_strategy_success_rate_pct": None,
+    }
+
+
 @router.get("/accuracy/backtest")
 async def get_valuation_accuracy(
     horizon_days: int = Query(

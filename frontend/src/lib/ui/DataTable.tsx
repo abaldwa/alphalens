@@ -1,21 +1,40 @@
 import {
   type Cell,
   type ColumnDef,
+  type ColumnFiltersState,
   flexRender,
   getCoreRowModel,
+  getFacetedUniqueValues,
   getFilteredRowModel,
   getSortedRowModel,
   type SortingState,
   useReactTable,
 } from '@tanstack/react-table'
 import * as React from 'react'
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, Filter, Search, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/lib/ui/primitives/table'
 import { Skeleton } from '@/lib/ui/primitives/skeleton'
 import { Input } from '@/lib/ui/primitives/input'
 import { Badge } from '@/lib/ui/primitives/badge'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from '@/lib/ui/primitives/dropdown-menu'
+
+/** Multi-select checkbox filter used by every DataTable column's header
+ * dropdown — filterValue is the list of raw (stringified) values the user
+ * has checked; an empty/undefined filterValue means "no filter applied". */
+function multiSelectFilterFn(row: { getValue: (columnId: string) => unknown }, columnId: string, filterValue: string[]) {
+  if (!filterValue || filterValue.length === 0) return true
+  return filterValue.includes(String(row.getValue(columnId) ?? ''))
+}
 
 /** Column-priority hint, read off `columnDef.meta.priority`. Below
  * `COLLAPSE_WIDTH_PX` container width, `low`-priority columns are pulled
@@ -115,6 +134,14 @@ export interface DataTableProps<TData> {
    * Use this instead of `facetFilter` when filtering by more than one
    * field; `facetFilter` remains a shorthand for the single-filter case. */
   facetFilters?: DataTableFacetFilter<TData>[]
+  /** Caps the table's vertical scroll region so its header can stick to the
+   * top of that region while scrolling — the "fix the top row" behavior.
+   * Default `'calc(100vh - 320px)'` fits comfortably under a page's title/
+   * filter bar; pass a smaller value for a table embedded alongside other
+   * content on the same page. Pass `'none'` to disable the scroll region
+   * (header scrolls away with the page) for a short table that never needs
+   * to scroll internally. */
+  maxHeight?: string
 }
 
 /**
@@ -135,12 +162,14 @@ export function DataTable<TData>({
   placeholder = 'Search…',
   facetFilter,
   facetFilters,
+  maxHeight = 'calc(100vh - 320px)',
 }: DataTableProps<TData>) {
   const allFacetFilters = React.useMemo(
     () => facetFilters ?? (facetFilter ? [facetFilter] : []),
     [facetFilters, facetFilter],
   )
   const [sorting, setSorting] = React.useState<SortingState>([])
+  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([])
   const [expandedRows, setExpandedRows] = React.useState<Record<string, boolean>>({})
   const [globalFilter, setGlobalFilter] = React.useState('')
   const [selectedFacetsByColumn, setSelectedFacetsByColumn] = React.useState<Record<string, Set<string>>>({})
@@ -196,28 +225,49 @@ export function DataTable<TData>({
     })
   }
 
-  const hasLowPriorityColumns = columns.some((c) => c.meta?.priority === 'low')
-
   const table = useReactTable({
     data: facetedData,
     columns,
-    state: { sorting, globalFilter },
+    state: { sorting, globalFilter, columnFilters },
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
+    onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getFacetedUniqueValues: getFacetedUniqueValues(),
     globalFilterFn: 'includesString',
     columnResizeMode: 'onChange',
     enableColumnResizing: resizableColumns,
-    defaultColumn: { minSize: 60, size: 160 },
+    defaultColumn: { minSize: 60, size: 160, filterFn: multiSelectFilterFn },
   })
 
-  // Collapse low-priority columns only if the full column set actually
-  // overflows the measured container — not an arbitrary breakpoint, since
-  // the same column count can fit fine in a full-width page but overflow
-  // inside a narrower card/sidebar layout.
-  const collapseColumns = hasLowPriorityColumns && containerWidth != null && table.getTotalSize() > containerWidth
+  // Two-stage overflow collapse: hide `low`-priority columns first; if the
+  // remaining (high + medium) columns still don't fit the measured
+  // container, also hide `medium`-priority columns. This is what lets a
+  // dense 10-12 column screener honor "no horizontal scroll" — a single
+  // collapse stage isn't always enough once `high`-priority columns alone
+  // approach the container width (e.g. a narrower viewport or the sidebar
+  // expanded). Never collapses `high`/unset-priority columns — those are
+  // the floor a table is allowed to shrink to.
+  const lowWidth = columns
+    .filter((c) => c.meta?.priority === 'low')
+    .reduce((sum, c) => sum + (c.size ?? 160), 0)
+  const mediumWidth = columns
+    .filter((c) => c.meta?.priority === 'medium')
+    .reduce((sum, c) => sum + (c.size ?? 160), 0)
+  const hasLowPriorityColumns = lowWidth > 0
+  const hasMediumPriorityColumns = mediumWidth > 0
+  const fullWidth = table.getTotalSize()
+  const collapseLevel: 'none' | 'low' | 'low+medium' =
+    containerWidth == null || fullWidth <= containerWidth
+      ? 'none'
+      : hasLowPriorityColumns && fullWidth - lowWidth <= containerWidth
+        ? 'low'
+        : hasLowPriorityColumns || hasMediumPriorityColumns
+          ? 'low+medium'
+          : 'none'
+  const collapseColumns = collapseLevel !== 'none'
 
   const filterBar =
     enableSearch || allFacetFilters.length > 0 ? (
@@ -291,10 +341,15 @@ export function DataTable<TData>({
     )
   }
 
-  const isLowPriority = (columnId: string) => table.getColumn(columnId)?.columnDef.meta?.priority === 'low'
+  const isCollapsedPriority = (columnId: string) => {
+    const priority = table.getColumn(columnId)?.columnDef.meta?.priority
+    if (collapseLevel === 'low+medium') return priority === 'low' || priority === 'medium'
+    if (collapseLevel === 'low') return priority === 'low'
+    return false
+  }
   const visibleHeaderGroups = table.getHeaderGroups().map((hg) => ({
     ...hg,
-    headers: collapseColumns ? hg.headers.filter((h) => !isLowPriority(h.column.id)) : hg.headers,
+    headers: collapseColumns ? hg.headers.filter((h) => !isCollapsedPriority(h.column.id)) : hg.headers,
   }))
   const columnCount = (visibleHeaderGroups[0]?.headers.length ?? columns.length) + (collapseColumns ? 1 : 0)
   const CHEVRON_COLUMN_WIDTH = 32
@@ -302,18 +357,35 @@ export function DataTable<TData>({
     ? CHEVRON_COLUMN_WIDTH +
       table
         .getVisibleLeafColumns()
-        .filter((c) => !isLowPriority(c.id))
+        .filter((c) => !isCollapsedPriority(c.id))
         .reduce((sum, c) => sum + c.getSize(), 0)
     : table.getTotalSize()
+  const hasActiveColumnFilters = columnFilters.length > 0
 
   return (
     <div>
-      {filterBar}
-      <div ref={containerRef}>
+      <div className="mb-3 flex items-start justify-between gap-2">
+        {filterBar}
+        {hasActiveColumnFilters ? (
+          <button
+            type="button"
+            onClick={() => setColumnFilters([])}
+            className="mt-1 flex shrink-0 items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:underline"
+          >
+            <X className="size-3" /> Clear column filters
+          </button>
+        ) : null}
+      </div>
+      <div ref={containerRef} className="overflow-x-hidden overflow-y-auto" style={maxHeight === 'none' ? undefined : { maxHeight }}>
         <Table
           style={
             resizableColumns
-              ? { width: visibleTotalSize, minWidth: '100%', tableLayout: 'fixed' }
+              ? {
+                  width: visibleTotalSize,
+                  minWidth: '100%',
+                  maxWidth: containerWidth ?? undefined,
+                  tableLayout: 'fixed',
+                }
               : undefined
           }
         >
@@ -323,27 +395,92 @@ export function DataTable<TData>({
                 {collapseColumns ? <TableHead className="w-8" /> : null}
                 {hg.headers.map((header) => {
                   const sorted = header.column.getIsSorted()
+                  const canSort = header.column.getCanSort()
+                  const canFilter = header.column.getCanFilter() && !header.isPlaceholder
+                  const activeFilter = (header.column.getFilterValue() as string[] | undefined) ?? []
+                  const facetedValues = canFilter ? Array.from(header.column.getFacetedUniqueValues().keys()) : []
+                  const filterOptions = facetedValues
+                    .filter((v) => v != null && v !== '')
+                    .map((v) => String(v))
+                    .sort((a, b) => a.localeCompare(b))
+                    .slice(0, 50)
                   return (
                     <TableHead
                       key={header.id}
-                      className={cn('relative text-center', header.column.getCanSort() && 'cursor-pointer select-none')}
+                      className="relative text-center"
                       style={resizableColumns ? { width: header.getSize() } : undefined}
                     >
-                      <span
-                        className="flex w-full items-center justify-center gap-1"
-                        onClick={header.column.getToggleSortingHandler()}
-                      >
-                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
-                        {header.column.getCanSort() ? (
-                          sorted === 'asc' ? (
-                            <ArrowUp className="size-3" />
-                          ) : sorted === 'desc' ? (
-                            <ArrowDown className="size-3" />
-                          ) : (
-                            <ArrowUpDown className="size-3 opacity-30" />
-                          )
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild disabled={!canSort && !canFilter}>
+                          <button
+                            type="button"
+                            className={cn(
+                              'flex w-full items-center justify-center gap-1',
+                              (canSort || canFilter) && 'cursor-pointer',
+                            )}
+                          >
+                            {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                            {canSort ? (
+                              sorted === 'asc' ? (
+                                <ArrowUp className="size-3" />
+                              ) : sorted === 'desc' ? (
+                                <ArrowDown className="size-3" />
+                              ) : (
+                                <ArrowUpDown className="size-3 opacity-30" />
+                              )
+                            ) : null}
+                            {activeFilter.length > 0 ? <Filter className="size-3 text-primary" /> : null}
+                            {canSort || canFilter ? <ChevronDown className="size-3 opacity-50" /> : null}
+                          </button>
+                        </DropdownMenuTrigger>
+                        {canSort || canFilter ? (
+                          <DropdownMenuContent align="center" className="normal-case">
+                            {canSort ? (
+                              <>
+                                <DropdownMenuItem onSelect={() => header.column.toggleSorting(false)}>
+                                  <ArrowUp className="size-3.5" /> Sort ascending
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => header.column.toggleSorting(true)}>
+                                  <ArrowDown className="size-3.5" /> Sort descending
+                                </DropdownMenuItem>
+                                {sorted ? (
+                                  <DropdownMenuItem onSelect={() => header.column.clearSorting()}>
+                                    <ArrowUpDown className="size-3.5" /> Clear sort
+                                  </DropdownMenuItem>
+                                ) : null}
+                              </>
+                            ) : null}
+                            {canSort && canFilter ? <DropdownMenuSeparator /> : null}
+                            {canFilter && filterOptions.length > 0 ? (
+                              <>
+                                <DropdownMenuLabel>Filter</DropdownMenuLabel>
+                                <div className="max-h-56 overflow-y-auto">
+                                  {filterOptions.map((value) => (
+                                    <DropdownMenuCheckboxItem
+                                      key={value}
+                                      checked={activeFilter.includes(value)}
+                                      onSelect={(e) => {
+                                        e.preventDefault()
+                                        const next = activeFilter.includes(value)
+                                          ? activeFilter.filter((v) => v !== value)
+                                          : [...activeFilter, value]
+                                        header.column.setFilterValue(next.length > 0 ? next : undefined)
+                                      }}
+                                    >
+                                      {value}
+                                    </DropdownMenuCheckboxItem>
+                                  ))}
+                                </div>
+                                {activeFilter.length > 0 ? (
+                                  <DropdownMenuItem onSelect={() => header.column.setFilterValue(undefined)}>
+                                    <X className="size-3.5" /> Clear filter
+                                  </DropdownMenuItem>
+                                ) : null}
+                              </>
+                            ) : null}
+                          </DropdownMenuContent>
                         ) : null}
-                      </span>
+                      </DropdownMenu>
                       {resizableColumns && header.column.getCanResize() ? (
                         <div
                           onMouseDown={header.getResizeHandler()}
@@ -366,8 +503,8 @@ export function DataTable<TData>({
               table.getRowModel().rows.map((row) => {
                 const isOpen = expandedRows[row.id] ?? false
                 const allCells = row.getVisibleCells()
-                const visibleCells = collapseColumns ? allCells.filter((c) => !isLowPriority(c.column.id)) : allCells
-                const hiddenCells = collapseColumns ? allCells.filter((c) => isLowPriority(c.column.id)) : []
+                const visibleCells = collapseColumns ? allCells.filter((c) => !isCollapsedPriority(c.column.id)) : allCells
+                const hiddenCells = collapseColumns ? allCells.filter((c) => isCollapsedPriority(c.column.id)) : []
                 return (
                   <React.Fragment key={row.id}>
                     <TableRow>

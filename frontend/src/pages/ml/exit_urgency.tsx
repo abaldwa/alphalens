@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, formatCurrencyINR, tickerColumn } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, exitTodayCagrColumn, formatCurrencyINR, tickerColumn, tradeDurationColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { ExitUrgencyResponse, ExitUrgencyRow } from './types'
 
@@ -20,24 +20,17 @@ function pnlTone(v: number | null | undefined) {
   return v >= 0 ? 'text-green' : 'text-red'
 }
 
+// Column order follows the app-wide convention for actionable positions:
+// exit-today flag -> exit reason -> win/loss if exited today -> duration ->
+// CAGR, then supporting identity/price detail.
 const columns: ColumnDef<ExitUrgencyRow, unknown>[] = [
   tickerColumn<ExitUrgencyRow>(),
-  { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
-  { accessorKey: 'entry_date', header: 'Entry Date', meta: { priority: 'low' } },
-  { accessorKey: 'entry_price', header: 'Entry Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number>()) },
-  { accessorKey: 'current_price', header: 'Current', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
-  {
-    accessorKey: 'unrealised_pnl_pct',
-    header: 'Unrealised P&L',
-    meta: { align: 'right' },
-    cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
-  },
   {
     accessorKey: 'exit_urgency',
     header: () => (
       <span className="inline-flex items-center gap-1">
-        Exit Urgency
-        <InfoTooltip>rule_based_exit_policy's 0-100 urgency score for exiting an existing position.</InfoTooltip>
+        Exit Today?
+        <InfoTooltip>rule_based_exit_policy's 0-100 urgency score for exiting an existing position — 70+ is a same-day exit call.</InfoTooltip>
       </span>
     ),
     meta: { align: 'right' },
@@ -47,12 +40,29 @@ const columns: ColumnDef<ExitUrgencyRow, unknown>[] = [
     accessorKey: 'exit_type',
     header: () => (
       <span className="inline-flex items-center gap-1">
-        Exit Type (reason)
+        Exit Reason
         <InfoTooltip>The specific rule that triggered the exit urgency score (thesis_broken / momentum_exhaustion / risk_management / target_achieved / opportunity_cost / pnd_exit).</InfoTooltip>
       </span>
     ),
     cell: (i) => i.getValue<string | null>() ?? '—',
   },
+  {
+    accessorKey: 'unrealised_pnl_pct',
+    header: () => (
+      <span className="inline-flex items-center gap-1">
+        Win/Loss (if exited today)
+        <InfoTooltip>Unrealised P&L using current_price as a stand-in exit price.</InfoTooltip>
+      </span>
+    ),
+    meta: { align: 'right' },
+    cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
+  },
+  tradeDurationColumn<ExitUrgencyRow>(),
+  exitTodayCagrColumn<ExitUrgencyRow>(),
+  { accessorKey: 'current_price', header: 'Current', meta: { align: 'right', priority: 'medium' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'entry_price', header: 'Entry Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number>()) },
+  { accessorKey: 'entry_date', header: 'Entry Date', meta: { priority: 'low' } },
+  { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
 ]
 
 export function MlExitUrgencyPage() {

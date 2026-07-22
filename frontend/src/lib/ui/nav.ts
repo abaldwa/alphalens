@@ -21,6 +21,19 @@ export interface NavSection {
   external?: boolean
 }
 
+/** The three sidebar tiers, in display order — every `NavSection.id` must
+ * appear in exactly one tier's list. 'pillars' are the five signal-
+ * generating strategy pillars (Technical/Fundamental/Valuation/Momentum/ML)
+ * the Home page summarizes; 'execution' is portfolio/trade-adjacent
+ * sections that consume pillar output rather than generating a signal
+ * themselves; 'reference' is diagnostic/supporting material. Purely a
+ * sidebar grouping — doesn't change routes or NAV_SECTIONS entries. */
+export const NAV_TIERS: { id: string; label: string; sectionIds: string[] }[] = [
+  { id: 'pillars', label: 'Strategy Pillars', sectionIds: ['technical', 'fundamental', 'valuation', 'momentum', 'ml'] },
+  { id: 'execution', label: 'Portfolio & Execution', sectionIds: ['backtest', 'big_investors'] },
+  { id: 'reference', label: 'Reference & Ops', sectionIds: ['explain', 'forensic', 'ops', 'macro'] },
+]
+
 export const NAV_SECTIONS: NavSection[] = [
   { id: 'home', label: 'Home', href: '/' },
   {

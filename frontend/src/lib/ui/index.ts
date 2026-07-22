@@ -13,6 +13,7 @@ export * from './primitives/badge'
 export * from './primitives/sheet'
 export * from './primitives/tooltip'
 export * from './primitives/input'
+export * from './primitives/dropdown-menu'
 
 // Composite components built on top of the primitives.
 export * from './AppShell'

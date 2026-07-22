@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/lib/ui/primitives/button'
 import { Sheet, SheetContent, SheetTrigger } from '@/lib/ui/primitives/sheet'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/lib/ui/primitives/tooltip'
-import { NAV_SECTIONS, type NavSection } from '@/lib/ui/nav'
+import { NAV_SECTIONS, NAV_TIERS, type NavSection } from '@/lib/ui/nav'
 import { CopilotPanel } from '@/lib/ui/CopilotPanel'
 
 const SECTION_ICONS: Record<string, LucideIcon> = {
@@ -74,10 +74,10 @@ function NavList({
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>(() =>
     Object.fromEntries(NAV_SECTIONS.map((s) => [s.id, sectionActive(s, pathname)])),
   )
+  const sectionsById = React.useMemo(() => new Map(NAV_SECTIONS.map((s) => [s.id, s])), [])
+  const homeSection = sectionsById.get('home')
 
-  return (
-    <nav className="flex flex-col gap-0.5 px-2">
-      {NAV_SECTIONS.map((s) => {
+  const renderSection = (s: NavSection) => {
         const active = sectionActive(s, pathname)
         const hasSub = (s.subItems?.length ?? 0) > 0
         const isOpen = expanded[s.id] ?? active
@@ -177,6 +177,24 @@ function NavList({
                 })}
               </div>
             ) : null}
+          </div>
+        )
+  }
+
+  return (
+    <nav className="flex flex-col gap-0.5 px-2">
+      {homeSection ? renderSection(homeSection) : null}
+      {NAV_TIERS.map((tier) => {
+        const sections = tier.sectionIds.map((id) => sectionsById.get(id)).filter((s): s is NavSection => s != null)
+        if (sections.length === 0) return null
+        return (
+          <div key={tier.id} className="mt-2 flex flex-col gap-0.5">
+            {!collapsed ? (
+              <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/40">
+                {tier.label}
+              </div>
+            ) : null}
+            {sections.map((s) => renderSection(s))}
           </div>
         )
       })}

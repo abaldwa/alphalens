@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, ResponsiveChartCard, StatCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, formatCurrencyINR, numericCellClass, sectorColumn, tickerColumn } from '@/lib/ui'
+import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, ResponsiveChartCard, StatCard, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, exitTodayCagrColumn, formatCurrencyINR, numericCellClass, sectorColumn, tickerColumn, tradeDurationColumn } from '@/lib/ui'
 import { apiGet, apiPost } from '@/shared/api/client'
 import type {
   EquityCurveResponse,
@@ -68,22 +68,27 @@ export function MlPositionsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['paper-trading-state'] }),
   })
 
+  // Column order follows the app-wide convention for actionable positions:
+  // current price -> win/loss if exited today -> exit reason -> duration ->
+  // CAGR, then supporting strategy/identity detail.
   const positionColumns: ColumnDef<PaperTradingPosition, unknown>[] = [
     tickerColumn<PaperTradingPosition>(),
-    { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
-    sectorColumn<PaperTradingPosition>(),
-    { accessorKey: 'entry_date', header: 'Entry Date', meta: { priority: 'low' } },
-    { accessorKey: 'entry_price', header: 'Entry Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number>()) },
-    { accessorKey: 'quantity', header: 'Qty', meta: { priority: 'low', align: 'right' } },
     { accessorKey: 'current_price', header: 'Current', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
     {
       accessorKey: 'unrealised_pnl_pct',
-      header: 'Unrealised P&L',
+      header: () => (
+        <span className="inline-flex items-center gap-1">
+          Win/Loss (if exited today)
+          <InfoTooltip>Unrealised P&L using current_price as a stand-in exit price.</InfoTooltip>
+        </span>
+      ),
       meta: { align: 'right' },
       cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
     },
-    { accessorKey: 'buy_prob_entry', header: 'Buy Prob (Entry)', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
-    { accessorKey: 'buy_prob_current', header: 'Buy Prob (Now)', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+    { accessorKey: 'exit_criterion', header: 'Exit Reason', cell: (i) => i.getValue<string | null>() ?? '—' },
+    tradeDurationColumn<PaperTradingPosition>(),
+    exitTodayCagrColumn<PaperTradingPosition>(),
+    { accessorKey: 'buy_prob_current', header: 'Buy Prob (Now)', meta: { align: 'right', priority: 'medium' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
     { accessorKey: 'target_price', header: 'Target Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
     { accessorKey: 'target_date', header: 'Target Date', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
     {
@@ -98,7 +103,12 @@ export function MlPositionsPage() {
       meta: { priority: 'low', align: 'right' },
       cell: (i) => <span className={pnlTone(i.getValue<number | null>())}>{fmtPct(i.getValue<number | null>())}</span>,
     },
-    { accessorKey: 'exit_criterion', header: 'Exit Criterion', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
+    { accessorKey: 'buy_prob_entry', header: 'Buy Prob (Entry)', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtPct(i.getValue<number | null>()) },
+    { accessorKey: 'entry_price', header: 'Entry Price', meta: { priority: 'low', align: 'right' }, cell: (i) => fmtMoney(i.getValue<number>()) },
+    { accessorKey: 'entry_date', header: 'Entry Date', meta: { priority: 'low' } },
+    { accessorKey: 'quantity', header: 'Qty', meta: { priority: 'low', align: 'right' } },
+    sectorColumn<PaperTradingPosition>(),
+    { accessorKey: 'company_name', header: 'Name', meta: { priority: 'low' }, cell: (i) => i.getValue<string | null>() ?? '—' },
     {
       id: 'action',
       header: 'Action',
@@ -233,7 +243,7 @@ export function MlPositionsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    {['Ticker', 'Entry', 'Exit', 'Exit Type', 'P&L', 'P&L %'].map((h) => (
+                    {['Ticker', 'Exit Type', 'P&L', 'P&L %', 'Duration', 'CAGR', 'Entry', 'Exit'].map((h) => (
                       <TableHead key={h}>
                         {h === 'Exit Type' ? (
                           <span className="inline-flex items-center gap-1 normal-case">
@@ -248,22 +258,37 @@ export function MlPositionsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {trades.data.trades.slice(0, 50).map((t, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="font-semibold">{t.ticker}</TableCell>
-                      <TableCell className={numericCellClass}>
-                        {fmtMoney(t.entry_price)} ({t.date})
-                      </TableCell>
-                      <TableCell className={numericCellClass}>
-                        {t.exit_price != null ? fmtMoney(t.exit_price) : '—'} ({t.exit_date ?? '—'})
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{t.exit_type ?? '—'}</Badge>
-                      </TableCell>
-                      <TableCell className={`${numericCellClass} ${pnlTone(t.pnl)}`}>{t.pnl != null ? fmtMoney(t.pnl) : '—'}</TableCell>
-                      <TableCell className={`${numericCellClass} ${pnlTone(t.pnl_pct)}`}>{fmtPct(t.pnl_pct)}</TableCell>
-                    </TableRow>
-                  ))}
+                  {trades.data.trades.slice(0, 50).map((t, i) => {
+                    // Whole calendar days between entry and exit — used for
+                    // the CAGR annualization below; null-safe since a trade
+                    // record without an exit_date can't have a duration.
+                    const durationDays =
+                      t.exit_date != null
+                        ? Math.max(1, Math.round((new Date(`${t.exit_date}T00:00:00`).getTime() - new Date(`${t.date}T00:00:00`).getTime()) / 86_400_000))
+                        : null
+                    const cagr =
+                      durationDays != null && t.exit_price != null && t.entry_price !== 0
+                        ? (Math.pow(t.exit_price / t.entry_price, 365 / durationDays) - 1) * 100
+                        : null
+                    return (
+                      <TableRow key={i}>
+                        <TableCell className="font-semibold">{t.ticker}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{t.exit_type ?? '—'}</Badge>
+                        </TableCell>
+                        <TableCell className={`${numericCellClass} ${pnlTone(t.pnl)}`}>{t.pnl != null ? fmtMoney(t.pnl) : '—'}</TableCell>
+                        <TableCell className={`${numericCellClass} ${pnlTone(t.pnl_pct)}`}>{fmtPct(t.pnl_pct)}</TableCell>
+                        <TableCell className={numericCellClass}>{durationDays != null ? `${durationDays}d` : '—'}</TableCell>
+                        <TableCell className={`${numericCellClass} ${pnlTone(cagr)}`}>{cagr != null ? `${cagr.toFixed(1)}%` : '—'}</TableCell>
+                        <TableCell className={numericCellClass}>
+                          {fmtMoney(t.entry_price)} ({t.date})
+                        </TableCell>
+                        <TableCell className={numericCellClass}>
+                          {t.exit_price != null ? fmtMoney(t.exit_price) : '—'} ({t.exit_date ?? '—'})
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             )}

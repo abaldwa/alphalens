@@ -181,6 +181,45 @@ def _enrich_with_price_data(conn, tickers: List[str], as_of_date: str) -> dict:
     }
 
 
+@router.get("/pillar_summary")
+async def get_momentum_pillar_summary(strategy_id: str = DEFAULT_STRATEGY_ID) -> dict:
+    """Home page pillar-outcome card, for one of the 5 rank-band
+    strategies (defaults to DEFAULT_STRATEGY_ID). Uses the pipeline-
+    written momentum_rankings snapshot only (no on-the-spot compute, unlike
+    /universe's fallback) — a summary card shouldn't trigger a live ranking
+    run. avg_expected_return_pct here is `momentum_return`, the trailing
+    lookback return used to RANK stocks into the top-N, not a forward-
+    looking forecast — labeled accordingly so it isn't confused with the
+    ML pillar's forward q50_return. No win-rate/success-rate table exists
+    for momentum (only the user's own manually-logged trades' CAGR does,
+    via /summary) — top_strategy names the active strategy_id but its
+    success-rate field is left null rather than depending on whether the
+    user happens to have logged trades in this band."""
+    _validate_strategy_id(strategy_id)
+    target_date = date_type.today().isoformat()
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=True) as conn:
+        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+        if "momentum_rankings" not in tables:
+            return {"as_of_date": None, "available": False, "recommendation_count": 0,
+                     "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+        row = conn.execute(
+            "SELECT COUNT(*), AVG(momentum_return) FROM momentum_rankings "
+            "WHERE date = ? AND strategy_id = ? AND in_top_n = TRUE",
+            [target_date, strategy_id],
+        ).fetchone()
+
+    count, avg_return = row if row else (0, None)
+    strategy_label = next((s["label"] for s in momentum_live.STRATEGIES if s["strategy_id"] == strategy_id), strategy_id)
+    return {
+        "as_of_date": target_date if count else None,
+        "available": bool(count),
+        "recommendation_count": int(count or 0),
+        "avg_expected_return_pct": float(avg_return * 100) if avg_return is not None else None,
+        "top_strategy": strategy_label,
+        "top_strategy_success_rate_pct": None,
+    }
+
+
 @router.get("/universe", response_model=List[RankingRow])
 async def get_universe(
     strategy_id: str = DEFAULT_STRATEGY_ID, as_of_date: Optional[date_type] = None
