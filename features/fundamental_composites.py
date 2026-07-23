@@ -4,7 +4,7 @@ features/fundamental_composites.py
 Phase: 3.x (Fundamental Analysis API Scaffolding)
 Specs: SPEC-FA-008
 Owner: Platform / Features
-Consumers: datastore/api/routers/fundamental_analysis.py
+Consumers: datastore/api/routers/fundamentals.py
 
 The 30 raw fundamental ratios (27 sector-relative z-scored per SPEC-FEAT-002,
 features/fundamental.py) and 12 governance features (features/governance.py)
@@ -14,8 +14,7 @@ datastore/api/routers/technical.py's docstring for the equivalent TA story.
 
 What's genuinely missing — confirmed during 2026-07-01 planning — is the
 small set of composite scores (quality/growth/management) and peer-ranking
-logic systems/fundamental_analysis/{quality,growth,management,peers}/ were
-always meant to hold but never got built. These functions are intentionally
+logic that was never built in a dedicated module. These functions are intentionally
 small (combine already-computed values, no new raw data ingestion) and are
 called at API-request time, not persisted as new feature columns — there is
 no new ground-truth data here, just documented arithmetic over real inputs.
@@ -103,8 +102,7 @@ def select_peers(
     ticker: str, panel: pd.DataFrame, sector_map: Dict[str, str], mcap_map: Dict[str, float], k: int = 5
 ) -> List[str]:
     """
-    Real peer-selection logic (was previously unimplemented —
-    systems/fundamental_analysis/peers/ was an empty stub): same sector,
+    Real peer-selection logic (was previously unimplemented): same sector,
     ranked by closeness in log(market_cap), top k excluding the ticker
     itself. `panel` is the day's fundamental feature rows (ticker column
     must be present) — only tickers that actually have a row in the panel
