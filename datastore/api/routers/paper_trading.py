@@ -126,6 +126,8 @@ async def _enrich_positions(raw_positions: list, position_meta: dict) -> list:
         p["target_price"] = meta.get("target_price")
         p["target_date"] = meta.get("target_date")
         p["exit_criterion"] = meta.get("exit_criterion") or exit_criterion_text(p["entry_price"])
+        p["pillar"] = meta.get("pillar")
+        p["template"] = meta.get("template")
 
         latest = await get_ohlcv_latest(p["ticker"])
         current_price = latest.close if latest is not None else None
@@ -169,7 +171,9 @@ async def get_paper_trading_state() -> PaperTradingStateResponse:
 
 
 @router.get("/exit_urgency", response_model=ExitUrgencyResponse)
-async def get_exit_urgency() -> ExitUrgencyResponse:
+async def get_exit_urgency(
+    pillar: Optional[str] = Query(None, description="Filter to positions tagged with this pillar (e.g. 'ml', 'technical'); omit for all positions"),
+) -> ExitUrgencyResponse:
     """
     #23 — all open positions ranked by exit_urgency, exit_type shown as the
     stated reason. Reads today's (or carried-forward) signal_5d row per
@@ -177,6 +181,10 @@ async def get_exit_urgency() -> ExitUrgencyResponse:
     exposes as columns, just aggregated across the whole book and sorted
     highest-urgency-first so nothing requires a separate alert banner to
     notice.
+
+    Optional ?pillar= filters server-side to positions whose position_meta
+    tags them with that pillar (e.g. "ml" / "technical"); omitted, this
+    returns every open position unfiltered, matching pre-pillar behavior.
     """
     if not PORTFOLIO_STATE_PATH.exists():
         return ExitUrgencyResponse()
@@ -186,6 +194,8 @@ async def get_exit_urgency() -> ExitUrgencyResponse:
     state = json.loads(PORTFOLIO_STATE_PATH.read_text())
     raw_positions = await _enrich_positions(state.get("positions", []), state.get("position_meta", {}))
     real = [p for p in raw_positions if p["ticker"] != "_HEARTBEAT_"]
+    if pillar is not None:
+        real = [p for p in real if p.get("pillar") == pillar]
     today = now_ist().date()
 
     rows = []
@@ -210,6 +220,8 @@ async def get_exit_urgency() -> ExitUrgencyResponse:
                 unrealised_pnl_pct=p.get("unrealised_pnl_pct"),
                 exit_urgency=exit_urgency,
                 exit_type=exit_type,
+                pillar=p.get("pillar"),
+                template=p.get("template"),
             )
         )
 
@@ -437,6 +449,12 @@ async def accept_pending_action(action_id: str) -> ActionDecisionResponse:
                     "target_price": round(pos.entry_price * (1 + TARGET_PCT), 2),
                     "target_date": str(today + timedelta(days=MAX_HOLD_DAYS)),
                     "exit_criterion": exit_criterion_text(pos.entry_price),
+                    # Pending actions are proposed by the ML signal engine
+                    # (propose_daily_entries reads signal_5d) — tag the
+                    # pillar accordingly; model_name is the specific model
+                    # (e.g. "signal_5d") that produced this candidate.
+                    "pillar": "ml",
+                    "template": match.get("model_name"),
                 }
             elif executed and match["ticker"] not in portfolio.positions:
                 # sell, or a reduce that exactly zeroed the position — log the
@@ -543,6 +561,8 @@ async def backdated_buy(request: BackdatedBuyRequest) -> BackdatedBuyResponse:
             "target_price": round(position.entry_price * (1 + TARGET_PCT), 2),
             "target_date": str(entry_date + timedelta(days=MAX_HOLD_DAYS)),
             "exit_criterion": exit_criterion_text(position.entry_price),
+            "pillar": request.pillar,
+            "template": request.template,
         }}
         save_portfolio_state(portfolio, PORTFOLIO_STATE_PATH, as_of_date=str(now_ist().date()), position_meta=position_meta)
 

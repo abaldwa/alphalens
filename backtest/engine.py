@@ -532,9 +532,19 @@ class BacktestEngine:
                     "pnd_score": pnd_scores.get(t, 0.0),
                     "hmm_regime": np.nan,
                     "atr_pct": pos.entry_atr_pct if pos.entry_atr_pct is not None else np.nan,
+                    "template": pos.template,
+                    "pillar": pos.pillar,
                 }
             )
-        exit_ctx = pd.DataFrame(rows).set_index("ticker")[EXIT_CONTEXT_COLUMNS]
+        rows_df = pd.DataFrame(rows).set_index("ticker")
+        exit_ctx = rows_df[EXIT_CONTEXT_COLUMNS]
+        # template/pillar are strategy-identity columns, not part of the
+        # trained EXIT_CONTEXT_COLUMNS schema (kept separate from
+        # ExitSignalModel's feature_names) — appended for
+        # PerTemplateExitPolicy's per-template routing (predict_full()
+        # implementations that don't use them simply ignore the extra
+        # columns, same as atr_pct's additive-column pattern above).
+        exit_ctx = exit_ctx.assign(template=rows_df["template"], pillar=rows_df["pillar"])
         exit_out = self.exit_model.predict_full(exit_ctx)
         adtv_today = self._adtv_cr(d, held)
         for t in held:
@@ -605,9 +615,26 @@ class BacktestEngine:
             # for RuleBasedExitPolicy's ATR-scaled target/stop (atr_pct).
             atr_14_pct = feat_block.loc[ticker, "atr_14_pct"] if "atr_14_pct" in feat_block.columns else np.nan
             entry_atr_pct = float(atr_14_pct) / 100.0 if pd.notna(atr_14_pct) else None
+            # Strategy identity for PerTemplateExitPolicy routing. This
+            # engine only ever drives the technical (CORE_TECHNICAL_FEATURES)
+            # channel (see module docstring), so pillar is always "technical";
+            # template comes from whichever screener template/preset column
+            # the caller merged onto day_rows (e.g. a `template`/`preset`
+            # column from systems/technical_analysis/screener output), when
+            # present — None otherwise (falls back to pillar/global default
+            # in PerTemplateExitPolicy).
+            template_col = "template" if "template" in day_rows.columns else (
+                "preset" if "preset" in day_rows.columns else None
+            )
+            template = None
+            if template_col is not None:
+                template_series = day_rows.set_index("ticker")[template_col]
+                if ticker in template_series.index:
+                    val = template_series.loc[ticker]
+                    template = str(val) if pd.notna(val) else None
             portfolio.buy(
                 ticker, self.sector_map.get(ticker, "UNKNOWN"), price, d, prices_today,
-                entry_atr_pct=entry_atr_pct,
+                entry_atr_pct=entry_atr_pct, template=template, pillar="technical",
             )
             self._log_feature(ticker, d, feat_block.loc[ticker].to_dict(), "bought")
 

@@ -140,6 +140,8 @@ export interface PaperTradingPosition {
   exit_criterion: string | null
   stock_gain_pct: number | null
   nifty_gain_pct: number | null
+  pillar?: string | null
+  template?: string | null
 }
 
 export interface PaperTradingStateResponse {
@@ -178,6 +180,8 @@ export interface ExitUrgencyRow {
   unrealised_pnl_pct: number | null
   exit_urgency: number | null
   exit_type: string | null
+  pillar?: string | null
+  template?: string | null
 }
 
 export interface ExitUrgencyResponse {

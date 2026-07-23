@@ -12,12 +12,14 @@ import type {
 /**
  * Shared paper-trading data layer — extracted from ml/positions.tsx so any
  * page can read/act on the account without duplicating the query/mutation
- * wiring. There is currently exactly one paper-trading account
- * (/api/v1/paper_trading), driven entirely by ML buy/sell signals
- * (buy_prob_entry/current on every position) — it has no strategy-source
- * or channel field, so it cannot be filtered down to "Technical-only"
- * positions without fabricating data. Every page using this hook shows the
- * same real account.
+ * wiring. There is exactly one paper-trading account (/api/v1/paper_trading);
+ * positions now carry an optional pillar/template field in position_meta
+ * (set at buy time — "ml" for ML-signal/pending-action buys, "technical"
+ * for backdated buys made from the Technical > Portfolio page, null for
+ * legacy positions opened before this existed). Every page using this hook
+ * still sees the same real account/state — pillar-based filtering, where
+ * wanted, is left to the caller (e.g. technical/portfolio.tsx filters
+ * realPositions down to pillar in (null, 'technical')).
  */
 export function usePaperTrading() {
   const queryClient = useQueryClient()

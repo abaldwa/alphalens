@@ -45,7 +45,7 @@ loads instantly without any external dependencies.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -76,6 +76,17 @@ class ScreenerTemplate:
     description: str
     conditions: List[Dict[str, Any]] = field(default_factory=list)
     key_display_features: List[str] = field(default_factory=list)
+    # Per-template exit params for PerTemplateExitPolicy (systems/
+    # ml_signal_engine/models/exit/per_template_exit_policy.py). None by
+    # default (untagged/legacy construction); populated in bulk below,
+    # by TEMPLATE_STYLE group, once TEMPLATE_STYLE exists — see
+    # STYLE_EXIT_PARAMS and the assignment loop at the bottom of this
+    # module. Kept as plain Optional fields (not required at
+    # construction) so this dataclass stays a pure data structure with
+    # no import-order dependency on the style table below.
+    exit_stop_pct: Optional[float] = None
+    exit_target_pct: Optional[float] = None
+    exit_max_hold_days: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -777,3 +788,34 @@ TEMPLATE_STYLE: Dict[str, str] = {
 }
 assert set(TEMPLATE_STYLE) == set(TEMPLATE_MAP), "TEMPLATE_STYLE must classify every template, no more, no less."
 STRATEGY_STYLES: List[str] = ["Momentum", "Trend Following", "Mean Reversion", "Volatility"]
+
+# ---------------------------------------------------------------------------
+# Per-template exit params (PerTemplateExitPolicy), one set of stop/target/
+# max_hold per TEMPLATE_STYLE group rather than 42 individually-reasoned
+# figures — the style groupings above already say what kind of trade each
+# template is, and exit discipline should follow the trade's *style*, not
+# its specific condition logic:
+#   - Momentum: signal decays fast once the move is already underway, so
+#     exits are tight and short-horizon (4% stop / 10% target / 15d).
+#   - Trend Following: designed to ride a real trend once confirmed, so
+#     gets the most room to run (5% stop / 12% target / 25d).
+#   - Mean Reversion: the whole thesis is a fast snap-back; if it hasn't
+#     reverted quickly the thesis is wrong, so exits are the tightest and
+#     shortest of all four (3% stop / 6% target / 10d).
+#   - Volatility (breakout/squeeze): a confirmed breakout needs slightly
+#     more room than a pure reversion trade but should still resolve
+#     faster than a trend-following thesis (4.5% stop / 9% target / 20d).
+# ---------------------------------------------------------------------------
+STYLE_EXIT_PARAMS: Dict[str, Dict[str, float]] = {
+    "Momentum": {"stop_pct": 0.04, "target_pct": 0.10, "max_hold_days": 15},
+    "Trend Following": {"stop_pct": 0.05, "target_pct": 0.12, "max_hold_days": 25},
+    "Mean Reversion": {"stop_pct": 0.03, "target_pct": 0.06, "max_hold_days": 10},
+    "Volatility": {"stop_pct": 0.045, "target_pct": 0.09, "max_hold_days": 20},
+}
+
+for _tname, _style in TEMPLATE_STYLE.items():
+    _params = STYLE_EXIT_PARAMS[_style]
+    _t = TEMPLATE_MAP[_tname]
+    _t.exit_stop_pct = _params["stop_pct"]
+    _t.exit_target_pct = _params["target_pct"]
+    _t.exit_max_hold_days = int(_params["max_hold_days"])

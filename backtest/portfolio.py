@@ -47,6 +47,11 @@ class Position:
     # #28). None for positions opened before this field existed, or when the
     # caller doesn't have an ATR figure (flat-percentage fallback applies).
     entry_atr_pct: Optional[float] = None
+    # Strategy identity for per-template/per-pillar exit routing
+    # (PerTemplateExitPolicy, backtest/strategy_id.py). None for callers
+    # that don't tag entries (paper trading sim scripts, older callers).
+    template: Optional[str] = None
+    pillar: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.peak_price is None:
@@ -170,7 +175,7 @@ class PortfolioSimulator:
 
     def buy(
         self, ticker: str, sector: str, price: float, date, prices: Dict[str, float], atr: Optional[float] = None,
-        entry_atr_pct: Optional[float] = None,
+        entry_atr_pct: Optional[float] = None, template: Optional[str] = None, pillar: Optional[str] = None,
     ) -> Optional[Position]:
         """
         Open a new position if SPEC-BT-002's gates (can_buy) pass.
@@ -203,7 +208,7 @@ class PortfolioSimulator:
         self.cash -= turnover
         position = Position(
             ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty,
-            entry_atr_pct=entry_atr_pct,
+            entry_atr_pct=entry_atr_pct, template=template, pillar=pillar,
         )
         self.positions[ticker] = position
         return position

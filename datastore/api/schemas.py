@@ -801,6 +801,8 @@ class PaperTradingPosition(BaseModel):
     exit_criterion: Optional[str] = None  # human-readable target/stop/max-hold summary
     stock_gain_pct: Optional[float] = None  # (current_price / entry_price - 1), same as unrealised_pnl_pct pre-cost
     nifty_gain_pct: Optional[float] = None  # NIFTYBEES gain over the same entry_date -> now window
+    pillar: Optional[str] = None  # e.g. "ml" / "technical" — which strategy pillar opened this position, from position_meta
+    template: Optional[str] = None  # e.g. model_name / strategy template that opened this position, from position_meta
 
 
 class PaperTradingStateResponse(BaseModel):
@@ -856,6 +858,8 @@ class ExitUrgencyRow(BaseModel):
     unrealised_pnl_pct: Optional[float] = None
     exit_urgency: Optional[float] = None
     exit_type: Optional[str] = None
+    pillar: Optional[str] = None  # e.g. "ml" / "technical" — which strategy pillar opened this position
+    template: Optional[str] = None  # e.g. model_name / strategy template that opened this position
 
 
 class ExitUrgencyResponse(BaseModel):
@@ -1735,6 +1739,8 @@ class BackdatedBuyRequest(BaseModel):
     ticker: str
     date: str  # YYYY-MM-DD
     quantity: Optional[int] = None  # if omitted, PortfolioSimulator sizes it
+    pillar: Optional[str] = None  # e.g. "ml" / "technical" — which strategy pillar this buy belongs to
+    template: Optional[str] = None  # e.g. model_name / strategy template used to pick this trade
 
 
 class BackdatedBuyResponse(BaseModel):

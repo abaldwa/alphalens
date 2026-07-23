@@ -32,7 +32,7 @@ export function MlToolsPage() {
   })
 
   const buyMutation = useMutation({
-    mutationFn: ({ ticker }: { ticker: string }) => apiPost<BackdatedBuyResult>('/api/v1/paper_trading/backdated_buy', { ticker, date }),
+    mutationFn: ({ ticker }: { ticker: string }) => apiPost<BackdatedBuyResult>('/api/v1/paper_trading/backdated_buy', { ticker, date, pillar: 'ml' }),
     onSuccess: (result, variables) => setResults((prev) => ({ ...prev, [variables.ticker]: result })),
     onError: (err: Error, variables) => setResults((prev) => ({ ...prev, [variables.ticker]: { executed: false, detail: err.message } })),
   })

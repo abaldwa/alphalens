@@ -43,7 +43,7 @@ correct and expected, not a collision.
 import re
 from dataclasses import dataclass
 from datetime import date as date_type
-from typing import Optional
+from typing import Dict, Optional
 
 from backtest.core.horizon import HorizonBucket
 
@@ -92,6 +92,22 @@ FUNDAMENTAL_PRESET_DEFAULT_HORIZON = {
     "quality_compounder": HorizonBucket.Y1,
     "garp": HorizonBucket.D63,
     "turnaround": HorizonBucket.D63,
+}
+
+# Per-preset exit params (PerTemplateExitPolicy) — same reasoning that
+# drove FUNDAMENTAL_PRESET_DEFAULT_HORIZON above, extended to stop/target/
+# max_hold: quality_compounder is a patient buy-and-hold thesis so it gets
+# the widest stop/target and the longest max hold (60d, in line with its
+# 1-year horizon bucket — this is an intra-fold exit cap, not the holding
+# thesis itself); garp plays out over a quarter so sits between the two;
+# turnaround theses are the highest-variance bet (the thesis can take
+# longest to prove out, or fail loudly) so they get the widest stop of
+# the three to avoid getting shaken out before the turnaround shows up,
+# and the longest max_hold together with quality_compounder.
+FUNDAMENTAL_PRESET_EXIT_PARAMS: Dict[str, Dict[str, float]] = {
+    "quality_compounder": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "garp": {"stop_pct": 0.06, "target_pct": 0.15, "max_hold_days": 40},
+    "turnaround": {"stop_pct": 0.10, "target_pct": 0.25, "max_hold_days": 45},
 }
 
 

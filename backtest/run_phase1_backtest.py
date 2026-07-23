@@ -42,7 +42,7 @@ from backtest.core.feature_log import FeatureLogWriter
 from backtest.engine import BacktestEngine
 from config.settings import BACKTEST_DUCKDB_PATH
 from config.timezone import now_ist
-from config.universe import get_tickers, load_universe
+from config.universe import get_tickers, get_top_adtv_tickers, load_universe
 from datastore.api.db import get_duckdb_connection
 from datastore.client import DataStoreClient
 from datastore.schema.create_backtest import create_backtest_schema
@@ -76,6 +76,12 @@ def _fetch_real_universe(
     via DataStoreClient (SPEC-DS-002), filtered to tickers with at least
     min_history_days rows.
 
+    When max_tickers is set, the universe is capped to the top
+    max_tickers by ADTV (config.universe.get_top_adtv_tickers), not an
+    alphabetical/CSV-row-order slice — training on the most liquid names
+    avoids both the memory blowup of the full universe and the noise of
+    thinly-traded tickers with unreliable fills.
+
     Returns
     -------
     pd.DataFrame
@@ -87,9 +93,7 @@ def _fetch_real_universe(
         If no ticker meets min_history_days.
     """
     client = DataStoreClient(base_url=api_base_url) if api_base_url else DataStoreClient()
-    tickers = get_tickers()
-    if max_tickers:
-        tickers = tickers[:max_tickers]
+    tickers = get_top_adtv_tickers(max_tickers) if max_tickers else get_tickers()
 
     to_dt = now_ist()
     from_dt = to_dt - timedelta(days=365 * REAL_DATA_LOOKBACK_YEARS)

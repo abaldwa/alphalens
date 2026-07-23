@@ -51,15 +51,18 @@ interface BackdatedBuyResult {
 /**
  * Technical > Portfolio — Stocks/Cash view, Buy, and Sell, all against the
  * app's one real paper-trading account (usePaperTrading, same data
- * ml/positions.tsx uses). There is currently no strategy-source field on
- * this account to filter down to "Technical-only" positions — see
- * shared/api/paperTrading.ts's docstring — so this shows the same real,
- * unfiltered account rather than fabricating a filter.
+ * ml/positions.tsx uses). Positions opened via this page's Buy form are
+ * tagged pillar="technical" in position_meta (backdated_buy request body);
+ * positions opened by the ML pending-actions flow are tagged pillar="ml".
+ * We filter the shared account down to technical-only positions client-side
+ * here; untagged legacy positions (opened before pillar tagging existed)
+ * are still shown so nothing silently disappears from the table.
  */
 export function TechnicalPortfolioPage() {
   const [tab, setTab] = useState<'view' | 'buy' | 'sell'>(initialActionFromUrl)
-  const { state, equity, sell, realPositions } = usePaperTrading()
+  const { state, equity, sell, realPositions: allPositions } = usePaperTrading()
   const queryClient = useQueryClient()
+  const realPositions = allPositions.filter((p) => p.pillar == null || p.pillar === 'technical')
 
   const positionColumns: ColumnDef<PaperTradingPosition, unknown>[] = [
     tickerColumn<PaperTradingPosition>('technical'),
@@ -191,6 +194,7 @@ function BuyForm({ onBought }: { onBought: () => void }) {
         ticker: ticker.trim().toUpperCase(),
         date: date.trim(),
         quantity: quantity.trim() ? Number(quantity.trim()) : undefined,
+        pillar: 'technical',
       }),
     onSuccess: () => onBought(),
   })

@@ -198,6 +198,7 @@ class StrategyPortfolio:
     def buy(
         self, ticker: str, sector: str, price: float, date, prices: Dict[str, float],
         adtv_cr: Optional[float] = None, entry_atr_pct: Optional[float] = None,
+        template: Optional[str] = None, pillar: Optional[str] = None,
     ) -> Optional[Position]:
         if not self.can_buy(ticker, sector, price, prices, adtv_cr):
             return None
@@ -207,7 +208,7 @@ class StrategyPortfolio:
         self.cash -= turnover
         position = Position(
             ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty,
-            entry_atr_pct=entry_atr_pct,
+            entry_atr_pct=entry_atr_pct, template=template, pillar=pillar,
         )
         self.positions[ticker] = position
         return position
