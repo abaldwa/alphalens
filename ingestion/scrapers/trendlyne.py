@@ -133,6 +133,7 @@ from config.settings import (
 )
 from config.universe import load_universe_raw
 from datastore.client import DataStoreClient
+from ingestion.scrapers._retry import retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,12 @@ def discover_superstar_investors(session: Optional[requests.Session] = None) -> 
     if session is None:
         sess.headers.update(_HEADERS)
 
-    response = _retry(lambda: sess.get(f"{BASE_URL}{SUPERSTAR_INDEX_PATH}", timeout=30))
+    response = retry_call(
+        lambda: sess.get(f"{BASE_URL}{SUPERSTAR_INDEX_PATH}", timeout=30),
+        retries=DEFAULT_RETRY_COUNT,
+        label="Trendlyne request",
+        exceptions=(requests.RequestException,),
+    )
     if response.status_code != 200:
         raise ConnectionError(f"Trendlyne superstar index fetch failed: HTTP {response.status_code}")
 
@@ -364,7 +370,12 @@ class TrendlyneScraper:
         session = requests.Session()
         session.headers.update(_HEADERS)
 
-        login_page = _retry(lambda: session.get(LOGIN_URL, timeout=30))
+        login_page = retry_call(
+            lambda: session.get(LOGIN_URL, timeout=30),
+            retries=DEFAULT_RETRY_COUNT,
+            label="Trendlyne request",
+            exceptions=(requests.RequestException,),
+        )
         csrf_match = re.search(r'name=["\']csrfmiddlewaretoken["\']\s+value=["\']([^"\']+)["\']', login_page.text)
         if not csrf_match:
             raise TrendlyneAuthError(
@@ -374,14 +385,17 @@ class TrendlyneScraper:
             )
         csrf_token = csrf_match.group(1)
 
-        response = _retry(
+        response = retry_call(
             lambda: session.post(
                 LOGIN_URL,
                 data={"csrfmiddlewaretoken": csrf_token, "login": self.username, "password": self.password,
                       "recaptcha_token": "", "recaptcha_action": "login", "remember": "on"},
                 headers={"Referer": LOGIN_URL},
                 timeout=30,
-            )
+            ),
+            retries=DEFAULT_RETRY_COUNT,
+            label="Trendlyne request",
+            exceptions=(requests.RequestException,),
         )
         if response.status_code >= 400 or "id_password" in response.text:
             raise TrendlyneAuthError(
@@ -411,7 +425,12 @@ class TrendlyneScraper:
             self.login()
 
         url = f"{BASE_URL}{path}"
-        response = _retry(lambda: self._session.get(url, timeout=30))
+        response = retry_call(
+            lambda: self._session.get(url, timeout=30),
+            retries=DEFAULT_RETRY_COUNT,
+            label="Trendlyne request",
+            exceptions=(requests.RequestException,),
+        )
         if response.status_code != 200:
             raise ConnectionError(f"Trendlyne fetch failed for {path}: HTTP {response.status_code}")
 
@@ -670,7 +689,12 @@ class TrendlyneScraper:
         path = _bulk_deals_path_for(investor_name)
         session = requests.Session()
         session.headers.update(_HEADERS)
-        response = _retry(lambda: session.get(f"{BASE_URL}{path}", timeout=30))
+        response = retry_call(
+            lambda: session.get(f"{BASE_URL}{path}", timeout=30),
+            retries=DEFAULT_RETRY_COUNT,
+            label="Trendlyne request",
+            exceptions=(requests.RequestException,),
+        )
         if response.status_code != 200:
             raise ConnectionError(f"Trendlyne bulk-deals fetch failed for {path}: HTTP {response.status_code}")
 
@@ -803,18 +827,6 @@ class TrendlyneScraper:
         inserted = after - before
         logger.info(f"backfill_bulk_deals_history: {inserted} new large_deals rows from Trendlyne (of {len(df)} scraped)")
         return inserted
-
-
-def _retry(fn, retries: int = DEFAULT_RETRY_COUNT):
-    """Retry a zero-arg callable up to `retries` times, same pattern as screener.py."""
-    last_exc = None
-    for attempt in range(1, retries + 1):
-        try:
-            return fn()
-        except requests.RequestException as exc:
-            last_exc = exc
-            logger.warning(f"Trendlyne request failed (attempt {attempt}/{retries}): {exc}")
-    raise ConnectionError(f"Trendlyne request failed after {retries} attempts: {last_exc}")
 
 
 def _verify_page_matches_investor(html: str, investor_name: str) -> bool:
