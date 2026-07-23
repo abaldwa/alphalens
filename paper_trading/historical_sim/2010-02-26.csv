@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-02-26,RAJSREESUG,BUY,62.85,15745,09:15:00,57.9,15:30:00,2010-03-11,thesis_broken,miss,-81917.90465223906,-0.08278104188066832,,,,,,
+2010-02-26,EKC,BUY,109.5,1,09:15:00,142.5,15:30:00,2010-05-17,target_achieved,hit,32.559580925999995,0.2973477710136986,,,,,,
+2010-02-26,FSL,BUY,22.700784638444972,1,09:15:00,20.31122836071392,15:30:00,2010-05-25,thesis_broken,miss,-2.4808609220190654,-0.10928524989473698,,,,,,

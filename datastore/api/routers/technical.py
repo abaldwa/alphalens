@@ -25,10 +25,13 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+import duckdb
 import pandas as pd
+import talib
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from config.settings import DUCKDB_PATH, SIGNALS_DUCKDB_PATH
+from backtest import strategy_confidence
+from config.settings import CONFIDENCE_MIN_INDEPENDENT_DATES, DUCKDB_PATH, SIGNALS_DUCKDB_PATH
 from config.universe import load_universe_raw
 from datastore.api.db import get_duckdb_connection
 from datastore.api.schemas import (
@@ -47,8 +50,16 @@ from datastore.api.schemas import (
     TAScreenerResponse,
     TAScreenerRow,
     TASignalWriteRequest,
+    TAStrategyHistoryResponse,
+    TAStrategyHistoryRow,
+    TAStrategyWinRateResponse,
+    TAStrategyWinRateRow,
+    TASummaryResponse,
     TATemplateInfo,
     TATemplateListResponse,
+    TATickerProfileResponse,
+    TARecommendationResponse,
+    TARecommendationRow,
     TAUserAlertCreate,
     TAUserAlertResponse,
     TAUserAlertRow,
@@ -58,10 +69,10 @@ from datastore.api.schemas import (
 from datastore.api.utils.feature_store import read_feature_row, resolve_date
 from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
 from features.pattern_scores import PATTERN_FEATURES
-from features.technical import CORE_TECHNICAL_FEATURES
+from features.technical import CORE_TECHNICAL_FEATURES, _supertrend
 from systems.technical_analysis.alerts import alert_store
 from systems.technical_analysis.screener.engine import ScreenerEngine
-from systems.technical_analysis.screener.templates import TEMPLATE_MAP
+from systems.technical_analysis.screener.templates import STRATEGY_STYLES, TEMPLATE_MAP, TEMPLATE_STYLE
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +321,10 @@ async def get_alerts_today(
                     """,
                     [target_date, buffer_limit],
                 ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("alerts/today DB query failed: %s", exc)
         return TAAlertResponse(count=0)
 
@@ -393,7 +407,10 @@ async def get_alerts_for_ticker(
                 """,
                 [ticker_upper, target_date],
             ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("alerts/%s DB query failed: %s", ticker, exc)
         return TAAlertResponse(count=0)
 
@@ -416,15 +433,92 @@ async def get_alerts_for_ticker(
     return TAAlertResponse(as_of_date=target_date, rows=rows, count=len(rows))
 
 
+_FEATURE_LABEL_OVERRIDES = {
+    "rsi": "RSI", "sma": "SMA", "ema": "EMA", "macd": "MACD", "bb": "BB",
+    "atr": "ATR", "adx": "ADX", "roc": "ROC", "cci": "CCI", "mfi": "MFI",
+    "vwap": "VWAP", "di": "DI", "rs": "RS", "cvi": "CVI", "obv": "OBV",
+}
+
+
+def _humanize_feature(feature: str) -> str:
+    """rsi_14 -> 'RSI 14', sma_200_ratio -> 'SMA 200 Ratio' — no Python-side
+    label dict exists (only chart.js's CURATED_INDICATORS on the frontend,
+    a curated 12-of-94 subset), so this covers the full feature set with a
+    token-by-token relabel instead."""
+    tokens = [_FEATURE_LABEL_OVERRIDES.get(t.lower(), t.capitalize()) for t in feature.split("_")]
+    return " ".join(tokens)
+
+
+def _describe_condition(cond: Dict[str, Any], key_values: Dict[str, Optional[float]]) -> str:
+    """Render one screener condition dict (templates.py) against the actual
+    fetched indicator value for that ticker/day, e.g. 'RSI 14 42.2 (in 40-60)'
+    instead of just counting matched/total conditions."""
+    feature = cond.get("feature", "")
+    op = cond.get("op", "")
+    value = cond.get("value")
+    label = _humanize_feature(feature)
+    actual = key_values.get(feature)
+    actual_str = f"{actual:.2f}" if actual is not None else "—"
+
+    if op == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
+        return f"{label} {actual_str} (in {value[0]}-{value[1]})"
+    if op == "top_pct":
+        return f"{label} {actual_str} (top {float(value) * 100:.0f}% of universe)"
+    if op == "bottom_pct":
+        return f"{label} {actual_str} (bottom {float(value) * 100:.0f}% of universe)"
+    symbol = {"lt": "<", "gt": ">", "lte": "<=", "gte": ">=", "eq": "="}.get(op, op)
+    return f"{label} {actual_str} ({symbol} {value})"
+
+
+def _describe_rule(cond: Dict[str, Any]) -> str:
+    """Render one screener condition dict as a strategy-level rule, with no
+    per-ticker actual value (unlike `_describe_condition`, which answers
+    "why did this fire for THIS ticker today") — e.g. 'SMA 50 Ratio > 1.0'.
+    Used to build a general "what is this strategy" description straight
+    from the template's own real condition definitions in templates.py,
+    not a fabricated summary."""
+    feature = cond.get("feature", "")
+    op = cond.get("op", "")
+    value = cond.get("value")
+    label = _humanize_feature(feature)
+
+    if op == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
+        return f"{label} in {value[0]}-{value[1]}"
+    if op == "top_pct":
+        return f"{label} in top {float(value) * 100:.0f}% of universe"
+    if op == "bottom_pct":
+        return f"{label} in bottom {float(value) * 100:.0f}% of universe"
+    symbol = {"lt": "<", "gt": ">", "lte": "<=", "gte": ">=", "eq": "="}.get(op, op)
+    return f"{label} {symbol} {value}"
+
+
+def _template_strategy_description(tmpl: Any) -> Optional[str]:
+    """One-line plain-English explanation of what a screener template
+    actually requires, e.g. 'Minervini SEPA requires: SMA 50 Ratio > 1.0;
+    SMA 200 Ratio > 1.0; ADX 14 > 20; ...' — derived from the template's own
+    conditions list, not a separately maintained (and driftable) blurb."""
+    if tmpl is None or not tmpl.conditions:
+        return None
+    rules = "; ".join(_describe_rule(c) for c in tmpl.conditions)
+    return f"{tmpl.description} requires: {rules}"
+
+
 @router.get("/watchlist/daily", response_model=TAWatchlistResponse)
 async def get_ta_daily_watchlist(
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest ta_signals date"),
     limit: int = Query(20, ge=1, le=100, description="Maximum tickers"),
+    lookback_days: int = Query(5, ge=1, le=20, description="Trading-day window to pool recommendations from"),
 ) -> TAWatchlistResponse:
-    """Daily TA WatchList: best-scoring template match per ticker (ta_signals,
-    SPEC-TA-006), with a plain-English rationale and the next resistance
-    levels above the current price (rolling 20d/50d/252d swing highs plus
-    classic floor-pivot R1/R2, computed from real OHLCV — SPEC-TA-004)."""
+    """Weekly TA WatchList: pools every screener-template recommendation
+    (ta_signals, SPEC-TA-006) across the trailing `lookback_days` real
+    trading days ending on the target date, keeping each ticker's single
+    best (highest-score, most-recent-on-tie) recommendation from that
+    window — so a ticker recommended earlier in the week still shows up
+    even if it didn't fire again today. Reports a plain-English rationale,
+    the price at the time of that recommendation (`recommended_price`) next
+    to today's price (`current_price`), and the next resistance levels
+    above the current price (rolling 20d/50d/252d swing highs plus classic
+    floor-pivot R1/R2, computed from real OHLCV — SPEC-TA-004)."""
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
@@ -442,20 +536,36 @@ async def get_ta_daily_watchlist(
                     return TAWatchlistResponse(count=0)
                 target_date = str(row[0])
 
+            window_dates = [
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT date FROM ta_signals WHERE date <= ? ORDER BY date DESC LIMIT ?",
+                    [target_date, lookback_days],
+                ).fetchall()
+            ]
+            if not window_dates:
+                return TAWatchlistResponse(count=0)
+            window_placeholders = ",".join("?" * len(window_dates))
+
             df = conn.execute(
-                """
+                f"""
                 SELECT date, ticker, template_name, category, score,
                        matched_conditions, total_conditions, key_values
                 FROM ta_signals
-                WHERE date = ?
-                QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY score DESC) = 1
-                ORDER BY score DESC
+                WHERE date IN ({window_placeholders})
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY ticker
+                    ORDER BY score DESC, matched_conditions DESC, date DESC, template_name ASC
+                ) = 1
+                ORDER BY score DESC, matched_conditions DESC, ticker ASC
                 LIMIT ?
                 """,
                 # ML24 (2026-07-11): over-fetch, ADTV-gate below, then trim.
-                [target_date, limit * 5],
+                window_dates + [limit * 5],
             ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("watchlist/daily TA query failed: %s", exc)
         return TAWatchlistResponse(count=0)
 
@@ -471,6 +581,15 @@ async def get_ta_daily_watchlist(
 
     name_map = dict(zip(universe["ticker"], universe["company_name"].fillna("")))
     sector_map = dict(zip(universe["ticker"], universe["sector"].fillna("")))
+    mcap_map = dict(zip(universe["ticker"], universe["market_cap_cr"]))
+    # market_cap_cr == 0 means "not yet sourced" for that ticker (see
+    # config/universe.py's REQUIRED_COLUMNS docstring) — excluded from the
+    # ranking rather than ranked as if it were a real (tiny) market cap.
+    # Ranked over the full universe, not just this watchlist's filtered
+    # subset, so "rank" means market-cap rank, not rank-among-20-rows.
+    ranked = universe[universe["market_cap_cr"] > 0].copy()
+    ranked["market_cap_rank"] = ranked["market_cap_cr"].rank(ascending=False, method="min").astype(int)
+    mcap_rank_map = dict(zip(ranked["ticker"], ranked["market_cap_rank"]))
 
     tickers = df["ticker"].tolist()
     placeholders = ",".join("?" * len(tickers))
@@ -484,19 +603,29 @@ async def get_ta_daily_watchlist(
             """,
             tickers + [target_date],
         ).fetchdf()
+    hist["date"] = pd.to_datetime(hist["date"])
 
     rows: List[TAWatchlistRow] = []
     for _, r in df.iterrows():
         ticker = str(r["ticker"])
         tmpl = TEMPLATE_MAP.get(str(r["template_name"]))
         matched, total = int(r["matched_conditions"]), int(r["total_conditions"])
-        rationale = (
-            f"{tmpl.description} — {matched}/{total} conditions matched"
-            if tmpl is not None else f"{matched}/{total} conditions matched"
-        )
+        key_values = _parse_key_values(r.get("key_values"))
+        if tmpl is not None and tmpl.conditions:
+            detail = "; ".join(_describe_condition(c, key_values) for c in tmpl.conditions)
+            rationale = f"{tmpl.description}: {detail}"
+        elif tmpl is not None:
+            rationale = f"{tmpl.description} — {matched}/{total} conditions matched"
+        else:
+            rationale = f"{matched}/{total} conditions matched"
 
         g = hist[hist["ticker"] == ticker]
         current_price = float(g["close"].iloc[-1]) if not g.empty else None
+
+        rec_date = pd.Timestamp(r["date"]).strftime("%Y-%m-%d")
+        g_asof_rec = g[g["date"] <= pd.Timestamp(rec_date)]
+        recommended_price = float(g_asof_rec["close"].iloc[-1]) if not g_asof_rec.empty else None
+
         resistance_levels: List[float] = []
         support_levels: List[float] = []
         if not g.empty and current_price is not None:
@@ -521,18 +650,407 @@ async def get_ta_daily_watchlist(
             ticker=ticker,
             company_name=name_map.get(ticker) or None,
             sector=sector_map.get(ticker) or None,
+            market_cap_cr=float(mcap_map[ticker]) if ticker in mcap_map and mcap_map[ticker] > 0 else None,
+            market_cap_rank=int(mcap_rank_map[ticker]) if ticker in mcap_rank_map else None,
+            recommendation_date=rec_date,
+            recommended_price=round(recommended_price, 2) if recommended_price is not None else None,
             current_price=round(current_price, 2) if current_price is not None else None,
             template_name=str(r["template_name"]),
+            template_description=tmpl.description if tmpl is not None else None,
+            template_strategy_description=_template_strategy_description(tmpl),
             category=str(r["category"]),
             score=float(r["score"]),
             rationale=rationale,
             matched_conditions=matched,
             total_conditions=total,
+            key_values=key_values,
             resistance_levels=resistance_levels,
             support_levels=support_levels,
         ))
 
     return TAWatchlistResponse(date=target_date, rows=rows, count=len(rows))
+
+
+@router.get("/{ticker}/profile", response_model=TATickerProfileResponse)
+async def get_ta_ticker_profile(ticker: str) -> TATickerProfileResponse:
+    """Bare company_name/sector lookup for a single ticker (e.g. for the
+    Technical Chart page header) — no existing endpoint returned just
+    these two fields, so this reuses the same real universe lookup every
+    other TA endpoint already does rather than shipping the whole
+    universe to the frontend."""
+    ticker = ticker.upper()
+    universe = load_universe_raw()
+    row = universe[universe["ticker"] == ticker]
+    if row.empty:
+        return TATickerProfileResponse(ticker=ticker)
+    r = row.iloc[0]
+    return TATickerProfileResponse(
+        ticker=ticker,
+        company_name=(str(r["company_name"]) if pd.notna(r.get("company_name")) else None),
+        sector=(str(r["sector"]) if pd.notna(r.get("sector")) else None),
+    )
+
+
+@router.get("/{ticker}/recommendations", response_model=TARecommendationResponse)
+async def get_ta_ticker_recommendations(
+    ticker: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to this ticker's latest ta_signals date"),
+) -> TARecommendationResponse:
+    """ALL screener-template matches for one ticker on one date (not
+    deduped to a single best match like /watchlist/daily) — backs the
+    Technical Chart page's "recommendations for this day" panel."""
+    ticker = ticker.upper()
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
+            ).fetchall()]
+            if not tables:
+                return TARecommendationResponse(ticker=ticker, count=0)
+
+            if date:
+                target_date = date
+            else:
+                row = conn.execute("SELECT MAX(date) FROM ta_signals WHERE ticker = ?", [ticker]).fetchone()
+                if row is None or row[0] is None:
+                    return TARecommendationResponse(ticker=ticker, count=0)
+                target_date = str(row[0])
+
+            df = conn.execute(
+                """
+                SELECT date, ticker, template_name, category, score,
+                       matched_conditions, total_conditions, key_values
+                FROM ta_signals
+                WHERE ticker = ? AND date = ?
+                ORDER BY score DESC, matched_conditions DESC, template_name ASC
+                """,
+                [ticker, target_date],
+            ).fetchdf()
+
+            outcomes_tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'strategy_confidence_outcomes'"
+            ).fetchall()]
+            outcomes = pd.DataFrame()
+            if outcomes_tables:
+                outcomes = conn.execute(
+                    """
+                    SELECT strategy_id AS template_name, outcome, outcome_date, entry_price, exit_price, net_return_pct
+                    FROM strategy_confidence_outcomes
+                    WHERE ticker = ? AND date = ?
+                    """,
+                    [ticker, target_date],
+                ).fetchdf()
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
+        logger.warning("ta/%s/recommendations query failed: %s", ticker, exc)
+        return TARecommendationResponse(ticker=ticker, count=0)
+
+    if df.empty:
+        return TARecommendationResponse(date=target_date, ticker=ticker, count=0)
+
+    outcome_map = {str(o["template_name"]): o for _, o in outcomes.iterrows()} if not outcomes.empty else {}
+
+    rows: List[TARecommendationRow] = []
+    for _, r in df.iterrows():
+        tmpl_name = str(r["template_name"])
+        tmpl = TEMPLATE_MAP.get(tmpl_name)
+        matched, total = int(r["matched_conditions"]), int(r["total_conditions"])
+        key_values = _parse_key_values(r.get("key_values"))
+        if tmpl is not None and tmpl.conditions:
+            detail = "; ".join(_describe_condition(c, key_values) for c in tmpl.conditions)
+            rationale = f"{tmpl.description}: {detail}"
+        elif tmpl is not None:
+            rationale = f"{tmpl.description} — {matched}/{total} conditions matched"
+        else:
+            rationale = f"{matched}/{total} conditions matched"
+
+        o = outcome_map.get(tmpl_name)
+        rows.append(TARecommendationRow(
+            date=pd.Timestamp(r["date"]).strftime("%Y-%m-%d"),
+            ticker=ticker,
+            template_name=tmpl_name,
+            category=str(r["category"]),
+            style=TEMPLATE_STYLE.get(tmpl_name),
+            score=float(r["score"]),
+            rationale=rationale,
+            matched_conditions=matched,
+            total_conditions=total,
+            outcome=(str(o["outcome"]) if o is not None else None),
+            outcome_date=(pd.Timestamp(o["outcome_date"]).strftime("%Y-%m-%d") if o is not None and pd.notna(o.get("outcome_date")) else None),
+            entry_price=(float(o["entry_price"]) if o is not None and pd.notna(o.get("entry_price")) else None),
+            exit_price=(float(o["exit_price"]) if o is not None and pd.notna(o.get("exit_price")) else None),
+            net_return_pct=(float(o["net_return_pct"]) if o is not None and pd.notna(o.get("net_return_pct")) else None),
+        ))
+
+    return TARecommendationResponse(date=target_date, ticker=ticker, rows=rows, count=len(rows))
+
+
+@router.get("/{ticker}/strategy_history", response_model=TAStrategyHistoryResponse)
+async def get_ta_ticker_strategy_history(ticker: str) -> TAStrategyHistoryResponse:
+    """Every template this ticker has ever been recommended under
+    (ta_signals, full history), with that ticker's own cost-adjusted
+    win/loss track record per template
+    (strategy_confidence_outcomes — backtest/strategy_confidence.py).
+    Note: win_rate/wilson bounds here are computed over just THIS ticker's
+    own firings, so they'll usually be INSUFFICIENT_DATA (too few
+    independent dates) even for a template that's VALIDATED in aggregate
+    on /strategies/win_rates — that's expected, not a bug: a single
+    ticker's history is a much smaller sample than the template's
+    universe-wide history."""
+    ticker = ticker.upper()
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'ta_signals'"
+            ).fetchall()]
+            if not tables:
+                return TAStrategyHistoryResponse(ticker=ticker, count=0)
+
+            outcomes_tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'strategy_confidence_outcomes'"
+            ).fetchall()]
+            outcomes_join = (
+                """
+                LEFT JOIN strategy_confidence_outcomes o
+                    ON o.date = s.date AND o.ticker = s.ticker AND o.strategy_id = s.template_name
+                """
+                if outcomes_tables else ""
+            )
+            outcome_cols = (
+                "SUM(CASE WHEN o.outcome = 'win' THEN 1 ELSE 0 END) AS wins,"
+                "SUM(CASE WHEN o.outcome = 'loss' THEN 1 ELSE 0 END) AS losses,"
+                "SUM(CASE WHEN o.outcome = 'pending' OR o.outcome IS NULL THEN 1 ELSE 0 END) AS pending,"
+                "COUNT(DISTINCT CASE WHEN o.outcome IN ('win','loss') THEN s.date END) AS n_independent_dates"
+                if outcomes_tables else
+                "0 AS wins, 0 AS losses, COUNT(*) AS pending, 0 AS n_independent_dates"
+            )
+
+            df = conn.execute(
+                f"""
+                SELECT s.template_name, s.category, COUNT(*) AS times_recommended,
+                       MAX(s.date) AS last_recommended_date, {outcome_cols}
+                FROM ta_signals s
+                {outcomes_join}
+                WHERE s.ticker = ?
+                GROUP BY s.template_name, s.category
+                ORDER BY times_recommended DESC
+                """,
+                [ticker],
+            ).fetchdf()
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
+        logger.warning("ta/%s/strategy_history query failed: %s", ticker, exc)
+        return TAStrategyHistoryResponse(ticker=ticker, count=0)
+
+    if df.empty:
+        return TAStrategyHistoryResponse(ticker=ticker, count=0)
+
+    rows: List[TAStrategyHistoryRow] = []
+    for _, r in df.iterrows():
+        wins, losses = int(r["wins"]), int(r["losses"])
+        decided = wins + losses
+        n_independent_dates = int(r["n_independent_dates"])
+        wilson_lo, wilson_hi = strategy_confidence.wilson_interval(wins, decided) if decided > 0 else (None, None)
+        tier = (
+            strategy_confidence.TIER_INSUFFICIENT
+            if n_independent_dates < CONFIDENCE_MIN_INDEPENDENT_DATES or decided == 0
+            else strategy_confidence.TIER_PRELIMINARY
+        )
+        rows.append(TAStrategyHistoryRow(
+            template_name=str(r["template_name"]),
+            category=str(r["category"]),
+            style=TEMPLATE_STYLE.get(str(r["template_name"])),
+            times_recommended=int(r["times_recommended"]),
+            wins=wins,
+            losses=losses,
+            pending=int(r["pending"]),
+            win_rate=(wins / decided) if decided > 0 else None,
+            wilson_lo=wilson_lo,
+            wilson_hi=wilson_hi,
+            tier=tier,
+            last_recommended_date=pd.Timestamp(r["last_recommended_date"]).strftime("%Y-%m-%d"),
+        ))
+
+    return TAStrategyHistoryResponse(ticker=ticker, rows=rows, count=len(rows))
+
+
+@router.get("/strategies/recent_outcomes")
+async def get_ta_strategy_recent_outcomes(
+    template: Optional[str] = Query(None, description="Filter by strategy_id/template_name"),
+    ticker: Optional[str] = Query(None, description="Filter by ticker"),
+    limit: int = Query(10, ge=1, le=50),
+) -> Dict[str, Any]:
+    """Individual firing-level rows from strategy_confidence_outcomes
+    (backtest/strategy_confidence.py — the same table /{ticker}/
+    strategy_history aggregates), most recent first. Powers two UI
+    surfaces off one query: the Strategies page's per-template "latest
+    Win/Loss/Open recommendations" drawer (filter by `template`) and Deep
+    Dive's "last N strategies that hit this stock" card (filter by
+    `ticker`). Exactly one of template/ticker should be passed. `outcome`
+    is 'win'/'loss'/'pending' as persisted — the frontend labels 'pending'
+    as "Open". Real per-firing entry/exit prices and dates, no synthetic
+    numbers — if the table doesn't exist yet (no backfill run) or the
+    filter matches nothing, `rows` is simply empty."""
+    if not template and not ticker:
+        raise HTTPException(status_code=400, detail="Provide template or ticker")
+
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'strategy_confidence_outcomes'"
+            ).fetchall()]
+            if not tables:
+                return {"rows": [], "count": 0}
+
+            where_col, where_val = ("strategy_id", template) if template else ("ticker", ticker.upper())
+            df = conn.execute(
+                f"""
+                SELECT date, ticker, strategy_id, entry_price, exit_price, outcome, outcome_date, net_return_pct
+                FROM strategy_confidence_outcomes
+                WHERE {where_col} = ?
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                [where_val, limit],
+            ).fetchdf()
+    except duckdb.Error as exc:
+        logger.warning("ta/strategies/recent_outcomes query failed: %s", exc)
+        return {"rows": [], "count": 0}
+
+    if df.empty:
+        return {"rows": [], "count": 0}
+
+    rows = [
+        {
+            "date": pd.Timestamp(r["date"]).strftime("%Y-%m-%d"),
+            "ticker": str(r["ticker"]),
+            "template_name": str(r["strategy_id"]),
+            "entry_price": None if pd.isna(r["entry_price"]) else float(r["entry_price"]),
+            "exit_price": None if pd.isna(r["exit_price"]) else float(r["exit_price"]),
+            "outcome": "open" if str(r["outcome"]) == "pending" else str(r["outcome"]),
+            "exit_date": None if pd.isna(r["outcome_date"]) else pd.Timestamp(r["outcome_date"]).strftime("%Y-%m-%d"),
+            "return_pct": None if pd.isna(r["net_return_pct"]) else float(r["net_return_pct"]),
+        }
+        for _, r in df.iterrows()
+    ]
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/pillar_summary")
+async def get_ta_pillar_summary() -> Dict[str, Any]:
+    """Home page pillar-outcome card: reuses /watchlist/daily (today's
+    template recommendations) for recommendation_count + avg expected
+    return (same nearest-resistance-vs-CMP arithmetic the frontend already
+    does per-row on the Weekly WatchList page), and /strategies/win_rates
+    (real, confidence-graded — INSUFFICIENT_DATA templates already
+    excluded there) for the single best-performing template's win rate.
+    Technical is the one pillar with a genuine strategy/win-rate table
+    (strategy_confidence_summary) — the other 4 pillar_summary endpoints
+    return null for top_strategy_success_rate_pct because no equivalent
+    table exists for them."""
+    # Calling get_ta_daily_watchlist directly (not through a real HTTP
+    # request) bypasses FastAPI's dependency injection, so its Query(...)
+    # parameter objects never resolve to their defaults — pass the same
+    # literal defaults FastAPI would have used (date=None, limit=20,
+    # lookback_days=5) explicitly.
+    watchlist = await get_ta_daily_watchlist(date=None, limit=20, lookback_days=5)
+    gains = []
+    for row in watchlist.rows:
+        if row.current_price and row.resistance_levels:
+            target = row.resistance_levels[0]
+            gains.append((target - row.current_price) / row.current_price * 100)
+    avg_gain = sum(gains) / len(gains) if gains else None
+
+    win_rates = await get_ta_strategy_win_rates()
+    best_row = None
+    for rows in win_rates.styles.values():
+        for r in rows:
+            if r.win_rate is not None and (best_row is None or r.win_rate > best_row.win_rate):
+                best_row = r
+
+    return {
+        "as_of_date": watchlist.date,
+        "available": watchlist.count > 0,
+        "recommendation_count": watchlist.count,
+        "avg_expected_return_pct": avg_gain,
+        "top_strategy": best_row.template_name if best_row else None,
+        "top_strategy_success_rate_pct": (best_row.win_rate * 100) if best_row and best_row.win_rate is not None else None,
+    }
+
+
+@router.get("/strategies/win_rates", response_model=TAStrategyWinRateResponse)
+async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
+    """Every one of the 42 screener templates, grouped by strategy style
+    (Momentum / Trend Following / Mean Reversion / Volatility —
+    systems/technical_analysis/screener/templates.py::TEMPLATE_STYLE),
+    with its cost-adjusted forward-return confidence result pooled across
+    every ticker/date it's fired on (strategy_confidence_summary, regime
+    'ALL' rows — backtest/strategy_confidence.py). Templates tiered
+    INSUFFICIENT_DATA are DELIBERATELY OMITTED from the response — the
+    whole point of the confidence framework is not showing a win-rate
+    number until it's earned enough independent history, multi-regime
+    coverage, and survives multiple-comparison correction. An empty or
+    short list here means exactly that: nothing has enough real history
+    yet, not a bug."""
+    SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    summaries: Dict[str, Dict] = {}
+    try:
+        with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+            summary_tables = [r[0] for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'strategy_confidence_summary'"
+            ).fetchall()]
+            if summary_tables:
+                df = conn.execute(
+                    """
+                    SELECT strategy_id, wins, losses, pending, win_rate, wilson_lo, wilson_hi,
+                           baseline_win_rate, delta_vs_baseline, tier, reasons
+                    FROM strategy_confidence_summary
+                    WHERE regime = 'ALL'
+                    """
+                ).fetchdf()
+                summaries = {str(r["strategy_id"]): r for _, r in df.iterrows()}
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
+        logger.warning("ta/strategies/win_rates query failed: %s", exc)
+
+    styles: Dict[str, List[TAStrategyWinRateRow]] = {s: [] for s in STRATEGY_STYLES}
+    for name, tmpl in TEMPLATE_MAP.items():
+        s = summaries.get(name)
+        tier = str(s["tier"]) if s is not None else strategy_confidence.TIER_INSUFFICIENT
+        if tier == strategy_confidence.TIER_INSUFFICIENT:
+            continue  # don't show a number until it's earned one
+
+        style = TEMPLATE_STYLE.get(name, "Momentum")
+        styles.setdefault(style, []).append(TAStrategyWinRateRow(
+            template_name=name,
+            category=tmpl.category,
+            description=tmpl.description,
+            style=style,
+            times_recommended=int(s["wins"]) + int(s["losses"]) + int(s["pending"]),
+            wins=int(s["wins"]),
+            losses=int(s["losses"]),
+            pending=int(s["pending"]),
+            win_rate=(float(s["win_rate"]) if pd.notna(s.get("win_rate")) else None),
+            wilson_lo=(float(s["wilson_lo"]) if pd.notna(s.get("wilson_lo")) else None),
+            wilson_hi=(float(s["wilson_hi"]) if pd.notna(s.get("wilson_hi")) else None),
+            baseline_win_rate=(float(s["baseline_win_rate"]) if pd.notna(s.get("baseline_win_rate")) else None),
+            delta_vs_baseline=(float(s["delta_vs_baseline"]) if pd.notna(s.get("delta_vs_baseline")) else None),
+            tier=tier,
+            reasons=str(s["reasons"]).split("; ") if s.get("reasons") else [],
+        ))
+    for s in styles:
+        styles[s].sort(key=lambda r: (r.win_rate is None, -(r.win_rate or 0)))
+
+    return TAStrategyWinRateResponse(styles=styles)
 
 
 @router.get("/consensus/daily", response_model=TAConsensusResponse)
@@ -576,7 +1094,10 @@ async def get_ta_consensus(
                 """,
                 [target_date, limit],
             ).fetchdf()
-    except Exception as exc:
+    except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
+        # only a real DuckDB-layer failure (missing table, malformed query, lock
+        # conflict) should present as an empty "nothing happened today" response;
+        # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("consensus/daily TA query failed: %s", exc)
         return TAConsensusResponse(count=0)
 
@@ -736,8 +1257,8 @@ async def write_ta_signals(body: TASignalWriteRequest) -> Dict[str, int]:
     SPEC-TA-006, SPEC-TA-008: ta_signals schema/upsert
     """
     from systems.technical_analysis.alerts.daily_alert_checker import (
+        _BULK_UPSERT_SQL,
         _CREATE_TA_SIGNALS_SQL,
-        _INSERT_SQL,
     )
 
     if not body.rows:
@@ -751,11 +1272,19 @@ async def write_ta_signals(body: TASignalWriteRequest) -> Dict[str, int]:
         )
         for r in body.rows
     ]
+    batch_df = pd.DataFrame(rows, columns=[
+        "date", "ticker", "template_name", "category", "score",
+        "matched_conditions", "total_conditions", "key_values",
+    ])
 
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(_CREATE_TA_SIGNALS_SQL)
-        conn.executemany(_INSERT_SQL, rows)
+        conn.register("_ta_signals_upsert_batch", batch_df)
+        try:
+            conn.execute(_BULK_UPSERT_SQL)
+        finally:
+            conn.unregister("_ta_signals_upsert_batch")
     return {"written": len(rows)}
 
 
@@ -827,6 +1356,103 @@ async def get_ta_patterns(
 
     patterns = {c: (None if c not in row or pd.isna(row[c]) else float(row[c])) for c in PATTERN_FEATURES}
     return TAPatternsResponse(ticker=ticker, date=resolved_date, available=True, patterns=patterns)
+
+
+def _last_or_none(series: "pd.Series") -> Optional[float]:
+    if series is None or len(series) == 0 or pd.isna(series.iloc[-1]):
+        return None
+    return float(series.iloc[-1])
+
+
+@router.get("/{ticker}/summary", response_model=TASummaryResponse)
+async def get_ta_summary(
+    ticker: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the latest available day"),
+) -> TASummaryResponse:
+    """Raw display-scale values (CMP, 52wk hi/lo, raw SMA/EMA/MACD/VWAP) for
+    the Technical Deep Dive page, computed directly from OHLCV — most of
+    these aren't stored in features/technical.py, which keeps only ratios.
+    """
+    resolved_date = resolve_date(date)
+    if resolved_date is None:
+        return TASummaryResponse(ticker=ticker, available=False)
+
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=True) as conn:
+        rows = conn.execute(
+            """
+            SELECT date, high, low, close, volume, delivery_pct
+            FROM ohlcv_adjusted
+            WHERE ticker = ? AND date <= ?
+            ORDER BY date ASC
+            """,
+            [ticker, resolved_date],
+        ).fetchall()
+
+    if not rows:
+        return TASummaryResponse(ticker=ticker, date=resolved_date, available=False)
+
+    df = pd.DataFrame(rows, columns=["date", "high", "low", "close", "volume", "delivery_pct"])
+    if str(df["date"].iloc[-1]) != resolved_date:
+        return TASummaryResponse(ticker=ticker, date=resolved_date, available=False)
+
+    close, high, low = df["close"], df["high"], df["low"]
+    cmp_ = float(close.iloc[-1])
+
+    win252 = df.tail(252)
+    week52_high = float(win252["high"].max())
+    week52_low = float(win252["low"].min())
+
+    sma_20 = _last_or_none(close.rolling(20).mean())
+    sma_50 = _last_or_none(close.rolling(50).mean())
+    sma_100 = _last_or_none(close.rolling(100).mean())
+    sma_200 = _last_or_none(close.rolling(200).mean())
+    ema_9 = _last_or_none(pd.Series(talib.EMA(close.values, timeperiod=9)))
+    ema_21 = _last_or_none(pd.Series(talib.EMA(close.values, timeperiod=21)))
+    rsi_14 = _last_or_none(pd.Series(talib.RSI(close.values, timeperiod=14)))
+
+    st_dir, _st_signal = _supertrend(high.values, low.values, close.values)
+    supertrend_dir = _last_or_none(pd.Series(st_dir))
+    hl2 = (high + low) / 2
+    atr = pd.Series(talib.ATR(high.values, low.values, close.values, timeperiod=10))
+    supertrend_value = _last_or_none(hl2 - (supertrend_dir or 0) * 3 * atr) if supertrend_dir is not None else None
+
+    macd_line, macd_signal_line, macd_hist = talib.MACD(close.values, fastperiod=12, slowperiod=26, signalperiod=9)
+    macd = _last_or_none(pd.Series(macd_line))
+    macd_signal = _last_or_none(pd.Series(macd_signal_line))
+    macd_hist_val = _last_or_none(pd.Series(macd_hist))
+
+    vwap_win = df.tail(20)
+    vwap_typical = (vwap_win["high"] + vwap_win["low"] + vwap_win["close"]) / 3
+    vwap_denom = vwap_win["volume"].sum()
+    vwap_20d = float((vwap_typical * vwap_win["volume"]).sum() / vwap_denom) if vwap_denom else None
+
+    dist_from_52w_high = (cmp_ / week52_high - 1) if week52_high else None
+    dist_from_52w_low = (cmp_ / week52_low - 1) if week52_low else None
+    sma_50_200_ratio = (sma_50 / sma_200) if sma_50 and sma_200 else None
+
+    delivery_pct = _last_or_none(df["delivery_pct"])
+    delivery_win = df["delivery_pct"].tail(21).dropna()
+    avg_delivery_pct_21d = float(delivery_win.mean()) if len(delivery_win) else None
+    delivery_std = delivery_win.std()
+    delivery_pct_zscore_21d = (
+        float((delivery_pct - avg_delivery_pct_21d) / delivery_std)
+        if delivery_pct is not None and avg_delivery_pct_21d is not None and delivery_std
+        else None
+    )
+
+    return TASummaryResponse(
+        ticker=ticker, date=resolved_date, available=True,
+        cmp=cmp_, week52_high=week52_high, week52_low=week52_low,
+        sma_20=sma_20, sma_50=sma_50, sma_100=sma_100, sma_200=sma_200,
+        ema_9=ema_9, ema_21=ema_21, rsi_14=rsi_14,
+        supertrend_value=supertrend_value, supertrend_dir=supertrend_dir,
+        macd=macd, macd_signal=macd_signal, macd_hist=macd_hist_val,
+        vwap_20d=vwap_20d,
+        dist_from_52w_high=dist_from_52w_high, dist_from_52w_low=dist_from_52w_low,
+        sma_50_200_ratio=sma_50_200_ratio,
+        delivery_pct=delivery_pct, avg_delivery_pct_21d=avg_delivery_pct_21d,
+        delivery_pct_zscore_21d=delivery_pct_zscore_21d,
+    )
 
 
 @router.get("/compare", response_model=TACompareResponse)

@@ -363,6 +363,24 @@ KNOWN_PND_TICKERS: List[str] = [
 ]
 
 
+def _load_sebi_positive_events(conn) -> pd.DataFrame:
+    """
+    Real per-ticker manipulation-event dates from sebi_enforcement_orders
+    (2026-07-19 full-codebase-review Fix A5 — see
+    ingestion/scrapers/sebi_enforcement_orders.py). Returns empty
+    DataFrame if the table doesn't exist yet or has no rows (callers fall
+    back to KNOWN_PND_TICKERS' "most recent" behavior — see
+    load_pnd_training_data_from_db).
+    """
+    try:
+        return conn.execute(
+            "SELECT ticker, order_date, manipulation_start_date, manipulation_end_date "
+            "FROM sebi_enforcement_orders ORDER BY ticker, order_date"
+        ).df()
+    except Exception:
+        return pd.DataFrame(columns=["ticker", "order_date", "manipulation_start_date", "manipulation_end_date"])
+
+
 def load_pnd_training_data_from_db(
     db_path=None,
     lookback_days: int = 180,
@@ -371,33 +389,42 @@ def load_pnd_training_data_from_db(
     """
     Build a real (X, y) training set from ohlcv_adjusted in the DuckDB database.
 
-    Positive class: KNOWN_PND_TICKERS (confirmed SEBI/NSE enforcement cases).
-    Negative class: all other active tickers in the database.
+    Negative class: all other active tickers in the database, most recent
+    `lookback_days`.
+
+    Positive class (2026-07-19 full-codebase-review Fix A5): when
+    sebi_enforcement_orders has rows for a ticker, its positive-class
+    OHLCV window is [manipulation_start_date, manipulation_end_date] if
+    both are known, else [order_date - lookback_days, order_date] — i.e.
+    ending AT the real event date, not today. This replaces the prior
+    [KNOWN GAP] behavior of scoring KNOWN_PND_TICKERS on their MOST
+    RECENT `lookback_days` (post-enforcement, already-scrutinized
+    trading, unrelated to the actual manipulation pattern). Falls back to
+    KNOWN_PND_TICKERS' old "most recent" behavior only for tickers with
+    no sebi_enforcement_orders row at all (or if the table is empty/
+    missing — e.g. before a first scraper run), so this function never
+    hard-fails just because the new table hasn't been populated yet.
 
     Each ticker's OHLCV history is run through compute_pnd_features() to
-    produce X (PND_FEATURES columns, last trading day per ticker).
-
-    [KNOWN GAP] Positive-class rows are each ticker's MOST RECENT
-    `lookback_days` of OHLCV, not its historical manipulation-event window
-    — see this module's docstring and BuildLog.md "Real data sourcing —
-    PnD" (2026-06-30 entry) for why this degrades detector quality and
-    what real data is needed to fix it properly.
+    produce X (PND_FEATURES columns, last trading day of its window).
 
     Parameters
     ----------
     db_path : Path, optional
         Defaults to config.settings.DUCKDB_PATH.
     lookback_days : int
-        Calendar days of OHLCV to load per ticker. Default 180 (~6 months,
-        enough to warm up all PND_FEATURES rolling windows).
+        Calendar days of OHLCV to load per ticker (both for negatives,
+        and as the positive-window fallback when manipulation_start/end
+        are unknown). Default 180 (~6 months, enough to warm up all
+        PND_FEATURES rolling windows).
     min_rows_per_ticker : int
         Tickers with fewer trading rows than this are dropped. Default 60.
 
     Returns
     -------
     (X, y) : (pd.DataFrame, pd.Series)
-        X has PND_FEATURES columns (last trading day per ticker).
-        y is 1 for KNOWN_PND_TICKERS, 0 otherwise.
+        X has PND_FEATURES columns (last trading day per ticker/event).
+        y is 1 for a confirmed P&D ticker/event, 0 otherwise.
         Returns (None, None) if the database is empty / unreachable.
     """
     from pathlib import Path as _Path
@@ -414,6 +441,11 @@ def load_pnd_training_data_from_db(
         )
 
     with get_duckdb_connection(db_path) as conn:
+        sebi_events = _load_sebi_positive_events(conn)
+        sebi_tickers = set(sebi_events["ticker"]) if not sebi_events.empty else set()
+
+        # Negative pool + any KNOWN_PND_TICKERS fallback positives (most
+        # recent lookback_days window, unchanged from prior behavior).
         df = conn.execute(
             """
             SELECT date, ticker, open, high, low, close, volume,
@@ -425,7 +457,29 @@ def load_pnd_training_data_from_db(
             [lookback_days],
         ).df()
 
-    if df.empty:
+        # Real event-window OHLCV per sebi_enforcement_orders row —
+        # ending AT the real event, not today (the core fix).
+        event_frames = []
+        for row in sebi_events.itertuples():
+            start = row.manipulation_start_date
+            end = row.manipulation_end_date
+            if pd.isna(start) or pd.isna(end):
+                end = row.order_date
+                start = end - pd.Timedelta(days=lookback_days)
+            event_df = conn.execute(
+                """
+                SELECT date, ticker, open, high, low, close, volume,
+                       COALESCE(delivery_pct, 0.0) AS delivery_pct
+                FROM ohlcv_adjusted
+                WHERE ticker = ? AND date BETWEEN ? AND ?
+                ORDER BY date
+                """,
+                [row.ticker, start, end],
+            ).df()
+            if not event_df.empty:
+                event_frames.append(event_df)
+
+    if df.empty and not event_frames:
         raise RuntimeError(
             "ohlcv_adjusted is empty. PnD training requires real OHLCV history — "
             "run ingestion/backfill_runner.py first. See BuildLog.md 'Real data sourcing — PnD'."
@@ -433,33 +487,98 @@ def load_pnd_training_data_from_db(
 
     df["date"] = pd.to_datetime(df["date"])
 
-    # Drop tickers with insufficient history
+    # Drop tickers with insufficient history (negative pool only — event
+    # windows are checked against min_rows_per_ticker separately below,
+    # since a real manipulation window can legitimately be shorter than
+    # the general lookback_days negative window).
     counts = df.groupby("ticker")["date"].count()
     eligible = counts[counts >= min_rows_per_ticker].index
     df = df[df["ticker"].isin(eligible)]
+    # Real-event tickers are scored on their event window, not this
+    # "most recent" window — drop them here so they aren't double-counted
+    # as (incorrectly-labeled) negatives from the general pool.
+    df = df[~df["ticker"].isin(sebi_tickers)]
 
-    features = compute_pnd_features(df)
-    last_per_ticker = features.sort_values("date").groupby("ticker", sort=False).tail(1)
+    features = compute_pnd_features(df) if not df.empty else pd.DataFrame(columns=["date", "ticker"] + PND_FEATURES)
 
-    known_pnd_set = set(KNOWN_PND_TICKERS)
-    y = last_per_ticker["ticker"].isin(known_pnd_set).astype(int)
-    y.index = last_per_ticker.index
-    X = last_per_ticker[PND_FEATURES]
+    # Negatives: one row per ticker (its most recent trading day) — the
+    # general "what does normal trading look like today" pool, unchanged.
+    last_per_ticker = (
+        features.sort_values("date").groupby("ticker", sort=False).tail(1) if not features.empty else features
+    )
 
-    n_pos = y.sum()
-    n_neg = (y == 0).sum()
+    known_pnd_set = set(KNOWN_PND_TICKERS) - sebi_tickers  # sebi_tickers use the real-event path instead
+
+    # [BUG FIX, 2026-07-21 full-codebase-review] Positives (both the
+    # KNOWN_PND_TICKERS fallback below and the sebi_enforcement_orders
+    # event windows further down) previously kept only the LAST day of
+    # each ticker/event window via `.tail(1)` — discarding every other
+    # real, non-fabricated day inside a confirmed manipulation window.
+    # With only 20 KNOWN_PND_TICKERS (and typically far fewer actually
+    # resolving to real ohlcv_adjusted rows), this structurally capped
+    # the model at a handful of positive training examples regardless of
+    # how many real manipulation-days were actually available — measured
+    # to produce a LightGBM component that couldn't distinguish a
+    # textbook P&D pattern from normal trading (near-zero predicted
+    # probability on both, confirmed via tests/regression/test_known_pnd.py
+    # scoring 26-30 instead of the expected >=70/>=80). Using every real
+    # day within each known-positive ticker's window multiplies the real,
+    # non-synthetic positive training signal without fabricating anything
+    # — each day's features are computed causally from real OHLCV, same
+    # as any other row.
+    known_features = features[features["ticker"].isin(known_pnd_set)] if not features.empty else features
+    other_features = features[~features["ticker"].isin(known_pnd_set)] if not features.empty else features
+    last_per_ticker = (
+        other_features.sort_values("date").groupby("ticker", sort=False).tail(1)
+        if not other_features.empty else other_features
+    )
+    X_neg = last_per_ticker[PND_FEATURES] if not last_per_ticker.empty else pd.DataFrame(columns=PND_FEATURES)
+    y_neg = pd.Series([0] * len(X_neg))
+
+    X_known_pos = known_features[PND_FEATURES] if not known_features.empty else pd.DataFrame(columns=PND_FEATURES)
+    y_known_pos = pd.Series([1] * len(X_known_pos))
+
+    X_parts = [f.reset_index(drop=True) for f in (X_neg, X_known_pos) if not f.empty]
+    y_parts = [s.reset_index(drop=True) for s in (y_neg, y_known_pos) if not s.empty]
+    X = pd.concat(X_parts, ignore_index=True) if X_parts else pd.DataFrame(columns=PND_FEATURES)
+    y = pd.concat(y_parts, ignore_index=True) if y_parts else pd.Series(dtype=int)
+
+    # Real sebi_enforcement_orders positives: EVERY real trading day within
+    # the confirmed event window (not just the last one), always labeled 1.
+    event_rows = []
+    for event_df in event_frames:
+        event_df = event_df.copy()
+        event_df["date"] = pd.to_datetime(event_df["date"])
+        if len(event_df) < min_rows_per_ticker:
+            continue
+        event_features = compute_pnd_features(event_df)
+        if event_features.empty:
+            continue
+        event_rows.append(event_features.sort_values("date")[PND_FEATURES])
+
+    if event_rows:
+        X_events = pd.concat(event_rows, ignore_index=True)
+        y_events = pd.Series([1] * len(X_events))
+        X = pd.concat([X.reset_index(drop=True), X_events], ignore_index=True)
+        y = pd.concat([y.reset_index(drop=True), y_events], ignore_index=True)
+
+    n_pos = int(y.sum())
+    n_neg = int((y == 0).sum())
     logger.info(
-        "PnD real training data: %d tickers (%d positive / %d negative) from ohlcv_adjusted",
-        len(X), n_pos, n_neg,
+        "PnD real training data: %d tickers (%d positive [%d from sebi_enforcement_orders real event windows] "
+        "/ %d negative) from ohlcv_adjusted",
+        len(X), n_pos, len(event_rows), n_neg,
     )
 
     if n_pos == 0:
         raise RuntimeError(
-            "None of KNOWN_PND_TICKERS found in ohlcv_adjusted (tickers may have been delisted "
-            "or not yet backfilled, or the active_days lookback excludes them). PnD training "
-            "requires at least one positive example. Add recently confirmed P&D cases to "
-            "KNOWN_PND_TICKERS, or run a corporate-actions/ticker-history backfill to recover "
-            "delisted P&D tickers' OHLCV. See BuildLog.md 'Real data sourcing — PnD'."
+            "No positive P&D examples found — neither sebi_enforcement_orders nor "
+            "KNOWN_PND_TICKERS resolved to any rows in ohlcv_adjusted (tickers may have been "
+            "delisted or not yet backfilled). PnD training requires at least one positive "
+            "example. Run ingestion/scrapers/sebi_enforcement_orders.py to populate real event "
+            "dates, add recently confirmed cases to KNOWN_PND_TICKERS, or run a corporate-"
+            "actions/ticker-history backfill to recover delisted P&D tickers' OHLCV. "
+            "See BuildLog.md 'Real data sourcing — PnD'."
         )
 
     return X.reset_index(drop=True), y.reset_index(drop=True)

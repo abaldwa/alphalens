@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-11,MANAPPURAM,BUY,14.541493395751955,1,09:15:00,12.86969480578481,15:30:00,2012-05-31,thesis_broken,miss,-1.7302858142222508,-0.11898955403904553,,,,,,
+2012-05-11,DHANBANK,BUY,54.15,1,09:15:00,49.8,15:30:00,2012-07-27,thesis_broken,miss,-4.5677962818,-0.08435450197229917,,,,,,

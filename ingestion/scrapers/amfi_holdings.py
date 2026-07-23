@@ -38,7 +38,7 @@ SPEC-PIPE-003: scheme holdings for month M are not publicly known until
 M+1 (the regulatory disclosure deadline). `availability_date` is stored
 on every row as `(month + 1).replace(day=DELAY)` — the conservative,
 never-too-early default, same direction-of-safety convention as P2.1's
-FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS/SHAREHOLDING_FILING_DELAY_DAYS.
+FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER/SHAREHOLDING_FILING_DELAY_DAYS.
 """
 
 import logging

@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaLens — Backtest, Paper Trading &amp; Forward Testing Explained</title>
+<style>
+  :root {
+    --bg: #f4f2ee;
+    --surface: #ffffff;
+    --surface-2: #eceae4;
+    --border: #dcd8cf;
+    --text: #221f1a;
+    --text-dim: #6b6558;
+    --text-faint: #9b9585;
+    --accent: #2f5d8a;
+    --accent-soft: #e4ecf3;
+    --ok: #2f7a4f;
+    --ok-soft: #e3f1e7;
+    --warn: #96691a;
+    --warn-soft: #f5ecd8;
+    --crit: #a13f3f;
+    --crit-soft: #f5e2e2;
+    --rule: #cfc9bc;
+
+    --display: Georgia, "Iowan Old Style", "Palatino Linotype", "URW Palladio", serif;
+    --body: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "IBM Plex Mono", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --surface: #1d2025;
+      --surface-2: #23262c;
+      --border: #34383f;
+      --text: #e7e4dc;
+      --text-dim: #a6a196;
+      --text-faint: #726d61;
+      --accent: #7fa8d4;
+      --accent-soft: #24313f;
+      --ok: #6fbf8f;
+      --ok-soft: #1e2f24;
+      --warn: #d3ab5c;
+      --warn-soft: #332a17;
+      --crit: #d98686;
+      --crit-soft: #382322;
+      --rule: #34383f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16181c; --surface: #1d2025; --surface-2: #23262c; --border: #34383f;
+    --text: #e7e4dc; --text-dim: #a6a196; --text-faint: #726d61;
+    --accent: #7fa8d4; --accent-soft: #24313f;
+    --ok: #6fbf8f; --ok-soft: #1e2f24;
+    --warn: #d3ab5c; --warn-soft: #332a17;
+    --crit: #d98686; --crit-soft: #382322;
+    --rule: #34383f;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f2ee; --surface: #ffffff; --surface-2: #eceae4; --border: #dcd8cf;
+    --text: #221f1a; --text-dim: #6b6558; --text-faint: #9b9585;
+    --accent: #2f5d8a; --accent-soft: #e4ecf3;
+    --ok: #2f7a4f; --ok-soft: #e3f1e7;
+    --warn: #96691a; --warn-soft: #f5ecd8;
+    --crit: #a13f3f; --crit-soft: #f5e2e2;
+    --rule: #cfc9bc;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 clamp(20px, 4vw, 56px) 96px;
+  }
+
+  /* ---------- Masthead ---------- */
+  header.masthead {
+    padding: 56px 0 28px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 40px;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1.title {
+    font-family: var(--display);
+    font-weight: 400;
+    font-size: clamp(30px, 4.2vw, 44px);
+    line-height: 1.12;
+    margin: 0 0 14px;
+    text-wrap: balance;
+    max-width: 16ch;
+  }
+  .dek {
+    font-size: 17px;
+    color: var(--text-dim);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 22px;
+    margin-top: 22px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--text-faint);
+  }
+  .meta-row strong { color: var(--text-dim); font-weight: 500; }
+
+  /* ---------- Layout: TOC + content ---------- */
+  .layout {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 52px;
+    align-items: start;
+  }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { display: none; }
+  }
+  nav.toc {
+    position: sticky;
+    top: 32px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  nav.toc .toc-label {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
+    margin-bottom: 12px;
+    font-size: 11px;
+  }
+  nav.toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-left: 1px solid var(--rule);
+  }
+  nav.toc a {
+    display: block;
+    padding: 5px 0 5px 14px;
+    color: var(--text-dim);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+  }
+  nav.toc a:hover { color: var(--text); border-left-color: var(--text-faint); }
+
+  main { min-width: 0; }
+
+  /* ---------- Pipeline strip ---------- */
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin-bottom: 52px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .pipeline .stage {
+    flex: 1;
+    padding: 16px 18px;
+    background: var(--surface);
+    position: relative;
+  }
+  .pipeline .stage + .stage { border-left: 1px solid var(--border); }
+  .pipeline .stage .n {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .pipeline .stage .label {
+    color: var(--text);
+    font-weight: 500;
+    margin-top: 3px;
+    font-family: var(--body);
+    font-size: 14.5px;
+  }
+  .pipeline .stage.current { background: var(--accent-soft); }
+  .pipeline .stage::after {
+    content: "→";
+    position: absolute;
+    right: -11px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    background: var(--bg);
+    width: 20px;
+    text-align: center;
+    z-index: 1;
+  }
+  .pipeline .stage:last-child::after { content: ""; }
+
+  /* ---------- Section ---------- */
+  section.module {
+    margin-bottom: 64px;
+    scroll-margin-top: 24px;
+  }
+  .module-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 6px;
+  }
+  .module-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 3px 8px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  h2 {
+    font-family: var(--display);
+    font-weight: 400;
+    font-size: 27px;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .module-sub {
+    color: var(--text-dim);
+    font-size: 15px;
+    margin: 10px 0 26px;
+    max-width: 68ch;
+  }
+
+  h3 {
+    font-family: var(--body);
+    font-weight: 600;
+    font-size: 15px;
+    margin: 30px 0 10px;
+    color: var(--text);
+  }
+  p { max-width: 68ch; color: var(--text); }
+  p.tight { margin: 8px 0; }
+  ul, ol.steps { max-width: 68ch; padding-left: 22px; }
+  li { margin: 5px 0; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text);
+  }
+
+  /* Numbered flow steps (genuine day-by-day sequence) */
+  ol.flow {
+    list-style: none;
+    margin: 0 0 20px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border-left: 2px solid var(--border);
+    max-width: 68ch;
+  }
+  ol.flow li {
+    position: relative;
+    padding: 4px 0 4px 22px;
+    margin: 0;
+    font-size: 14.5px;
+    color: var(--text-dim);
+  }
+  ol.flow li::before {
+    content: "";
+    position: absolute;
+    left: -5px;
+    top: 12px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid var(--accent);
+  }
+  ol.flow li strong { color: var(--text); font-weight: 600; }
+
+  /* ---------- Metric table ---------- */
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin: 6px 0 28px;
+  }
+  table.metrics {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 560px;
+    font-size: 13.8px;
+  }
+  table.metrics caption {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    padding: 10px 14px 8px;
+    background: var(--surface-2);
+  }
+  table.metrics th, table.metrics td {
+    text-align: left;
+    padding: 9px 14px;
+    border-top: 1px solid var(--border);
+    vertical-align: top;
+  }
+  table.metrics thead th {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-faint);
+    background: var(--surface-2);
+    border-top: none;
+  }
+  table.metrics tbody tr:hover { background: var(--surface-2); }
+  table.metrics td.metric { font-weight: 600; white-space: nowrap; }
+  table.metrics td.target {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--accent);
+  }
+  table.metrics td.desc { color: var(--text-dim); }
+
+  /* ---------- Callouts ---------- */
+  .callout {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    border-radius: 0 4px 4px 0;
+    padding: 14px 18px;
+    margin: 20px 0;
+    max-width: 68ch;
+    font-size: 14.5px;
+    color: var(--text-dim);
+  }
+  .callout strong { color: var(--text); }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.crit { border-left-color: var(--crit); }
+
+  /* ---------- Gate status card ---------- */
+  .gate-card {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    max-width: 68ch;
+    margin: 8px 0 24px;
+  }
+  .gate-cell {
+    background: var(--surface);
+    padding: 16px 18px;
+  }
+  .gate-cell .k {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-bottom: 6px;
+  }
+  .gate-cell .v {
+    font-family: var(--mono);
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .gate-cell .v.crit { color: var(--crit); }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    padding: 3px 9px;
+    border-radius: 20px;
+  }
+  .pill.crit { background: var(--crit-soft); color: var(--crit); }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill::before { content: "●"; font-size: 8px; }
+
+  .progress-track {
+    height: 8px;
+    background: var(--surface-2);
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .progress-fill { height: 100%; background: var(--accent); }
+
+  code.file {
+    display: inline-block;
+    color: var(--text-dim);
+  }
+
+  hr.divider {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 56px 0;
+  }
+
+  footer {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="kicker">AlphaLens — Internal Reference</p>
+    <h1 class="title">Backtest, Paper Trading &amp; Forward Testing</h1>
+    <p class="dek">How a strategy earns the right to risk real capital: three stages, one pipeline, a hard gate in between.</p>
+    <div class="meta-row">
+      <span><strong>Scope</strong> backtest/, backtest/paper_trading/, datastore/api/routers/paper_trading.py</span>
+      <span><strong>Gate</strong> ≥90 genuine forward days before live capital</span>
+      <span><strong>Current status</strong> Paper trading at 0/90 days</span>
+    </div>
+    <div class="callout" style="max-width:none; font-size:16px; padding:16px 20px;">
+      📖 <strong>New to this module?</strong> Start with the
+      <a href="/explain/backtest-guide.html"><strong>Backtest Module &amp; Strategy Reference →</strong></a>
+      — how to run/queue backtests, the codified <code>strategy_id</code> format, Backtest vs Walk-Forward, and all
+      42 Technical screener templates with their entry conditions and duration (5d / 21d / 63d).
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <p class="toc-label">On this page</p>
+      <ol>
+        <li><a href="#pipeline">The pipeline</a></li>
+        <li><a href="#one-module">One module, all trades</a></li>
+        <li><a href="#strategy-id">Strategy ID &amp; horizon defaults</a></li>
+        <li><a href="#backtest">1 · Backtesting</a></li>
+        <li><a href="#backtest-metrics">Backtest metrics</a></li>
+        <li><a href="#whatif">What-if analysis</a></li>
+        <li><a href="#paper">2 · Paper Trading</a></li>
+        <li><a href="#paper-metrics">Paper-trading metrics</a></li>
+        <li><a href="#gate7">Gate 7</a></li>
+        <li><a href="#forward">Forward testing = paper trading</a></li>
+        <li><a href="#metrics-compare">Metric comparison</a></li>
+        <li><a href="#feature-page">Feature catalogue →</a></li>
+      </ol>
+    </nav>
+
+    <main>
+
+      <div id="pipeline" class="pipeline" role="img" aria-label="Pipeline: Backtest, then Paper Trading and Forward Testing, then Live Capital, gated by Gate 7">
+        <div class="stage">
+          <div class="n">Stage 1</div>
+          <div class="label">Backtest</div>
+        </div>
+        <div class="stage current">
+          <div class="n">Stage 2</div>
+          <div class="label">Paper Trading / Forward Test</div>
+        </div>
+        <div class="stage">
+          <div class="n">Stage 3</div>
+          <div class="label">Live Capital</div>
+        </div>
+      </div>
+
+      <section class="module" id="one-module">
+        <div class="module-head">
+          <span class="module-tag">Architecture</span>
+          <h2>One backtest module, every kind of trade</h2>
+        </div>
+        <p class="module-sub">There is exactly one <code>Backtest</code> module in AlphaLens. It does not fork by strategy type — Technical, Fundamental, ML, and Momentum all run through the same engine, the same portfolio and cost logic, and the same metrics.</p>
+
+        <p>Historically this wasn't true: <code>backtest/engine.py</code> grew to drive only the ML signal stack, <code>momentum_backtest.py</code> became a separate engine built the same week with its own CAGR methodology, Technical had nothing but a win-rate lookup (<code>strategy_confidence.py</code>), and Fundamental had no backtest capability at all. <code>BacktestUmbrellaPlan.md</code> is the confirmed plan to collapse that into one system:</p>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Shared core, thin adapters per channel</caption>
+            <thead>
+              <tr><th>Layer</th><th>Module</th><th>Shared across all 4 channels?</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">Run definition</td><td class="desc"><code>core/run_context.py</code> — <code>BacktestRun</code>: channel, strategy_id, horizon_bucket, universe, date range, capital mode</td><td class="desc">Yes</td></tr>
+              <tr><td class="metric">Position sizing</td><td class="desc"><code>core/horizon.py</code> — one sizing table keyed by <em>horizon bucket</em> (5-day / 21-day / 63-day / 1-year / MultiBagger), not by channel</td><td class="desc">Yes</td></tr>
+              <tr><td class="metric">Portfolio &amp; cash flows</td><td class="desc"><code>core/portfolio.py</code> — SIP injection, position sizing, cash tracking, sector/position caps</td><td class="desc">Yes</td></tr>
+              <tr><td class="metric">Costs</td><td class="desc"><code>backtest/costs.py</code>'s <code>IndianTransactionCosts</code></td><td class="desc">Yes — already shared, unchanged</td></tr>
+              <tr><td class="metric">Metrics</td><td class="desc"><code>core/metrics.py</code> — CAGR, XIRR, drawdown, win rate, profit factor, churn, benchmark comparison</td><td class="desc">Yes</td></tr>
+              <tr><td class="metric">Tax</td><td class="desc"><code>core/tax.py</code> — FY-end LTCG/STCG cash outflow</td><td class="desc">Yes</td></tr>
+              <tr><td class="metric">Signal generation</td><td class="desc"><code>adapters/&lbrace;technical,fundamental,ml,momentum&rbrace;_adapter.py</code></td><td class="desc">No — this is the one channel-specific piece, behind a common <code>StrategyAdapter</code> contract</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Every adapter implements the same two methods — <code>generate_signals(universe, as_of_date, horizon_bucket)</code> and <code>feature_vector(ticker, as_of_date)</code> — so the engine, portfolio, and metrics code never needs to know which channel it's running. <code>adapters/ml_adapter.py</code> is a thin wrapper around the existing, unmodified <code>BacktestEngine</code> rather than a rewrite, so the live <code>/ml-backtest</code> page keeps working unchanged throughout this migration.</p>
+
+        <div class="callout">
+          <strong>Hard constraint:</strong> no cross-channel capital pooling, anywhere. Each strategy — a (channel, horizon-bucket) pair such as "Technical 21-day" or "Momentum MultiBagger" — runs its own independent backtest, walk-forward, and paper-trading cycle against its own dedicated capital base. <code>core/portfolio.py</code> is not allowed to grow a shared-pool concept, even later.
+        </div>
+      </section>
+
+      <section class="module" id="strategy-id">
+        <div class="module-head">
+          <span class="module-tag">backtest/strategy_id.py</span>
+          <h2>Strategy ID &amp; horizon defaults</h2>
+        </div>
+        <p class="module-sub">Every backtest, orchestrator trigger, and queued job carries a codified <code>strategy_id</code> instead of a hand-typed free-text label, so runs are identifiable and comparable by construction.</p>
+
+        <p>Format: <code>{channel}_{descriptor}_{horizon_code}_{YYYYMMDD}</code> — e.g. <code>ta_e2_63d_20260722</code> is a Technical run of the <strong>E2</strong> template at a 63-day horizon, launched 2026-07-22. <code>parse_strategy_id()</code> recovers channel, descriptor, horizon, and run date straight back out of the string, no database lookup required.</p>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Horizon defaults by channel — used whenever horizon_bucket is left blank</caption>
+            <thead><tr><th>Channel</th><th>Keyed by</th><th>Default</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">Technical</td><td class="desc">Template style — see the <a href="/explain/backtest-guide.html#technical-strategies">full strategy reference</a> for all 42 templates and their durations</td><td class="desc">Mean Reversion → 5d · Momentum/Volatility → 21d · Trend Following → 63d</td></tr>
+              <tr><td class="metric">Fundamental</td><td class="desc">Screener preset</td><td class="desc">quality_compounder → 1y · garp / turnaround → 63d</td></tr>
+              <tr><td class="metric">Momentum</td><td class="desc">Lookback window</td><td class="desc">≤3mo → 21d · ≤9mo → 63d · longer → 1y</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Both <code>strategy_id</code> and <code>horizon_bucket</code> are optional on the CLI, the <code>/orchestrator/trigger</code> API, and the Backtest page's trigger panel — leave them blank and the backend resolves both from the table above. This is a naming convention, not a uniqueness key: older free-text ids (e.g. <code>signal_5d_metalabeler_retrain</code>) keep working unchanged.</p>
+
+        <div class="callout">
+          <strong>Run several strategies unattended:</strong> <code>run_strategy_queue.py</code> (and the Backtest page's "Schedule a Strategy Queue" panel) chains multiple orchestrator/iterative-retrain jobs into one sequential, memory-gated submission — no manual re-triggering between runs.
+        </div>
+      </section>
+
+      <section class="module" id="backtest">
+        <div class="module-head">
+          <span class="module-tag">Stage 1</span>
+          <h2>Backtesting</h2>
+        </div>
+        <p class="module-sub">Simulates a strategy against historical data before it ever touches a real signal. Walk-forward only — never a random train/test split on time-series data.</p>
+
+        <h3>Where it lives</h3>
+        <p class="tight"><code>backtest/engine.py</code> (<code>WalkForwardBacktester</code>) drives the ML signal stack today; <code>momentum_backtest.py</code> is a separate engine for Momentum; Technical has only <code>strategy_confidence.py</code>, a historical win-rate lookup rather than a full backtest; Fundamental has none yet. These four are being unified under <code>backtest/core/</code> (shared engine, portfolio, metrics, tax) with thin per-channel adapters implementing one <code>StrategyAdapter</code> contract — see <code class="file">BacktestUmbrellaPlan.md</code>.</p>
+
+        <h3>How a run executes</h3>
+        <ol class="flow">
+          <li><strong>Fold split</strong> — expanding walk-forward folds: train on 2021 → test 2022; train 2021–22 → test 2023; and so on through the most recent year.</li>
+          <li><strong>Day-by-day simulation</strong> inside each fold, reproducing the live pipeline's exact order.</li>
+          <li><strong>P&amp;D pre-filter</strong> blocks any ticker scoring above threshold before a buy signal is considered.</li>
+          <li><strong>Exit check</strong> on every held position — urgency &gt; 80 exits today, 60–80 reduces by half.</li>
+          <li><strong>New buy signals</strong> generated and sized against sector/position caps.</li>
+          <li><strong>Cost model applied</strong> on every trade via <code>IndianTransactionCosts</code> — brokerage, STT, exchange fees, GST, stamp duty, and liquidity-scaled slippage (~0.40–0.50% round trip; small-cap slippage rises under ₹1Cr ADTV).</li>
+          <li><strong>Delisted stocks included</strong> throughout, so results aren't survivorship-biased.</li>
+        </ol>
+
+        <p>Two further checks run over the result before it's trusted: <code>integrity_checker.py</code> screens for point-in-time leakage (e.g. a feature column that's secretly fundamentals-derived beyond its announcement date), and <code>overfit_checks.py</code> applies a Deflated Sharpe Ratio correction whenever 20+ configurations were tried, plus a random-feature shuffle test that a sound model should score ~50% on.</p>
+      </section>
+
+      <section class="module" id="backtest-metrics">
+        <div class="module-head">
+          <span class="module-tag">Metrics</span>
+          <h2>What a backtest reports</h2>
+        </div>
+        <p class="module-sub">Every run produces the same scorecard, regardless of channel, so strategies can be compared on equal terms.</p>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Return &amp; risk</caption>
+            <thead>
+              <tr><th>Metric</th><th>Target</th><th>What it captures</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">CAGR</td><td class="target">&gt; Nifty + 5%</td><td class="desc">Calendar-day/365.25 compounded growth — the canonical primary figure; a legacy trading-day-annualized variant is kept as a secondary field.</td></tr>
+              <tr><td class="metric">XIRR</td><td class="target">—</td><td class="desc">Money-weighted return across irregular cash flows — required once SIP-style contributions are involved, since plain CAGR only handles one lump sum in/out.</td></tr>
+              <tr><td class="metric">Total Return</td><td class="target">—</td><td class="desc">Net-of-cost return across the whole run.</td></tr>
+              <tr><td class="metric">Sharpe Ratio</td><td class="target">&gt; 1.0</td><td class="desc">Return per unit of volatility.</td></tr>
+              <tr><td class="metric">Sharpe std (fold stability)</td><td class="target">&lt; 0.5</td><td class="desc">Spread of Sharpe across folds — a strategy that only works in one fold reads as overfit, not robust.</td></tr>
+              <tr><td class="metric">Max Drawdown</td><td class="target">&lt; 25%</td><td class="desc">Worst peak-to-trough equity decline.</td></tr>
+              <tr><td class="metric">Calmar Ratio</td><td class="target">&gt; 0.5</td><td class="desc">CAGR divided by max drawdown.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Trade quality &amp; behaviour</caption>
+            <thead>
+              <tr><th>Metric</th><th>Target</th><th>What it captures</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">Win Rate</td><td class="target">&gt; 55%</td><td class="desc">Share of closed trades that were profitable.</td></tr>
+              <tr><td class="metric">Profit Factor</td><td class="target">&gt; 1.5</td><td class="desc">Gross profit ÷ gross loss.</td></tr>
+              <tr><td class="metric">Churn Factor</td><td class="target">—</td><td class="desc"><code>n_bought + n_sold</code> per rebalance, plus an annualized average — how much turnover the strategy generates.</td></tr>
+              <tr><td class="metric">Final Capital / Cash Position</td><td class="target">—</td><td class="desc">Ending portfolio value and a time series of idle cash.</td></tr>
+              <tr><td class="metric">Signal Accuracy (5d / 21d / 63d)</td><td class="target">&gt; 55%</td><td class="desc">Directional hit rate at each horizon.</td></tr>
+              <tr><td class="metric">Multibagger Precision@20</td><td class="target">&gt; 25%</td><td class="desc">Of the top-20 ranked candidates, share that go on to hit 2x.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Robustness &amp; benchmarking</caption>
+            <thead>
+              <tr><th>Metric</th><th>Target</th><th>What it captures</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">Benchmark comparison</td><td class="target">4 baselines</td><td class="desc">Nifty buy-hold, equal-weight-50, 6-month momentum, random 20-stock. Excess return is reported as <code>None</code> before 2023-07-03 — Nifty history in <code>index_ohlcv</code> doesn't go back further.</td></tr>
+              <tr><td class="metric">Deflated Sharpe Ratio</td><td class="target">—</td><td class="desc">Corrects the headline Sharpe for multiple-testing bias when 20+ configurations were searched.</td></tr>
+              <tr><td class="metric">Tax drag</td><td class="target">—</td><td class="desc">12.5% LTCG / 20% STCG applied as a single FY-end cash outflow on net realized profit, feeding into XIRR like a negative SIP contribution.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="module" id="whatif">
+        <div class="module-head">
+          <span class="module-tag">Robustness</span>
+          <h2>What-if analysis</h2>
+        </div>
+        <p class="module-sub">There's no separate "what-if" button — a what-if is just another backtest run with one input changed, compared against its parent. The mechanism that makes the comparison rigorous rather than anecdotal is the feature-vector log.</p>
+
+        <h3>What can be varied</h3>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead>
+              <tr><th>Lever</th><th>Where it lives</th><th>Example what-if</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">Position sizing</td><td class="desc"><code>core/horizon.py::sizing_for(bucket, overrides=...)</code></td><td class="desc">"What if 21-day max position was 2% instead of 3% — does drawdown fall faster than CAGR?"</td></tr>
+              <tr><td class="metric">Transaction costs</td><td class="desc"><code>backtest/costs.py::IndianTransactionCosts</code> constructor args</td><td class="desc">"What if slippage on small-caps was 0.50% instead of 0.30% — does the edge survive?"</td></tr>
+              <tr><td class="metric">Signal / meta thresholds</td><td class="desc"><code>config/settings.py</code> — <code>SIGNAL_THRESHOLD</code>, <code>META_THRESHOLD</code></td><td class="desc">"What if the buy threshold was 0.70 instead of 0.65 — fewer, higher-conviction trades?"</td></tr>
+              <tr><td class="metric">P&amp;D / exit sensitivity</td><td class="desc"><code>config/settings.py</code> — <code>PND_BLOCK_THRESHOLD</code>, <code>EXIT_URGENT_THRESHOLD</code></td><td class="desc">"What if exits triggered at urgency &gt; 70 instead of 80 — does it clip winners early?"</td></tr>
+              <tr><td class="metric">Universe / date range</td><td class="desc"><code>core/run_context.py::BacktestRun</code></td><td class="desc">"What if we only trade Tier-1 large caps — does churn and cost drag both drop?"</td></tr>
+              <tr><td class="metric">Capital mode</td><td class="desc"><code>BacktestRun.capital_mode</code> (lump-sum vs. SIP)</td><td class="desc">"What if capital arrived monthly instead of as one lump sum — how does XIRR change?"</td></tr>
+              <tr><td class="metric">Trial count correction</td><td class="desc"><code>overfit_checks.py::deflated_sharpe_ratio(n_trials=...)</code></td><td class="desc">"What if we're honest that 40 configs were tried, not 5 — does the Sharpe survive DSR?"</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>How the comparison is made rigorous</h3>
+        <p>Every run writes a full per-decision record to <code>backtest_feature_log</code> (DuckDB) via <code>core/feature_log.py</code> — not just the trades it took, but the feature vector, signal output, and decision (<code>bought</code> / <code>held</code> / <code>skipped_no_cash</code> / <code>skipped_sector_cap</code> / <code>sold</code>) for <em>every candidate it considered</em>, tagged with a <code>run_id</code>. A what-if run carries a <code>parent_run_id</code> back to the run it varied from, so a "compare to parent" query can isolate exactly which decisions flipped because of the changed input — not just that the aggregate CAGR moved.</p>
+
+        <div class="callout warn">
+          <strong>Scope today:</strong> the levers above are real, overridable config, and the feature log is implemented (<code>backtest/core/feature_log.py</code>) — but a one-click "run a what-if grid and diff it" UI does not exist yet. Today, a what-if is: set the override, re-run with a fresh <code>run_id</code> + <code>parent_run_id</code>, then query <code>backtest_feature_log</code> and the metrics table for both runs.
+        </div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="paper">
+        <div class="module-head">
+          <span class="module-tag">Stage 2</span>
+          <h2>Paper Trading</h2>
+        </div>
+        <p class="module-sub">The bridge between backtest and live capital: real signals, generated for a real "today," against real prices — with a human in the loop and nothing at financial risk.</p>
+
+        <h3>Where it lives</h3>
+        <p class="tight"><code>backtest/paper_trading/live_runner.py</code> and <code>approval_queue.py</code>. Same <code>StrategyAdapter</code> contract the backtest uses, fed a live data source instead of a historical panel.</p>
+
+        <h3>How a day runs</h3>
+        <ol class="flow">
+          <li><strong>Propose</strong> — <code>PaperTradingRunner.propose_today()</code> generates today's signals from the live adapter.</li>
+          <li><strong>Queue, never execute</strong> — every proposed buy/sell/forced-close is written to the pending-actions queue. Nothing touches the portfolio automatically.</li>
+          <li><strong>Human review</strong> — a person explicitly <code>accept()</code>s or <code>reject()</code>s each action.</li>
+          <li><strong>Reject → no state change.</strong> Accept → the trade executes against the persisted portfolio and the day counts toward Gate 7.</li>
+          <li><strong>Heartbeat on quiet days</strong> — even with zero trades, a row is logged so the day still counts as genuine operation.</li>
+        </ol>
+
+        <p>Portfolio state persists to <code>paper_trading/state/&lbrace;channel&rbrace;/&lbrace;strategy_id&rbrace;.json</code> — cash, positions, trades, cash flows, and equity curve, one file per (channel, strategy) track.</p>
+      </section>
+
+      <section class="module" id="paper-metrics">
+        <div class="module-head">
+          <span class="module-tag">Metrics</span>
+          <h2>What paper trading reports</h2>
+        </div>
+        <p class="module-sub">Fields actually written to a run report today (<code>paper_trading/sim_reports/*.json</code>), plus the live-state fields the API exposes.</p>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Per-run summary (sim_reports/*.json)</caption>
+            <thead>
+              <tr><th>Field</th><th>Meaning</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">trading_days / skipped_dates</td><td class="desc">Days the runner genuinely operated vs. days it had nothing to do (skipped ≠ missing — Gate 7 still counts a heartbeat day)</td></tr>
+              <tr><td class="metric">initial_capital_inr / final_equity_inr</td><td class="desc">Starting and ending portfolio value</td></tr>
+              <tr><td class="metric">total_pnl_inr</td><td class="desc">final_equity − initial_capital, in rupees</td></tr>
+              <tr><td class="metric">total_trades</td><td class="desc">Count of executed (human-accepted) buy/sell actions</td></tr>
+              <tr><td class="metric">win_rate_pct</td><td class="desc">Share of closed trades that were profitable</td></tr>
+              <tr><td class="metric">avg_win_pct / avg_loss_pct</td><td class="desc">Mean return of winning trades vs. mean return of losing trades — separates "wins how big" from "how often"</td></tr>
+              <tr><td class="metric">sharpe_ratio</td><td class="desc">Return per unit of volatility over the run</td></tr>
+              <tr><td class="metric">cagr_pct</td><td class="desc">Annualized return over the run's actual elapsed calendar time</td></tr>
+              <tr><td class="metric">model / meta_model</td><td class="desc">Which model versions generated the signals this run traded — pins results to a reproducible model snapshot</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="table-wrap">
+          <table class="metrics">
+            <caption>Live state (datastore/api/routers/paper_trading.py)</caption>
+            <thead>
+              <tr><th>Field</th><th>Meaning</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">Gate status</td><td class="desc"><code>days_count</code> vs. <code>GATE_THRESHOLD</code> (90), <code>gate_cleared</code> boolean</td></tr>
+              <tr><td class="metric">Equity curve</td><td class="desc">Time series backing the equity-curve chart</td></tr>
+              <tr><td class="metric">Positions (enriched)</td><td class="desc">Open positions joined with exit-urgency score and current Nifty level for context</td></tr>
+              <tr><td class="metric">Pending / accepted / rejected actions</td><td class="desc">Queue state per date — the raw signal-vs-human-override record</td></tr>
+              <tr><td class="metric">Horizon watchlist</td><td class="desc">Candidates being tracked ahead of a formal signal, by horizon bucket</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="module" id="gate7">
+        <div class="module-head">
+          <span class="module-tag">The gate</span>
+          <h2>Gate 7</h2>
+        </div>
+        <p class="module-sub">The hard requirement standing between paper trading and real money.</p>
+
+        <div class="gate-card">
+          <div class="gate-cell">
+            <div class="k">Threshold</div>
+            <div class="v">90 days</div>
+          </div>
+          <div class="gate-cell">
+            <div class="k">Current progress</div>
+            <div class="v crit">0 / 90</div>
+          </div>
+          <div class="gate-cell">
+            <div class="k">Status</div>
+            <div class="v"><span class="pill crit">Not cleared</span></div>
+          </div>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="90" aria-label="Gate 7 progress">
+          <div class="progress-fill" style="width: 0%"></div>
+        </div>
+
+        <p style="margin-top:22px;">A strategy needs <strong>≥90 distinct genuine forward-trading days</strong> of paper-trading history before it's eligible for live capital. The day count is anchored to an audit-proof invariant: one dated file (<code>paper_trading/executions/&lbrace;date&rbrace;.csv</code>) per day the bot actually ran — <em>"CSV exists ⇔ bot genuinely ran."</em> Nothing can retroactively backfill or fabricate a day.</p>
+
+        <div class="callout crit">
+          <strong>Current state:</strong> paper trading is at 0 of 90 days. Historical replays (<code>run_paper_trading_sim.py</code>, which simulates 2007 and 2025 windows) do not count toward Gate 7 — they aren't real forward time, so this is the current bottleneck between AlphaLens and live-trading readiness.
+        </div>
+      </section>
+
+      <section class="module" id="forward">
+        <div class="module-head">
+          <span class="module-tag">Clarification</span>
+          <h2>Forward testing is paper trading</h2>
+        </div>
+        <p class="module-sub">AlphaLens doesn't have a separate forward-testing module — the terms describe the same stage from two angles.</p>
+        <p>"Paper trading" names <em>how</em> it runs (simulated capital, real signals, real prices). "Forward testing" names <em>why</em> it matters (proof the strategy holds up on data it couldn't have seen at backtest time, accumulated one real day at a time — as opposed to a historical replay). Gate 7 is the mechanism that enforces the forward-testing property: it only counts days that genuinely elapsed in real time, which is exactly what distinguishes forward testing from another backtest.</p>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="metrics-compare" style="margin-bottom: 8px;">
+        <div class="module-head">
+          <span class="module-tag">Summary</span>
+          <h2>Backtest vs. Paper Trading — what's tracked</h2>
+        </div>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead>
+              <tr><th>Tracked</th><th>Backtest</th><th>Paper Trading / Forward Test</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="metric">Core return/risk set</td><td class="desc">CAGR, XIRR, Sharpe, drawdown, Calmar, win rate, profit factor</td><td class="desc">Same set, computed only over human-accepted trades</td></tr>
+              <tr><td class="metric">Universe</td><td class="desc">Full historical panel, including delisted names</td><td class="desc">Live universe as of today</td></tr>
+              <tr><td class="metric">Execution</td><td class="desc">Fully automatic inside each simulated fold</td><td class="desc">Proposed only — requires explicit human accept/reject</td></tr>
+              <tr><td class="metric">Gate tracking</td><td class="desc">Not applicable</td><td class="desc"><code>days_count</code> vs. <code>GATE_THRESHOLD</code> (90), <code>gate_cleared</code> boolean</td></tr>
+              <tr><td class="metric">Exposure checks</td><td class="desc">Enforced inside the simulation</td><td class="desc">Live-checked against <code>MAX_POSITION_PCT</code>, <code>MAX_SECTOR_PCT</code>, <code>MAX_ORDER_VS_ADTV</code></td></tr>
+              <tr><td class="metric">Override signal</td><td class="desc">—</td><td class="desc">Accepted-vs-rejected ratio — how much the human is overriding the model's raw output</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="module" id="feature-page" style="margin-bottom: 8px;">
+        <div class="module-head">
+          <span class="module-tag">Companion page</span>
+          <h2>What features get captured</h2>
+        </div>
+        <p class="module-sub">This page covers the run mechanics and the metrics they produce. The 330-feature catalogue each run reads from, the point-in-time rules that govern it, and the per-decision feature-vector log that powers what-if comparisons are documented separately.</p>
+        <p><a href="backtest-features.html" target="_blank" rel="noopener noreferrer" style="font-weight:600;">Features Captured in Backtest &amp; Walk-Forward &rarr;</a></p>
+      </section>
+
+      <footer>
+        AlphaLens internal reference · sources: backtest/engine.py, backtest/costs.py, backtest/momentum_metrics.py, backtest/overfit_checks.py, backtest/paper_trading/live_runner.py, backtest/paper_trading/approval_queue.py, backtest/core/horizon.py, backtest/core/feature_log.py, datastore/api/routers/paper_trading.py, BacktestUmbrellaPlan.md
+      </footer>
+
+    </main>
+  </div>
+</div>
+</body>
+</html>

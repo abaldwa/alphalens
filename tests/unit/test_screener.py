@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 from bs4 import BeautifulSoup
 
-from config.settings import FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS, SHAREHOLDING_FILING_DELAY_DAYS
+from config.settings import FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER, SHAREHOLDING_FILING_DELAY_DAYS
 from ingestion.scrapers.screener import (
     ScreenerAuthError,
     ScreenerScraper,
@@ -136,8 +136,29 @@ class TestBuildFundamentalsRow:
         row = _build_fundamentals_row("RELIANCE", quarters, balance_sheet, header)
 
         assert row["announcement_date"] > row["quarter_end_date"]
-        expected = row["quarter_end_date"] + timedelta(days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS)
+        expected = row["quarter_end_date"] + timedelta(
+            days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER[row["quarter"]]
+        )
         assert row["announcement_date"] == expected
+
+    def test_q4_announcement_date_uses_60_day_annual_delay(self):
+        """2026-07-19 full-codebase-review Fix A2: Q4/annual results get
+        60 days under SEBI LODR Reg. 33, not the flat 45-day constant
+        previously applied to every quarter."""
+        soup = BeautifulSoup(_SAMPLE_HTML, "html.parser")
+        from ingestion.scrapers.screener import _BALANCE_SHEET_FIELDS, _HEADER_FIELDS, _QUARTERS_FIELDS
+
+        header = _parse_section_table(soup, None, _HEADER_FIELDS, header_stats=True)
+        quarters = _parse_section_table(soup, "quarters", _QUARTERS_FIELDS)
+        balance_sheet = _parse_section_table(soup, "balance-sheet", _BALANCE_SHEET_FIELDS)
+        row = _build_fundamentals_row("RELIANCE", quarters, balance_sheet, header)
+
+        if row["quarter"] == 4:
+            expected = row["quarter_end_date"] + timedelta(days=60)
+            assert row["announcement_date"] == expected
+        else:
+            expected = row["quarter_end_date"] + timedelta(days=45)
+            assert row["announcement_date"] == expected
 
     def test_no_revenue_row_returns_none(self):
         row = _build_fundamentals_row("EMPTYCO", {"revenue": None}, {}, {})

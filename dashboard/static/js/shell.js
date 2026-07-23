@@ -72,7 +72,15 @@ const APPS = [
     id: "ops", name: "AlphaLens.Ops", short: "Ops", color: "var(--tx3)", base: "/ui/ops/",
     screens: [
       { id: "index", label: "Job Autoruns", href: "index.html" },
-      { id: "macro", label: "Macro Data Entry", href: "macro.html" },
+    ],
+  },
+  {
+    // Split out from AlphaLens.Ops into its own top-level app — was a
+    // sub-tab under Ops (A27), now promoted since it has nothing to do
+    // with pipeline/job monitoring.
+    id: "macro", name: "AlphaLens.Macro", short: "Macro", color: "var(--purple)", base: "/ui/macro/",
+    screens: [
+      { id: "index", label: "Macro Data Entry", href: "index.html" },
     ],
   },
   {
@@ -84,6 +92,24 @@ const APPS = [
       { id: "index", label: "Bulk/Block Deals", href: "index.html" },
       { id: "mf_holdings", label: "MF Holdings", href: "mf_holdings.html" },
       { id: "announcements", label: "Corporate Announcements", href: "announcements.html" },
+    ],
+  },
+  {
+    // ML38 (2026-07-14) — live dashboard section for the
+    // robustness-validated momentum strategy (Rank 100-150 / top 15 /
+    // 6-month lookback / monthly rebalance / grace=2). Manual
+    // paper-trading style: the user records their own fills.
+    id: "momentum", name: "AlphaLens.Momentum", short: "Momentum", color: "var(--green)", base: "/ui/momentum/",
+    screens: [
+      { id: "universe", label: "Universe", href: "index.html" },
+      { id: "rebalance", label: "Rebalance", href: "rebalance.html" },
+      { id: "portfolio", label: "Holding Dashboard", href: "portfolio.html" },
+      // 2026-07-18: research artifacts (732-variant grid backtest ledger,
+      // year-on-year report) live outside this app as published Claude
+      // artifacts, not local screens — external links, opened in a new
+      // tab (see renderAppShell's target="_blank" handling below).
+      { id: "backtest_ledger", label: "Backtest Ledger ↗", href: "https://claude.ai/code/artifact/def4eadd-f11c-40d9-b491-ccc7f213c990" },
+      { id: "yoy_report", label: "Year-on-Year Report ↗", href: "https://claude.ai/code/artifact/3950a32a-23dc-4600-8d7f-6a4c48520858" },
     ],
   },
 ];
@@ -125,8 +151,10 @@ function renderAppShell(appId, screenId) {
   if (sub) {
     sub.innerHTML = "";
     app.screens.forEach((s) => {
+      const isExternal = /^https?:\/\//.test(s.href);
+      const attrs = isExternal ? { href: s.href, target: "_blank", rel: "noopener" } : { href: s.href };
       sub.appendChild(
-        el("a", { href: s.href }, [
+        el("a", attrs, [
           el("span", { class: "sub-tab" + (s.id === screenId ? " active" : "") }, [s.label]),
         ])
       );

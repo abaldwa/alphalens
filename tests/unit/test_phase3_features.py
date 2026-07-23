@@ -191,6 +191,26 @@ class TestAdvancedTechnicalPanel:
         if not np.isnan(val):
             assert 0.0 <= val <= 1.0, f"fracdiff_d_optimal={val} outside [0,1]"
 
+    def test_fracdiff_d_uses_real_adf_test(self):
+        """2026-07-19 full-codebase-review Fix 10: _optimal_fracdiff_d must
+        use a real ADF test (statsmodels adfuller), not the prior lag-1-
+        autocorrelation proxy — verified by distinguishing a stationary
+        white-noise series (should need close to d=0) from a non-stationary
+        random walk (should need close to d=1)."""
+        from features.advanced_technical import _optimal_fracdiff_d
+
+        rng = np.random.default_rng(7)
+        white_noise = rng.normal(size=200)
+        random_walk = np.cumsum(rng.normal(size=200))
+
+        d_noise = _optimal_fracdiff_d(white_noise)
+        d_walk = _optimal_fracdiff_d(random_walk)
+
+        # A non-stationary random walk should need materially more
+        # differencing than already-stationary white noise.
+        assert d_noise < d_walk
+        assert d_walk > 0.7
+
     def test_permutation_entropy_in_unit_interval(self):
         """permutation_entropy_21d (normalised) must be in [0, 1]."""
         from features.advanced_technical import compute_advanced_technical_features

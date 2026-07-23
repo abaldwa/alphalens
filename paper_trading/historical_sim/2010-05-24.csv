@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-05-24,HINDOILEXP,BUY,175.1,1,09:15:00,238.25,15:30:00,2010-07-06,target_achieved,hit,62.44573169080002,0.35662896453912063,,,,,,
+2010-05-24,TRIGYN,BUY,17.65,1,09:15:00,23.9,15:30:00,2010-10-04,target_achieved,hit,6.179010076200001,0.3500855567252125,,,,,,

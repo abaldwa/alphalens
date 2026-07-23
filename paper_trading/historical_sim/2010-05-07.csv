@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-05-07,BAJAJHIND,BUY,112.60000000000001,8599,09:15:00,105.65,15:30:00,2010-05-19,thesis_broken,miss,-63657.4301215607,-0.06574500496625212,,,,,,
+2010-05-07,RENUKA,BUY,55.5,1,09:15:00,74.45,15:30:00,2010-09-08,target_achieved,hit,18.726773894000004,0.33741934944144153,,,,,,

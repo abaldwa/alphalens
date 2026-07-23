@@ -41,6 +41,12 @@ from typing import List
 import numpy as np
 import pandas as pd
 
+from features._vector_utils import (
+    grouped_rolling as _grouped_rolling,
+    grouped_shift as _grouped_shift,
+    safe_div as _safe_div,
+)
+
 logger = logging.getLogger(__name__)
 
 REQUIRED_OHLCV_COLUMNS = ["date", "ticker", "open", "high", "low", "close", "volume"]
@@ -84,21 +90,6 @@ _CROSS_FEATURE = [
 
 PND_FEATURES: List[str] = _VOLUME_ANOMALIES + _PRICE_ANOMALIES + _DELIVERY_COLLAPSE + _MICROSTRUCTURE + _CROSS_FEATURE
 assert len(PND_FEATURES) == 22, "PND_FEATURES catalog drifted from the spec'd 22"
-
-
-def _grouped_rolling(df: pd.DataFrame, col: str, window: int, how: str, min_periods: int = None) -> pd.Series:
-    grouped = df.groupby("ticker", sort=False)[col].rolling(window, min_periods=min_periods or window)
-    return getattr(grouped, how)().reset_index(level=0, drop=True)
-
-
-def _grouped_shift(df: pd.DataFrame, col: str, periods: int) -> pd.Series:
-    return df.groupby("ticker", sort=False)[col].shift(periods)
-
-
-def _safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
-    with np.errstate(divide="ignore", invalid="ignore"):
-        result = numerator.to_numpy(dtype=np.float64) / denominator.to_numpy(dtype=np.float64)
-    return pd.Series(result, index=numerator.index).replace([np.inf, -np.inf], np.nan)
 
 
 def _consecutive_true_run(flags: pd.Series, ticker: pd.Series) -> pd.Series:

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaLens — Machine Learning Models Explained</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --surface: #ffffff; --surface-2: #eceae4; --border: #dcd8cf;
+    --text: #221f1a; --text-dim: #6b6558; --text-faint: #9b9585;
+    --accent: #2f5d8a; --accent-soft: #e4ecf3;
+    --ok: #2f7a4f; --ok-soft: #e3f1e7; --warn: #96691a; --warn-soft: #f5ecd8;
+    --crit: #a13f3f; --crit-soft: #f5e2e2; --rule: #cfc9bc;
+    --display: Georgia, "Iowan Old Style", "Palatino Linotype", "URW Palladio", serif;
+    --body: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "IBM Plex Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181c; --surface:#1d2025; --surface-2:#23262c; --border:#34383f; --text:#e7e4dc; --text-dim:#a6a196; --text-faint:#726d61; --accent:#7fa8d4; --accent-soft:#24313f; --ok:#6fbf8f; --ok-soft:#1e2f24; --warn:#d3ab5c; --warn-soft:#332a17; --crit:#d98686; --crit-soft:#382322; --rule:#34383f; }
+  }
+  :root[data-theme="dark"] { --bg:#16181c; --surface:#1d2025; --surface-2:#23262c; --border:#34383f; --text:#e7e4dc; --text-dim:#a6a196; --text-faint:#726d61; --accent:#7fa8d4; --accent-soft:#24313f; --ok:#6fbf8f; --ok-soft:#1e2f24; --warn:#d3ab5c; --warn-soft:#332a17; --crit:#d98686; --crit-soft:#382322; --rule:#34383f; }
+  :root[data-theme="light"] { --bg:#f4f2ee; --surface:#ffffff; --surface-2:#eceae4; --border:#dcd8cf; --text:#221f1a; --text-dim:#6b6558; --text-faint:#9b9585; --accent:#2f5d8a; --accent-soft:#e4ecf3; --ok:#2f7a4f; --ok-soft:#e3f1e7; --warn:#96691a; --warn-soft:#f5ecd8; --crit:#a13f3f; --crit-soft:#f5e2e2; --rule:#cfc9bc; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--body); font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .page { max-width: 1180px; margin: 0 auto; padding: 0 clamp(20px,4vw,56px) 96px; }
+  header.masthead { padding: 56px 0 28px; border-bottom: 1px solid var(--rule); margin-bottom: 40px; }
+  .backlink { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; color:var(--text-faint); text-decoration:none; margin-bottom:18px; }
+  .backlink:hover { color: var(--accent); }
+  .kicker { font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px; }
+  h1.title { font-family:var(--display); font-weight:400; font-size:clamp(30px,4.2vw,44px); line-height:1.12; margin:0 0 14px; text-wrap:balance; max-width:22ch; }
+  .dek { font-size:17px; color:var(--text-dim); max-width:66ch; margin:0; }
+  .meta-row { display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:22px; font-family:var(--mono); font-size:12.5px; color:var(--text-faint); }
+  .meta-row strong { color:var(--text-dim); font-weight:500; }
+  .layout { display:grid; grid-template-columns:210px minmax(0,1fr); gap:52px; align-items:start; }
+  @media (max-width:860px) { .layout{grid-template-columns:1fr;} nav.toc{display:none;} }
+  nav.toc { position:sticky; top:32px; font-family:var(--mono); font-size:12.5px; }
+  nav.toc .toc-label { text-transform:uppercase; letter-spacing:.1em; color:var(--text-faint); margin-bottom:12px; font-size:11px; }
+  nav.toc ol { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; border-left:1px solid var(--rule); }
+  nav.toc a { display:block; padding:5px 0 5px 14px; color:var(--text-dim); text-decoration:none; border-left:2px solid transparent; margin-left:-1px; }
+  nav.toc a:hover { color:var(--text); border-left-color:var(--text-faint); }
+  main { min-width:0; }
+  section.module { margin-bottom:60px; scroll-margin-top:24px; }
+  .module-head { display:flex; align-items:baseline; gap:14px; margin-bottom:6px; }
+  .module-tag { font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); background:var(--accent-soft); padding:3px 8px; border-radius:2px; white-space:nowrap; }
+  h2 { font-family:var(--display); font-weight:400; font-size:27px; margin:0; text-wrap:balance; }
+  .module-sub { color:var(--text-dim); font-size:15px; margin:10px 0 26px; max-width:70ch; }
+  h3 { font-family:var(--body); font-weight:600; font-size:15px; margin:30px 0 10px; color:var(--text); }
+  p { max-width:70ch; color:var(--text); }
+  code { font-family:var(--mono); font-size:.88em; background:var(--surface-2); padding:1px 5px; border-radius:3px; color:var(--text); }
+  ol.flow { list-style:none; margin:0 0 20px; padding:0; display:flex; flex-direction:column; gap:0; border-left:2px solid var(--border); max-width:70ch; }
+  ol.flow li { position:relative; padding:4px 0 4px 22px; margin:0; font-size:14.5px; color:var(--text-dim); }
+  ol.flow li::before { content:""; position:absolute; left:-5px; top:12px; width:8px; height:8px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
+  ol.flow li strong { color:var(--text); font-weight:600; }
+  .table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:4px; margin:6px 0 28px; }
+  table.metrics { border-collapse:collapse; width:100%; min-width:620px; font-size:13.6px; }
+  table.metrics caption { text-align:left; font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); padding:10px 14px 8px; background:var(--surface-2); }
+  table.metrics th, table.metrics td { text-align:left; padding:9px 14px; border-top:1px solid var(--border); vertical-align:top; }
+  table.metrics thead th { font-family:var(--mono); font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); background:var(--surface-2); border-top:none; }
+  table.metrics tbody tr:hover { background:var(--surface-2); }
+  table.metrics td.metric { font-weight:600; white-space:nowrap; }
+  table.metrics td.desc { color:var(--text-dim); }
+  .badge { display:inline-block; font-family:var(--mono); font-size:10.5px; padding:2px 7px; border-radius:3px; background:var(--surface-2); color:var(--text-dim); margin-right:6px; }
+  .badge.p1 { background: var(--ok-soft); color: var(--ok); }
+  .badge.p2 { background: var(--accent-soft); color: var(--accent); }
+  .badge.p3 { background: var(--warn-soft); color: var(--warn); }
+  .badge.p4 { background: var(--crit-soft); color: var(--crit); }
+  .callout { border:1px solid var(--border); border-left:3px solid var(--accent); background:var(--surface); border-radius:0 4px 4px 0; padding:14px 18px; margin:20px 0; max-width:70ch; font-size:14.5px; color:var(--text-dim); }
+  .callout strong { color:var(--text); }
+  .callout.warn { border-left-color: var(--warn); }
+  hr.divider { border:none; border-top:1px solid var(--rule); margin:56px 0; }
+  footer { font-family:var(--mono); font-size:12px; color:var(--text-faint); padding-top:24px; border-top:1px solid var(--rule); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="masthead">
+    <a class="backlink" href="backtest-paper-trading.html">&larr; Backtest, Paper Trading &amp; Forward Testing</a>
+    <p class="kicker">AlphaLens — Explain Series</p>
+    <h1 class="title">Machine Learning Models</h1>
+    <p class="dek">16 models across 4 build phases — regime detection, multi-horizon signals, pump-and-dump defense, exit timing, multibagger scanning, and a forensic/deep-learning ensemble, wired together into one daily pipeline.</p>
+    <div class="meta-row">
+      <span><strong>Primary</strong> LightGBM 4.6 + CatBoost 1.2 ensemble</span>
+      <span><strong>Validation</strong> Walk-forward only, never random split</span>
+      <span><strong>Screens</strong> Daily Insights · Signal Deep Dive · Multibagger · Positions · Backtest</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <p class="toc-label">On this page</p>
+      <ol>
+        <li><a href="#what">What it is</a></li>
+        <li><a href="#p1">Phase 1 — Core Signal Engine</a></li>
+        <li><a href="#p2">Phase 2 — Fundamentals + Multibagger</a></li>
+        <li><a href="#p3">Phase 3 — Deep Learning Ensemble</a></li>
+        <li><a href="#p4">Phase 4 — RL Meta-Agent</a></li>
+        <li><a href="#daily">The daily inference chain</a></li>
+        <li><a href="#stack">Library stack</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <section class="module" id="what">
+        <div class="module-head"><span class="module-tag">Overview</span><h2>What it is</h2></div>
+        <p class="module-sub"><code>systems/ml_signal_engine/</code> is System 1 in the platform architecture. It's not one model — it's a pipeline of 16, each with a narrow, named job (SOLID Single Responsibility), each inheriting a shared contract (<code>IModel</code>/<code>IClassificationModel</code>/<code>IRegimeModel</code>/<code>ISurvivalModel</code> in <code>contracts/interfaces.py</code>), trained exclusively via walk-forward validation on real data — never a random time-series split, never synthetic training data.</p>
+      </section>
+
+      <section class="module" id="p1">
+        <div class="module-head"><span class="module-tag">Weeks 1–14</span><h2>Phase 1 — Core Signal Engine</h2></div>
+        <p class="module-sub">Goal: usable for paper trading by Week 8. 98 features (76 core technical + 8 intraday + 7 calendar + P&amp;D), free data sources only.</p>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Model</th><th>Job</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">M-01 HMM Regime Detection</td><td class="desc">Classifies the current market regime (Gaussian HMM) — bull/bear/choppy — that downstream models condition on</td></tr>
+              <tr><td class="metric">M-02 Signal 5d</td><td class="desc">Short-horizon Buy/Hold/Sell signal (LightGBM primary)</td></tr>
+              <tr><td class="metric">M-03 Signal 21d / 63d</td><td class="desc">Medium-horizon signal; 63d adds fundamental features once Phase 2 lands</td></tr>
+              <tr><td class="metric">M-04 Meta-Labeler</td><td class="desc">Learns when to trust the base signal at all — filters low-conviction calls before they reach the user</td></tr>
+              <tr><td class="metric">M-05 Conformal Prediction</td><td class="desc">MAPIE CQR/ACI — attaches a calibrated uncertainty interval to every signal, time-series-aware</td></tr>
+              <tr><td class="metric">M-06 Pump &amp; Dump Detector</td><td class="desc">Hard pre-filter, not a post-filter — score &gt; 60 blocks a buy signal before the user ever sees it</td></tr>
+              <tr><td class="metric">M-07 Exit Signal</td><td class="desc">Urgency score for held positions — &gt;80 exit today, 60–80 reduce 50%, 40–60 monitor</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="module" id="p2">
+        <div class="module-head"><span class="module-tag">Weeks 12–24</span><h2>Phase 2 — Fundamentals + Multibagger</h2></div>
+        <p class="module-sub">+170 features (fundamentals, governance, MF holdings, F&amp;O, corporate actions, microstructure, seasonality, classical forensic) once Screener.in Premium, BSE shareholding, and AMFI data land.</p>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Model</th><th>Job</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">M-08 Multibagger Detection</td><td class="desc">Scans weekly (Monday, after the daily pipeline) for early-stage multibagger candidates using base-formation, accumulation, and trend-quality features</td></tr>
+              <tr><td class="metric">M-09 Forensic Classical Scores</td><td class="desc">7 formula-based accounting-manipulation models — see the <a href="backtest-paper-trading.html" target="_blank" rel="noopener noreferrer">Forensic Accounting page</a></td></tr>
+              <tr><td class="metric">M-10 Forensic ML Ensemble</td><td class="desc">Learned ensemble over 54 deep forensic features, complementing M-09's formulas</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="p3">
+        <div class="module-head"><span class="module-tag">Weeks 24–36</span><h2>Phase 3 — Deep Learning Ensemble</h2></div>
+        <p class="module-sub">+62 features (54 deep forensic + 10 real-economy macro + 20 advanced technical). Trains overnight on CPU.</p>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Model</th><th>Job</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">M-11 Temporal Fusion Transformer</td><td class="desc">PyTorch + pytorch-forecasting — attention-based multi-horizon forecasting over the full feature set</td></tr>
+              <tr><td class="metric">M-12 BiLSTM + Mamba-2</td><td class="desc">Sequence model for longer-range dependency capture (Ubuntu-only Mamba-2 SSM, skipping Mamba-1/3)</td></tr>
+              <tr><td class="metric">M-13 Stacking Meta-Learner</td><td class="desc">Combines M-02/03/11/12's outputs into one final ensemble prediction</td></tr>
+              <tr><td class="metric">M-14 TabNet</td><td class="desc">Used only as a feature-selection validator, not a production signal source</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="module" id="p4">
+        <div class="module-head"><span class="module-tag">Week 36+</span><h2>Phase 4 — RL Meta-Agent</h2></div>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Model</th><th>Job</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">M-15 PPO RL Meta-Agent</td><td class="desc">Learns position-sizing/allocation policy across the signal stack — gated behind 3+ months of stable paper trading across all prior phases; rules-based sizing is used until then</td></tr>
+              <tr><td class="metric">M-16 PSI + ADWIN Drift Monitors</td><td class="desc">Built in Phase 1 (PSI) but formalized in Phase 4 (adds river ADWIN) — watches for feature/model drift in production</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn">
+          <strong>Dropped from scope permanently:</strong> GNN, VAE, Knowledge Distillation, DRHP/IPO module, LLM alphas, ESG data, satellite data, DQN (replaced by PPO), Random Forest (dominated by gradient boosting), Bayesian Neural Networks (replaced by conformal prediction) — explicit decisions, not gaps.
+        </div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="daily">
+        <div class="module-head"><span class="module-tag">Production</span><h2>The daily inference chain</h2></div>
+        <p class="module-sub">Every model runs in a fixed order once per pipeline cycle (today's date only, never backfilled for inference) — the exact order the Backtest module's day-by-day simulation reproduces, so a backtest genuinely mirrors production:</p>
+        <ol class="flow">
+          <li><strong>M-01 HMM</strong> classifies today's regime.</li>
+          <li><strong>M-06 P&amp;D</strong> pre-filters — blocks any ticker scoring &gt; 60 before a buy signal is considered.</li>
+          <li><strong>M-02/03/04/05</strong> generate signal + meta-label + conformal interval for the allowed universe.</li>
+          <li><strong>M-07 Exit</strong> scores every currently held position.</li>
+          <li><strong>Alerts &amp; outputs</strong> are written; retrain schedule is checked.</li>
+          <li><strong>Monday only:</strong> M-08 Multibagger weekly scan runs after the daily pipeline.</li>
+        </ol>
+      </section>
+
+      <section class="module" id="stack">
+        <div class="module-head"><span class="module-tag">Reference</span><h2>Library stack (final, not up for debate)</h2></div>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Decision</th><th>Choice</th><th>Why</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">Primary ML</td><td class="desc">LightGBM 4.6</td><td class="desc">Fastest on Intel CPU, best tabular performance</td></tr>
+              <tr><td class="metric">Ensemble partner</td><td class="desc">CatBoost 1.2</td><td class="desc">Best categorical feature handling</td></tr>
+              <tr><td class="metric">Regime detection</td><td class="desc">hmmlearn GaussianHMM</td><td class="desc">Gold standard for financial regimes</td></tr>
+              <tr><td class="metric">Uncertainty</td><td class="desc">MAPIE ≥1.3 (ACI)</td><td class="desc">Time-series-aware conformal prediction</td></tr>
+              <tr><td class="metric">HPO</td><td class="desc">Optuna 4.7</td><td class="desc">Bayesian TPE, walk-forward aware — always on validation folds, never test data</td></tr>
+              <tr><td class="metric">Imbalance</td><td class="desc">imbalanced-learn SMOTE-Tomek</td><td class="desc">P&amp;D and forensic models; training data only, never validation/test</td></tr>
+              <tr><td class="metric">Survival analysis</td><td class="desc">lifelines + scikit-survival</td><td class="desc">Exit timing and multibagger duration</td></tr>
+              <tr><td class="metric">Drift monitoring</td><td class="desc">PSI (custom) + river ADWIN</td><td class="desc">Phase 1 PSI, Phase 2+ ADWIN</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer>
+        AlphaLens internal reference · sources: alphalens_docs/CLAUDE.md (Build Phases, Technology Decisions), systems/ml_signal_engine/, contracts/interfaces.py, config/settings.py
+      </footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

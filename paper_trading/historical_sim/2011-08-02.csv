@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-08-02,VASCONEQ,BUY,65.1,15871,09:15:00,61.95,15:30:00,2011-08-05,thesis_broken,miss,-54149.28390079294,-0.05240918877419331,,,,,,
+2011-08-02,SAIL,BUY,90.57024531411484,11408,09:15:00,82.74129190560662,15:30:00,2011-08-08,thesis_broken,miss,-93468.42793305649,-0.09046276996610164,,,,,,

@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-11-24,INDBANK,BUY,6.35,3073,09:15:00,5.65,15:30:00,2011-12-19,thesis_broken,miss,-2229.5852933465976,-0.11425831247244082,,,,,,
+2011-11-24,BPL,BUY,16.25,1,09:15:00,22.55,15:30:00,2012-02-13,target_achieved,hit,6.234641005,0.3836702156923077,,,,,,

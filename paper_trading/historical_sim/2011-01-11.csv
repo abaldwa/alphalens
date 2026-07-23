@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-01-11,SOBHA,BUY,266.8165766015032,3925,09:15:00,250.32010191061488,15:30:00,2011-01-17,thesis_broken,miss,-68960.81937323557,-0.06584911527196928,,,,,,

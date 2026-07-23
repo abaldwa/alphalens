@@ -56,6 +56,16 @@ class FCFFInputs:
         Book debt (INR crore); deducted from EV to get equity value.
     cash : float
         Cash & equivalents (INR crore); added back after debt deduction.
+    minority_interest : float
+        Non-controlling/minority interest (INR crore); deducted from EV
+        alongside total_debt, since a consolidated EV includes 100% of a
+        partially-owned subsidiary's value even though shareholders only
+        have a claim on the parent's stake (2026-07-19 full-codebase-
+        review Fix B6 — previously omitted entirely from the equity
+        bridge, overstating intrinsic value per share for any company
+        with a material listed/consolidated subsidiary). Defaults to 0.0
+        so existing valuations are unchanged unless a real
+        non_controlling_interest figure is supplied.
     target_margin : float, optional
         Target EBIT margin for the three-stage model; if None uses current margin.
     """
@@ -73,6 +83,7 @@ class FCFFInputs:
     shares_outstanding: float = 1.0
     total_debt: float = 0.0
     cash: float = 0.0
+    minority_interest: float = 0.0
     target_margin: Optional[float] = None
 
 
@@ -93,8 +104,15 @@ class DCFResult:
         Present value of the terminal (Gordon-growth) cash flow (INR crore).
     terminal_value_pct : float
         Terminal value as fraction of EV (0–1).
-    implied_terminal_pe : float
-        Implied P/E at the terminal year.
+    implied_terminal_ev_nopat : float
+        Implied EV/NOPAT multiple at the terminal year (terminal_fcff /
+        (wacc - g) / NOPAT). NOTE: this is NOT a P/E ratio — NOPAT is
+        unlevered (pre-interest) earnings, so for any company carrying
+        debt this multiple will be lower than a true trailing/forward P/E
+        (which divides by levered net income). Previously mislabeled
+        ``implied_terminal_pe``; renamed rather than changed numerically —
+        computing a true P/E would require a net-income projection this
+        stateless model doesn't have.
     wacc : float
         WACC used (decimal).
     model_used : str
@@ -108,7 +126,7 @@ class DCFResult:
     equity_value: float
     terminal_value: float
     terminal_value_pct: float
-    implied_terminal_pe: float
+    implied_terminal_ev_nopat: float
     wacc: float
     model_used: str
     assumptions: Dict[str, float] = field(default_factory=dict)
@@ -134,7 +152,7 @@ def _ev_to_result(
 ) -> DCFResult:
     """Shared EV → DCFResult converter."""
     ev = pv_phase1 + terminal_value_pv
-    equity_value = ev - inputs.total_debt + inputs.cash
+    equity_value = ev - inputs.total_debt - inputs.minority_interest + inputs.cash
     shares = max(inputs.shares_outstanding, 1e-9)
     intrinsic = equity_value / shares  # both in INR crore units — cancels to INR/share
 
@@ -166,7 +184,7 @@ def _ev_to_result(
         equity_value=equity_value,
         terminal_value=terminal_value_pv,
         terminal_value_pct=tv_pct,
-        implied_terminal_pe=implied_pe,
+        implied_terminal_ev_nopat=implied_pe,
         wacc=inputs.wacc,
         model_used=model_name,
         assumptions=assumptions,
@@ -426,7 +444,7 @@ class ExcessReturnModel:
             equity_value=equity_value,
             terminal_value=tv_pv,
             terminal_value_pct=tv_pct,
-            implied_terminal_pe=float("nan"),
+            implied_terminal_ev_nopat=float("nan"),
             wacc=cost_of_equity,
             model_used="ExcessReturn",
             assumptions={

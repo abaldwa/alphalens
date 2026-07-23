@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-03-03,DHAMPURSUG,BUY,96.4,10658,09:15:00,84.6,15:30:00,2010-03-11,thesis_broken,miss,-129896.82281007059,-0.12642873100414956,,,,,,

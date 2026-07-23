@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-02-08,GMRAIRPORT,BUY,35.27,24739,09:15:00,31.15,15:30:00,2011-02-09,thesis_broken,miss,-105434.13437375682,-0.12083524765636525,,,,,,
+2011-02-08,SOMATEX,BUY,8.05,4,09:15:00,7.45,15:30:00,2011-02-10,thesis_broken,miss,-2.529511362400001,-0.07855625349068325,,,,,,
+2011-02-08,ARIES,BUY,102.65,1,09:15:00,93.45,15:30:00,2011-08-17,thesis_broken,miss,-9.61286774380001,-0.09364703111349254,,,,,,

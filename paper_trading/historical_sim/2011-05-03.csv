@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-05-03,IRB,BUY,6.241028988317638,168632,09:15:00,5.69648376099537,15:30:00,2011-05-26,thesis_broken,miss,-96060.75001787115,-0.09127456724752477,,,,,,

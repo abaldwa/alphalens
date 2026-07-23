@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-08-19,TANLA,BUY,24.7,42965,09:15:00,23.15,15:30:00,2010-08-27,thesis_broken,miss,-70864.1368146661,-0.06677512843724706,,,,,,

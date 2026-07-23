@@ -801,6 +801,8 @@ class PaperTradingPosition(BaseModel):
     exit_criterion: Optional[str] = None  # human-readable target/stop/max-hold summary
     stock_gain_pct: Optional[float] = None  # (current_price / entry_price - 1), same as unrealised_pnl_pct pre-cost
     nifty_gain_pct: Optional[float] = None  # NIFTYBEES gain over the same entry_date -> now window
+    pillar: Optional[str] = None  # e.g. "ml" / "technical" — which strategy pillar opened this position, from position_meta
+    template: Optional[str] = None  # e.g. model_name / strategy template that opened this position, from position_meta
 
 
 class PaperTradingStateResponse(BaseModel):
@@ -856,6 +858,8 @@ class ExitUrgencyRow(BaseModel):
     unrealised_pnl_pct: Optional[float] = None
     exit_urgency: Optional[float] = None
     exit_type: Optional[str] = None
+    pillar: Optional[str] = None  # e.g. "ml" / "technical" — which strategy pillar opened this position
+    template: Optional[str] = None  # e.g. model_name / strategy template that opened this position
 
 
 class ExitUrgencyResponse(BaseModel):
@@ -975,6 +979,39 @@ class TAIndicatorsResponse(BaseModel):
     date: Optional[str] = None
     available: bool = False
     indicators: Dict[str, Optional[float]] = Field(default_factory=dict)
+
+
+class TASummaryResponse(BaseModel):
+    """GET /api/v1/ta/{ticker}/summary — raw display-oriented values (CMP,
+    52wk hi/lo, raw SMA/EMA/MACD/VWAP) computed directly from OHLCV for the
+    Technical Deep Dive page, since features/technical.py only stores
+    ratios/derived values for most of these, not the raw price-scale figures."""
+
+    ticker: str
+    date: Optional[str] = None
+    available: bool = False
+    cmp: Optional[float] = None
+    week52_high: Optional[float] = None
+    week52_low: Optional[float] = None
+    sma_20: Optional[float] = None
+    sma_50: Optional[float] = None
+    sma_100: Optional[float] = None
+    sma_200: Optional[float] = None
+    ema_9: Optional[float] = None
+    ema_21: Optional[float] = None
+    rsi_14: Optional[float] = None
+    supertrend_value: Optional[float] = None
+    supertrend_dir: Optional[float] = None
+    macd: Optional[float] = None
+    macd_signal: Optional[float] = None
+    macd_hist: Optional[float] = None
+    vwap_20d: Optional[float] = None
+    dist_from_52w_high: Optional[float] = None
+    dist_from_52w_low: Optional[float] = None
+    sma_50_200_ratio: Optional[float] = None
+    delivery_pct: Optional[float] = None
+    avg_delivery_pct_21d: Optional[float] = None
+    delivery_pct_zscore_21d: Optional[float] = None
 
 
 class TAPatternsResponse(BaseModel):
@@ -1116,13 +1153,20 @@ class TAWatchlistRow(BaseModel):
     ticker: str
     company_name: Optional[str] = None
     sector: Optional[str] = None
+    market_cap_cr: Optional[float] = None
+    market_cap_rank: Optional[int] = None
+    recommendation_date: Optional[str] = None
+    recommended_price: Optional[float] = None
     current_price: Optional[float] = None
     template_name: str
+    template_description: Optional[str] = None
+    template_strategy_description: Optional[str] = None
     category: str
     score: float
     rationale: str
     matched_conditions: int
     total_conditions: int
+    key_values: Dict[str, Optional[float]] = Field(default_factory=dict)
     resistance_levels: List[float] = Field(default_factory=list)
     support_levels: List[float] = Field(default_factory=list)
 
@@ -1131,6 +1175,97 @@ class TAWatchlistResponse(BaseModel):
     date: Optional[str] = None
     rows: List[TAWatchlistRow] = Field(default_factory=list)
     count: int = 0
+
+
+class TATickerProfileResponse(BaseModel):
+    ticker: str
+    company_name: Optional[str] = None
+    sector: Optional[str] = None
+
+
+class TARecommendationRow(BaseModel):
+    """One template match for a ticker on a specific date (not deduped —
+    a ticker can have several rows on the same date, one per matching
+    template), with its cost-adjusted forward-return outcome if one has
+    been computed (backtest/strategy_confidence.py via
+    systems/technical_analysis/screener/outcomes.py)."""
+
+    date: str
+    ticker: str
+    template_name: str
+    category: str
+    style: Optional[str] = None
+    score: float
+    rationale: str
+    matched_conditions: int
+    total_conditions: int
+    outcome: Optional[str] = None  # "win" | "loss" | "pending" | None (not yet evaluated)
+    outcome_date: Optional[str] = None
+    entry_price: Optional[float] = None
+    exit_price: Optional[float] = None
+    net_return_pct: Optional[float] = None
+
+
+class TARecommendationResponse(BaseModel):
+    date: Optional[str] = None
+    ticker: str
+    rows: List[TARecommendationRow] = Field(default_factory=list)
+    count: int = 0
+
+
+class TAStrategyHistoryRow(BaseModel):
+    """One template a given ticker has ever been recommended under, with
+    that ticker's own cost-adjusted win-rate track record for it
+    (backtest/strategy_confidence.py). `tier` is INSUFFICIENT_DATA /
+    PRELIMINARY / VALIDATED — see that module's docstring; win_rate/
+    wilson bounds are only meaningful once tier clears INSUFFICIENT_DATA."""
+
+    template_name: str
+    category: str
+    style: Optional[str] = None
+    times_recommended: int
+    wins: int
+    losses: int
+    pending: int
+    win_rate: Optional[float] = None
+    wilson_lo: Optional[float] = None
+    wilson_hi: Optional[float] = None
+    tier: Optional[str] = None
+    last_recommended_date: Optional[str] = None
+
+
+class TAStrategyHistoryResponse(BaseModel):
+    ticker: str
+    rows: List[TAStrategyHistoryRow] = Field(default_factory=list)
+    count: int = 0
+
+
+class TAStrategyWinRateRow(BaseModel):
+    """One template's confidence result (backtest/strategy_confidence.py),
+    pooled across every ticker/date it's fired on. Rows tiered
+    INSUFFICIENT_DATA are excluded from the API response entirely (per the
+    framework's own "don't show a number until it's earned" design) —
+    every row present here is at least PRELIMINARY."""
+
+    template_name: str
+    category: str
+    description: str
+    style: str
+    times_recommended: int
+    wins: int
+    losses: int
+    pending: int
+    win_rate: Optional[float] = None
+    wilson_lo: Optional[float] = None
+    wilson_hi: Optional[float] = None
+    baseline_win_rate: Optional[float] = None
+    delta_vs_baseline: Optional[float] = None
+    tier: str = "INSUFFICIENT_DATA"
+    reasons: List[str] = Field(default_factory=list)
+
+
+class TAStrategyWinRateResponse(BaseModel):
+    styles: Dict[str, List[TAStrategyWinRateRow]] = Field(default_factory=dict)
 
 
 # ===== T11: Multi-strategy consensus =====
@@ -1604,6 +1739,8 @@ class BackdatedBuyRequest(BaseModel):
     ticker: str
     date: str  # YYYY-MM-DD
     quantity: Optional[int] = None  # if omitted, PortfolioSimulator sizes it
+    pillar: Optional[str] = None  # e.g. "ml" / "technical" — which strategy pillar this buy belongs to
+    template: Optional[str] = None  # e.g. model_name / strategy template used to pick this trade
 
 
 class BackdatedBuyResponse(BaseModel):

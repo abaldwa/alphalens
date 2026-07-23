@@ -54,6 +54,26 @@ from features.multibagger import MULTIBAGGER_FEATURES
 logger = logging.getLogger(__name__)
 
 
+# 2026-07-19 full-codebase-review Fix 4: HISTORICAL_MULTIBAGGER_ARCHIVE's
+# 33-feature vectors are synthetic (hand-authored to be archetype-consistent,
+# not measured — see module docstring above), not a real backtested dataset.
+# find_analogues() currently has zero callers anywhere in the repo (verified
+# by repo-wide grep 2026-07-19) despite the module docstring listing
+# multibagger_model.py/inference as consumers — it is not yet wired into
+# anything user-facing. This flag exists so that whenever it IS wired in,
+# the caller is forced to either surface Analogue.disclaimer to the user or
+# consciously override PRODUCTION_READY, rather than silently presenting a
+# "resembles Avanti Feeds 2017" claim as if it were empirically grounded.
+PRODUCTION_READY = False
+
+_SYNTHETIC_ARCHIVE_DISCLAIMER = (
+    "Illustrative match only: this archetype's 33-feature vector is "
+    "synthetic (hand-authored to be internally consistent with the real "
+    "company's well-known trading pattern), not a measured historical "
+    "feature snapshot. Not evidence of similarity in the statistical sense."
+)
+
+
 @dataclass
 class Analogue:
     """One historical-multibagger match for a given ticker."""
@@ -64,6 +84,7 @@ class Analogue:
     duration_months: int
     similarity_score: float
     archetype: str
+    disclaimer: str = _SYNTHETIC_ARCHIVE_DISCLAIMER
 
 
 # See module docstring: real names/years/approximate-return-facts/archetype;
@@ -242,7 +263,10 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def find_analogues(
-    ticker: str, n: int = 3, feature_vector: Optional[Dict[str, float]] = None
+    ticker: str,
+    n: int = 3,
+    feature_vector: Optional[Dict[str, float]] = None,
+    acknowledge_synthetic_archive: bool = False,
 ) -> List[Analogue]:
     """
     Find the n historical multibagger entries most similar to `ticker`'s
@@ -260,6 +284,14 @@ def find_analogues(
         (datastore/features/daily/*.parquet) is read for `ticker` — real
         production usage; tests inject this directly (SPEC-SOLID-005-style
         dependency inversion, avoiding a parquet-file dependency in unit tests).
+    acknowledge_synthetic_archive : bool
+        Must be explicitly set True to receive results (2026-07-19
+        full-codebase-review Fix 4) — HISTORICAL_MULTIBAGGER_ARCHIVE's
+        feature vectors are synthetic, not measured (see PRODUCTION_READY /
+        module docstring). Forces a caller to consciously opt in — and
+        ideally surface each result's `disclaimer` field to the end user —
+        rather than silently presenting a "resembles Avanti Feeds 2017"
+        match as empirically grounded. Raises RuntimeError if False.
 
     Returns
     -------
@@ -274,8 +306,17 @@ def find_analogues(
 
     Raises
     ------
-    None
+    RuntimeError
+        If acknowledge_synthetic_archive is not explicitly True.
     """
+    if not acknowledge_synthetic_archive:
+        raise RuntimeError(
+            "find_analogues() matches against a SYNTHETIC feature archive "
+            "(see PRODUCTION_READY=False / module docstring) — pass "
+            "acknowledge_synthetic_archive=True to confirm the caller will "
+            "surface each Analogue.disclaimer to the end user rather than "
+            "presenting these as measured historical matches."
+        )
     if feature_vector is None:
         row = _latest_feature_row(ticker)
         if row is None:

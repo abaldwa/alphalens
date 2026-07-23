@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-02-05,DLF,BUY,279.9626905459593,3557,09:15:00,264.0010988595036,15:30:00,2010-02-19,thesis_broken,miss,-60780.69060630747,-0.061035373503077264,,,,,,
+2010-02-05,IOB,BUY,76.96629661130059,1,09:15:00,101.16321247701516,15:30:00,2010-07-13,target_achieved,hit,23.88735033984463,0.3103611761454736,,,,,,
+2010-02-05,GMRAIRPORT,BUY,51.61,1,09:15:00,48.81,15:30:00,2010-11-16,thesis_broken,miss,-3.0075801681200005,-0.058275143734160054,,,,,,

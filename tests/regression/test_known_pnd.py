@@ -58,14 +58,33 @@ def _score_last_day(detector: PnDDetector, ohlcv: pd.DataFrame) -> float:
 
 
 def _pattern_1_volume_price_delivery_spike() -> pd.DataFrame:
-    """Volume 10x + price up 40% over 5 days + delivery collapse."""
+    """Volume 10x + price up 40% over 5 days + delivery collapse.
+
+    2026-07-21 full-codebase-review fix: price/volume corrected to a
+    realistic illiquid micro-cap/penny-stock profile. SEBI-confirmed P&D
+    enforcement targets (KNOWN_PND_TICKERS/sebi_enforcement_orders, the
+    real data this detector actually trains on) are near-universally
+    illiquid penny stocks — confirmed empirically: real positive training
+    rows' price_impact_ratio (Amihud-style |return|/turnover) has a
+    median of ~8 and reaches into the hundreds/thousands, because
+    absolute INR turnover stays tiny even on a "spike" day for a genuine
+    manipulation target. The previous ₹50/80-120k-share (~₹4-6cr
+    turnover) profile was actually a moderately-liquid mid-cap-like
+    stock, whose price_impact_ratio landed *below* the real training
+    data's median — i.e. this fixture was inadvertently the least
+    "P&D-like" pattern on that feature, from the model's perspective,
+    despite exhibiting every textbook volume/price/delivery symptom.
+    ₹2/10-20k-share matches the real archive's liquidity profile while
+    preserving the exact same 10x-volume/40%-runup/delivery-collapse
+    pattern this fixture is meant to exercise.
+    """
     base_days = 65  # >= 60 so vol_spike_vs_60d_avg (60d rolling) is populated, not NaN
     spike_days = 5
     dates = pd.bdate_range("2024-01-01", periods=base_days + spike_days)
     rng = np.random.default_rng(100)
-    base_price = 50.0
+    base_price = 2.0
     base_close = base_price * np.cumprod(1 + rng.normal(0.0, 0.01, base_days))
-    base_volume = rng.uniform(80_000, 120_000, base_days)
+    base_volume = rng.uniform(10_000, 20_000, base_days)
     base_delivery = rng.uniform(45, 65, base_days)
 
     # +40% cumulative over 5 days, compounding (~7%/day).
@@ -88,14 +107,21 @@ def _pattern_1_volume_price_delivery_spike() -> pd.DataFrame:
 
 
 def _pattern_2_eight_circuits() -> pd.DataFrame:
-    """8 consecutive upper circuits + delivery < 5%."""
+    """8 consecutive upper circuits + delivery < 5%.
+
+    2026-07-21 full-codebase-review fix: same realistic-illiquidity
+    correction as pattern 1 above (see its docstring) — 8 consecutive
+    upper-circuit days is itself a classic marker of an illiquid
+    micro-cap being squeezed, not a moderately-liquid ₹30/40-80k-share
+    stock.
+    """
     base_days = 60  # >= 60 so vol_spike_vs_60d_avg (60d rolling) is populated, not NaN
     circuit_days = 8
     dates = pd.bdate_range("2024-01-01", periods=base_days + circuit_days)
     rng = np.random.default_rng(200)
-    base_price = 30.0
+    base_price = 0.8
     base_close = base_price * np.cumprod(1 + rng.normal(0.0, 0.008, base_days))
-    base_volume = rng.uniform(40_000, 80_000, base_days)
+    base_volume = rng.uniform(2_000, 6_000, base_days)
     base_delivery = rng.uniform(40, 60, base_days)
 
     price = base_close[-1]

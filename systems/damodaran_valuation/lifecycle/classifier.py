@@ -70,7 +70,13 @@ class LifecycleClassifier:
     # Thresholds (SPEC-VAL-001 §3.2)
     # -----------------------------------------------------------------------
     _DISTRESS_MIN_INTEREST_COV: float = 1.5
-    _DISTRESS_MIN_ALTMAN_Z: float = 1.81
+    # valuation_engine._altman_z computes the Z'' non-manufacturing/
+    # emerging-market revision (6.56/3.26/6.72/1.05 weights, no asset-
+    # turnover term) — its distress threshold is 1.1 (grey zone 1.1-2.6,
+    # safe > 2.6), NOT the original manufacturing Z-score's 1.81/2.99.
+    # Using 1.81 against Z'' weights misclassified healthy non-manufacturing
+    # companies (IT, financials-adjacent, services) as distressed.
+    _DISTRESS_MIN_ALTMAN_Z: float = 1.1
 
     _YOUNG_GROWTH_MIN_CAGR: float = 0.30
     _YOUNG_GROWTH_MAX_MARGIN: float = 0.10

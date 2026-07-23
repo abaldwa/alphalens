@@ -1,0 +1,5 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-01-17,KOTAKBANK,BUY,40.212620136822096,3,09:15:00,37.797672047872275,15:30:00,2011-01-28,thesis_broken,miss,-7.730060840103519,-0.06407657441703828,,,,,,
+2011-01-17,SOBHA,BUY,250.32010191061488,1447,09:15:00,226.0387739948129,15:30:00,2011-02-02,thesis_broken,miss,-36591.936257761554,-0.10102320269974085,,,,,,
+2011-01-17,MANINDS,BUY,66.9,15260,09:15:00,61.7,15:30:00,2011-02-08,thesis_broken,miss,-83458.1295902481,-0.08175004416741415,,,,,,
+2011-01-17,VIMTALABS,BUY,13.95,73182,09:15:00,11.8,15:30:00,2011-02-09,thesis_broken,miss,-161447.40907757857,-0.15814395579928295,,,,,,

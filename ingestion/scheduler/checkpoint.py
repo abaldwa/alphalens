@@ -117,6 +117,13 @@ STEPS = [
     # deterministic given that day's features, no model inference, so
     # unlike run_models/write_signals it IS safe to backfill.
     {"name": "check_ta_alerts", "is_backfillable": True, "depends_on": ["compute_features"]},
+    # ML38 (2026-07-14): live momentum-strategy ranking + rebalance
+    # suggestions (features/momentum_live.py). Deterministic given that
+    # day's own already-final EOD OHLCV — same rationale as
+    # check_ta_alerts — and it only ever suggests trades for the user to
+    # manually record, never auto-trades, so backfilling a missed day is
+    # safe (unlike paper_trade below).
+    {"name": "compute_momentum", "is_backfillable": True, "depends_on": ["compute_features"]},
     # Inference chain: each step hard-depends on the previous one.
     # 2026-07-08 (user decision): run_models/write_signals made backfillable
     # — a missed trading day (laptop off across its 18:00 run) should still

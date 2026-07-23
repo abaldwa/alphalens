@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaLens — Backtest Module Reference</title>
+<meta name="description" content="How to run backtests, strategy_id conventions, Backtest vs Walk-Forward, and a full reference of the 42 Technical screener templates." />
+
+<style>
+  :root {
+    --ink: #12151b;
+    --ink-raised: #1a1f28;
+    --ink-border: #2a3040;
+    --paper: #eef0ea;
+    --paper-raised: #e2e6dd;
+    --paper-border: #c9cfc2;
+
+    --bg: var(--ink);
+    --bg-raised: var(--ink-raised);
+    --border: var(--ink-border);
+    --text: #e7e9e2;
+    --text-muted: #9aa1a8;
+    --text-dim: #6b7178;
+
+    --accent: #d69a4c;
+    --link: #5fada0;
+
+    --momentum: #4a9d8f;
+    --trend: #7a86d8;
+    --reversion: #b5779e;
+    --volatility: #c17652;
+
+    --good: #6ea373;
+    --warn: #c1554a;
+
+    --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --font-body: "Seravek", "Gill Sans Nova", "Gill Sans", "Trebuchet MS", "Calibri", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+
+    color-scheme: dark;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: var(--paper);
+      --bg-raised: var(--paper-raised);
+      --border: var(--paper-border);
+      --text: #1d221c;
+      --text-muted: #565f52;
+      --text-dim: #7c8478;
+      --accent: #a3691e;
+      --link: #2c766a;
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: var(--ink);
+    --bg-raised: var(--ink-raised);
+    --border: var(--ink-border);
+    --text: #e7e9e2;
+    --text-muted: #9aa1a8;
+    --text-dim: #6b7178;
+    --accent: #d69a4c;
+    --link: #5fada0;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --bg: var(--paper);
+    --bg-raised: var(--paper-raised);
+    --border: var(--paper-border);
+    --text: #1d221c;
+    --text-muted: #565f52;
+    --text-dim: #7c8478;
+    --accent: #a3691e;
+    --link: #2c766a;
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: var(--ink); }
+
+  a { color: var(--link); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover, a:focus-visible { border-bottom-color: currentColor; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+  code {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1em 0.4em;
+  }
+  pre {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
+    line-height: 1.65;
+  }
+  pre code { background: none; border: none; padding: 0; }
+
+  h1, h2, h3, h4 { font-family: var(--font-display); text-wrap: balance; font-weight: 600; }
+  h1 { font-size: clamp(1.9rem, 3vw, 2.5rem); margin: 0 0 0.3em; letter-spacing: -0.01em; }
+  h2 { font-size: 1.55rem; margin: 0 0 0.6em; padding-top: 0.2em; }
+  h3 { font-size: 1.15rem; margin: 0 0 0.4em; }
+  h4 { font-size: 1rem; margin: 0 0 0.3em; }
+
+  p { max-width: 68ch; }
+  .measure-wide { max-width: 78ch; }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  /* ---- Shell layout ---- */
+  .shell {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    max-width: 1180px;
+    margin: 0 auto;
+  }
+  @media (max-width: 880px) {
+    .shell { grid-template-columns: 1fr; }
+  }
+
+  nav.toc {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 2rem 1.25rem 2rem 1.5rem;
+    border-right: 1px solid var(--border);
+  }
+  @media (max-width: 880px) {
+    nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+  }
+  nav.toc .brand {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin-bottom: 0.15rem;
+  }
+  nav.toc .brand-sub { color: var(--text-muted); font-size: 0.78rem; margin-bottom: 1.6rem; }
+  nav.toc ul { list-style: none; margin: 0 0 1.4rem; padding: 0; }
+  nav.toc > ul > li { margin-bottom: 0.15rem; }
+  nav.toc a.top-link {
+    display: block;
+    padding: 0.3rem 0;
+    color: var(--text);
+    font-size: 0.92rem;
+    border-bottom: none;
+  }
+  nav.toc a.top-link:hover { color: var(--accent); }
+  nav.toc .style-group { margin: 0.9rem 0 0.3rem; }
+  nav.toc .style-group summary {
+    cursor: pointer;
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0.25rem 0;
+  }
+  nav.toc .tpl-index { display: flex; flex-wrap: wrap; gap: 0.3rem; padding: 0.4rem 0 0.6rem; }
+  nav.toc .tpl-index a {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0.12rem 0.42rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+  }
+  nav.toc .tpl-index a:hover { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+
+  main { padding: 2.5rem 2.75rem 6rem; min-width: 0; }
+  @media (max-width: 640px) { main { padding: 2rem 1.25rem 4rem; } }
+
+  header.page-head { margin-bottom: 3rem; }
+  header.page-head .eyebrow { margin-bottom: 0.6rem; display: block; }
+  header.page-head p { color: var(--text-muted); font-size: 1.02rem; }
+
+  section { margin-bottom: 4rem; scroll-margin-top: 1.5rem; }
+  section > .section-num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    display: block;
+    margin-bottom: 0.3rem;
+  }
+  hr.rule { border: none; border-top: 1px solid var(--border); margin: 3.2rem 0; }
+
+  .card {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.1rem 1.3rem;
+  }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.93rem; }
+  .table-wrap { overflow-x: auto; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+  td.num, th.num { font-variant-numeric: tabular-nums; }
+
+  .badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    padding: 0.14rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .badge-momentum { color: var(--momentum); border-color: var(--momentum); background: color-mix(in srgb, var(--momentum) 12%, transparent); }
+  .badge-trend    { color: var(--trend);    border-color: var(--trend);    background: color-mix(in srgb, var(--trend) 12%, transparent); }
+  .badge-reversion{ color: var(--reversion);border-color: var(--reversion);background: color-mix(in srgb, var(--reversion) 12%, transparent); }
+  .badge-volatility{color: var(--volatility);border-color: var(--volatility);background: color-mix(in srgb, var(--volatility) 12%, transparent); }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+
+  .tpl-name-link {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text);
+    border-bottom: 1px dashed var(--text-dim);
+  }
+  .tpl-name-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .style-block { margin-bottom: 2.4rem; }
+  .style-block h3 { display: flex; align-items: baseline; gap: 0.6rem; }
+  .style-block .style-desc { color: var(--text-muted); font-size: 0.9rem; margin: 0 0 1rem; max-width: 62ch; }
+
+  .tpl-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.9rem;
+  }
+  .tpl-card {
+    scroll-margin-top: 1.25rem;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--tpl-accent, var(--accent));
+    border-radius: 6px;
+    padding: 0.85rem 1rem 0.95rem;
+  }
+  .tpl-card .tpl-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem; margin-bottom: 0.25rem; }
+  .tpl-card .tpl-code { font-family: var(--font-mono); font-weight: 700; font-size: 0.95rem; }
+  .tpl-card h4 { margin: 0 0 0.5rem; font-size: 0.98rem; }
+  .tpl-card ul { margin: 0.5rem 0 0.6rem; padding-left: 1.1rem; font-size: 0.85rem; color: var(--text-muted); }
+  .tpl-card li { margin-bottom: 0.15rem; }
+  .tpl-card .tpl-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem; font-size: 0.74rem; }
+  .tpl-card .back { color: var(--text-dim); }
+
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin: 1.4rem 0;
+  }
+  .flow .step {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    background: var(--bg-raised);
+  }
+  .flow .step .k { font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    margin: 1.4rem 0;
+  }
+  @media (max-width: 640px) { .compare { grid-template-columns: 1fr; } }
+  .compare .col {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.1rem 1.25rem;
+  }
+  .compare .col.backtest { border-top: 3px solid var(--momentum); }
+  .compare .col.walkforward { border-top: 3px solid var(--trend); }
+  .compare h4 { display: flex; align-items: center; gap: 0.5em; }
+  .compare .verdict { font-size: 0.84rem; color: var(--text-muted); margin-top: 0.7rem; }
+  .compare .verdict strong { color: var(--text); }
+
+  .callout {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--warn);
+    border-radius: 6px;
+    background: var(--bg-raised);
+    padding: 0.8rem 1.1rem;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    max-width: 68ch;
+  }
+  .callout strong { color: var(--text); }
+
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.2rem; font-size: 0.92rem; margin: 1rem 0; }
+  .kv dt { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); padding-top: 0.15rem; }
+  .kv dd { margin: 0; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html { scroll-behavior: smooth; }
+  }
+</style>
+
+</head>
+<body>
+<div class="shell">
+  <nav class="toc" aria-label="Table of contents">
+    <div class="brand">Backtest Module</div>
+    <div class="brand-sub">AlphaLens — operator reference</div>
+    <ul>
+      <li><a class="top-link" href="#usage">1. How to run a backtest</a></li>
+      <li><a class="top-link" href="#strategy-id">2. What goes in strategy_id</a></li>
+      <li><a class="top-link" href="#mode">3. Backtest vs Walk-Forward</a></li>
+      <li><a class="top-link" href="#technical-strategies">4. Technical strategy reference</a></li>
+    </ul>
+    <div id="toc-style-groups"></div>
+  </nav>
+
+  <main>
+    <header class="page-head">
+      <span class="eyebrow">AlphaLens · Platform / Backtest</span>
+      <h1>Running &amp; reading backtests</h1>
+      <p>A working reference for the two backtest engines, how <code>strategy_id</code> is codified and
+      <code>horizon_bucket</code> defaulted automatically, when a plain backtest is enough versus when you need
+      Walk-Forward, how to queue several strategies to run unattended, and a full breakdown of the 42 Technical
+      screener templates — including which ones are quick trades and which are position trades.</p>
+    </header>
+
+    <!-- ============================================================ -->
+    <section id="usage">
+      <span class="section-num">01</span>
+      <h2>How to use the Backtest module</h2>
+      <p>There are two engines under <code>backtest/</code>, and which one you reach for depends on what you're
+      testing:</p>
+
+      <div class="compare">
+        <div class="col backtest">
+          <h4><span class="badge badge-momentum">ML engine</span></h4>
+          <p style="margin:0.4rem 0 0;">
+            <code>backtest/engine.py</code>'s <code>BacktestEngine</code> — the Signal5D/21D/63D + MetaLabeler +
+            Exit-model stack. Driven by <code>run_phase1_backtest.py</code> / <code>run_phase2_backtest.py</code> /
+            <code>run_phase3_backtest.py</code>, or all three together via <code>run_batch_backtest.py</code>
+            (sequenced light-to-heavy with an OOM guard). <code>run_iterative_backtest.py</code> sits on top of this
+            engine to iteratively retrain the MetaLabeler.
+          </p>
+        </div>
+        <div class="col walkforward">
+          <h4><span class="badge badge-trend">Orchestrator</span></h4>
+          <p style="margin:0.4rem 0 0;">
+            <code>backtest/core/engine.py</code>'s <code>BacktestOrchestrator</code> — the channel-agnostic engine
+            for Technical, Fundamental, and Momentum screener/rotation strategies. Driven by
+            <code>run_orchestrator_backtest.py</code>, or triggered straight from the <strong>Backtest</strong> page's
+            "Run a Backtest" panel in the UI.
+          </p>
+        </div>
+      </div>
+
+      <h3>From the command line</h3>
+      <pre><code># ML engine — one phase
+python3 -m backtest.run_phase1_backtest --folds 5 --trials 5
+
+# ML engine — all three phases, sequenced to avoid OOM
+python3 -m backtest.run_batch_backtest --phases 1 2 3
+
+# ML engine — iteratively retrain the MetaLabeler, holdout-evaluated once
+python3 -m backtest.run_iterative_backtest --horizon-days 5 --folds 4
+
+# Orchestrator — Technical channel, Minervini SEPA (<a class="tpl-name-link" href="#tpl-E2">E2</a>), top 10.
+# strategy_id and horizon-bucket are both OPTIONAL — omitted, they're
+# codified/defaulted for you (see §2 below): this becomes
+# strategy_id = ta_e2_63d_20260722, horizon_bucket = 63_day.
+python3 -m backtest.run_orchestrator_backtest \
+  --channel technical --template-name E2 --top-n 10 \
+  --start-date 2023-01-01 --end-date 2026-07-01</code></pre>
+
+      <h3>Scheduling several strategies sequentially</h3>
+      <p><code>run_strategy_queue.py</code> takes a queue of jobs — backtests and/or an iterative retrain — and runs
+      them one after another, memory-gated between each (the same subprocess-isolation pattern
+      <code>run_batch_backtest.py</code> already uses, shared via <code>backtest/batch_common.py</code>). Point it at
+      a queue once instead of triggering each strategy by hand and waiting between them:</p>
+      <pre><code>{
+  "jobs": [
+    {"kind": "orchestrator", "channel": "technical", "template_name": "<a class="tpl-name-link" href="#tpl-E2">E2</a>", "top_n": 10,
+     "start_date": "2023-01-01", "end_date": "2026-07-01"},
+    {"kind": "orchestrator", "channel": "technical", "template_name": "B1", "top_n": 10,
+     "start_date": "2023-01-01", "end_date": "2026-07-01"},
+    {"kind": "iterative_retrain", "horizon_days": 5, "folds": 4}
+  ]
+}</code></pre>
+      <pre><code>python3 -m backtest.run_strategy_queue --queue-file my_queue.json</code></pre>
+      <p>Each job's <code>strategy_id</code>/<code>horizon_bucket</code> defaults exactly as a standalone
+      <code>run_orchestrator_backtest.py</code> call would (they're genuinely optional per job, not required just
+      because they're in a queue) — the queue runner doesn't re-implement that defaulting, it only sequences.</p>
+
+      <h3>From the UI</h3>
+      <p>The <strong>Backtest</strong> page (<code>/backtest</code>) has four panels beneath the Runs table:</p>
+      <div class="flow">
+        <div class="step">
+          <div class="k">Runs</div>
+          <p style="margin:0.4rem 0 0;">Filterable list across every channel/mode, with per-run fold metrics, lineage
+          (parent → child re-runs), and the feature-log inspector (every candidate considered, not just the ones
+          traded).</p>
+        </div>
+        <div class="step">
+          <div class="k">Run a Backtest</div>
+          <p style="margin:0.4rem 0 0;">Triggers <code>run_orchestrator_backtest.py</code> as a background job —
+          pick a channel, date range, and the channel-specific field (screener template, screener preset, or
+          lookback months). Strategy ID and horizon default automatically — both stay editable if you want to
+          override them. Polls until done, then the run appears above.</p>
+        </div>
+        <div class="step">
+          <div class="k">Schedule a Strategy Queue</div>
+          <p style="margin:0.4rem 0 0;">Build a list of strategies (and optionally an iterative retrain) right in
+          the page, then submit the whole queue — it runs sequentially in the background, one consolidated status
+          to poll instead of babysitting each trigger.</p>
+        </div>
+        <div class="step">
+          <div class="k">Iterative Retrain</div>
+          <p style="margin:0.4rem 0 0;">Triggers the MetaLabeler retrain loop — shows the holdout fiscal year chosen,
+          every tuning iteration's Sharpe/DSR/random-feature-test result, and the one-shot holdout evaluation.</p>
+        </div>
+      </div>
+
+      <h3>Which panel do I start with?</h3>
+      <p>The three trigger panels aren't interchangeable starting points — each depends on the one before it having
+      already earned your trust:</p>
+
+      <div class="kv">
+        <dt>1. Run a Backtest</dt>
+        <dd>Always first. It's the only panel that actually executes a strategy end-to-end (real signals, real
+        portfolio, real metrics) — you need at least one clean run per template before there's anything to compare
+        or automate. Starting with Technical? Trigger your highest-conviction templates standalone first — e.g.
+        <a class="tpl-name-link" href="#tpl-E2">E2</a> (Minervini SEPA) or <a class="tpl-name-link" href="#tpl-B1">B1</a>
+        (Weinstein Stage 2) — and sanity-check the output (CAGR, drawdown, data gaps) before queuing anything.</dd>
+        <dt>2. Schedule a Strategy Queue</dt>
+        <dd>Once you trust individual runs and want to batch several templates — or the same template across
+        date ranges — without babysitting each trigger. It's a scheduling convenience, not a different kind of
+        test: it chains step 1 across multiple templates sequentially, nothing more.</dd>
+        <dt>3. Iterative Retrain</dt>
+        <dd>Last, and only when you're ready for it — it's ML-specific, not Technical. It retrains and tunes the
+        MetaLabeler used in the ML signal stack (<code>backtest/engine.py</code>), a separate engine from the
+        Technical/Fundamental/Momentum orchestrator the other two panels drive. If you're validating Technical
+        templates, you likely don't need this panel yet at all.</dd>
+      </div>
+
+      <p class="callout"><strong>Technical-first path:</strong> Run a Backtest on your top templates →
+      Schedule a Strategy Queue once you're running several confidently → skip Iterative Retrain until you're
+      specifically validating the ML channel.</p>
+
+      <p class="callout"><strong>Every path writes to the same place:</strong> every run — CLI, queued, or
+      UI-triggered — lands in the <code>backtest_runs</code> table via <code>save_run_result()</code>, so
+      <code>GET /api/v1/backtest/runs</code> and the Runs table always show the full picture regardless of how a run
+      was started.</p>
+
+      <h3>Which market phase does this strategy work in?</h3>
+      <p>Every orchestrator run defaults to a per-<strong>Bull/Bear/Sideways</strong> performance breakdown —
+      <code>systems/regime/market_regime.py</code> classifies the Nifty 500 into contiguous date-range regime
+      segments (a rule-based 20%-move-from-extreme threshold, confirmed with a duration timeout for consolidation
+      stretches — deliberately a different, simpler taxonomy from the existing daily HMM regime probability used
+      elsewhere in the ML pages). A run's trades and equity curve are sliced against whichever segments its date
+      range overlaps, giving segment-local CAGR, max drawdown, win rate, and profit factor — visible in a run's
+      detail panel as soon as it completes, and in the <strong>Market Regime Timeline</strong> chart on this page.</p>
+      <pre><code># Backfill/refresh the regime segments (run once, or after new price data lands)
+python3 -m scripts.backfill_market_regimes --index "Nifty 500"
+
+# Opt out of the breakdown for a specific run, or point it at a different index
+python3 -m backtest.run_orchestrator_backtest --channel technical --template-name E2 \
+  --start-date 2023-01-01 --end-date 2026-07-01 --regime-index ""   # "" = skip</code></pre>
+      <p class="callout"><strong>Retrospective, not a live signal:</strong> the classifier looks at the full price
+      history, including data after any given segment's start — correct for "how did this strategy do across
+      history's Bull/Bear/Sideways stretches," but not something to feed into a live trading decision without
+      gating on <code>confirmed_date</code> (the day the 20% threshold actually fired), not <code>start_date</code>
+      (backdated to the actual peak/trough).</p>
+    </section>
+
+    <hr class="rule" />
+
+    <!-- ============================================================ -->
+    <section id="strategy-id">
+      <span class="section-num">02</span>
+      <h2>What goes in <code>strategy_id</code></h2>
+      <p><code>strategy_id</code> is now a <strong>codified, machine-generated</strong> label by default
+      (<code>backtest/strategy_id.py</code>) rather than something you invent by hand each time — the format bakes
+      the run date in, so you can recover "when was this triggered" straight from the string, no DB lookup needed.
+      It's still overridable per run if you want a custom label instead.</p>
+
+      <h3>The canonical format</h3>
+      <pre><code>{channel}_{descriptor}_{horizon_code}_{YYYYMMDD}</code></pre>
+      <div class="kv">
+        <dt>channel</dt><dd><code>ta</code> (technical) · <code>fund</code> (fundamental) · <code>mom</code> (momentum)</dd>
+        <dt>descriptor</dt><dd>the screener template name, the screener preset name, or <code>top{N}_{lookback}m</code> for momentum</dd>
+        <dt>horizon_code</dt><dd><code>5d</code> · <code>21d</code> · <code>63d</code> · <code>1y</code> · <code>mb</code> · <code>cust</code></dd>
+        <dt>YYYYMMDD</dt><dd>the date this run was triggered</dd>
+      </div>
+      <p>Example: triggering <a class="tpl-name-link" href="#tpl-E2">E2</a> (Trend Following → 63-day, see §4) on
+      22 July 2026 produces <code>ta_e2_63d_20260722</code> automatically — no channel, template, horizon, or date
+      needs to be typed twice.</p>
+
+      <h3>Getting the date back out</h3>
+      <pre><code>from backtest.strategy_id import parse_strategy_id
+
+parsed = parse_strategy_id("ta_e2_63d_20260722")
+parsed.channel         # "technical"
+parsed.descriptor      # "e2"
+parsed.horizon_bucket  # HorizonBucket.D63
+parsed.run_date        # date(2026, 7, 22)</code></pre>
+      <p class="callout"><strong>Naming convention, not a uniqueness key:</strong> <code>backtest_runs.run_id</code>
+      (a uuid) is still the real primary key — two runs of the identical strategy on the identical day legitimately
+      share a <code>strategy_id</code>, the same way an unchanged scheduled job producing the same label twice is
+      correct, not a collision. A <code>strategy_id</code> from before this convention existed (e.g.
+      <code>signal_5d_metalabeler_retrain</code>) is real historical data, not something <code>parse_strategy_id()</code>
+      is expected to understand — it raises rather than guess.</p>
+    </section>
+
+    <hr class="rule" />
+
+    <!-- ============================================================ -->
+    <section id="mode">
+      <span class="section-num">03</span>
+      <h2>Backtest vs Walk-Forward</h2>
+      <p>Both are <code>BacktestRun.mode</code> values the same <code>BacktestOrchestrator</code> executes — the
+      difference is entirely about whether anything gets <em>retrained mid-run</em>.</p>
+
+      <div class="compare">
+        <div class="col backtest">
+          <h4><span class="pill">mode = backtest</span></h4>
+          <p style="margin:0.6rem 0 0;">One pass over the whole window. No mid-run refitting — the adapter's rule
+          (a screener template, a screener preset, a rotation rule) is fixed for the entire backtest.</p>
+          <p class="verdict"><strong>Use this for:</strong> Technical, Fundamental, and Momentum channel runs today —
+          none of their adapters implement a <code>refit()</code> method, so there's nothing to retrain. This is
+          also what <code>run_orchestrator_backtest.py</code> always uses.</p>
+        </div>
+        <div class="col walkforward">
+          <h4><span class="pill">mode = walk_forward</span></h4>
+          <p style="margin:0.6rem 0 0;">Routed through <code>WalkForwardRunner</code>, which calls
+          <code>adapter.refit(as_of_date)</code> at a cadence (the horizon bucket's default rebalance cadence, unless
+          overridden) — an expanding-window retrain loop.</p>
+          <p class="verdict"><strong>Use this for:</strong> a model-based adapter that actually needs periodic
+          retraining. The hook exists and is exercised in tests, but no shipped Technical/Fundamental/Momentum
+          adapter implements <code>refit()</code> yet — it's ready for the next ML-style adapter, not a knob to
+          flip on today's rule-based screeners (flipping it for them is a harmless no-op, not an error, but it does
+          nothing).</p>
+        </div>
+      </div>
+
+      <p class="callout"><strong>Not the same thing as the ML engine's own fold retraining:</strong>
+      <code>run_phase1/2/3_backtest.py</code>'s <code>BacktestEngine</code> already retrains its Signal model and
+      MetaLabeler every fiscal-year fold internally (via <code>WalkForwardValidator</code>) — that's a separate,
+      always-on mechanism specific to that engine, independent of the <code>mode</code> flag described here.</p>
+    </section>
+
+    <hr class="rule" />
+
+    <!-- ============================================================ -->
+    <section id="technical-strategies">
+      <span class="section-num">04</span>
+      <h2>Technical strategy reference</h2>
+      <p class="measure-wide">All 42 pre-built screener templates (<code>systems/technical_analysis/screener/templates.py</code>),
+      grouped by style. <strong>Horizon</strong> below is what <code>run_orchestrator_backtest.py</code> actually
+      defaults <code>horizon_bucket</code> to when you don't specify one (<code>backtest/strategy_id.py</code>'s
+      <code>default_horizon_for_technical()</code>) — not enforced by the template itself, so you can still
+      override it per run; this is just what happens automatically if you don't.</p>
+      <div class="kv">
+        <dt>Mean Reversion</dt><dd>Oversold bounce — the edge decays fast. Defaults to <span class="pill">5_day</span>.</dd>
+        <dt>Momentum</dt><dd>Continuation over weeks. Defaults to <span class="pill">21_day</span>.</dd>
+        <dt>Volatility</dt><dd>Squeeze/breakout follow-through. Defaults to <span class="pill">21_day</span>.</dd>
+        <dt>Trend Following</dt><dd>Position trades lasting months. Defaults to <span class="pill">63_day</span>.</dd>
+      </div>
+
+      <div id="template-groups"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  var STYLE_META = {
+    "Momentum":        { cls: "momentum",   horizon: "21-day",  desc: "Rides an established move — entries look for continuation, not a turning point." },
+    "Trend Following":  { cls: "trend",      horizon: "63-day",  desc: "Position trades: enter once a trend is confirmed, hold while it persists." },
+    "Mean Reversion":   { cls: "reversion",  horizon: "5-day",   desc: "Short-lived oversold bounces inside a still-intact uptrend — the edge is quick." },
+    "Volatility":       { cls: "volatility", horizon: "21-day",  desc: "Compression-then-expansion setups — the trade is the breakout, not the squeeze itself." }
+  };
+  var STYLE_ORDER = ["Momentum", "Trend Following", "Mean Reversion", "Volatility"];
+
+  // Sourced directly from systems/technical_analysis/screener/templates.py —
+  // name, category, description, inline rationale comments, and TEMPLATE_STYLE.
+  var TEMPLATES = [
+    {n:"A1",c:"A",d:"BB Squeeze Breakout",s:"Volatility",cond:["Bollinger Band width in bottom 25% of universe (volatility squeeze)","Close above 200-day SMA","Volume surge (>1.8x) confirming breakout"]},
+    {n:"A2",c:"A",d:"MACD Histogram Divergence",s:"Momentum",cond:["MACD histogram positive","RSI(14) ≥ 40 — momentum building, not yet overbought"]},
+    {n:"A3",c:"A",d:"Williams %R Mean Reversion",s:"Mean Reversion",cond:["Williams %R ≤ -85 (oversold)","Price still above 200-day SMA (uptrend intact)"]},
+    {n:"A4",c:"A",d:"RSI Oversold + Trend",s:"Mean Reversion",cond:["RSI(14) < 30 (oversold)","Price above 200-day SMA (long-term uptrend holding)"]},
+    {n:"B1",c:"B",d:"Weinstein Stage 2",s:"Trend Following",cond:["Close above 200-day SMA","Volume expansion (>1.5x)","ADX(14) > 20 — trend is established"]},
+    {n:"B2",c:"B",d:"IBD Base Breakout",s:"Trend Following",cond:["Close within 3% of the recent 21-day high","Volume ≥ 1.4x average confirming the breakout"]},
+    {n:"B3",c:"B",d:"Darvas Box",s:"Trend Following",cond:["Price near the recent box high (21-day proxy)","ADX(14) > 20 (trending environment)","Volume ≥ 1.5x confirming breakout"]},
+    {n:"B4",c:"B",d:"AVWAP Support",s:"Mean Reversion",cond:["RSI(14) in the 40–60 neutral zone (pullback, not exhaustion)","Double-bottom pattern score > 0.4"]},
+    {n:"B5",c:"B",d:"Livermore Pivot",s:"Momentum",cond:["Breakout probability score > 0.5","Volume ≥ 2.0x confirming the pivot"]},
+    {n:"C1",c:"C",d:"Time Series Momentum",s:"Momentum",cond:["Close above 200-day SMA (absolute momentum)","Positive 10-day return"]},
+    {n:"C2",c:"C",d:"Cross-Sectional Momentum",s:"Momentum",cond:["Top 20% of the universe by 10-day return"]},
+    {n:"C3",c:"C",d:"Dual Momentum",s:"Momentum",cond:["Positive 10-day return (absolute momentum)","Close above 200-day SMA (trend filter)"]},
+    {n:"C4",c:"C",d:"CAN SLIM proxy",s:"Momentum",cond:["Above 200-day SMA (market direction)","Volume ≥ 1.5x (institutional buying)","ADX(14) > 20 (trending)","RSI(14) > 50"]},
+    {n:"C5",c:"C",d:"52-Week High Proximity",s:"Trend Following",cond:["Within 1% of the recent high (52w proxy)","Volume ≥ 2.0x (accumulation at highs)","ADX(14) ≥ 20"]},
+    {n:"C6",c:"C",d:"EMA Ribbon Alignment",s:"Trend Following",cond:["EMA8 &gt; EMA21 &gt; EMA55 &gt; EMA89 — fully bullish aligned","Close above EMA8"]},
+    {n:"C7",c:"C",d:"Post-Earnings Drift",s:"Momentum",cond:["Volume ≥ 2.0x (earnings-announcement proxy)","10-day return > 2%","Breakout probability score > 0.4"]},
+    {n:"D1",c:"D",d:"RSI-2 Mean Reversion",s:"Mean Reversion",cond:["RSI(14) < 10 (Connors RSI-2 proxy — deeply oversold)","Above 200-day SMA (long-term uptrend intact)"]},
+    {n:"D2",c:"D",d:"Long-Horizon Contrarian",s:"Mean Reversion",cond:["RSI(14) < 35 (oversold)","More than 30% below the recent high — a genuine contrarian setup"]},
+    {n:"D3",c:"D",d:"MACD + RSI Divergence",s:"Mean Reversion",cond:["MACD histogram turning positive","RSI(14) still under 45 (divergence window)","Double-bottom pattern score > 0.4"]},
+    {n:"D4",c:"D",d:"IBD Follow-Through Day",s:"Momentum",cond:["10-day return > 1.7% (IBD follow-through threshold)","Volume ≥ 1.5x confirming accumulation","Breakout pattern score > 0.4"]},
+    {n:"E1",c:"E",d:"Turtle Donchian",s:"Trend Following",cond:["Within 1% of the recent high (Donchian 20-day proxy)","ADX(14) ≥ 15 — trend is established"]},
+    {n:"E2",c:"E",d:"Minervini SEPA",s:"Trend Following",cond:["Above 50-day SMA","Above 200-day SMA","ADX(14) > 20 (trending, not ranging)","Volume above average (institutional sponsorship)","RSI(14) > 50 (bullish momentum)"]},
+    {n:"E3",c:"E",d:"Piotroski F proxy",s:"Trend Following",cond:["Flag/continuation pattern score > 0.6 (trend-quality proxy — real Piotroski F needs fundamentals)","Hurst exponent(21d) > 0.5 (persistent, trending behaviour)"]},
+    {n:"E4",c:"E",d:"Sector Rotation",s:"Trend Following",cond:["Flag pattern score > 0.5 (rotation momentum)","Above 50-day SMA (recent strength)"]},
+    {n:"E5",c:"E",d:"Earnings Acceleration",s:"Momentum",cond:["Volume ≥ 1.5x","10-day return > 5% (acceleration)","ADX(14) > 20 confirming a new trend"]},
+    {n:"E6",c:"E",d:"GARP Momentum",s:"Trend Following",cond:["Above 200-day SMA (quality + uptrend)","RSI(14) between 50–70 — the “GARP sweet spot”"]},
+    {n:"E7",c:"E",d:"Greenblatt Magic Formula proxy",s:"Trend Following",cond:["Flag pattern score > 0.6 (proxy for earnings yield + ROIC rank)","Above 200-day SMA (quality filter)"]},
+    {n:"F1",c:"F",d:"Low RSI Quality",s:"Mean Reversion",cond:["RSI(14) < 45 (mildly oversold, not crashed)","Above 200-day SMA","Hurst exponent(21d) > 0.5 (persistence/quality proxy)"]},
+    {n:"F2",c:"F",d:"Momentum + Volume",s:"Momentum",cond:["Above 200-day SMA","Volume ≥ 1.5x (institutional buying proxy)","ADX(14) > 20"]},
+    {n:"F3",c:"F",d:"Dividend/Consistent Growth proxy",s:"Trend Following",cond:["Flag pattern score > 0.5 (consistency proxy)","Hurst exponent(21d) > 0.5 (persistence)"]},
+    {n:"F4",c:"F",d:"Compounder proxy",s:"Trend Following",cond:["Above 200-day SMA","Hurst exponent(21d) > 0.55 (strong persistence)","ADX(14) > 15 (actively trending, not coasting)"]},
+    {n:"F5",c:"F",d:"Cash Flow King proxy",s:"Volatility",cond:["Flag pattern score > 0.6 (steady underlying business proxy)","Volume ratio < 0.8 — steady accumulation, not a speculative frenzy"]},
+    {n:"F6",c:"F",d:"Turnaround proxy",s:"Mean Reversion",cond:["RSI(14) between 30–50 (recovering)","MACD histogram turning positive (momentum shift)"]},
+    {n:"F7",c:"F",d:"Promoter Confidence proxy",s:"Trend Following",cond:["Flag pattern score > 0.5","Hurst exponent(21d) > 0.5 (persistent trend as an insider-confidence proxy)"]},
+    {n:"F8",c:"F",d:"PEG proxy",s:"Momentum",cond:["10-day return > 2% (growth proxy)","RSI(14) < 60 (not fully priced in — the “value” half of PEG)","ADX(14) > 15 (growth is real, not noise)"]},
+    {n:"S001",c:"S",d:"EMA Crossover",s:"Trend Following",cond:["EMA8 above EMA21 (golden cross on fast EMAs)","Close above 200-day SMA (trend filter)"]},
+    {n:"S002",c:"S",d:"Supertrend Breakout",s:"Trend Following",cond:["Supertrend direction bullish","Volume ≥ 1.5x confirming"]},
+    {n:"S003",c:"S",d:"RSI Mean Reversion",s:"Mean Reversion",cond:["RSI(14) < 35 (oversold)","Above 200-day SMA (structural uptrend maintained)"]},
+    {n:"S004",c:"S",d:"52-Week High Breakout",s:"Trend Following",cond:["At/above the recent 21-day high (52w-breakout proxy)","Volume ≥ 2.0x confirming"]},
+    {n:"S005",c:"S",d:"VWAP Reversal",s:"Mean Reversion",cond:["Close above 20-day SMA (VWAP proxy)","Volume ≥ 1.3x confirming the reversal"]},
+    {n:"S006",c:"S",d:"Ichimoku Cloud Breakout",s:"Trend Following",cond:["Price above the Ichimoku cloud","ADX(14) > 20 (trend confirmed)","Hurst exponent(21d) > 0.5 (Ichimoku works best trending)"]},
+    {n:"S008",c:"S",d:"MACD Histogram",s:"Momentum",cond:["MACD histogram positive","MACD histogram in the top 40% of the universe (recently turned positive)"]}
+  ];
+
+  var byStyle = {};
+  STYLE_ORDER.forEach(function (s) { byStyle[s] = []; });
+  TEMPLATES.forEach(function (t) { byStyle[t.s].push(t); });
+
+  function tplLink(name) {
+    return '<a class="tpl-name-link" href="#tpl-' + name + '">' + name + '</a>';
+  }
+
+  // ---- Sidebar: collapsible style groups with a compact template index ----
+  var tocHtml = "";
+  STYLE_ORDER.forEach(function (style) {
+    var meta = STYLE_META[style];
+    tocHtml += '<details class="style-group"><summary>' + style + ' (' + byStyle[style].length + ')</summary>';
+    tocHtml += '<div class="tpl-index">';
+    byStyle[style].forEach(function (t) {
+      tocHtml += '<a href="#tpl-' + t.n + '" title="' + t.d + '">' + t.n + '</a>';
+    });
+    tocHtml += '</div></details>';
+  });
+  document.getElementById("toc-style-groups").innerHTML = tocHtml;
+
+  // ---- Main content: one card grid per style ----
+  var groupsHtml = "";
+  STYLE_ORDER.forEach(function (style) {
+    var meta = STYLE_META[style];
+    groupsHtml += '<div class="style-block">';
+    groupsHtml += '<h3><span class="badge badge-' + meta.cls + '">' + style + '</span>' +
+      '<span style="color:var(--text-dim); font-size:0.8rem; font-family:var(--font-mono);">default horizon: ' + meta.horizon + '</span></h3>';
+    groupsHtml += '<p class="style-desc">' + meta.desc + '</p>';
+    groupsHtml += '<div class="tpl-grid">';
+    byStyle[style].forEach(function (t) {
+      groupsHtml += '<article class="tpl-card" id="tpl-' + t.n + '" style="--tpl-accent: var(--' + meta.cls + ')">';
+      groupsHtml += '<div class="tpl-head"><span class="tpl-code">' + t.n + '</span><span class="pill">cat ' + t.c + '</span></div>';
+      groupsHtml += '<h4>' + t.d + '</h4>';
+      groupsHtml += '<ul>' + t.cond.map(function (c) { return '<li>' + c + '</li>'; }).join('') + '</ul>';
+      groupsHtml += '<div class="tpl-footer"><span class="badge badge-' + meta.cls + '">' + meta.horizon + '</span><a class="back" href="#technical-strategies">↑ index</a></div>';
+      groupsHtml += '</article>';
+    });
+    groupsHtml += '</div></div>';
+  });
+  document.getElementById("template-groups").innerHTML = groupsHtml;
+})();
+</script>
+</body>
+</html>

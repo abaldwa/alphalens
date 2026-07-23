@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-09,PRAJIND,BUY,61.5,15937,09:15:00,55.35,15:30:00,2012-05-14,thesis_broken,miss,-101954.7049325459,-0.10402209199999989,,,,,,
+2012-05-09,GMRAIRPORT,BUY,22.07,2,09:15:00,19.72,15:30:00,2012-05-14,thesis_broken,miss,-4.877535140880006,-0.1105014757788855,,,,,,

@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-08-18,HBLENGINE,BUY,25.740390239217092,41409,09:15:00,24.12856314643879,15:30:00,2010-08-20,thesis_broken,miss,-71031.23086785828,-0.06664068782542709,,,,,,

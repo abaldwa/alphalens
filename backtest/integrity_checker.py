@@ -43,6 +43,41 @@ from config.settings import MIN_ADT_INR, TOTAL_ROUNDTRIP_COST
 
 logger = logging.getLogger(__name__)
 
+# [AS BUILT, full-codebase-review Fix 12, 2026-07-19] Narrow allowlist of
+# fundamentals-derived feature name patterns used by check_02_pit's
+# stopgap (see that method's docstring for why this exists instead of a
+# full features/registry.py cross-check). Deliberately conservative —
+# false negatives (a fundamentals feature this list misses) are possible,
+# but false positives (flagging a genuinely PITRule.NONE technical/macro
+# column) would break real backtests, so this only matches unambiguous
+# fundamentals-ratio/governance naming conventions already used across
+# features/fundamental*.py and features/governance.py.
+_FUNDAMENTALS_DERIVED_PATTERNS = (
+    "_ratio", "roe", "roce", "pledge", "promoter", "eps", "pat", "ebitda",
+    "book_value", "debt_to_equity", "interest_coverage", "altman_z",
+    "quality_flag", "shareholding",
+    # [BUG FIX, 2026-07-21 full-codebase-review REV7] Broadened per real
+    # column names confirmed present in features/forensic_classical.py
+    # and features/fundamental*.py that the original list missed —
+    # e.g. `cfo_to_net_income`, `m_score`/`f_score`/`o_score`,
+    # `dechow_f_score`/`piotroski_f_score`, `capex_to_cfo_ratio` (this one
+    # already matched `_ratio`, kept for clarity), `revenue_concentration`,
+    # `channel_stuffing_indicator` — all fundamentals-statement-derived and
+    # PIT-sensitive (only knowable after the underlying filing), none of
+    # which contain "_ratio"/"roe"/etc. Still deliberately not exhaustive —
+    # see this module's docstring for why a full features/registry.py
+    # cross-check isn't viable yet (registry.py's own names predate
+    # matrix_builder.py's current ALL_FEATURE_COLUMNS and don't match it).
+    "cfo", "accrual", "revenue", "m_score", "f_score", "o_score",
+    "dechow", "piotroski", "beneish", "capex", "cash_flow", "receivable",
+    "channel_stuffing", "tax_paid", "fcf_",
+)
+
+
+def _looks_fundamentals_derived(column_name: str) -> bool:
+    lowered = column_name.lower()
+    return any(pattern in lowered for pattern in _FUNDAMENTALS_DERIVED_PATTERNS)
+
 # SPEC-BT-001: data-integrity / look-ahead-prevention checks — a failure
 # here means the backtest result is not trustworthy and must halt.
 # 08/09/10 are performance-quality signals (a real, clean backtest can
@@ -69,7 +104,17 @@ ALL_CHECK_NAMES = [
     "check_08_fold_stability",
     "check_09_benchmarks",
     "check_10_random_feature",
+    "check_11_sector_tier_lookahead",
 ]
+
+# REV15 (2026-07-21 review): sector/tier columns from config/build_universe.py
+# reflect NSE's CURRENT classification snapshot, not point-in-time membership
+# — conditioning a multi-year backtest on them applies today's label
+# retroactively. A full PIT-joined sector/tier history is a separate
+# data-ingestion project (out of scope here); this is the review's own
+# accepted cheaper alternative — an explicit guardrail flagging the risk
+# rather than silently trusting it.
+_SECTOR_TIER_COLUMN_NAMES = {"sector", "tier", "market_cap_tier"}
 
 
 @dataclass
@@ -101,6 +146,15 @@ class BacktestIntegrityChecker:
     fold_returns: Optional[List[float]] = None
     benchmark_returns: Optional[List[float]] = None
     random_feature_accuracy: Optional[float] = None
+    # REV18 (2026-07-21 review): a non-empty delisted set alone doesn't prove
+    # the universe is survivorship-bias-safe — a near-complete universe
+    # missing just 1-2 delisted names out of hundreds would still pass a
+    # presence-only check. 1% is a conservative floor: real NSE-listed-equity
+    # attrition (delistings/suspensions/mergers) over any multi-year backtest
+    # window is comfortably above this in practice, so a ratio below it is a
+    # signal the delisted-ticker set itself is incomplete, not that the
+    # market genuinely had that few exits.
+    min_delisted_ratio: float = 0.01
 
     _results_cache: Dict[str, CheckResult] = field(default_factory=dict, repr=False, compare=False)
 
@@ -135,6 +189,26 @@ class BacktestIntegrityChecker:
 
         pit_cols = [c for c in ("announcement_date", "filing_date") if c in df.columns]
         if not pit_cols:
+            # [AS BUILT, full-codebase-review Fix 12, 2026-07-19] Trusting
+            # "no PIT columns present" as proof of PITRule.NONE is a
+            # trust-not-verify gap — features/registry.py's pit_rule
+            # declarations aren't currently wired into the production
+            # feature pipeline (matrix_builder.py uses different column
+            # names — see registry.py's own disclaimer), so a full
+            # registry cross-check isn't viable yet. As a narrower,
+            # achievable stopgap: fail loudly if any column name matches a
+            # known fundamentals-derived feature pattern (these should
+            # always carry announcement_date/filing_date) rather than
+            # silently vacuous-passing a feature_df that's missing its PIT
+            # column by mistake.
+            suspect = [c for c in df.columns if _looks_fundamentals_derived(c)]
+            if suspect:
+                return self._result(
+                    name, False,
+                    f"no announcement_date/filing_date column present, but {suspect} "
+                    "look fundamentals-derived (roe/pledge/ratio-style names) and should "
+                    "carry one — likely a missing PIT column, not a genuine PITRule.NONE feature",
+                )
             return self._result(
                 name, True, "no announcement_date/filing_date columns present — "
                 "pure technical/calendar/macro features are PITRule.NONE by construction"
@@ -170,7 +244,20 @@ class BacktestIntegrityChecker:
                 "every historical ticker is still in the current universe — no delisted/removed "
                 "names found, survivorship bias risk",
             )
-        return self._result(name, True, f"{len(delisted_seen)} delisted/since-removed tickers included")
+        ratio = len(delisted_seen) / len(self.historical_tickers)
+        if ratio < self.min_delisted_ratio:
+            return self._result(
+                name, False,
+                f"only {len(delisted_seen)}/{len(self.historical_tickers)} historical tickers "
+                f"({ratio:.2%}) are delisted/removed — below the {self.min_delisted_ratio:.2%} "
+                "plausibility floor; the delisted-ticker set is likely incomplete, not that the "
+                "market genuinely had this few exits (REV18)",
+            )
+        return self._result(
+            name, True,
+            f"{len(delisted_seen)}/{len(self.historical_tickers)} historical tickers ({ratio:.2%}) "
+            "delisted/since-removed and included",
+        )
 
     def check_05_costs(self) -> CheckResult:
         """SPEC-BT-001 rule 4 / SPEC-BT-002: TOTAL_ROUNDTRIP_COST actually applied."""
@@ -236,6 +323,38 @@ class BacktestIntegrityChecker:
         passed = 0.48 <= self.random_feature_accuracy <= 0.52
         detail = f"random feature accuracy={self.random_feature_accuracy:.3f} (band [0.48, 0.52])"
         return self._result(name, passed, detail)
+
+    def check_11_sector_tier_lookahead(self) -> CheckResult:
+        """
+        REV15 (2026-07-21 review): sector/tier/market_cap_tier reflect
+        NSE's CURRENT classification snapshot (config/build_universe.py),
+        not point-in-time membership. Using one as a time-varying feature
+        across a multi-year window applies today's label retroactively —
+        classic label look-ahead. Non-critical (a warning, not a hard
+        failure): a backtest that only uses these columns as a same-day
+        filter, or over a short single-year window, isn't necessarily
+        affected — this flags the risk for a human to confirm, rather than
+        halting every run that happens to carry the column.
+        """
+        name = "check_11_sector_tier_lookahead"
+        if self.feature_df is None or "date" not in self.feature_df.columns:
+            return self._result(name, True, "no feature_df/date column to check")
+        suspect_cols = sorted(set(self.feature_df.columns) & _SECTOR_TIER_COLUMN_NAMES)
+        if not suspect_cols:
+            return self._result(name, True, "no sector/tier/market_cap_tier column present")
+        dates = pd.to_datetime(self.feature_df["date"])
+        span_days = (dates.max() - dates.min()).days
+        if span_days > 365:
+            return self._result(
+                name, False,
+                f"{suspect_cols} present alongside a {span_days}-day feature window (> 1 year) — "
+                "these reflect NSE's CURRENT classification snapshot, not point-in-time membership; "
+                "using them as a time-varying feature over a multi-year window applies today's "
+                "label retroactively (REV15)",
+            )
+        return self._result(
+            name, True, f"{suspect_cols} present but feature window is only {span_days} days (<= 1 year)",
+        )
 
     def run_all_checks(self) -> Dict[str, bool]:
         """

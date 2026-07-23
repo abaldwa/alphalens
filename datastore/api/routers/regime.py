@@ -10,17 +10,28 @@ GET /api/v1/macro/regime — current market-wide HMM state (M-01), written
 by daily_inference.py as a 'hmm_market' row in ml_signals (ticker='MARKET',
 a sentinel since the HMM regime detector is market-wide, not per-ticker —
 see systems/ml_signal_engine/models/hmm/regime_detector.py, P1.2).
+
+GET /api/v1/macro/market_regimes — a SEPARATE, deliberately distinct
+taxonomy: rule-based Bull/Bear/Sideways DATE-RANGE segments (not daily
+point labels) computed by systems/regime/market_regime.py's 20%-threshold
+classifier from an index's close price, persisted via systems/regime/
+regime_store.py. Built for the Backtest module's "which strategy works in
+which market phase" per-regime breakdown — the HMM regime above answers
+"what does today look like," this answers "what were the confirmed
+Bull/Bear/Sideways stretches over history." Do not conflate the two.
 """
 
 import logging
 from datetime import date as date_type
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel
 
-from config.settings import SIGNALS_DUCKDB_PATH
+from config.settings import DUCKDB_PATH, SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from datastore.api.schemas import RegimeHistoryResponse, RegimeHistoryRow, RegimeResponse
+from systems.regime.regime_store import list_regime_segments
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +39,8 @@ router = APIRouter(prefix="/api/v1/macro", tags=["Macro"])
 
 HMM_MARKET_MODEL_NAME = "hmm_market"
 HMM_MARKET_TICKER = "MARKET"
+
+DEFAULT_REGIME_INDEX = "Nifty 500"
 
 
 # [AS BUILT, P3.x] /regime/history (SPEC-UI-002 Signal Detail screen).
@@ -80,4 +93,38 @@ async def get_regime(
 
     return RegimeResponse(
         date=row[0], hmm_regime=row[1], hmm_regime_prob=row[2], hmm_stability=row[3], available=True
+    )
+
+
+class MarketRegimeSegmentResponse(BaseModel):
+    index_name: str
+    regime: str
+    start_date: date_type
+    end_date: date_type
+    confirmed_date: date_type
+    method: str
+    move_pct: Optional[float] = None
+
+
+class MarketRegimeSegmentListResponse(BaseModel):
+    index_name: str
+    segments: List[MarketRegimeSegmentResponse]
+
+
+@router.get("/market_regimes", response_model=MarketRegimeSegmentListResponse)
+async def get_market_regimes(
+    index_name: str = Query(DEFAULT_REGIME_INDEX, description="Index name in index_ohlcv, e.g. 'Nifty 500'"),
+    as_of: Optional[date_type] = Query(
+        None, description="PIT-safe: only segments confirmed at or before this date"
+    ),
+    start_date: Optional[date_type] = Query(None, description="Restrict to segments overlapping this date range"),
+    end_date: Optional[date_type] = Query(None, description="Restrict to segments overlapping this date range"),
+) -> MarketRegimeSegmentListResponse:
+    """Rule-based Bull/Bear/Sideways date-range segments for `index_name`
+    (backfilled by scripts/backfill_market_regimes.py) — the Backtest
+    module's per-regime performance breakdown reads this."""
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=True) as conn:
+        rows = list_regime_segments(conn, index_name, as_of=as_of, start_date=start_date, end_date=end_date)
+    return MarketRegimeSegmentListResponse(
+        index_name=index_name, segments=[MarketRegimeSegmentResponse(**r) for r in rows]
     )

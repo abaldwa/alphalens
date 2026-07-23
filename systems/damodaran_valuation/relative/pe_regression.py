@@ -73,10 +73,13 @@ class RelativePERegression:
     overvalued_threshold : float
         Gap percentage above which a stock is flagged as overvalued (default 10 %).
     min_peers : int
-        Minimum number of peers required to fit the regression (default 5).
+        Minimum number of peers required to fit the regression (default 20).
+        A 3-factor OLS (4 params incl. intercept) with only 5 peers leaves
+        near-zero degrees of freedom and an unstable, inflated R²; Damodaran's
+        own regression work typically uses 20-40+ peers.
     """
 
-    def __init__(self, overvalued_threshold: float = 0.10, min_peers: int = 5) -> None:
+    def __init__(self, overvalued_threshold: float = 0.10, min_peers: int = 20) -> None:
         self.overvalued_threshold = overvalued_threshold
         self.min_peers = min_peers
         self._coef: Optional[np.ndarray] = None

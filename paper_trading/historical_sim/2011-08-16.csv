@@ -1,0 +1,6 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-08-16,ADSL,BUY,33.4,1,09:15:00,30.1,15:30:00,2011-08-17,thesis_broken,miss,-3.434337872799997,-0.10282448720958075,,,,,,
+2011-08-16,DHANBANK,BUY,83.95,9905,09:15:00,78.8,15:30:00,2011-08-18,thesis_broken,miss,-54355.21904477698,-0.06536813130911255,,,,,,
+2011-08-16,HINDOILEXP,BUY,128.75,7135,09:15:00,115.6,15:30:00,2011-08-19,thesis_broken,miss,-97520.06940157502,-0.10615801433009711,,,,,,
+2011-08-16,RPOWER,BUY,84.20127161749745,10911,09:15:00,76.36403865717192,15:30:00,2011-08-26,thesis_broken,miss,-89207.2254924745,-0.09709946256428163,,,,,,
+2011-08-16,PARACABLES,BUY,2.85,1,09:15:00,2.55,15:30:00,2011-11-18,thesis_broken,miss,-0.31146296220000025,-0.10928524989473692,,,,,,

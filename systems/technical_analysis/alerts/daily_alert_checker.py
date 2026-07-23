@@ -24,6 +24,8 @@ import json
 import logging
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 from config.settings import SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from datastore.api.utils.feature_store import resolve_date
@@ -47,11 +49,18 @@ CREATE TABLE IF NOT EXISTS ta_signals (
 )
 """
 
-_INSERT_SQL = """
-INSERT INTO ta_signals (
-    date, ticker, template_name, category, score,
-    matched_conditions, total_conditions, key_values
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+# Bulk upsert via a registered DataFrame + INSERT...SELECT...ON CONFLICT,
+# NOT conn.executemany() with one parameterized statement per row — measured
+# ~7s for ~5,000 rows via executemany against a table this size (row-by-row
+# prepared-statement overhead) vs ~0.03s for the equivalent single bulk
+# statement below (a ~250x difference), found while building
+# scripts/backfill_ta_signals.py's historical replay. Same upsert semantics,
+# just executed as one vectorized statement instead of N individual ones.
+_BULK_UPSERT_SQL = """
+INSERT INTO ta_signals (date, ticker, template_name, category, score,
+    matched_conditions, total_conditions, key_values)
+SELECT date, ticker, template_name, category, score,
+    matched_conditions, total_conditions, key_values FROM _ta_signals_upsert_batch
 ON CONFLICT (date, ticker, template_name) DO UPDATE SET
     category = EXCLUDED.category,
     score = EXCLUDED.score,
@@ -99,13 +108,16 @@ class DailyAlertChecker:
         """
         conn.execute(_CREATE_TA_SIGNALS_SQL)
 
-    def _write_results_batch(
+    def _write_all_results(
         self,
         conn,
         date_str: str,
-        results: List[ScreenerResult],
-    ) -> None:
-        """Upsert a batch of ScreenerResult rows into ta_signals.
+        template_results: Dict[str, List[ScreenerResult]],
+    ) -> int:
+        """Upsert every template's full-match rows for one date in a
+        single bulk statement (see _BULK_UPSERT_SQL's docstring note for
+        why this replaced a per-row executemany loop). Returns the number
+        of rows written.
 
         Parameters
         ----------
@@ -113,17 +125,14 @@ class DailyAlertChecker:
             Open DuckDB connection.
         date_str : str
             The feature date (YYYY-MM-DD) for all rows in this batch.
-        results : list of ScreenerResult
-            Full-match results from one template run.
+        template_results : dict
+            {template_name: [ScreenerResult, ...]} across all 42 templates.
 
         Spec References
         ---------------
         SPEC-TA-008: ta_signals upsert (ON CONFLICT DO UPDATE)
         SPEC-DS-004: "same date+ticker+system replaces, never duplicates"
         """
-        if not results:
-            return
-
         rows = [
             (
                 date_str,
@@ -135,13 +144,24 @@ class DailyAlertChecker:
                 r.total_conditions,
                 json.dumps(r.key_values) if r.key_values else None,
             )
+            for results in template_results.values()
             for r in results
             # Only persist full matches as alerts (score == 1.0)
             if r.score >= 1.0 - 1e-9
         ]
+        if not rows:
+            return 0
 
-        if rows:
-            conn.executemany(_INSERT_SQL, rows)
+        batch_df = pd.DataFrame(rows, columns=[
+            "date", "ticker", "template_name", "category", "score",
+            "matched_conditions", "total_conditions", "key_values",
+        ])
+        conn.register("_ta_signals_upsert_batch", batch_df)
+        try:
+            conn.execute(_BULK_UPSERT_SQL)
+        finally:
+            conn.unregister("_ta_signals_upsert_batch")
+        return len(rows)
 
     def evaluate(self, run_date: Optional[str] = None) -> "tuple[Optional[str], Dict[str, List[ScreenerResult]]]":
         """Run all 42 templates against a date's feature Parquet — compute only, no DB write.
@@ -186,18 +206,26 @@ class DailyAlertChecker:
 
         logger.info("DailyAlertChecker: evaluating 42 templates for date %s", resolved)
 
+        # Load the date's feature Parquet ONCE and reuse it across all 42
+        # templates, rather than calling ScreenerEngine.screen() per template
+        # (each of which re-reads the same file from disk) — a real
+        # inefficiency for bulk historical backfills over many dates
+        # (scripts/backfill_ta_signals.py), harmless but wasteful for the
+        # single-date live daily case this was originally written for.
+        df = self._engine._load_df(resolved)  # noqa: SLF001 — same module family, no public API needed for this
+
         template_results: Dict[str, List[ScreenerResult]] = {}
         total_matches = 0
 
         for template in TEMPLATES:
             try:
-                # screen() already limits to 10k results; for alert storage we
-                # want ALL full matches — use a very large limit (universe ≤ 5 000)
-                matches = self._engine.screen(
-                    template.name, date=resolved, limit=10_000
-                )
-                # Keep only full matches for the alerts table
-                full_matches = [r for r in matches if r.score >= 1.0 - 1e-9]
+                if df is None:
+                    full_matches = []
+                else:
+                    # screen() already limits to 10k results; for alert storage we
+                    # want ALL full matches — use a very large limit (universe ≤ 5 000)
+                    matches = self._engine._screen_df(df, template, resolved, limit=10_000)  # noqa: SLF001
+                    full_matches = [r for r in matches if r.score >= 1.0 - 1e-9]
                 template_results[template.name] = full_matches
                 total_matches += len(full_matches)
             except Exception as exc:
@@ -252,7 +280,6 @@ class DailyAlertChecker:
         # SPEC-SCHED-013: persist=False releases the lock immediately on exit
         with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
             self._ensure_db_and_table(conn)
-            for template_name, results in template_results.items():
-                self._write_results_batch(conn, resolved, results)
+            self._write_all_results(conn, resolved, template_results)
 
         return {name: len(res) for name, res in template_results.items()}

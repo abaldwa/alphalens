@@ -62,7 +62,11 @@ from features.fundamental_composites import (
     select_peers,
 )
 from features.fundamental_quality_gate import validate_and_annotate
-from features.fundamental_source_priority import SOURCE_PRIORITY, build_priority_update_clause
+from features.fundamental_source_priority import (
+    SOURCE_PRIORITY,
+    append_fundamentals_history,
+    build_priority_update_clause,
+)
 from features.governance import GOVERNANCE_FEATURES
 
 logger = logging.getLogger(__name__)
@@ -146,7 +150,7 @@ async def get_fundamentals_history_by_quarters(
 
     df = pd.DataFrame(rows, columns=_COLUMNS)
     if not df.empty:
-        df["announcement_date"] = pd.to_datetime(df["announcement_date"])
+        df["announcement_date"] = pd.to_datetime(df["announcement_date"], format="mixed")
         # 2026-07-07: same tie-break fix as GET /{ticker} — see that route's
         # comment for the full incident (a Screener row and an NSE-XBRL row
         # for the same real quarter, identical quarter_end_date AND
@@ -203,6 +207,45 @@ async def get_fundamental_screener(
     matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
     matched = matched_df["ticker"].tolist()
     return FAScreenerResponse(preset=preset, date=resolved_date, tickers=matched)
+
+
+@router.get("/pillar_summary")
+async def get_fundamentals_pillar_summary(
+    preset: str = Query(default="quality_compounder", description=f"One of: {', '.join(SCREENER_PRESETS.keys())}"),
+) -> dict:
+    """Home page pillar-outcome card: today's recommendation count for one
+    screener preset. Fundamentals has no `target_price`/expected-return
+    field (its ratios are sector-relative z-scores, not price forecasts)
+    and no strategy/win-rate table exists for this pillar (unlike
+    Technical's strategy_confidence_summary) — those two fields are
+    genuinely null here, not omitted by mistake; fabricating a number for
+    them would violate this project's no-stub-data policy."""
+    resolved_date = resolve_date(None)
+    if resolved_date is None:
+        return {"as_of_date": None, "available": False, "recommendation_count": 0,
+                "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+    panel = read_feature_day(resolved_date)
+    if panel is None:
+        return {"as_of_date": resolved_date, "available": False, "recommendation_count": 0,
+                "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+    from config.training_universe import filter_recommendable
+
+    matched = [
+        row["ticker"] for _, row in panel.iterrows()
+        if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
+    ]
+    matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
+
+    return {
+        "as_of_date": resolved_date,
+        "available": True,
+        "recommendation_count": len(matched_df),
+        "avg_expected_return_pct": None,
+        "top_strategy": None,
+        "top_strategy_success_rate_pct": None,
+    }
 
 
 @router.get("/sector/{sector}", response_model=FASectorResponse)
@@ -398,14 +441,14 @@ async def get_fundamentals(
         rows = conn.execute(
             f"""
             SELECT {_SELECT_COLS} FROM fundamentals
-            WHERE ticker = ? AND quarter_end_date >= ? AND quarter_end_date <= ?
+            WHERE ticker = ? AND CAST(quarter_end_date AS DATE) >= ? AND CAST(quarter_end_date AS DATE) <= ?
             """,
             [ticker, start_date.date(), end_date.date()],
         ).fetchall()
 
     df = pd.DataFrame(rows, columns=_COLUMNS)
     if not df.empty:
-        df["announcement_date"] = pd.to_datetime(df["announcement_date"])
+        df["announcement_date"] = pd.to_datetime(df["announcement_date"], format="mixed")
         df = enforce_pit_fundamentals(df, as_of=pit_reference, announcement_date_col="announcement_date")
         # 2026-07-07: real tie-break bug caught via NSE XBRL pipeline
         # verification — a Screener-sourced row and an NSE-XBRL-sourced row
@@ -446,8 +489,12 @@ _UPDATE_COLS = [c for c in _COLUMNS if c not in _NON_DATA_COLS]
 # nse_xbrl > trendlyne > screener > kaggle priority, not "whichever
 # source's write happened to run last" — see A36 in FeatureBacklog.md.
 _UPDATE_CLAUSE = build_priority_update_clause(_UPDATE_COLS)
+# as_of_ingested (Fix 5, 2026-07-19): stamped CURRENT_TIMESTAMP at write
+# time, same pattern as the backfill scripts — not part of _COLUMNS since
+# that list is shared with read endpoints too.
 _INSERT_SQL = f"""
-    INSERT INTO fundamentals ({_SELECT_COLS}) VALUES ({", ".join("?" for _ in _COLUMNS)})
+    INSERT INTO fundamentals ({_SELECT_COLS}, as_of_ingested)
+    VALUES ({", ".join("?" for _ in _COLUMNS)}, CURRENT_TIMESTAMP)
     ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET {_UPDATE_CLAUSE}
 """
 
@@ -509,6 +556,18 @@ async def write_fundamentals(record: FundamentalsWrite) -> FundamentalsWriteResu
 
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         conn.execute(_INSERT_SQL, values)
+        # 2026-07-20 Gap #2 fix: append a real snapshot into the append-only
+        # fundamentals_history table — see append_fundamentals_history's docstring.
+        # REV11 (2026-07-21 review): the primary upsert above already committed;
+        # a history-append failure (e.g. a schema-sync race) must never 500 the
+        # whole write on top of an already-successful upsert.
+        try:
+            append_fundamentals_history(conn, record.ticker, record.fiscal_year, record.quarter)
+        except Exception:
+            logger.exception(
+                f"fundamentals.write: append_fundamentals_history failed for "
+                f"{record.ticker} FY{record.fiscal_year}Q{record.quarter} — primary upsert already committed"
+            )
 
     logger.info(f"fundamentals.write: {record.ticker} FY{record.fiscal_year}Q{record.quarter}")
     return FundamentalsWriteResult(
@@ -545,6 +604,16 @@ async def write_fundamentals_batch(body: FundamentalsWriteBatch) -> Fundamentals
     if all_values:
         with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
             conn.executemany(_INSERT_SQL, all_values)
+            # 2026-07-20 Gap #2 fix: one history snapshot per written row.
+            ticker_idx, fy_idx, q_idx = _COLUMNS.index("ticker"), _COLUMNS.index("fiscal_year"), _COLUMNS.index("quarter")
+            for row in all_values:
+                try:
+                    append_fundamentals_history(conn, row[ticker_idx], row[fy_idx], row[q_idx])
+                except Exception:
+                    logger.exception(
+                        f"fundamentals.write_batch: append_fundamentals_history failed for "
+                        f"{row[ticker_idx]} FY{row[fy_idx]}Q{row[q_idx]} — primary upsert already committed"
+                    )
 
     logger.info(f"fundamentals.write_batch: {len(all_values)} written, {failed} failed of {len(body.records)}")
     return FundamentalsWriteBatchResult(written=len(all_values), failed=failed)

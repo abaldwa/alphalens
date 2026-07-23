@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-12-14,BALRAMCHIN,BUY,32.847270838391516,26367,09:15:00,29.479441471472548,15:30:00,2011-12-15,thesis_broken,miss,-92283.0264058474,-0.10655205205326235,,,,,,
+2011-12-14,CEMPRO,BUY,1.1739912162952237,737750,09:15:00,1.1033527617554264,15:30:00,2011-12-29,thesis_broken,miss,-55597.102062764694,-0.06419158352542383,,,,,,

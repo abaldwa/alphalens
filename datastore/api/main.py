@@ -35,16 +35,23 @@ versions.
 import logging
 from contextlib import asynccontextmanager
 
+import duckdb
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config.settings import DATASTORE_API_HOST, DATASTORE_API_PORT
+from config.settings import (
+    DATASTORE_API_CORS_ORIGINS,
+    DATASTORE_API_HOST,
+    DATASTORE_API_PORT,
+)
 
 from .routers import (
     alerts,
     backtest_reports,
+    backtest_runs,
     big_investors,
+    copilot,
     corporate_actions,
     corporate_announcements,
     events,
@@ -56,10 +63,12 @@ from .routers import (
     holdings,
     macro,
     models,
+    momentum,
     multibagger,
     ohlcv,
     ops,
     paper_trading,
+    paper_trading_unified,
     pipeline,
     regime,
     sector_accumulation,
@@ -90,7 +99,20 @@ async def lifespan(app: FastAPI):
     # nothing previously called create_schema() outside manual/ad-hoc runs.
     from datastore.schema.create_normalised import create_schema
 
-    create_schema()
+    try:
+        create_schema()
+    except duckdb.IOException as exc:
+        # The schema is idempotent (CREATE TABLE IF NOT EXISTS) and, on any
+        # restart of an already-provisioned deployment, almost certainly
+        # already exists — don't take the whole API down just because a
+        # long-running writer (the ingestion scheduler) held the DuckDB
+        # write lock at this exact instant. Surfaced instead as a clear,
+        # actionable warning rather than "Application startup failed. Exiting."
+        logger.warning(
+            "Skipping schema provisioning at startup — the database file is locked by "
+            f"another process (e.g. the ingestion scheduler): {exc}. Continuing startup; "
+            "schema will be verified again on the next restart."
+        )
     # TODO: Phase 1 — initialize database connections
     yield
     logger.info("DataStore API shutting down")
@@ -110,11 +132,38 @@ app = FastAPI(
 # ===== CORS Middleware =====
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: SPEC-SEC-003 — restrict in production
+    allow_origins=DATASTORE_API_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(duckdb.IOException)
+async def duckdb_lock_conflict_handler(request, exc: duckdb.IOException):
+    """
+    Surface a DuckDB write-lock conflict (e.g. the ingestion scheduler
+    holding the file for a long-running pipeline) as a clear, actionable
+    503 instead of an opaque 500 — this is a transient, expected condition
+    under SPEC-SCHED-013's single-writer model, not a bug, and the caller
+    (a UI trigger button, a script) needs to know to retry shortly rather
+    than assume the request itself was malformed or the endpoint is broken.
+    """
+    from fastapi.responses import JSONResponse
+
+    if "Could not set lock" not in str(exc):
+        raise exc
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": (
+                "Database is temporarily locked by another process (e.g. the ingestion "
+                "scheduler's daily pipeline). This is expected under DuckDB's single-writer "
+                "model — wait for that process to finish and retry."
+            )
+        },
+    )
+
 
 # ===== Routers (P1.7; fundamentals/shareholding added P2.1; corporate_actions
 # added P2.2; fno added P2.3; forensic/multibagger/governance added P2.6) =====
@@ -147,7 +196,9 @@ app.include_router(macro.router)
 # [AS BUILT, P3.x] paper_trading/backtest_reports added for the Automated
 # Daily Paper Trading + Web UI build (see plan: scalable-bubbling-reddy.md).
 app.include_router(paper_trading.router)
+app.include_router(paper_trading_unified.router)
 app.include_router(backtest_reports.router)
+app.include_router(backtest_runs.router)
 # [AS BUILT, SPEC-TA-004] Technical Analysis API scaffolding over the
 # already-computed features/{technical,advanced_technical,pattern_scores}.py
 # output — see plan: squishy-frolicking-whisper.md.
@@ -187,6 +238,16 @@ app.include_router(holdings.router)
 # overlay. "forensic-flag date" event type deliberately not included this
 # pass — see events.py's module docstring.
 app.include_router(events.router)
+# [AS BUILT, ML38] Momentum — live dashboard section for the
+# robustness-validated momentum strategy (Rank 100-150 / top 15 / 6-month
+# lookback / monthly rebalance / grace=2), manual paper-trading style CRUD
+# mirroring holdings.router above.
+app.include_router(momentum.router)
+# [AS BUILT, Co-Pilot v1] Natural-language strategy authoring: NL query ->
+# structured spec -> dedup check against screener templates/saved
+# strategies -> backtest via the existing momentum backtest engine -> save
+# to strategies/*.yaml. See systems/copilot/ for the implementation.
+app.include_router(copilot.router)
 
 # ===== Static UI (P3.x — zero-new-dependency web UI, StaticFiles ships with
 # Starlette/FastAPI already; rebuilt to the 27-screen/5-app prototype layout

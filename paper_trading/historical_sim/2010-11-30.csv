@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-11-30,KAUSHALYA,BUY,14.598540145985401,1,09:15:00,13.498650134986502,15:30:00,2010-12-10,thesis_broken,miss,-1.1586066825317474,-0.0793645577534247,,,,,,
+2010-11-30,ASHAPURMIN,BUY,39.05,25,09:15:00,34.6,15:30:00,2011-01-17,thesis_broken,miss,-115.17656731499994,-0.11797855806914208,,,,,,
+2010-11-30,HCC,BUY,43.45,1,09:15:00,38.4,15:30:00,2011-01-28,thesis_broken,miss,-5.224759897400006,-0.12024763860529356,,,,,,

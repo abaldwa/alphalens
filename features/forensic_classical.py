@@ -84,6 +84,7 @@ import pandas as pd
 from config.settings import ASSUMED_TAX_RATE
 from datastore.client import DataStoreClient
 from features.fundamental import _latest_close_on_or_before
+from systems.damodaran_valuation.lifecycle.classifier import _FINANCIAL_SERVICES_SECTORS
 from systems.ml_signal_engine.models.forensic.classical_scores import (
     altman_z_score,
     beneish_m_score,
@@ -449,7 +450,8 @@ def compute_forensic_classical_features_panel(
 
 
 def compute_forensic_classical_scores(
-    client: DataStoreClient, ticker: str, as_of: datetime, lookback_years: int = 4
+    client: DataStoreClient, ticker: str, as_of: datetime, lookback_years: int = 4,
+    sector: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Compute all 7 M-09 classical MODEL-LEVEL outputs (m_score, z_score,
@@ -509,7 +511,20 @@ def compute_forensic_classical_scores(
     shares = get_quarter_value(latest, "shares_outstanding")
     bvps = get_quarter_value(latest, "book_value_per_share")
 
-    beneish = beneish_m_score(_build_beneish_inputs(latest, yoy))
+    # Beneish M-Score and Altman Z below rely on ratios (current
+    # assets/liabilities, total-debt leverage, working capital) that are
+    # structurally invalid for banks/NBFCs/insurers — deposits/borrowings
+    # are core operating liabilities there, not distress/manipulation
+    # signals. Skip both (NaN) for Financial Services tickers rather than
+    # serve a misleading score (2026-07-19 full-codebase-review, same
+    # guard as features/deep_forensic.py's _altman_z sector param).
+    is_financial_services = sector in _FINANCIAL_SERVICES_SECTORS
+
+    beneish = (
+        {f: np.nan for f in GROUP_A_FEATURES + ["m_score", "is_likely_manipulator"]}
+        if is_financial_services
+        else beneish_m_score(_build_beneish_inputs(latest, yoy))
+    )
 
     wc = ca - cl if pd.notna(ca) and pd.notna(cl) else np.nan
     # [FIXED, FO1/FO9 2026-07-13] `retained_earnings` is a real column
@@ -541,8 +556,12 @@ def compute_forensic_classical_scores(
     ebit = get_quarter_value(latest, "ebit")
     if pd.isna(ebit):
         ebit = get_quarter_value(latest, "ebitda")  # depreciation not reliably available — EBITDA used as EBIT proxy
-    altman = altman_z_score(
-        {"wc": wc, "re": re_proxy, "ebit": ebit, "ta": ta, "mktcap": mktcap, "tl": tl, "sales": revenue}
+    altman = (
+        {"z_score": np.nan, "distress_zone": None, "safe_zone": None}
+        if is_financial_services
+        else altman_z_score(
+            {"wc": wc, "re": re_proxy, "ebit": ebit, "ta": ta, "mktcap": mktcap, "tl": tl, "sales": revenue}
+        )
     )
 
     ta_yoy = derive_total_assets(yoy)

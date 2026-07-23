@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-06-04,NETWORK18,BUY,30.35,1,09:15:00,28.55,15:30:00,2012-09-05,thesis_broken,miss,-1.9220704921999996,-0.06333016448764414,,,,,,
+2012-06-04,MRPL,BUY,46.338231850717456,1,09:15:00,60.83560573107628,15:30:00,2012-10-05,target_achieved,hit,14.310997248737905,0.30883779283685225,,,,,,

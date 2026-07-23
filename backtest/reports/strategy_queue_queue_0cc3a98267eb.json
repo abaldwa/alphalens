@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-07-22T07:50:36.306176",
+  "total_jobs": 1,
+  "jobs_run": 1,
+  "results": [
+    {
+      "job_index": 0,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "A2",
+        "top_n": 10
+      },
+      "returncode": 1,
+      "elapsed_s": 17.812164160000975
+    }
+  ],
+  "all_passed": false,
+  "runtime_seconds": 17.820445493009174
+}

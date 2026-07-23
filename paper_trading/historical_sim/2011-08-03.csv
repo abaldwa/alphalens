@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-08-03,ONMOBILE,BUY,85.5,12093,09:15:00,74.4,15:30:00,2011-08-05,thesis_broken,miss,-138390.9480565379,-0.13384665340350865,,,,,,
+2011-08-03,FEDERALBNK,BUY,40.31097452740311,25650,09:15:00,38.79018076518078,15:30:00,2011-08-05,thesis_broken,miss,-43167.10859627789,-0.041748636199235564,,,,,,
+2011-08-03,PATELENG,BUY,128.0,8077,09:15:00,120.65,15:30:00,2011-08-05,thesis_broken,miss,-63524.2139467519,-0.061443966999999905,,,,,,

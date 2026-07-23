@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-02-02,IRB,BUY,7.177569538854168,1,09:15:00,6.221718873873588,15:30:00,2011-02-08,thesis_broken,miss,-0.9847195100022486,-0.13719400483292982,,,,,,
+2011-02-02,HCC,BUY,35.45,9209,09:15:00,32.35,15:30:00,2011-02-09,thesis_broken,miss,-29860.948333332606,-0.09146920060366714,,,,,,

@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-08-28,JPPOWER,BUY,26.8,38184,09:15:00,25.05,15:30:00,2012-08-30,thesis_broken,miss,-70937.93223287037,-0.06932059946268654,,,,,,
+2012-08-28,PATELENG,BUY,69.15,14798,09:15:00,64.35,15:30:00,2012-09-04,thesis_broken,miss,-75146.13313931657,-0.07343640870282012,,,,,,
+2012-08-28,SPIC,BUY,13.15,152,09:15:00,17.6,15:30:00,2012-09-26,target_achieved,hit,668.3606425104001,0.33438094982509514,,,,,,

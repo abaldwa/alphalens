@@ -47,6 +47,8 @@ class SectorAccumulationRow(BaseModel):
     delivery_volume: float
     sector_shares_outstanding: float
     n_stocks_included: int
+    n_stocks_total_in_sector: int
+    low_coverage: bool
 
 
 class SectorAccumulationDrilldownRow(BaseModel):
@@ -79,6 +81,9 @@ async def get_sector_accumulation_daily(
         logger.exception("sector_accumulation daily failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
+    # NaN -> None: DuckDB NULLs surface as float('nan'), which Pydantic v2
+    # rejects even for Optional[float] fields (same fix as fundamentals.py).
+    df = df.astype(object).where(df.notna(), None)
     return [SectorAccumulationRow(**row) for row in df.to_dict(orient="records")]
 
 
@@ -96,4 +101,5 @@ async def get_sector_accumulation_drilldown(
         logger.exception("sector_accumulation drilldown failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
+    df = df.astype(object).where(df.notna(), None)
     return [SectorAccumulationDrilldownRow(**row) for row in df.to_dict(orient="records")]

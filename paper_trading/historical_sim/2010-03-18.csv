@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-03-18,BANARISUG,BUY,922.15,1,09:15:00,861.65,15:30:00,2010-06-08,thesis_broken,miss,-64.20897213779995,-0.06962963957902722,,,,,,

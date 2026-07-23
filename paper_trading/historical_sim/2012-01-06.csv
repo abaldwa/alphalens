@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-01-06,ADANIENT,BUY,264.2646338239857,212,09:15:00,366.45745535673905,15:30:00,2012-01-17,target_achieved,hit,21439.54407099139,0.38268429414783073,,,,,,

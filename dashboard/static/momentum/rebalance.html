@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLens.Momentum — Rebalance</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/shell.css">
+<link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+<div class="app-bar" id="app-bar"></div>
+<div class="sub-tabs" id="sub-tabs"></div>
+<div class="page">
+  <div class="sec">
+    <div class="sec-head"><span class="sec-title">Rebalance</span></div>
+    <div class="card" id="strategy-picker" style="margin-bottom:16px"></div>
+    <div id="next-rebalance-banner"><div class="loading">Loading…</div></div>
+    <div id="suggestions-table" style="margin-top:16px"></div>
+  </div>
+</div>
+
+<div id="trade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100">
+  <div class="card" style="max-width:420px;margin:80px auto">
+    <div class="sec-title" style="margin-bottom:10px">Record Trade</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <label>Ticker <input type="text" id="modal-ticker" disabled></label>
+      <label>Date <input type="date" id="modal-date"></label>
+      <label>Qty <input type="number" id="modal-qty"></label>
+      <label>Price <input type="number" id="modal-price"></label>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="modal-save">Save</button>
+        <button id="modal-cancel" style="background:var(--tx3)">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../js/api.js"></script>
+<script src="../js/shell.js"></script>
+<script src="js/rebalance.js"></script>
+</body>
+</html>

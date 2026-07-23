@@ -57,7 +57,8 @@ from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel
 from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy
 from systems.ml_signal_engine.models.hmm.regime_detector import compute_hmm_observables
 from systems.ml_signal_engine.models.pnd.pnd_detector import PnDDetector
-from systems.ml_signal_engine.models.signal.base_signal_model import CLASS_NAMES, BaseSignalModel
+from systems.ml_signal_engine.models.signal.base_signal_model import CLASS_NAMES, CLASS_ORDER, BaseSignalModel
+from systems.ml_signal_engine.models.deep.stacking import StackingMetaLearner
 from systems.ml_signal_engine.models.signal.meta_labeler import MetaLabeler
 from systems.ml_signal_engine.models.signal.signal_5d import Signal5DModel
 from systems.ml_signal_engine.models.signal.signal_21d import Signal21DModel
@@ -80,6 +81,15 @@ SIGNAL_MODEL_NAME = "signal_5d"
 SIGNAL_21D_MODEL_NAME = "signal_21d"
 SIGNAL_63D_MODEL_NAME = "signal_63d"
 META_MODEL_NAME = "meta_labeler"
+# 2026-07-19 full-codebase-review Fix A3: the models actually scored in
+# this file's chunk loop that produce a 3-class (sell/hold/buy)
+# probability output StackingMetaLearner can combine — meta_labeler is
+# excluded (binary act/no_act, not a 3-class distribution) and tft/bilstm
+# are excluded (never loaded in this file; see _load_stacking_ensemble's
+# docstring for why a full-5-model trained artifact may not match this
+# narrower set, handled defensively at the call site).
+STACKING_ENSEMBLE_BASE_MODELS = [SIGNAL_MODEL_NAME, SIGNAL_21D_MODEL_NAME, SIGNAL_63D_MODEL_NAME]
+STACKING_ENSEMBLE_MODEL_NAME = "stacking_ensemble"
 EXIT_MODEL_NAME = "exit_signal"
 CONFORMAL_MODEL_DIR_NAME = "conformal"
 CONFORMAL_SIGNAL5D_NAME = "conformal_signal5d"
@@ -141,6 +151,36 @@ def _load_hmm(models_dir: Path):
     if not candidates:
         raise FileNotFoundError(f"no hmm_market model found under {hmm_dir}")
     return joblib.load(candidates[-1])
+
+
+def _load_stacking_ensemble(models_dir: Path):
+    """
+    Load the most recently trained StackingMetaLearner artifact, if one
+    exists (2026-07-19 full-codebase-review Fix A3 — wires the previously
+    dead-code ensemble into live inference).
+
+    scripts/train_stacking.py saves date-versioned files
+    (stacking_meta_v{YYYYMMDD}.pkl/.json under `models_dir`, no
+    `_current.pkl` symlink convention like every other model here — same
+    globbing fallback pattern as _load_hmm above, since YYYYMMDD version
+    strings sort correctly lexicographically.
+
+    Returns None (not an exception) if no artifact has ever been trained
+    — this is the expected, common case (train_stacking.py's own module
+    docstring documents it as NOT wired into any unattended retrain
+    trigger due to its OOM history training the full 5-model TFT/BiLSTM
+    set), and the caller must treat a missing ensemble as "skip this
+    step today," not a hard failure blocking signal_5d/meta_labeler.
+    """
+    candidates = sorted(models_dir.glob("stacking_meta_v*.pkl"))
+    if not candidates:
+        return None
+    path = candidates[-1]
+    # StackingMetaLearner.load() appends ".pkl" itself — strip it back off.
+    stem = str(path)[: -len(".pkl")]
+    model = StackingMetaLearner(base_model_names=STACKING_ENSEMBLE_BASE_MODELS)
+    model.load(stem)
+    return model
 
 
 def _load_conformal(models_dir: Path):
@@ -386,6 +426,16 @@ def _step_signals_and_meta(
     signal_model = _load_model(Signal5DModel, SIGNAL_MODEL_NAME, models_dir)
     meta_model = _load_model(MetaLabeler, META_MODEL_NAME, models_dir)
 
+    # 2026-07-19 full-codebase-review Fix A3: optional, best-effort —
+    # a missing/never-trained ensemble artifact (the common case; see
+    # _load_stacking_ensemble's docstring) must never block signal_5d/
+    # meta_labeler from being scored and written.
+    try:
+        ensemble_model = _load_stacking_ensemble(models_dir)
+    except Exception as exc:
+        ensemble_model = None
+        logger.info(f"daily_inference: no usable stacking ensemble artifact, skipping ensemble combination today ({exc})")
+
     # FutureDevelopment.md #14: signal_21d/signal_63d are trained and
     # present in the model registry (datastore/models/registry.json) but,
     # until this change, were never invoked from the daily per-ticker
@@ -512,6 +562,14 @@ def _step_signals_and_meta(
         # BUY/HOLD/SELL + Q10/Q50/Q90 output contract as signal_5d, written
         # as their own (date, ticker, model_name) rows (SPEC-DS-004), never
         # blended into the signal_5d row itself.
+        # 2026-07-19 full-codebase-review Fix A3: captured per-horizon
+        # proba frames so the ensemble-combine step below can build a
+        # {model_name: ndarray} input from whichever of signal_21d/
+        # signal_63d actually scored successfully this chunk (signal_5d's
+        # `proba` above is always available since its load isn't wrapped
+        # in try/except like the longer-horizon models are).
+        horizon_probas: Dict[str, pd.DataFrame] = {}
+
         for name, model in longer_horizon_models.items():
             try:
                 lh_proba = model.predict_signals(Xc)
@@ -519,6 +577,7 @@ def _step_signals_and_meta(
             except Exception as exc:
                 logger.warning(f"daily_inference: {name} scoring failed for this batch, skipping it today ({exc})")
                 continue
+            horizon_probas[name] = lh_proba
 
             # ML24 (2026-07-11): this module's own comment previously claimed
             # signal_21d/signal_63d SHAP was "already wired in" — false; SHAP
@@ -550,6 +609,64 @@ def _step_signals_and_meta(
                     client, api_base_url,
                     lh_payload,
                 )
+
+        # 2026-07-19 full-codebase-review Fix A3: combine signal_5d/21d/63d
+        # into a stacking-ensemble row, only when (a) a trained artifact
+        # exists and (b) all three of its expected base models scored
+        # successfully this chunk — a partial set (e.g. signal_21d failed
+        # to load today) skips ensemble combination for this chunk rather
+        # than feeding predict_ensemble a subset it wasn't trained on.
+        if ensemble_model is not None and all(m in horizon_probas for m in (SIGNAL_21D_MODEL_NAME, SIGNAL_63D_MODEL_NAME)):
+            try:
+                base_predictions = {
+                    SIGNAL_MODEL_NAME: proba[["signal_sell_prob", "signal_hold_prob", "signal_buy_prob"]].to_numpy(),
+                    SIGNAL_21D_MODEL_NAME: horizon_probas[SIGNAL_21D_MODEL_NAME][
+                        ["signal_sell_prob", "signal_hold_prob", "signal_buy_prob"]
+                    ].to_numpy(),
+                    SIGNAL_63D_MODEL_NAME: horizon_probas[SIGNAL_63D_MODEL_NAME][
+                        ["signal_sell_prob", "signal_hold_prob", "signal_buy_prob"]
+                    ].to_numpy(),
+                }
+                ensemble_out = ensemble_model.predict_ensemble(base_predictions)
+                ensemble_classes = ensemble_out.predict_class()
+                # `ensemble_idx` (not `i`) deliberately — this loop must never
+                # shadow the outer chunk-cursor `i` from the enclosing `while
+                # i < len(tickers)` loop; a prior version did, and an
+                # exception raised partway through this loop left the outer
+                # `i` holding whatever value this loop's `i` had reached,
+                # corrupting (and sometimes reversing) the chunk cursor and
+                # turning the outer loop into a genuine infinite loop.
+                for ensemble_idx, ticker in enumerate(Xc.index):
+                    # predict_class() returns a dense argmax POSITION in
+                    # {0,1,2} for [Sell,Hold,Buy] (per its own docstring),
+                    # not a model class LABEL — CLASS_NAMES is keyed by the
+                    # actual labels {-1,0,1} (base_signal_model.py's
+                    # DIRECTION_SELL/HOLD/BUY). Indexing CLASS_NAMES with the
+                    # raw position directly crashed with KeyError on every
+                    # Buy prediction (position 2 isn't a valid CLASS_NAMES
+                    # key) and silently mislabeled Sell/Hold predictions
+                    # (position 0/1 coincide with the HOLD/BUY label values
+                    # by accident) — CLASS_ORDER maps position -> label.
+                    class_label = CLASS_ORDER[int(ensemble_classes[ensemble_idx])]
+                    _write_signal(
+                        client, api_base_url,
+                        {
+                            "date": run_date.isoformat(), "ticker": ticker,
+                            "model_name": STACKING_ENSEMBLE_MODEL_NAME, "model_version": "1.0",
+                            "signal_direction": CLASS_NAMES[class_label],
+                            "buy_prob": float(ensemble_out.final_buy_prob[ensemble_idx]),
+                            "hold_prob": float(ensemble_out.final_hold_prob[ensemble_idx]),
+                            "sell_prob": float(ensemble_out.final_sell_prob[ensemble_idx]),
+                        },
+                    )
+            except Exception as exc:
+                # Same defensive isolation as every other model in this
+                # function — e.g. a trained artifact whose base_model_names
+                # don't match STACKING_ENSEMBLE_BASE_MODELS (a full
+                # 5-model tft/bilstm-inclusive artifact, per
+                # _load_stacking_ensemble's docstring) must not block
+                # signal_5d/meta_labeler from being written.
+                logger.warning(f"daily_inference: stacking ensemble combination failed for this batch, skipping it today ({exc})")
 
         result_chunks.append(proba.join(meta_out))
         del proba, direction, meta_out, shap_top5, conformal_intervals, Xc

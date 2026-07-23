@@ -182,6 +182,17 @@ def _action_factors(
     # all rows before ex_date. That patch lives only in the DB, not in this
     # function — a newly ingested RIGHTS action will still get no
     # adjustment here until the same validate-then-patch process is re-run.
+    #
+    # 2026-07-20 (BacktestUmbrellaPlan.md Truthful Review Gap #3, decided,
+    # not a gap): confirmed with the user — this stays a deliberate manual/
+    # semi-automated process, not something to formula-derive here. Real
+    # corrected prices come from Fyers (the same source
+    # validate_corporate_actions_fyers.py already uses), which is the
+    # correct source for a rights issue's real market-observed price impact
+    # anyway (a formula from `ratio` alone can't capture subscription price/
+    # take-up rate). Do not build an automatic RIGHTS adjustment here —
+    # the fix is periodically re-running validate_corporate_actions_fyers.py
+    # against newly ingested RIGHTS actions, not adding logic to this function.
     logger.debug(f"{ticker}: {action_type} — no price/volume adjustment")
     return 1.0, 1.0
 

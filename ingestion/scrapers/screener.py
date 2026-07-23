@@ -96,12 +96,13 @@ PIT Assumptions
 SPEC-PIPE-003 (CRITICAL): announcement_date is never directly visible in
 this page's scraped content (verified — no "Result" timestamp in the
 quarters table). Conservative default: quarter_end_date +
-config.settings.FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS (45 days, the NSE
-regulatory deadline) — this can only ever be LATER than the true
-announcement date, never earlier, so it can never introduce look-ahead
-bias (it can only make data look available slightly later than it
-really was, the safe direction). Same logic for shareholding's
-filing_date (quarter_end_date + SHAREHOLDING_FILING_DELAY_DAYS, 21 days).
+config.settings.FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER (45 days
+for Q1-Q3, 60 days for Q4/annual, per SEBI LODR Reg. 33) — this can only
+ever be LATER than the true announcement date, never earlier, so it can
+never introduce look-ahead bias (it can only make data look available
+slightly later than it really was, the safe direction). Same logic for
+shareholding's filing_date (quarter_end_date + SHAREHOLDING_FILING_DELAY_DAYS,
+21 days, no Q4 exception).
 """
 
 import logging
@@ -116,7 +117,7 @@ from bs4 import BeautifulSoup
 
 from config.settings import (
     DEFAULT_RETRY_COUNT,
-    FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS,
+    FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER,
     SCREENER_BATCH_EXPORT_CHUNK_SIZE,
     SCREENER_PASSWORD,
     SCREENER_RATE_LIMIT_SLEEP_SECONDS,
@@ -683,8 +684,12 @@ def _build_fundamentals_row(
         return None
 
     quarter_end = _current_quarter_end()
-    announcement_date = quarter_end + timedelta(days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS)
     fiscal_year, quarter = _indian_fiscal_year_quarter(quarter_end)
+    # Q4/annual results get 60 days under SEBI LODR Reg. 33, not the
+    # 45-day Q1-Q3 deadline (2026-07-19 full-codebase-review Fix A2).
+    announcement_date = quarter_end + timedelta(
+        days=FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER[quarter]
+    )
 
     revenue = quarters.get("revenue")
     operating_profit = quarters.get("operating_profit")

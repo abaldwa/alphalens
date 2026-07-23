@@ -124,6 +124,50 @@ class TestComputeSectorAccumulation:
         assert row["n_stocks_included"] == 1
         assert row["sector_shares_outstanding"] == pytest.approx(100_000)
 
+    def test_low_coverage_flagged_when_most_constituents_missing_data(self, normalised_db, monkeypatch):
+        """REV16 (2026-07-21 review): a sector where most constituents lack
+        PIT data must be visibly flagged, not look uniformly trustworthy."""
+        universe = pd.DataFrame({
+            "ticker": ["AAA", "BBB", "CCC", "DDD"],
+            "sector": ["Information Technology"] * 4,
+        })
+        monkeypatch.setattr(sector_accum_mod, "load_universe", lambda: universe)
+
+        d = date(2026, 1, 10).isoformat()
+        # Only 1 of 4 real constituents has data that date.
+        _seed_fundamentals(normalised_db, "AAA", "2025-12-01", 100_000)
+        _seed_ohlcv(normalised_db, "AAA", [(d, 10_000, 50.0)])
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            result = sector_accum_mod.compute_sector_accumulation(conn, start_date=d, end_date=d)
+
+        assert len(result) == 1
+        row = result.iloc[0]
+        assert row["n_stocks_included"] == 1
+        assert row["n_stocks_total_in_sector"] == 4
+        assert row["low_coverage"] == True  # noqa: E712 — numpy bool, `is True` fails
+
+    def test_low_coverage_false_when_most_constituents_have_data(self, normalised_db, monkeypatch):
+        universe = pd.DataFrame({
+            "ticker": ["AAA", "BBB"], "sector": ["Information Technology"] * 2,
+        })
+        monkeypatch.setattr(sector_accum_mod, "load_universe", lambda: universe)
+
+        d = date(2026, 1, 10).isoformat()
+        _seed_fundamentals(normalised_db, "AAA", "2025-12-01", 100_000)
+        _seed_fundamentals(normalised_db, "BBB", "2025-12-01", 200_000)
+        _seed_ohlcv(normalised_db, "AAA", [(d, 10_000, 50.0)])
+        _seed_ohlcv(normalised_db, "BBB", [(d, 20_000, 25.0)])
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            result = sector_accum_mod.compute_sector_accumulation(conn, start_date=d, end_date=d)
+
+        assert len(result) == 1
+        row = result.iloc[0]
+        assert row["n_stocks_included"] == 2
+        assert row["n_stocks_total_in_sector"] == 2
+        assert row["low_coverage"] == False  # noqa: E712 — numpy bool, `is False` fails
+
 
 class TestSectorAccumulationDrilldown:
     def test_drilldown_breaks_down_by_stock(self, normalised_db, monkeypatch):
@@ -180,6 +224,8 @@ class TestSectorAccumulationEndpoints:
         assert len(rows) == 1
         assert rows[0]["sector"] == "Information Technology"
         assert rows[0]["sector_shares_outstanding"] == pytest.approx(300_000)
+        assert rows[0]["n_stocks_total_in_sector"] == 2
+        assert rows[0]["low_coverage"] is False
 
     def test_daily_endpoint_no_data(self, client, monkeypatch):
         test_client, _ = client

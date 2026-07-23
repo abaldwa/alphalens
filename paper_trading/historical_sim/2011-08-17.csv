@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-08-17,BAGFILMS,BUY,5.65,2,09:15:00,5.1,15:30:00,2011-08-19,thesis_broken,miss,-1.1454496396000007,-0.10136722474336289,,,,,,
+2011-08-17,JMFINANCIL,BUY,13.351217186407355,2093,09:15:00,12.431711870539079,15:30:00,2011-09-26,thesis_broken,miss,-2036.9183574004455,-0.07289261541597801,,,,,,

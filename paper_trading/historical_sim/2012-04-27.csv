@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-04-27,JAICORPLTD,BUY,66.7,15529,09:15:00,59.5,15:30:00,2012-05-04,thesis_broken,miss,-115974.81974675565,-0.11196811898650678,,,,,,

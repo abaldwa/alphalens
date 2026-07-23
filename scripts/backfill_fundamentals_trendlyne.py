@@ -67,6 +67,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from features.fundamental_quality_gate import validate_and_annotate  # noqa: E402
 from features.fundamental_source_priority import (  # noqa: E402
     SOURCE_PRIORITY,
+    append_fundamentals_history,
     build_priority_update_clause,
 )
 
@@ -439,11 +440,11 @@ _UPSERT_SQL = f"""
 INSERT INTO fundamentals (
     ticker, fiscal_year, quarter, quarter_end_date, announcement_date,
     {", ".join(_UPSERT_DATA_COLS)},
-    fundamentals_source, fundamentals_source_priority
+    fundamentals_source, fundamentals_source_priority, as_of_ingested
 ) VALUES (
     ?,?,?,?,?,
     {", ".join("?" for _ in _UPSERT_DATA_COLS)},
-    ?,?
+    ?,?,CURRENT_TIMESTAMP
 )
 ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET
     {build_priority_update_clause(_UPSERT_DATA_COLS)}
@@ -464,6 +465,8 @@ def _write_rows(conn, rows: List[Dict]) -> int:
                 *[r.get(c) for c in _UPSERT_DATA_COLS],
                 "trendlyne", SOURCE_PRIORITY["trendlyne"],
             ])
+            # 2026-07-20 Gap #2 fix: append-only history snapshot.
+            append_fundamentals_history(conn, r["ticker"], r["fiscal_year"], r["quarter"])
             written += 1
         except Exception as exc:
             logger.debug("Write error %s FY%s Q%s: %s",

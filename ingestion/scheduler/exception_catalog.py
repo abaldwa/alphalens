@@ -108,7 +108,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="publish_and_snapshot",
-        location="ingestion/scheduler/daily_pipeline.py:1422",
+        location="ingestion/scheduler/daily_pipeline.py:1568",
         caught="N=7 rollback snapshot (fno_data, ohlcv_adjusted) write or "
         "prune failure. Runs last, after every other writer for the date.",
         impact="No new rollback snapshot exists for this date — "
@@ -124,7 +124,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="main (scheduler startup)",
-        location="ingestion/scheduler/daily_pipeline.py:1898",
+        location="ingestion/scheduler/daily_pipeline.py:2045",
         caught="scheduler.remove_job('backfill_catchup') raising "
         "JobLookupError when the stale persisted job doesn't exist (the "
         "common case after the first cleanup run).",

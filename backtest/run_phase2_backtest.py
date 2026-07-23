@@ -36,11 +36,14 @@ documented here as a real, intentional simplification, not a hidden gap.
 import argparse
 import json
 import logging
+import time
+import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
 import pandas as pd
 
+from backtest.core.feature_log import FeatureLogWriter
 from backtest.engine import BacktestEngine
 from backtest.report_utils import write_per_horizon_reports
 from backtest.run_phase1_backtest import (
@@ -49,9 +52,12 @@ from backtest.run_phase1_backtest import (
     _fetch_real_universe,
     _real_sector_map,
 )
+from config.settings import BACKTEST_DUCKDB_PATH
 from config.timezone import now_ist
 from config.universe import get_tickers
+from datastore.api.db import get_duckdb_connection
 from datastore.client import DataStoreClient
+from datastore.schema.create_backtest import create_backtest_schema
 from features.multibagger import MULTIBAGGER_FEATURES, compute_multibagger_features
 from systems.ml_signal_engine.inference.score_multibagger import _fetch_benchmark_wide
 from systems.ml_signal_engine.models.exit.exit_signal import ExitSignalModel, load_exit_training_data_from_db
@@ -104,7 +110,9 @@ def _run_variant(
     universe_tickers: set, historical_tickers: set, signal_model_cls: type, horizon_days: int,
     profit_multiplier: float, stop_multiplier: float, watchlist_tickers: Optional[set],
     folds: int, optuna_trials: int, seed: int, model_name: str,
+    feature_log_writer: Optional[FeatureLogWriter] = None, run_id: Optional[str] = None,
 ) -> dict:
+    variant_started = time.monotonic()
     pnd_X, pnd_y = load_pnd_training_data_from_db()
     pnd_detector = PnDDetector(random_state=seed)
     pnd_detector.train(pnd_X, pnd_y)
@@ -119,10 +127,22 @@ def _run_variant(
         stop_multiplier=stop_multiplier, initial_capital=1_000_000.0, sizing_mode="equal_weight",
         n_target_positions=10, optuna_trials=optuna_trials, random_state=seed, n_folds=folds,
         benchmark=benchmark, universe_tickers=universe_tickers, historical_tickers=historical_tickers,
-        watchlist_tickers=watchlist_tickers,
+        watchlist_tickers=watchlist_tickers, feature_log_writer=feature_log_writer, run_id=run_id,
     )
     results = engine.run_full_backtest(model_name, folds=folds)
-    return results.to_dict()
+    variant_runtime_seconds = time.monotonic() - variant_started
+    logger.info(f"{model_name}: runtime {variant_runtime_seconds:.1f}s")
+
+    from backtest.adapters.ml_dual_write import dual_write_ml_run
+
+    dual_write_ml_run(
+        results, strategy_id=model_name, horizon_days=horizon_days, ohlcv=ohlcv,
+        initial_capital=1_000_000.0, random_seed=seed,
+    )
+
+    result_dict = results.to_dict()
+    result_dict["runtime_seconds"] = variant_runtime_seconds
+    return result_dict
 
 
 def run_phase2_backtest(
@@ -130,6 +150,7 @@ def run_phase2_backtest(
     max_real_tickers: Optional[int] = None, min_history_days: int = 252,
 ) -> Dict[str, dict]:
     run_date = now_ist()
+    run_started = time.monotonic()
     client = DataStoreClient()
 
     logger.info("Phase 2 backtest starting: REAL data (config.universe.get_tickers() via DataStoreClient)")
@@ -141,31 +162,48 @@ def run_phase2_backtest(
 
     watchlist_tickers = _build_multibagger_watchlist(ohlcv, sector_map, client)
 
-    logger.info("Running Phase 1 baseline (Signal5D, no watchlist filter)...")
-    phase1 = _run_variant(
-        ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
-        signal_model_cls=Signal5DModel, horizon_days=5, profit_multiplier=2.0, stop_multiplier=1.0,
-        watchlist_tickers=None, folds=folds, optuna_trials=optuna_trials, seed=seed, model_name="signal_5d",
-    )
+    # Feature capture (backtest_feature_log) — shared writer across both
+    # variants, each getting its own run_id (PRIMARY KEY is (run_id,
+    # ticker, as_of_date), so distinct run_ids keep the two variants'
+    # logged decisions from colliding on the same ticker/date).
+    base_run_id = f"phase2_{run_date.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    create_backtest_schema(BACKTEST_DUCKDB_PATH)
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as feature_log_conn:
+        feature_log_writer = FeatureLogWriter(feature_log_conn)
 
-    logger.info("Running Phase 2 variant (Signal63D + multibagger watchlist filter)...")
-    phase2 = _run_variant(
-        ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
-        signal_model_cls=Signal63DModel, horizon_days=63,
-        profit_multiplier=SIGNAL_63D_PROFIT_MULTIPLIER, stop_multiplier=SIGNAL_63D_STOP_MULTIPLIER,
-        watchlist_tickers=watchlist_tickers, folds=folds, optuna_trials=optuna_trials, seed=seed,
-        model_name="signal_63d_watchlist",
-    )
+        logger.info("Running Phase 1 baseline (Signal5D, no watchlist filter)...")
+        phase1 = _run_variant(
+            ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
+            signal_model_cls=Signal5DModel, horizon_days=5, profit_multiplier=2.0, stop_multiplier=1.0,
+            watchlist_tickers=None, folds=folds, optuna_trials=optuna_trials, seed=seed, model_name="signal_5d",
+            feature_log_writer=feature_log_writer, run_id=f"{base_run_id}_signal_5d",
+        )
+
+        logger.info("Running Phase 2 variant (Signal63D + multibagger watchlist filter)...")
+        phase2 = _run_variant(
+            ohlcv, sector_map, benchmark, universe_tickers, historical_tickers,
+            signal_model_cls=Signal63DModel, horizon_days=63,
+            profit_multiplier=SIGNAL_63D_PROFIT_MULTIPLIER, stop_multiplier=SIGNAL_63D_STOP_MULTIPLIER,
+            watchlist_tickers=watchlist_tickers, folds=folds, optuna_trials=optuna_trials, seed=seed,
+            model_name="signal_63d_watchlist",
+            feature_log_writer=feature_log_writer, run_id=f"{base_run_id}_signal_63d_watchlist",
+        )
+    logger.info(f"Feature vectors captured to backtest_feature_log under run_id prefix={base_run_id}")
 
     print("\n=== Phase 1 vs Phase 2 Comparison ===")
     print(f"{'Metric':<20}{'Phase 1 (Signal5D)':<25}{'Phase 2 (Signal63D+Watchlist)':<25}")
-    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_mean"):
+    for key in ("sharpe_mean", "cagr_mean", "max_drawdown_worst"):
         v1 = phase1["aggregate"].get(key)
         v2 = phase2["aggregate"].get(key)
         print(f"{key:<20}{str(v1):<25}{str(v2):<25}")
 
+    runtime_seconds = time.monotonic() - run_started
+    print(f"\n  Total runtime: {runtime_seconds:.1f}s "
+          f"(phase1={phase1['runtime_seconds']:.1f}s, phase2={phase2['runtime_seconds']:.1f}s)")
+
     report = {
         "generated_at": run_date.isoformat(),
+        "runtime_seconds": runtime_seconds,
         "watchlist_size": len(watchlist_tickers),
         "phase1": phase1,
         "phase2": phase2,

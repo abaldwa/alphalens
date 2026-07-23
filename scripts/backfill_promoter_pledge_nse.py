@@ -27,6 +27,10 @@ Usage:
 
 import argparse
 import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection

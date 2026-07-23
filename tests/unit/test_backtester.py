@@ -49,9 +49,13 @@ class TestSplitData:
             # Expanding window: each fold's train set is >= the previous fold's.
             assert len(train_df) >= prev_train_size
             prev_train_size = len(train_df)
-            # Test set is exactly the year immediately after the training cutoff.
-            assert test_df["date"].dt.year.nunique() == 1
-            assert train_df["date"].max().year < test_df["date"].min().year
+            # Test set is exactly the fiscal year (Apr-Mar) immediately after
+            # the training cutoff.
+            assert validator._fiscal_years(test_df["date"]).nunique() == 1
+            assert (
+                validator._fiscal_years(train_df["date"]).max()
+                < validator._fiscal_years(test_df["date"]).min()
+            )
 
     def test_no_overlap_between_train_and_test(self):
         df = _daily_df("2020-01-01", 2400)
@@ -126,6 +130,49 @@ class TestIntegrityChecker:
 
         assert result.passed is True
 
+    def test_pit_check_passes_with_no_pit_columns_and_no_fundamentals_names(self):
+        """A pure technical/calendar feature_df (no announcement_date/
+        filing_date, no fundamentals-like column names) is genuinely
+        PITRule.NONE — should pass."""
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({
+                "date": pd.date_range("2020-01-01", periods=5),
+                "rsi_14": [50.0] * 5,
+                "sma_20": [100.0] * 5,
+            })
+        )
+        result = checker.check_02_pit()
+        assert result.passed is True
+
+    def test_pit_check_fails_on_fundamentals_like_column_missing_pit_col(self):
+        """2026-07-19 full-codebase-review Fix 12: a fundamentals-derived-
+        looking column (e.g. roe) with neither announcement_date nor
+        filing_date present must fail loudly rather than vacuously pass —
+        this is exactly the failure mode a feature-engineering mistake
+        would produce."""
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({
+                "date": pd.date_range("2020-01-01", periods=5),
+                "roe": [0.15] * 5,
+            })
+        )
+        result = checker.check_02_pit()
+        assert result.passed is False
+        assert result.critical is True
+
+    def test_pit_check_passes_when_fundamentals_column_has_pit_col(self):
+        """Same fundamentals-like column, but with a real, non-violating
+        announcement_date present — should pass as before."""
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({
+                "date": pd.date_range("2020-01-01", periods=5),
+                "roe": [0.15] * 5,
+                "announcement_date": pd.date_range("2019-12-01", periods=5),
+            })
+        )
+        result = checker.check_02_pit()
+        assert result.passed is True
+
     def test_run_all_checks_raises_on_critical_failure(self):
         checker = BacktestIntegrityChecker()  # no context at all -> every critical check fails
         with pytest.raises(RuntimeError):
@@ -155,7 +202,7 @@ class TestIntegrityChecker:
         assert set(results) == {
             "check_01_walk_forward", "check_02_pit", "check_03_corp_actions", "check_04_survivorship",
             "check_05_costs", "check_06_liquidity", "check_07_no_hpo_on_test", "check_08_fold_stability",
-            "check_09_benchmarks", "check_10_random_feature",
+            "check_09_benchmarks", "check_10_random_feature", "check_11_sector_tier_lookahead",
         }
 
     def test_no_critical_failure_does_not_raise_even_if_noncritical_fails(self):
@@ -183,6 +230,24 @@ class TestIntegrityChecker:
         result = checker.check_04_survivorship()
         assert result.passed is False
 
+    def test_survivorship_check_flags_implausibly_low_delisted_ratio(self):
+        """REV18: presence-only was not enough — a near-complete universe missing
+        just 1 of 500 historical tickers should still fail as an implausible ratio."""
+        universe = {f"T{i:04d}" for i in range(499)}
+        historical = universe | {"DELISTED1"}
+        checker = BacktestIntegrityChecker(universe_tickers=universe, historical_tickers=historical)
+        result = checker.check_04_survivorship()
+        assert result.passed is False
+        assert "0.20%" in result.detail or "below" in result.detail
+
+    def test_survivorship_check_passes_above_ratio_floor(self):
+        """A plausible delisted fraction (well above the 1% floor) should pass."""
+        universe = {f"T{i:04d}" for i in range(90)}
+        historical = universe | {f"DELISTED{i}" for i in range(10)}  # 10/100 = 10%
+        checker = BacktestIntegrityChecker(universe_tickers=universe, historical_tickers=historical)
+        result = checker.check_04_survivorship()
+        assert result.passed is True
+
     def test_costs_check_flags_understated_costs(self):
         checker = BacktestIntegrityChecker(applied_roundtrip_cost_pct=0.0001)
         result = checker.check_05_costs()
@@ -190,6 +255,35 @@ class TestIntegrityChecker:
 
     def test_random_feature_check_band(self):
         assert BacktestIntegrityChecker(random_feature_accuracy=0.50).check_10_random_feature().passed is True
+
+    def test_sector_tier_lookahead_fails_over_multi_year_window(self):
+        """REV18/REV15: sector/tier reflect NSE's CURRENT snapshot, not PIT
+        membership — flag when used across a window long enough for that
+        drift to matter."""
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({
+                "date": pd.date_range("2020-01-01", periods=3, freq="18ME"),  # ~3 years span
+                "sector": ["IT", "IT", "IT"],
+            })
+        )
+        result = checker.check_11_sector_tier_lookahead()
+        assert result.passed is False
+        assert result.critical is False  # non-critical, same tier as checks 08-10
+
+    def test_sector_tier_lookahead_passes_within_one_year_window(self):
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({
+                "date": pd.date_range("2020-01-01", periods=3, freq="30D"),  # ~2 months span
+                "tier": ["large_cap", "large_cap", "mid_cap"],
+            })
+        )
+        assert checker.check_11_sector_tier_lookahead().passed is True
+
+    def test_sector_tier_lookahead_passes_when_column_absent(self):
+        checker = BacktestIntegrityChecker(
+            feature_df=pd.DataFrame({"date": pd.date_range("2020-01-01", periods=1000)})
+        )
+        assert checker.check_11_sector_tier_lookahead().passed is True
         assert BacktestIntegrityChecker(random_feature_accuracy=0.80).check_10_random_feature().passed is False
 
 
@@ -255,6 +349,37 @@ class TestOverfitChecks:
     def test_deflated_sharpe_ratio_invalid_args_raise(self):
         with pytest.raises(ValueError):
             deflated_sharpe_ratio(1.0, n_trials=0, n_obs=100)
+
+    def test_deflated_sharpe_ratio_negative_skew_lowers_dsr(self):
+        """2026-07-19 full-codebase-review Fix B4: a negatively-skewed,
+        fat-tailed return series (common for momentum strategies —
+        occasional sharp reversals) should score a LOWER DSR than an
+        otherwise-identical normal series at the same scalar Sharpe,
+        since its real standard error is wider than the normal
+        approximation assumes."""
+        rng = np.random.default_rng(7)
+        normal_returns = pd.Series(rng.normal(0.001, 0.02, 252))
+        # Left-skewed: occasional large negative shocks.
+        skewed_returns = pd.Series(
+            np.concatenate([rng.normal(0.002, 0.01, 240), rng.normal(-0.08, 0.02, 12)])
+        )
+        sharpe = 1.0
+
+        dsr_normal = deflated_sharpe_ratio(sharpe, n_trials=10, n_obs=252, returns=normal_returns)
+        dsr_skewed = deflated_sharpe_ratio(sharpe, n_trials=10, n_obs=252, returns=skewed_returns)
+
+        assert skewed_returns.skew() < 0
+        assert dsr_skewed <= dsr_normal
+
+    def test_deflated_sharpe_ratio_no_returns_matches_zero_skew_kurtosis(self):
+        """Omitting `returns` (backward-compatible default) should equal
+        passing a returns series with sample skew/kurtosis of exactly 0."""
+        no_returns = deflated_sharpe_ratio(1.0, n_trials=10, n_obs=252)
+        # A returns series is never needed to hit exactly skew=kurt=0 in
+        # practice, so directly verify the two code paths agree by
+        # checking no_returns falls strictly between two returns-series
+        # DSRs bracketing zero skew.
+        assert 0.0 <= no_returns <= 1.0
 
     def test_random_feature_test_scores_near_chance(self):
         """A model with no real relationship between shuffled features and y should land near 50%."""

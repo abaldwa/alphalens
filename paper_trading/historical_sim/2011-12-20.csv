@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-12-20,GODFRYPHLP,BUY,153.58349444184387,3,09:15:00,202.54643754167958,15:30:00,2012-02-01,target_achieved,hit,145.0356484665274,0.3147813268034189,,,,,,
+2011-12-20,ASHOKLEY,BUY,9.722334565676132,10,09:15:00,12.87309113788599,15:30:00,2012-02-01,target_achieved,hit,31.11652448131929,0.32005198207407415,,,,,,
+2011-12-20,RUCHINFRA,BUY,13.65,1,09:15:00,18.95,15:30:00,2012-06-06,target_achieved,hit,5.245098444199998,0.38425629627838814,,,,,,

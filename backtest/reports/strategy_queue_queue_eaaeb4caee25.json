@@ -1,0 +1,552 @@
+{
+  "generated_at": "2026-07-22T13:56:45.983468",
+  "total_jobs": 39,
+  "jobs_run": 39,
+  "results": [
+    {
+      "job_index": 0,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "A2",
+        "top_n": 10
+      },
+      "returncode": 1,
+      "elapsed_s": 157.68396418800694
+    },
+    {
+      "job_index": 1,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "B4",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 573.1031416210026
+    },
+    {
+      "job_index": 2,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "B5",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 393.8967685520038
+    },
+    {
+      "job_index": 3,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "C1",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 436.3947628649912
+    },
+    {
+      "job_index": 4,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "C2",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 448.66806784499204
+    },
+    {
+      "job_index": 5,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "C3",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 483.3102917990036
+    },
+    {
+      "job_index": 6,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "C4",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 465.0932990160072
+    },
+    {
+      "job_index": 7,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "C5",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 277.514546795006
+    },
+    {
+      "job_index": 8,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "C6",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 282.61566547899565
+    },
+    {
+      "job_index": 9,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "C7",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 280.7576331169985
+    },
+    {
+      "job_index": 10,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "D1",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 296.5927857939969
+    },
+    {
+      "job_index": 11,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "D2",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 299.41770320999785
+    },
+    {
+      "job_index": 12,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "D3",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 292.5230024269986
+    },
+    {
+      "job_index": 13,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "D4",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 275.657252599005
+    },
+    {
+      "job_index": 14,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "E1",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 279.88948611498927
+    },
+    {
+      "job_index": 15,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "E2",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 274.6038488129998
+    },
+    {
+      "job_index": 16,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "E3",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 272.70614385399676
+    },
+    {
+      "job_index": 17,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "E4",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 276.63173085400194
+    },
+    {
+      "job_index": 18,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "E5",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 282.77299063600367
+    },
+    {
+      "job_index": 19,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "E6",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 285.2481224399962
+    },
+    {
+      "job_index": 20,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "E7",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 278.3732015580026
+    },
+    {
+      "job_index": 21,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F1",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 288.86334214500675
+    },
+    {
+      "job_index": 22,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F2",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 281.7854057710065
+    },
+    {
+      "job_index": 23,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F3",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 276.00415970999165
+    },
+    {
+      "job_index": 24,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F4",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 276.5650902619964
+    },
+    {
+      "job_index": 25,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F5",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 279.81070322700543
+    },
+    {
+      "job_index": 26,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F6",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 309.3426970610017
+    },
+    {
+      "job_index": 27,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F7",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 277.00217339499795
+    },
+    {
+      "job_index": 28,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "F8",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 284.51309516599576
+    },
+    {
+      "job_index": 29,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "S001",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 275.8584640129993
+    },
+    {
+      "job_index": 30,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "S002",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 279.8645950069913
+    },
+    {
+      "job_index": 31,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "S003",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 337.032841252003
+    },
+    {
+      "job_index": 32,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "S004",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 374.06580567698984
+    },
+    {
+      "job_index": 33,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "S005",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 421.8374863670033
+    },
+    {
+      "job_index": 34,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "S006",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 369.2176923020015
+    },
+    {
+      "job_index": 35,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "template_name": "S008",
+        "top_n": 10
+      },
+      "returncode": 0,
+      "elapsed_s": 380.35193500800233
+    },
+    {
+      "job_index": 36,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "top_n": 10,
+        "lookback_months": 6
+      },
+      "returncode": 0,
+      "elapsed_s": 316.8335955609946
+    },
+    {
+      "job_index": 37,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2015-01-01",
+        "end_date": "2026-07-22",
+        "top_n": 10,
+        "lookback_months": 12
+      },
+      "returncode": 0,
+      "elapsed_s": 283.7071506049979
+    },
+    {
+      "job_index": 38,
+      "kind": "iterative_retrain",
+      "job": {
+        "kind": "iterative_retrain",
+        "horizon_days": 5,
+        "folds": 4
+      },
+      "returncode": -9,
+      "elapsed_s": 286.6950250509981
+    }
+  ],
+  "all_passed": false,
+  "runtime_seconds": 12512.919768730993
+}

@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-11-22,BALAJITELE,BUY,45.1,23411,09:15:00,41.6,15:30:00,2010-11-25,thesis_broken,miss,-86185.16993112129,-0.08162741350776061,,,,,,
+2010-11-22,FSL,BUY,19.075250975680614,55351,09:15:00,17.18008565196289,15:30:00,2010-11-26,thesis_broken,miss,-109145.95818963589,-0.1033741438358529,,,,,,
+2010-11-22,GUJAPOLLO,BUY,192.55,4089,09:15:00,177.25,15:30:00,2010-11-26,thesis_broken,miss,-65728.44164789945,-0.08348197255050642,,,,,,

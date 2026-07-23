@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-08,UNITECH,BUY,22.05,2,09:15:00,20.45,15:30:00,2012-05-11,thesis_broken,miss,-3.377374257200003,-0.07658445027664407,,,,,,
+2012-05-08,JISLJALEQS,BUY,74.75,13459,09:15:00,70.2,15:30:00,2012-06-04,thesis_broken,miss,-65284.9168830429,-0.06489165721739121,,,,,,
+2012-05-08,DELTACORP,BUY,54.55,1,09:15:00,73.2,15:30:00,2012-09-24,target_achieved,hit,18.430594881400012,0.3378660839853348,,,,,,

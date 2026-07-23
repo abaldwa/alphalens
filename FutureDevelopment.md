@@ -17,6 +17,53 @@ series (PHASE X, prompts X.0–X.10) in `CLAUDE_CODE_PROMPTS.md`, plus the
 item localizes to, so related items sit together regardless of which prompt
 surfaced them. No priority ranking implied by order within a section.
 
+
+## Backlog to be classified
+1. Need to run the Back Testing on all Models, all strategies. Fine tune all models. THis should be scheduled whenever there is a free time on the laptop
+2. Nobody should hold the lock to the database more than that is necessary.
+3. Refactor the entire UI/UX. Go section by section for the same. Start in this order: 1. Technical, 2. Fundamental, 3. Machine Learning, 4. ML Signals, 5. Valuations. 5. Backtest. 6. Big Investors. 7. Forensic, 8. Macro. 9. Ops. 10. Explain.
+4. The UI/UX Menu has to follow a standard format: 
+Refactor the Menu Structures for Technical as follows:
+Technical
+- Portfolio [below are sections under the same Menu Item]
+    - Portfolio View (Stocks and Cash)
+    - Buy
+    - Sell
+    - Watchlist (Contains Stocks recommended, yet not in Portfolio)
+- Strategies (This is the Top Part of the current page : http://localhost:5173/technical-screener, but with a More detailled explaination in a sortable table. On clicking on a specific strategy, I should get the latest 5-10 Win/Loose/Open Recommendations with the dates of the Entry and Exit recommendations.
+- Deep Dive: In this page, we would also show the Last 10 Strategies that hit this stock
+- Chart
+
+As a UX framework, we need to provide a mechanism that anywhere in the Application, if you Click the name of stock, it opens the chart for that stock in a New Window. I should not have to select the Stock in the Chart Window.
+
+Anywhere we click on the Microscope, we should be able to go to the Deep Dive Page. For example, when in Technical, we should be able to go Technical Deep Dive, when in Fundamendal, we should go to the Fundamental Deep Dive.
+    
+
+
+
+
+Recommendations for the day:
+- Buy Recommendations.
+- Sell Recommendations.
+WatchList
+
+Portfolio View.
+- Overall Portfolio
+- Portfolio by Strategy
+Detailled View:
+- Go by Strategy for their recommendations.
+Deep Dive:
+- This is a view of the deep dive of a stock recommended with a rationale.
+
+
+
+
+
+
+------------------------
+
+
+
 ## Status Matrix
 
 Legend: ✅ Done · 🔧 In Progress · ⏳ Not Started · 🚫 Blocked (external dep or explicit design-pass needed)
@@ -1299,3 +1346,6 @@ match and lose the Trendlyne cross-check for that family/ticker. This
 echoes `bulk_deal_reconciliation.py`'s existing note that a corrected gap
 lining up with an "unmapped:" client's trades should eventually grow the
 `investor_family` seed automatically — not implemented, still manual.
+
+
+

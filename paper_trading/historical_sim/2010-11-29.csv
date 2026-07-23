@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-11-29,GPIL,BUY,7.856170583845618,1,09:15:00,7.189051895810368,15:30:00,2011-02-09,thesis_broken,miss,-0.6987169288911703,-0.08893861474035693,,,,,,

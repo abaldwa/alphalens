@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-01-02,VARDMNPOLY,BUY,7.1850000000000005,16,09:15:00,9.525000000000002,15:30:00,2012-02-03,target_achieved,hit,36.97762030368003,0.3216564048684762,,,,,,

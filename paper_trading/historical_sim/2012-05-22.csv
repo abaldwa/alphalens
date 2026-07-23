@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-22,ONMOBILE,BUY,43.65,22315,09:15:00,40.35,15:30:00,2012-06-01,thesis_broken,miss,-77557.21770707704,-0.07962346657044678,,,,,,
+2012-05-22,INDIACEM,BUY,72.0,1,09:15:00,96.4,15:30:00,2012-09-27,target_achieved,hit,24.110409376000007,0.334866796888889,,,,,,

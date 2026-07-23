@@ -191,6 +191,37 @@ def get_tickers() -> list[str]:
     return load_universe()["ticker"].tolist()
 
 
+def get_top_adtv_tickers(n: int) -> list[str]:
+    """
+    Top `n` tickers from the filtered universe ranked by ADTV (avg daily
+    traded value, adtv_cr) descending — the liquid subset.
+
+    Unlike get_tickers()[:n], which is alphabetical (CSV row order) and
+    can slice in sparsely-traded names ahead of liquid ones, this ranks
+    by adtv_cr first so the returned tickers are the most tradeable ones
+    in the filtered universe. Rows with adtv_cr == 0 ("not yet sourced",
+    see load_universe()'s docstring) sort last, same as genuinely
+    illiquid names, since we can't distinguish "unknown" from "thin" for
+    ranking purposes.
+
+    Parameters
+    ----------
+    n : int
+        Number of tickers to return. If n >= the filtered universe size,
+        the whole universe is returned (still ADTV-sorted).
+
+    Returns
+    -------
+    list[str]
+
+    Spec References
+    ----------------
+    SPEC-SYS-001, SPEC-SYS-011
+    """
+    df = load_universe().sort_values("adtv_cr", ascending=False)
+    return df["ticker"].tolist()[:n]
+
+
 def get_isin_to_ticker_map() -> dict:
     """
     ISIN -> ticker lookup, built from the full (unfiltered) universe CSV.

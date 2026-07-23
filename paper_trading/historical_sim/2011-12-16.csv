@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-12-16,JAICORPLTD,BUY,53.95,15453,09:15:00,46.35,15:30:00,2011-12-20,thesis_broken,miss,-120795.97526512027,-0.1448932690157554,,,,,,
+2011-12-16,KSL,BUY,34.75,1439,09:15:00,46.6,15:30:00,2012-01-11,target_achieved,hit,16851.02428401701,0.33698510224460454,,,,,,
+2011-12-16,TTL,BUY,1.7869663446556556,1,09:15:00,1.6603692739171079,15:30:00,2012-05-11,thesis_broken,miss,-0.13378441377765649,-0.07486677864850132,,,,,,

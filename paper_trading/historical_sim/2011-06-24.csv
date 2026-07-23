@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-06-24,ASTEC,BUY,41.45,643,09:15:00,38.85,15:30:00,2011-07-27,thesis_broken,miss,-1778.9982037162044,-0.06674826811580234,,,,,,
+2011-06-24,NITINSPIN,BUY,8.55,1,09:15:00,7.75,15:30:00,2011-08-03,thesis_broken,miss,-0.8343888866000011,-0.09758934346198843,,,,,,

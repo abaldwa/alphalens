@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List, Optional
 
@@ -95,6 +95,12 @@ class ValuationResult:
         Relative PE gap vs sector peers.
     data_quality : str
         'full', 'partial', or 'insufficient'.
+    proxy_used : list[str]
+        Names of inputs that fell back to a proxy/approximation rather than
+        a directly-observed value (e.g. 'risk_free_rate_default',
+        'eps_growth_3y_from_revenue_cagr', 'beta_sector_average',
+        'payout_ratio_missing', 'altman_x2_roe_proxy'). Empty if every
+        input used in this valuation was a real, directly-sourced figure.
     error : str, optional
         Error message if computation failed.
     """
@@ -110,12 +116,14 @@ class ValuationResult:
     cost_of_equity: Optional[float] = None
     terminal_value_pct: Optional[float] = None
     dcf_model_type: str = "none"
+    terminal_growth_rate: Optional[float] = None
     scenario_bull: Optional[float] = None
     scenario_base: Optional[float] = None
     scenario_bear: Optional[float] = None
     mc_probability_undervalued: Optional[float] = None
     relative_pe_gap: Optional[float] = None
     data_quality: str = "insufficient"
+    proxy_used: List[str] = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -136,8 +144,14 @@ def _load_fundamentals(ticker: str, as_of_date: str) -> pd.DataFrame:
     return df
 
 
-def _load_macro_yield(as_of_date: str) -> float:
-    """Load latest India 10Y G-Sec yield on or before as_of_date."""
+def _load_macro_yield(as_of_date: str) -> tuple[float, bool]:
+    """
+    Load latest India 10Y G-Sec yield on or before as_of_date.
+
+    Returns (yield, is_proxy) — is_proxy is True whenever the frozen
+    ``_DEFAULT_10Y_YIELD`` fallback was used (missing macro row or a DB
+    error), so callers can surface this in ``ValuationResult.proxy_used``.
+    """
     try:
         with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=True) as conn:
             row = conn.execute(
@@ -150,9 +164,11 @@ def _load_macro_yield(as_of_date: str) -> float:
                 """,
                 [as_of_date],
             ).fetchone()
-        return float(row[0]) if row else _DEFAULT_10Y_YIELD
+        if row:
+            return float(row[0]), False
+        return _DEFAULT_10Y_YIELD, True
     except Exception:
-        return _DEFAULT_10Y_YIELD
+        return _DEFAULT_10Y_YIELD, True
 
 
 def _load_current_price(ticker: str, as_of_date: str) -> Optional[float]:
@@ -219,17 +235,30 @@ def _compute_revenue_cagr(df: pd.DataFrame, years: int = 3) -> float:
     return float((latest / earliest) ** (4.0 / periods) - 1.0)
 
 
-def _altman_z(row: pd.Series) -> Optional[float]:
+def _altman_z(row: pd.Series) -> tuple[Optional[float], bool]:
     """
-    Simplified Altman Z'-score for non-manufacturing Indian companies.
+    Altman Z''-score (1995 non-manufacturing/emerging-market revision).
 
-    Z' = 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4
-    X1 = Working Capital / Total Assets (approximated)
-    X2 = Retained Earnings / Total Assets (approximated via ROE × BV)
+    Z'' = 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4
+    X1 = Working Capital / Total Assets
+    X2 = Retained Earnings / Total Assets
     X3 = EBIT / Total Assets
     X4 = BV of equity / Total Debt
 
-    Returns None if required inputs are missing.
+    Distress/grey/safe thresholds for this variant are Z'' < 1.1 / 1.1-2.6 / > 2.6
+    (see systems/damodaran_valuation/lifecycle/classifier.py — NOT the
+    original manufacturing model's 1.81/2.99 thresholds, which use a
+    differently-weighted formula and do not apply here).
+
+    X2 prefers the real ``retained_earnings`` column (Reserves & Surplus,
+    added specifically for this purpose — see create_normalised.py's
+    "deep-forensic altman_z fix 2026-07-07" comment). Falls back to the
+    ROE × book-value proxy only when retained_earnings is missing, and
+    flags that fallback via the returned ``is_proxy`` bool.
+
+    Returns (z_score, is_proxy) — ``z_score`` is None if required inputs
+    are missing; ``is_proxy`` is True iff the X2 term used the ROE×BV
+    fallback rather than real retained_earnings.
     """
     try:
         total_assets = (
@@ -238,7 +267,7 @@ def _altman_z(row: pd.Series) -> Optional[float]:
             + float(row.get("total_equity") or 1.0)
         )
         if total_assets <= 0:
-            return None
+            return None, False
         wc = float(row.get("current_assets") or 0) - float(row.get("current_liabilities") or 0)
         # shares_outstanding is an absolute count; book_value_per_share is
         # real ₹/share, and total_assets/current_assets are ₹ crore — divide
@@ -248,14 +277,18 @@ def _altman_z(row: pd.Series) -> Optional[float]:
         revenue = float(row.get("revenue") or 1)
         ebit = ebit_margin * revenue
 
+        retained_earnings = row.get("retained_earnings")
+        is_proxy = retained_earnings is None
+        re_value = float(retained_earnings) if not is_proxy else (float(row.get("roe") or 0) * bv)
+
         x1 = wc / total_assets
-        x2 = (float(row.get("roe") or 0) * bv) / total_assets
+        x2 = re_value / total_assets
         x3 = ebit / total_assets
         x4 = bv / max(float(row.get("total_debt") or 1), 1.0)
 
-        return 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4
+        return 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4, is_proxy
     except Exception:
-        return None
+        return None, False
 
 
 def _latest_row(df: pd.DataFrame) -> Dict:
@@ -351,9 +384,12 @@ class ValuationEngine:
         sector = _get_sector(ticker)
 
         # --- Compute derived inputs -------------------------------------------
+        proxy_used: List[str] = []
         revenue_cagr_3y = _compute_revenue_cagr(fund_df, years=3)
         revenue_cagr_5y = _compute_revenue_cagr(fund_df, years=5)
-        altman_z = _altman_z(pd.Series(latest))
+        altman_z, altman_x2_is_proxy = _altman_z(pd.Series(latest))
+        if altman_x2_is_proxy:
+            proxy_used.append("altman_x2_roe_proxy")
 
         fundamentals_for_classifier = {
             "revenue_cagr_3y": revenue_cagr_3y,
@@ -375,13 +411,22 @@ class ValuationEngine:
         stage = self._classifier.classify(fundamentals_for_classifier)
 
         # --- Load macro -------------------------------------------------------
-        india_10y = _load_macro_yield(aod)
+        india_10y, india_10y_is_proxy = _load_macro_yield(aod)
+        if india_10y_is_proxy:
+            proxy_used.append("risk_free_rate_default")
 
         # --- WACC -------------------------------------------------------------
         de_ratio = _safe_float(latest.get("debt_to_equity") or latest.get("debt_equity"), default=0.3)
         int_cov = _safe_float(latest.get("interest_coverage"), default=5.0)
         total_debt = _safe_float(latest.get("total_debt"), default=0.0)
         cash = _safe_float(latest.get("cash_and_equivalents"), default=0.0)
+        # Fix B6: subtracted from EV alongside total_debt in the equity
+        # bridge — consolidated EV includes 100% of a partially-owned
+        # subsidiary, but shareholders only have a claim on the parent's
+        # stake. `non_controlling_interest` is a real fundamentals column
+        # (create_normalised.py); defaults to 0.0 (no bridge change) when
+        # unavailable.
+        minority_interest = _safe_float(latest.get("non_controlling_interest"), default=0.0)
         revenue = _safe_float(latest.get("revenue"), default=1.0)
         ebit_margin = _safe_float(latest.get("operating_margin"), default=0.10)
         ebit = revenue * ebit_margin
@@ -460,6 +505,10 @@ class ValuationEngine:
                     book_value=book_value,
                     roe=roe,
                     cost_of_equity=wacc_result.cost_of_equity,
+                    # Explicit clamp — was previously omitted, silently
+                    # falling back to the model's internal 0.05 default
+                    # regardless of the risk-free-rate ceiling (Fix 9).
+                    terminal_growth=min(0.05, india_10y),
                     shares_outstanding=shares_cr,
                     total_debt=total_debt,
                     cash=cash,
@@ -472,11 +521,15 @@ class ValuationEngine:
                 change_in_nwc=nwc_chg, wacc=wacc_result.wacc,
                 high_growth_rate=min(revenue_cagr_3y, 0.50),
                 revenue=revenue,
-                terminal_growth_rate=0.06,
+                # Damodaran's stable-growth constraint: g <= risk-free rate,
+                # not merely g < WACC (which the DCF models already enforce
+                # via their own ValueError guard).
+                terminal_growth_rate=min(0.06, india_10y),
                 high_growth_years=7,
                 shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
+                minority_interest=minority_interest,
                 target_margin=max(ebit_margin, 0.10),
             )
             dcf_result = FCFFThreeStageModel().value(inp)
@@ -488,11 +541,12 @@ class ValuationEngine:
                 change_in_nwc=nwc_chg, wacc=wacc_result.wacc,
                 high_growth_rate=min(revenue_cagr_3y, 0.35),
                 revenue=revenue,
-                terminal_growth_rate=0.05,
+                terminal_growth_rate=min(0.05, india_10y),
                 high_growth_years=5,
                 shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
+                minority_interest=minority_interest,
             )
             dcf_result = FCFFTwoStageModel().value(inp)
             model_name = "FCFFTwoStage"
@@ -504,11 +558,12 @@ class ValuationEngine:
                 change_in_nwc=nwc_chg, wacc=wacc_result.wacc,
                 high_growth_rate=g,
                 revenue=revenue,
-                terminal_growth_rate=0.04,
+                terminal_growth_rate=min(0.04, india_10y),
                 high_growth_years=5,
                 shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
+                minority_interest=minority_interest,
             )
             dcf_result = FCFFTwoStageModel().value(inp)
             model_name = "FCFFTwoStage (stable)"
@@ -520,11 +575,12 @@ class ValuationEngine:
                 change_in_nwc=nwc_chg, wacc=wacc_result.wacc,
                 high_growth_rate=g,
                 revenue=revenue,
-                terminal_growth_rate=0.02,
+                terminal_growth_rate=min(0.02, india_10y),
                 high_growth_years=3,
                 shares_outstanding=shares_cr,
                 total_debt=total_debt,
                 cash=cash,
+                minority_interest=minority_interest,
             )
             try:
                 dcf_result = FCFFTwoStageModel().value(inp)
@@ -552,6 +608,7 @@ class ValuationEngine:
                     shares_outstanding=shares_cr,
                     total_debt=total_debt,
                     cash=cash,
+                    minority_interest=minority_interest,
                 )
                 mc_result = self._mc.simulate(
                     mc_inp,
@@ -577,6 +634,14 @@ class ValuationEngine:
                     "payout_ratio": _safe_float(latest.get("payout_ratio"), default=0.0),
                     "beta": float(SECTOR_UNLEVERED_BETAS.get(sector, 0.90)),
                 }
+                # `fundamentals` has no eps_growth_3y/payout_ratio columns and
+                # this uses sector-average beta rather than the company's own
+                # — all three are proxies, not measured company-specific
+                # inputs (Fix 6/14). Flag them rather than silently blending.
+                proxy_used.append("eps_growth_3y_from_revenue_cagr")
+                proxy_used.append("beta_sector_average")
+                if latest.get("payout_ratio") is None:
+                    proxy_used.append("payout_ratio_missing")
                 rel_result = reg.value_gap(ticker_pe_data)
                 pe_gap = rel_result.gap_pct
             except Exception as exc:
@@ -608,12 +673,17 @@ class ValuationEngine:
             cost_of_equity=wacc_result.cost_of_equity,
             terminal_value_pct=dcf_result.terminal_value_pct if dcf_result else None,
             dcf_model_type=model_name,
+            terminal_growth_rate=(
+                _safe_float(dcf_result.assumptions.get("terminal_growth_rate"), default=None)
+                if dcf_result else None
+            ),
             scenario_bull=scenario_bull,
             scenario_base=scenario_base,
             scenario_bear=scenario_bear,
             mc_probability_undervalued=mc_prob,
             relative_pe_gap=pe_gap,
             data_quality=data_quality,
+            proxy_used=proxy_used,
         )
 
         if self._write_signals:

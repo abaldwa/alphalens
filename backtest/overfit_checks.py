@@ -17,7 +17,7 @@ doc's generic `model_class()` sketch.
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -27,12 +27,38 @@ from contracts.interfaces import IModel
 
 logger = logging.getLogger(__name__)
 
+# Euler-Mascheroni constant, used in the expected-max-Sharpe-under-the-null
+# approximation below (Bailey & Lopez de Prado 2014, eq. 10).
+_EULER_MASCHERONI = 0.5772156649015329
 
-def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> float:
+
+def deflated_sharpe_ratio(
+    sharpe: float, n_trials: int, n_obs: int, returns: Optional[pd.Series] = None
+) -> float:
     """
     Probability that the observed Sharpe ratio is genuine skill rather
     than the best of `n_trials` noisy configurations (SPEC-BT-001 rule 8:
     "apply DSR correction if testing 20+ configurations").
+
+    Full Bailey & Lopez de Prado (2014) formula: "The Deflated Sharpe
+    Ratio: Correcting for Selection Bias, Backtest Overfitting, and
+    Non-Normality". Two components a simplified version previously
+    omitted (2026-07-19 full-codebase-review Fix B4):
+
+    1. Expected max Sharpe under the null across n_trials configurations
+       uses the full two-term approximation (eq. 10) — E[max SR] =
+       sqrt(V[SR]) * [(1-gamma)*Phi^-1(1-1/N) + gamma*Phi^-1(1-1/(N*e))],
+       gamma = Euler-Mascheroni constant — not just the single
+       Phi^-1(1-1/N) term.
+    2. The Sharpe ratio's standard error accounts for the return series'
+       skewness (gamma3) and excess kurtosis (gamma4) (eq. 8):
+       sigma(SR) = sqrt((1 - gamma3*SR + (gamma4/4)*SR^2) / (n_obs - 1)).
+       A fat-tailed or negatively-skewed strategy (the common case for
+       momentum-style strategies, which tend to have negative skew from
+       occasional sharp reversals) has a WIDER standard error than the
+       normal-distribution assumption implies, meaning a previously
+       "passing" Sharpe ratio can fail once the real return distribution's
+       skew/kurtosis is accounted for.
 
     Parameters
     ----------
@@ -42,6 +68,14 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> float:
         Number of configurations/strategies compared before selecting this one.
     n_obs : int
         Number of return observations the Sharpe ratio was computed over.
+    returns : pd.Series, optional
+        The actual per-period return series the Sharpe ratio was computed
+        from. When provided, its sample skewness/excess-kurtosis feed the
+        standard-error correction above. When omitted (None, default —
+        preserves callers that only have a scalar Sharpe, e.g. when
+        returns aren't available at the call site), skewness/excess
+        kurtosis are assumed 0 (i.e. normal), the same assumption the
+        prior simplified version made implicitly.
 
     Returns
     -------
@@ -62,8 +96,27 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int, n_obs: int) -> float:
     """
     if n_trials < 1 or n_obs < 1:
         raise ValueError("n_trials and n_obs must be >= 1")
-    e_max = norm.ppf(1 - 1 / n_trials) if n_trials > 1 else 0.0
-    dsr_stat = sharpe - e_max / np.sqrt(n_obs)
+
+    if n_trials > 1:
+        e_max = (
+            (1.0 - _EULER_MASCHERONI) * norm.ppf(1 - 1.0 / n_trials)
+            + _EULER_MASCHERONI * norm.ppf(1 - 1.0 / (n_trials * np.e))
+        )
+    else:
+        e_max = 0.0
+
+    skewness, excess_kurtosis = 0.0, 0.0
+    if returns is not None and len(returns) >= 3:
+        s, k = float(returns.skew()), float(returns.kurt())  # pandas .kurt() is already excess (normal = 0)
+        if np.isfinite(s):
+            skewness = s
+        if np.isfinite(k):
+            excess_kurtosis = k
+
+    variance_term = 1.0 - skewness * sharpe + (excess_kurtosis / 4.0) * sharpe**2
+    sr_std_error = np.sqrt(max(variance_term, 1e-12) / max(n_obs - 1, 1))
+
+    dsr_stat = (sharpe - e_max / np.sqrt(n_obs)) / sr_std_error
     return float(norm.cdf(dsr_stat))
 
 

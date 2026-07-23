@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-11-23,DBREALTY,BUY,313.0,3289,09:15:00,258.85,15:30:00,2010-11-24,thesis_broken,miss,-182239.92076404393,-0.17702528688817884,,,,,,
+2010-11-23,MUKANDLTD,BUY,62.1,16578,09:15:00,57.35,15:30:00,2010-11-26,thesis_broken,miss,-82886.21877702954,-0.08051162501127208,,,,,,
+2010-11-23,VOLTAMP,BUY,744.35,17,09:15:00,701.1,15:30:00,2010-11-26,thesis_broken,miss,-786.1453510634001,-0.06212647837737624,,,,,,

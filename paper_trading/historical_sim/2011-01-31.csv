@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-01-31,KOHINOOR,BUY,44.45,2,09:15:00,39.2,15:30:00,2011-02-09,thesis_broken,miss,-10.857563978800002,-0.12213232822047246,,,,,,
+2011-01-31,JAGSNPHARM,BUY,7.56,1,09:15:00,6.5200000000000005,15:30:00,2011-02-09,thesis_broken,miss,-1.070407015519999,-0.14158822956613742,,,,,,
+2011-01-31,SUPREMEINF,BUY,196.5,1,09:15:00,275.15,15:30:00,2011-07-01,target_achieved,hit,77.859658922,0.3962323609262086,,,,,,

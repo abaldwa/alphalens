@@ -62,6 +62,14 @@ class TestAltmanZFormula:
     def test_zero_total_assets_returns_nan_not_divzero(self):
         assert np.isnan(_altman_z(1, 1, 1, 0, 1, 1, 1))
 
+    def test_negative_total_liabilities_returns_nan_not_sign_flipped(self):
+        """2026-07-19 full-codebase-review Fix: previously abs(total_liabilities)
+        silently flipped the sign instead of flagging the input as unusable."""
+        assert np.isnan(_altman_z(
+            working_capital=100, retained_earnings=200, ebit=150,
+            total_assets=1000, total_liabilities=-300, revenue=800, market_cap=500,
+        ))
+
 
 class TestComputeDeepForensicAltmanZ:
     def test_total_liabilities_and_retained_earnings_derive_from_real_columns(self):
@@ -126,6 +134,32 @@ class TestComputeDeepForensicAltmanZ:
             total_assets=1000.0, total_liabilities=600.0, revenue=800.0, market_cap=500.0,
         )
         assert result["altman_z"] == pytest.approx(expected, rel=1e-6)
+
+    def test_altman_z_is_nan_for_financial_services_sector(self):
+        """2026-07-19 full-codebase-review Fix: Altman Z's liabilities/
+        working-capital ratios don't apply to banks/NBFCs/insurers — skip
+        rather than serve a misleading score, even when every input is
+        otherwise available (same fundamentals row as the passing case above)."""
+        client = MagicMock()
+        client.get_fundamentals_history.return_value = [
+            _fund_row(
+                total_assets=1000.0,
+                total_equity=400.0,
+                retained_earnings=150.0,
+                revenue=800.0,
+                operating_margin=0.15,
+                market_cap=500.0,
+                current_assets=300.0,
+                current_liabilities=200.0,
+            )
+        ]
+        client.get_shareholding_history.return_value = []
+
+        result = compute_deep_forensic_features(
+            client, "TEST", datetime(2026, 7, 1), sector="Financial Services"
+        )
+
+        assert np.isnan(result["altman_z"])
 
 
 def _share_row(qed, **kwargs):

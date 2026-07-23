@@ -156,6 +156,7 @@ import pandas as pd
 
 from datastore.client import DataStoreClient
 from features.fundamental import _latest_close_on_or_before
+from systems.damodaran_valuation.lifecycle.classifier import _FINANCIAL_SERVICES_SECTORS
 
 logger = logging.getLogger(__name__)
 
@@ -271,11 +272,19 @@ def _altman_z(
         return np.nan
     if abs(total_assets) < 1e-6:
         return np.nan
+    # total_liabilities <= 0 is either a data error or (when derived as
+    # total_assets - total_equity, see caller) a negative-equity company —
+    # X4 = market_cap / total_liabilities is undefined/meaningless in
+    # either case. Previously `abs(total_liabilities)` silently flipped
+    # the sign, producing a plausible-looking but wrong Z-score instead of
+    # flagging the input as unusable (2026-07-19 full-codebase-review).
+    if total_liabilities <= 0:
+        return np.nan
     try:
         x1 = working_capital / total_assets
         x2 = retained_earnings / total_assets
         x3 = ebit / total_assets
-        x4 = market_cap / max(abs(total_liabilities), 1e-6)
+        x4 = market_cap / total_liabilities
         x5 = revenue / total_assets
         z = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
         return float(z)
@@ -312,6 +321,7 @@ def compute_deep_forensic_features(
     pre_loaded_fundamentals=None,
     pre_loaded_shareholding=None,
     ticker_ohlcv: "Optional[pd.DataFrame]" = None,
+    sector: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Compute all 28 deep forensic features for one ticker.
@@ -328,6 +338,16 @@ def compute_deep_forensic_features(
     sector_fundamentals : pd.DataFrame, optional
         Pre-fetched sector-wide fundamental rows for peer_outlier_score.
         If None, peer_outlier_score returns NaN.
+    sector : str, optional
+        Real sector taxonomy string (e.g. from config.universe/hybrid_compute's
+        ticker->sector map). When it matches
+        systems.damodaran_valuation.lifecycle.classifier._FINANCIAL_SERVICES_SECTORS,
+        altman_z is forced to NaN rather than computed — Altman Z's
+        liabilities/working-capital ratios are structurally invalid for
+        banks/NBFCs/insurers (deposits/borrowings are core operating
+        liabilities, not distress leverage), not just a division-by-zero
+        edge case (2026-07-19 full-codebase-review). None (default)
+        preserves prior behavior — always compute altman_z.
 
     Returns
     -------
@@ -549,7 +569,10 @@ def compute_deep_forensic_features(
         if not np.isnan(shares_out) and close is not None:
             mktcap = (shares_out * close) / 1e7  # raw rupees -> Crore, same unit as total_liabilities
     rev_latest = _get(latest, "revenue")
-    result["altman_z"] = _altman_z(wc, retained, ebit_v, total_assets, total_liab, rev_latest, mktcap)
+    if sector in _FINANCIAL_SERVICES_SECTORS:
+        result["altman_z"] = np.nan
+    else:
+        result["altman_z"] = _altman_z(wc, retained, ebit_v, total_assets, total_liab, rev_latest, mktcap)
 
     # interest_coverage_trend: slope of interest_coverage over 4 quarters
     if len(fund_df) >= 4 and "interest_coverage" in fund_df.columns:
@@ -642,6 +665,7 @@ def compute_deep_forensic_features_panel(
     lookback_years: int = 3,
     data_cache=None,
     ohlcv_panel: "Optional[pd.DataFrame]" = None,
+    sector_map: "Optional[Dict[str, str]]" = None,
 ) -> pd.DataFrame:
     """
     Compute deep forensic features for all tickers.
@@ -659,6 +683,13 @@ def compute_deep_forensic_features_panel(
         price x shares_outstanding) can be computed PIT-safely without an
         extra per-ticker API call; without it, market_cap (and therefore
         altman_z) stays NaN, same honest-degradation behavior as before.
+    sector_map : dict, optional
+        ticker -> real sector taxonomy string (e.g. hybrid_compute.py's
+        existing sector_map). Forwarded to compute_deep_forensic_features
+        so altman_z is skipped (NaN) for Financial Services tickers,
+        where its liabilities/working-capital ratios don't apply
+        (2026-07-19 full-codebase-review). None (default) preserves prior
+        behavior - always compute altman_z.
 
     Returns
     -------
@@ -682,6 +713,7 @@ def compute_deep_forensic_features_panel(
             pre_loaded_fundamentals=pre_fund,
             pre_loaded_shareholding=pre_sh,
             ticker_ohlcv=t_ohlcv,
+            sector=sector_map.get(ticker) if sector_map is not None else None,
         )
         feat["ticker"] = ticker
         rows.append(feat)

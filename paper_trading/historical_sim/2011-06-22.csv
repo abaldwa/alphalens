@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-06-22,BLKASHYAP,BUY,18.45,1,09:15:00,15.2,15:30:00,2011-08-04,thesis_broken,miss,-3.324207597399999,-0.18017385351761514,,,,,,
+2011-06-22,SPMLINFRA,BUY,153.9,1,09:15:00,136.0,15:30:00,2011-08-16,thesis_broken,miss,-18.51899995880001,-0.12033138374788829,,,,,,

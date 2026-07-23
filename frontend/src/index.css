@@ -1,0 +1,157 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/* ---------------------------------------------------------------------
+ * Design tokens, ported from dashboard/static/css/tokens.css (the old
+ * vanilla-JS dashboard) so the new React UI stays visually consistent.
+ * Light values below; dark equivalents under `.dark` (class strategy).
+ * ------------------------------------------------------------------- */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #f8f9fc;
+  --bg2: #ffffff;
+  --bg3: #f0f2f8;
+  --bdr: #e2e6ef;
+  --bdr2: #c8cee0;
+  --tx: #1a1d26;
+  --tx2: #5a6178;
+  --tx3: #8e95a8;
+  --teal: #0a9b8e;
+  --blue: #3b6bf5;
+  --purple: #6e56cf;
+  --green: #1a9338;
+  --amber: #c27a09;
+  --red: #d13438;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow-token: 0 1px 3px rgba(0, 0, 0, 0.05);
+
+  /* shadcn/ui semantic aliases, mapped onto the tokens above */
+  --background: var(--bg);
+  --foreground: var(--tx);
+  --card: var(--bg2);
+  --card-foreground: var(--tx);
+  --popover: var(--bg2);
+  --popover-foreground: var(--tx);
+  --primary: var(--blue);
+  --primary-foreground: #ffffff;
+  --secondary: var(--bg3);
+  --secondary-foreground: var(--tx);
+  --muted: var(--bg3);
+  --muted-foreground: var(--tx2);
+  --accent: var(--bg3);
+  --accent-foreground: var(--tx);
+  --destructive: var(--red);
+  --destructive-foreground: #ffffff;
+  --border: var(--bdr);
+  --input: var(--bdr);
+  --ring: var(--blue);
+  --sidebar: var(--tx);
+  --sidebar-foreground: #e7e9f0;
+  --sidebar-border: #2a2e3c;
+
+  /* Semantic signal tokens (buy/hold/sell) — one alias per verdict, reused
+   * everywhere a recommendation is rendered (SignalBadge, Confidence
+   * Matrix, Symbol Overview) instead of each call site picking a raw
+   * green/amber/red directly. */
+  --signal-buy: var(--green);
+  --signal-hold: var(--amber);
+  --signal-sell: var(--red);
+}
+
+.dark {
+  --bg: #12141c;
+  --bg2: #1a1d28;
+  --bg3: #20232f;
+  --bdr: #2a2e3c;
+  --bdr2: #3a3f52;
+  --tx: #eceef4;
+  --tx2: #a7adc2;
+  --tx3: #767c92;
+  --teal: #2ec4b4;
+  --blue: #6c8dff;
+  --purple: #9a86e8;
+  --green: #3fbf5e;
+  --amber: #e0a83a;
+  --red: #f0575c;
+
+  --background: var(--bg);
+  --foreground: var(--tx);
+  --card: var(--bg2);
+  --card-foreground: var(--tx);
+  --popover: var(--bg2);
+  --popover-foreground: var(--tx);
+  --primary: var(--blue);
+  --primary-foreground: #0d1120;
+  --secondary: var(--bg3);
+  --secondary-foreground: var(--tx);
+  --muted: var(--bg3);
+  --muted-foreground: var(--tx2);
+  --accent: var(--bg3);
+  --accent-foreground: var(--tx);
+  --destructive: var(--red);
+  --destructive-foreground: #0d1120;
+  --border: var(--bdr);
+  --input: var(--bdr);
+  --ring: var(--blue);
+  --sidebar: #0b0d14;
+  --sidebar-foreground: #e7e9f0;
+  --sidebar-border: #1d202b;
+}
+
+@theme inline {
+  --font-sans: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+
+  /* AlphaLens accent + status hues, available as bg-teal / text-amber / etc. */
+  --color-teal: var(--teal);
+  --color-blue: var(--blue);
+  --color-purple: var(--purple);
+  --color-green: var(--green);
+  --color-amber: var(--amber);
+  --color-red: var(--red);
+
+  /* Signal semantics as Tailwind utilities: bg-signal-buy, text-signal-sell, etc. */
+  --color-signal-buy: var(--signal-buy);
+  --color-signal-hold: var(--signal-hold);
+  --color-signal-sell: var(--signal-sell);
+
+  --radius-token: var(--radius);
+  --radius-token-lg: var(--radius-lg);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono-data {
+  font-family: var(--font-mono);
+}

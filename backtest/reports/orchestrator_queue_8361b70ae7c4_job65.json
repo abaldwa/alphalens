@@ -1,0 +1,3407 @@
+{
+  "run": {
+    "channel": "technical",
+    "strategy_id": "ta_f6_63d_20260723",
+    "horizon_bucket": "63_day",
+    "mode": "backtest",
+    "universe_spec": "curated",
+    "start_date": "2015-01-01",
+    "end_date": "2026-07-22",
+    "capital_mode": "lump",
+    "initial_capital": 1000000.0,
+    "sip_amount": null,
+    "sip_cadence_days": null,
+    "random_seed": 0,
+    "run_id": "orch_technical_20260723_010608_4c9d237d",
+    "parent_run_id": null,
+    "created_at": "2026-07-22 19:40:39.834829",
+    "config": {
+      "template_name": "F6",
+      "preset": null,
+      "top_n": 10,
+      "lookback_months": 6,
+      "max_tickers": null,
+      "min_history_days": 60
+    }
+  },
+  "metrics": {
+    "cagr": 0.2187024521659926,
+    "cagr_trading_day_legacy": 361123.2477659945,
+    "xirr": null,
+    "final_capital": 9827401.227416225,
+    "total_contributed": 1000000.0,
+    "max_drawdown": -0.41279456407567894,
+    "win_rate": 0.49032258064516127,
+    "profit_factor": 1.7447238716987679,
+    "sortino": 11.848961057109888,
+    "sortino_none_reason": null,
+    "calmar": 0.5298094287062782,
+    "calmar_none_reason": null,
+    "n_distinct_tickers_traded": 406,
+    "turnover_ratio": 6.709053943575258,
+    "n_trades": 310,
+    "benchmark_cagr": null,
+    "excess_return": null,
+    "benchmark_status": "insufficient_benchmark_history",
+    "cash_position_series": [
+      {
+        "date": "2015-01-01",
+        "cash": 600306.8161404604
+      },
+      {
+        "date": "2015-04-06",
+        "cash": 559148.2320581607
+      },
+      {
+        "date": "2015-07-06",
+        "cash": 563780.5577265113
+      },
+      {
+        "date": "2015-10-06",
+        "cash": 609159.2085900027
+      },
+      {
+        "date": "2016-01-07",
+        "cash": 661111.7302844422
+      },
+      {
+        "date": "2016-04-11",
+        "cash": 650822.89076121
+      },
+      {
+        "date": "2016-07-13",
+        "cash": 675908.5401385233
+      },
+      {
+        "date": "2016-10-17",
+        "cash": 696288.8499085053
+      },
+      {
+        "date": "2017-01-13",
+        "cash": 780604.9780374154
+      },
+      {
+        "date": "2017-04-19",
+        "cash": 859802.6801474602
+      },
+      {
+        "date": "2017-07-19",
+        "cash": 836815.5520524436
+      },
+      {
+        "date": "2017-10-19",
+        "cash": 715541.6635368847
+      },
+      {
+        "date": "2018-01-18",
+        "cash": 678995.8117613285
+      },
+      {
+        "date": "2018-04-24",
+        "cash": 625725.9974135663
+      },
+      {
+        "date": "2018-07-23",
+        "cash": 546076.1967650335
+      },
+      {
+        "date": "2018-10-26",
+        "cash": 479078.05772288516
+      },
+      {
+        "date": "2019-01-28",
+        "cash": 483309.4120127914
+      },
+      {
+        "date": "2019-05-03",
+        "cash": 415205.1029131647
+      },
+      {
+        "date": "2019-08-01",
+        "cash": 377441.76660160045
+      },
+      {
+        "date": "2019-11-07",
+        "cash": 337396.63257366855
+      },
+      {
+        "date": "2020-02-05",
+        "cash": 223383.4480128603
+      },
+      {
+        "date": "2020-05-13",
+        "cash": 99749.14549669303
+      },
+      {
+        "date": "2020-08-11",
+        "cash": 306.667777388775
+      },
+      {
+        "date": "2020-11-09",
+        "cash": 0.31316321108351985
+      },
+      {
+        "date": "2021-02-09",
+        "cash": 1.6503900139359757
+      },
+      {
+        "date": "2021-05-17",
+        "cash": 8.398543285048799
+      },
+      {
+        "date": "2021-08-13",
+        "cash": 33.62702035862043
+      },
+      {
+        "date": "2021-11-17",
+        "cash": 19.69193899355014
+      },
+      {
+        "date": "2022-02-16",
+        "cash": 19.56092197757971
+      },
+      {
+        "date": "2022-05-23",
+        "cash": 29.934361421898984
+      },
+      {
+        "date": "2022-08-22",
+        "cash": 7.653624303668039
+      },
+      {
+        "date": "2022-11-24",
+        "cash": 1.2161051050352398
+      },
+      {
+        "date": "2023-02-22",
+        "cash": 8.739342287792354
+      },
+      {
+        "date": "2023-05-30",
+        "cash": 3.7688050141558165
+      },
+      {
+        "date": "2023-08-29",
+        "cash": 22.862274552491726
+      },
+      {
+        "date": "2023-11-30",
+        "cash": 25.007453743659426
+      },
+      {
+        "date": "2024-02-29",
+        "cash": 35.023890082899015
+      },
+      {
+        "date": "2024-06-04",
+        "cash": 42.091676722464626
+      },
+      {
+        "date": "2024-09-04",
+        "cash": 5.728119023551699
+      },
+      {
+        "date": "2024-12-06",
+        "cash": 2.7184046016120647
+      },
+      {
+        "date": "2025-03-06",
+        "cash": 118.77502696568422
+      },
+      {
+        "date": "2025-06-11",
+        "cash": 4.014318078975183
+      },
+      {
+        "date": "2025-09-10",
+        "cash": 11.838870474003194
+      },
+      {
+        "date": "2025-12-12",
+        "cash": 0.08696089021862008
+      },
+      {
+        "date": "2026-03-16",
+        "cash": 20.118114625499587
+      },
+      {
+        "date": "2026-06-19",
+        "cash": 25.13979110336004
+      }
+    ]
+  },
+  "data_gaps": [
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GOLDTECH",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GRAVITA",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HARRMALAYA",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HEG",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDIAGLYCO",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KESORAMIND",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MADHUCON",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SOMATEX",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VENUSREM",
+      "as_of_date": "2015-01-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2015-04-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2015-04-06",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "CONSOFINVT",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CORDSCABLE",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "FIEMIND",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GLOBUSSPR",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDIANB",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LOVABLE",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PTL",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PURVA",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VSTIND",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "XCHANGING",
+      "as_of_date": "2015-04-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "AHLWEST",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CERA",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GKWLIMITED",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HATHWAY",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HGS",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MAANALU",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MAHLIFE",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NRBBEARING",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SAKSOFT",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TAINWALCHM",
+      "as_of_date": "2015-07-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "AHLEAST",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BSL",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GMDCLTD",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GSPL",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INOXWIND",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LAMBODHARA",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MUKANDLTD",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VAIBHAVGBL",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VESUVIUS",
+      "as_of_date": "2015-10-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2016-01-07",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "APOLLOTYRE",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ATUL",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BLUEDART",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NDTV",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NESCO",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PGHH",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "REPCOHOME",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TIMETECHNO",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "UNIENTER",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "UNITECH",
+      "as_of_date": "2016-01-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2016-04-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ALMONDZ",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ASIANHOTNR",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "J&KBANK",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MONTECARLO",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NILAINFRA",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "OILCOUNTUB",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SUPERSPIN",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TDPOWERSYS",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TREEHOUSE",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ZODIACLOTH",
+      "as_of_date": "2016-04-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "AMBIKCO",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDALPOLY",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NDTV",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NETWORK18",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PGHH",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PVP",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SOLARINDS",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TEXRAIL",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VADILALIND",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VASWANI",
+      "as_of_date": "2016-07-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2016-10-17",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ADANIPOWER",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ASHAPURMIN",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CAMLINFINE",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GRANULES",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ICIL",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LAOPALA",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NUCLEUS",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RSSOFTWARE",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SOBHA",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ZENSARTECH",
+      "as_of_date": "2016-10-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ALEMBICLTD",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "APOLLOTYRE",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "FINCABLES",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GSPL",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GUJGASLTD",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDWORLD",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MINDACORP",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PNCINFRA",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SHOPERSTOP",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "XPROINDIA",
+      "as_of_date": "2017-01-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2017-04-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARROWGREEN",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDOTHAI",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IOLCP",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ORBTEXP",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RAJSREESUG",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RANASUG",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SMSPHARMA",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SWANCORP",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TVVISION",
+      "as_of_date": "2017-04-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2017-07-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2017-07-19",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "AHLWEST",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ASIANHOTNR",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "EMAMILTD",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INOXWIND",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JKCEMENT",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NLCINDIA",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TRIVENI",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VISASTEEL",
+      "as_of_date": "2017-07-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2017-10-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2017-10-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2017-10-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2017-10-19",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2017-10-19",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "ALBERTDAVD",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "AMRUTANJAN",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTUM",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HONDAPOWER",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RELIGARE",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RSYSTEMS",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TRIGYN",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "WELSPUNLIV",
+      "as_of_date": "2017-10-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ALBERTDAVD",
+      "as_of_date": "2018-01-18",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2018-01-18",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2018-01-18",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2018-01-18",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ALBERTDAVD",
+      "as_of_date": "2018-01-18",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2018-01-18",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "AVADHSUGAR",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BANKBARODA",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BODALCHEM",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BRITANNIA",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTENKA",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "COCHINSHIP",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "DBCORP",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HATSUN",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PATINTLOG",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PNB",
+      "as_of_date": "2018-01-18",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ALBERTDAVD",
+      "as_of_date": "2018-04-24",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2018-04-24",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2018-04-24",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ASAHISONG",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HCG",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LPDC",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SARLAPOLY",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SCHAEFFLER",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SIEMENS",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SURANAT&P",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "UFLEX",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "UFO",
+      "as_of_date": "2018-04-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2018-07-23",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARIHANT",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "DELTAMAGNT",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "EVERESTIND",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KDDL",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MIRZAINT",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MUKTAARTS",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NACLIND",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SAREGAMA",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VHL",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "WONDERLA",
+      "as_of_date": "2018-07-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2018-10-26",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2018-10-26",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "DELTAMAGNT",
+      "as_of_date": "2018-10-26",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "AGARIND",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CEATLTD",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CROMPTON",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GANECOS",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KIRLOSENG",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PANAMAPET",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PHOENIXLTD",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SETCO",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SUBROS",
+      "as_of_date": "2018-10-26",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2019-01-28",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "AMBIKCO",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ASTEC",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HIMATSEIDE",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDALPOLY",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KAMDHENU",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NDGL",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PETRONET",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PNBHOUSING",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "USHAMART",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ZENITHEXPO",
+      "as_of_date": "2019-01-28",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "DCM",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GENUSPAPER",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GLAXO",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HINDCOMPOS",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HINDUNILVR",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INVENTURE",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LALPATHLAB",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PERSISTENT",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VINDHYATEL",
+      "as_of_date": "2019-05-03",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2019-08-01",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2019-08-01",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2019-08-01",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2019-08-01",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "3PLAND",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "FINCABLES",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GANDHITUBE",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HCL-INSYS",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HONDAPOWER",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MAANALU",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PDMJEPAPER",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PGHH",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SMSPHARMA",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ZEEMEDIA",
+      "as_of_date": "2019-08-01",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2019-11-07",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BASF",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LOKESHMACH",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LUPIN",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PANAMAPET",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PRECAM",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PRSMJOHNSN",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SOMANYCERA",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SWELECTES",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TIJARIA",
+      "as_of_date": "2019-11-07",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PRECAM",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "PRECAM",
+      "as_of_date": "2020-02-05",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "ABB",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CSBBANK",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CYBERTECH",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GTLINFRA",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RKDL",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SAMBHAAV",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPANDANA",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TFCILTD",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "YESBANK",
+      "as_of_date": "2020-02-05",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2020-05-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2020-05-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "GTLINFRA",
+      "as_of_date": "2020-05-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2020-05-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2020-05-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "GTLINFRA",
+      "as_of_date": "2020-05-13",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2020-05-13",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "ARVIND",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "COUNCODOS",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "DPWIRES",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GODREJPROP",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDTERRAIN",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDWORLD",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ORIENTHOT",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SAFARI",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TATAPOWER",
+      "as_of_date": "2020-05-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "DPWIRES",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ORIENTHOT",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "DPWIRES",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "ORIENTHOT",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2020-08-11",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "DELTAMAGNT",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ENIL",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MAHESHWARI",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MALUPAPER",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MANAKSIA",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MARALOVER",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SHREECEM",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SUTLEJTEX",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SYMPHONY",
+      "as_of_date": "2020-08-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2020-11-09",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2020-11-09",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "MAHESHWARI",
+      "as_of_date": "2020-11-09",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2020-11-09",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2020-11-09",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "MAHESHWARI",
+      "as_of_date": "2020-11-09",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "CORALFINAC",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "DHANBANK",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GVT&D",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HGINFRA",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDNIPPON",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDOTECH",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MMP",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PSPPROJECT",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RAMANEWS",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SUPERSPIN",
+      "as_of_date": "2020-11-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2021-02-09",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2021-02-09",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2021-02-09",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ASTRAZEN",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ASTRON",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BALKRISIND",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDOSTAR",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IOLCP",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MASFIN",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MONTECARLO",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PREMEXPLN",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ROSSELLIND",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TORNTPHARM",
+      "as_of_date": "2021-02-09",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2021-05-17",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2021-05-17",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "AHLEAST",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CHEMBOND",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDIGOPNTS",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KAUSHALYA",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KEC",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NDRAUTO",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NIRAJ",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "OMAXAUTO",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PRESTIGE",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "WILLAMAGOR",
+      "as_of_date": "2021-05-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GTLINFRA",
+      "as_of_date": "2021-08-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2021-08-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "NDRAUTO",
+      "as_of_date": "2021-08-13",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "NDRAUTO",
+      "as_of_date": "2021-08-13",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "OMAXAUTO",
+      "as_of_date": "2021-08-13",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "BAJAJ-AUTO",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BPCL",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "EICHERMOT",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GRPLTD",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HEROMOTOCO",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDIGO",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IRCON",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MAZDA",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NITIRAJ",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SUNDRMFAST",
+      "as_of_date": "2021-08-13",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2021-11-17",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2021-11-17",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2021-11-17",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "HISARMETAL",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LINDEINDIA",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "OMAXAUTO",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PIONEEREMB",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RAMCOSYS",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SHALBY",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SMSPHARMA",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SOMICONVEY",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPIC",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TAINWALCHM",
+      "as_of_date": "2021-11-17",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2022-02-16",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2022-02-16",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2022-02-16",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2022-02-16",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2022-02-16",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2022-02-16",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "FORTIS",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GODREJPROP",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HGS",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MAHSCOOTER",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PNBHOUSING",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RAMCOCEM",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SAGCEM",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SURYAROSNI",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SVPGLOB",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SYNGENE",
+      "as_of_date": "2022-02-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2022-05-23",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2022-05-23",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2022-05-23",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "GABRIEL",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KARURVYSYA",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KSL",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "METROBRAND",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MTARTECH",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PANACEABIO",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SHYAMMETL",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SOBHA",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TORNTPHARM",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TTKHLTCARE",
+      "as_of_date": "2022-05-23",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2022-08-22",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "HEXATRADEX",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IEX",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDSWFTLAB",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KANANIIND",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MEDPLUS",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NBIFIN",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NDGL",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PRAENG",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPLPETRO",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TEXINFRA",
+      "as_of_date": "2022-08-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2022-11-24",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2022-11-24",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "AFFLE",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ALPHAGEO",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "DAMODARIND",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "FCSSOFT",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "FMGOETZE",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KMSUGAR",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MAHEPC",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SANOFI",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TASTYBITE",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TIJARIA",
+      "as_of_date": "2022-11-24",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2023-02-22",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2023-02-22",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "TIJARIA",
+      "as_of_date": "2023-02-22",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "APLLTD",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ASHIMASYN",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "COFFEEDAY",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GULFOILLUB",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IFBIND",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ITI",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JKLAKSHMI",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VGUARD",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VISAKAIND",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "WOCKPHARMA",
+      "as_of_date": "2023-02-22",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ABMINTLLTD",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ACI",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BALAXI",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CINELINE",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HPIL",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LPDC",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NARMADA",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PANACEABIO",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RADIOCITY",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TIIL",
+      "as_of_date": "2023-05-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CINELINE",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "MAHESHWARI",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "NDRAUTO",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ABMINTLLTD",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "CINELINE",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "RADIOCITY",
+      "as_of_date": "2023-08-29",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "AARVI",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GSPL",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HARDWYN",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NAHARINDUS",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PDSL",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SHARDACROP",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPLIL",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "UPL",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VRLLOG",
+      "as_of_date": "2023-08-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CINELINE",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "NDRAUTO",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PALASHSECU",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2023-11-30",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "ACEINTEG",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CAMLINFINE",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GHCL",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "IDFCFIRSTB",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NOCIL",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TATACOMM",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "THANGAMAYL",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TIMKEN",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TMB",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VINATIORGA",
+      "as_of_date": "2023-11-30",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2024-02-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2024-02-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BEARDSELL",
+      "as_of_date": "2024-02-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2024-02-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2024-02-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2024-02-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2024-02-29",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ALLCARGO",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BHARATRAS",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CERA",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "DHANUKA",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GSS",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JTEKTINDIA",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KREBSBIO",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NACLIND",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "OSWALSEEDS",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PRESTIGE",
+      "as_of_date": "2024-02-29",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2024-06-04",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "GSS",
+      "as_of_date": "2024-06-04",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "OSWALSEEDS",
+      "as_of_date": "2024-06-04",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "ADANIENT",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ATGL",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEL",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTRALBK",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GAIL",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GIPCL",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MBAPL",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MOTOGENFIN",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NDTV",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SAPPHIRE",
+      "as_of_date": "2024-06-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2024-09-04",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2024-09-04",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2024-09-04",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2024-09-04",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2024-09-04",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "AIROLAM",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "APCOTEXIND",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HILTON",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NACLIND",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NSLNISP",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RAYMOND",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SPCENET",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TGBHOTELS",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TREEHOUSE",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "WONDERLA",
+      "as_of_date": "2024-09-04",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2024-12-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2024-12-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2024-12-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ALBERTDAVD",
+      "as_of_date": "2024-12-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2024-12-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "SURANASOL",
+      "as_of_date": "2024-12-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "TREEHOUSE",
+      "as_of_date": "2024-12-06",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "CUBEXTUB",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDIACEM",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JAYBARMARU",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KRISHANA",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MIRZAINT",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PTCIL",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SENCO",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SUNDARMFIN",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TANLA",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VERTOZ",
+      "as_of_date": "2024-12-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CUBEXTUB",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CINELINE",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "VERTOZ",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ARENTERP",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "URJA",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CUBEXTUB",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "VERTOZ",
+      "as_of_date": "2025-03-06",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "APTECHT",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "FIRSTCRY",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GALAXYSURF",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JPOLYINVST",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KICL",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KPIL",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MRPL",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ROUTE",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ZYDUSWELL",
+      "as_of_date": "2025-03-06",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CINELINE",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "IITL",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "VERTOZ",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "APTECHT",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "APTECHT",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "JINDALPHOT",
+      "as_of_date": "2025-06-11",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "ALPHAGEO",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BEDMUTHA",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GPTHEALTH",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "JINDWORLD",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KRITIKA",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "MEDICAMEQ",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PRIMO",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SALSTEEL",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VAISHALI",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "WIPL",
+      "as_of_date": "2025-06-11",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2025-09-10",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CUBEXTUB",
+      "as_of_date": "2025-09-10",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ANUHPHR",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BAJAJELEC",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BLUEJET",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "EXICOM",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GREENPANEL",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LAXMICOT",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "LYKALABS",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ROSSARI",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SUNDROP",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SWSOLAR",
+      "as_of_date": "2025-09-10",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTEXT",
+      "as_of_date": "2025-12-12",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ALKALI",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "FILATEX",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GOCLCORP",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "PARSVNATH",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SHAKTIPUMP",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TARIL",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "THERMAX",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TIRUMALCHM",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "TRF",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VINNY",
+      "as_of_date": "2025-12-12",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BANSALWIRE",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CENTRUM",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "COMPUSOFT",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "HITECHCORP",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INDOBORAX",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KRITI",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "NRL",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "REGENCERAM",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SEMAC",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "VSTL",
+      "as_of_date": "2026-03-16",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "KRITI",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BYKE",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "MAHESHWARI",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "HITECHCORP",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "VERTOZ",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "APTECHT",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "HITECHCORP",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "KRITI",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "NRL",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "SEMAC",
+      "as_of_date": "2026-06-19",
+      "reason": "no_price_for_sell_signal"
+    },
+    {
+      "ticker": "AHLADA",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ALLCARGO",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "AWL",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "BAJAJINDEF",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "CUBEXTUB",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "GTPL",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "INNOVANA",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "ORKLAINDIA",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "RALLIS",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    },
+    {
+      "ticker": "SDBL",
+      "as_of_date": "2026-06-19",
+      "reason": "no_adtv_data_position_sized_uncapped"
+    }
+  ],
+  "integrity_passed": null,
+  "integrity_detail": {},
+  "refit_log": [],
+  "execution_timing": "same_day_close",
+  "regime_breakdown": [
+    {
+      "regime": "bull",
+      "start_date": "2015-01-01",
+      "end_date": "2015-03-02",
+      "cagr": 0.0,
+      "max_drawdown": 0.0,
+      "win_rate": null,
+      "profit_factor": null,
+      "n_trades": 0,
+      "n_days": 1
+    },
+    {
+      "regime": "bear",
+      "start_date": "2015-03-03",
+      "end_date": "2016-02-24",
+      "cagr": 0.1591121399892279,
+      "max_drawdown": -0.0021087678042406213,
+      "win_rate": 0.631578947368421,
+      "profit_factor": 2.4503101773986504,
+      "n_trades": 38,
+      "n_days": 4
+    },
+    {
+      "regime": "bull",
+      "start_date": "2016-02-25",
+      "end_date": "2020-01-16",
+      "cagr": 0.01709290670470409,
+      "max_drawdown": -0.32979800062583375,
+      "win_rate": 0.4420289855072464,
+      "profit_factor": 1.1166254573841201,
+      "n_trades": 138,
+      "n_days": 15
+    },
+    {
+      "regime": "bear",
+      "start_date": "2020-01-17",
+      "end_date": "2020-03-20",
+      "cagr": 0.0,
+      "max_drawdown": 0.0,
+      "win_rate": 0.375,
+      "profit_factor": 0.5493554213494546,
+      "n_trades": 8,
+      "n_days": 1
+    },
+    {
+      "regime": "bull",
+      "start_date": "2020-03-23",
+      "end_date": "2026-07-21",
+      "cagr": 0.4285165850090107,
+      "max_drawdown": -0.3216416354458935,
+      "win_rate": 0.5079365079365079,
+      "profit_factor": 1.9765035029822562,
+      "n_trades": 126,
+      "n_days": 25
+    }
+  ],
+  "runtime_seconds": 273.69121857499704
+}

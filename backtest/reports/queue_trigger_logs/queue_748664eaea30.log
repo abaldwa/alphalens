@@ -1,0 +1,534 @@
+2026-07-22 07:56:26,255 INFO run_strategy_queue: launching job[0] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name A2 --top-n 10 --report-suffix queue_748664eaea30_job0
+2026-07-22 07:56:27,935 INFO orchestrator backtest starting: channel=technical strategy_id=ta_a2_21d_20260722 run_id=orch_technical_20260722_075627_1f00c1ed horizon_bucket=21_day
+2026-07-22 07:56:27,935 INFO orchestrator[orch_technical_20260722_075627_1f00c1ed]: acquired the backtest execution lock
+2026-07-22 07:56:27,942 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:56:43,499 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:56:43,500 INFO orchestrator[orch_technical_20260722_075627_1f00c1ed]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:56:44,049 INFO run_strategy_queue: job[0] exited 1 in 18s
+2026-07-22 07:56:44,050 ERROR run_strategy_queue: job[0] failed (exit 1)
+2026-07-22 07:56:44,056 INFO run_strategy_queue: launching job[1] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name B4 --top-n 10 --report-suffix queue_748664eaea30_job1
+2026-07-22 07:56:45,969 INFO orchestrator backtest starting: channel=technical strategy_id=ta_b4_5d_20260722 run_id=orch_technical_20260722_075645_e99368d6 horizon_bucket=5_day
+2026-07-22 07:56:45,969 INFO orchestrator[orch_technical_20260722_075645_e99368d6]: acquired the backtest execution lock
+2026-07-22 07:56:45,976 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:57:01,531 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:57:01,531 INFO orchestrator[orch_technical_20260722_075645_e99368d6]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:57:02,184 INFO run_strategy_queue: job[1] exited 1 in 18s
+2026-07-22 07:57:02,185 ERROR run_strategy_queue: job[1] failed (exit 1)
+2026-07-22 07:57:02,187 INFO run_strategy_queue: launching job[2] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name B5 --top-n 10 --report-suffix queue_748664eaea30_job2
+2026-07-22 07:57:04,320 INFO orchestrator backtest starting: channel=technical strategy_id=ta_b5_21d_20260722 run_id=orch_technical_20260722_075704_5dd106c1 horizon_bucket=21_day
+2026-07-22 07:57:04,320 INFO orchestrator[orch_technical_20260722_075704_5dd106c1]: acquired the backtest execution lock
+2026-07-22 07:57:04,327 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:57:19,882 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:57:19,883 INFO orchestrator[orch_technical_20260722_075704_5dd106c1]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:57:20,558 INFO run_strategy_queue: job[2] exited 1 in 18s
+2026-07-22 07:57:20,559 ERROR run_strategy_queue: job[2] failed (exit 1)
+2026-07-22 07:57:20,565 INFO run_strategy_queue: launching job[3] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name C1 --top-n 10 --report-suffix queue_748664eaea30_job3
+2026-07-22 07:57:22,493 INFO orchestrator backtest starting: channel=technical strategy_id=ta_c1_21d_20260722 run_id=orch_technical_20260722_075722_9fe02956 horizon_bucket=21_day
+2026-07-22 07:57:22,493 INFO orchestrator[orch_technical_20260722_075722_9fe02956]: acquired the backtest execution lock
+2026-07-22 07:57:22,501 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:57:38,056 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:57:38,057 INFO orchestrator[orch_technical_20260722_075722_9fe02956]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:57:38,724 INFO run_strategy_queue: job[3] exited 1 in 18s
+2026-07-22 07:57:38,725 ERROR run_strategy_queue: job[3] failed (exit 1)
+2026-07-22 07:57:38,727 INFO run_strategy_queue: launching job[4] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name C2 --top-n 10 --report-suffix queue_748664eaea30_job4
+2026-07-22 07:57:40,393 INFO orchestrator backtest starting: channel=technical strategy_id=ta_c2_21d_20260722 run_id=orch_technical_20260722_075740_41f0da45 horizon_bucket=21_day
+2026-07-22 07:57:40,393 INFO orchestrator[orch_technical_20260722_075740_41f0da45]: acquired the backtest execution lock
+2026-07-22 07:57:40,400 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:57:55,957 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:57:55,957 INFO orchestrator[orch_technical_20260722_075740_41f0da45]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:57:56,648 INFO run_strategy_queue: job[4] exited 1 in 18s
+2026-07-22 07:57:56,649 ERROR run_strategy_queue: job[4] failed (exit 1)
+2026-07-22 07:57:56,651 INFO run_strategy_queue: launching job[5] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name C3 --top-n 10 --report-suffix queue_748664eaea30_job5
+2026-07-22 07:57:58,723 INFO orchestrator backtest starting: channel=technical strategy_id=ta_c3_21d_20260722 run_id=orch_technical_20260722_075758_b8713f75 horizon_bucket=21_day
+2026-07-22 07:57:58,724 INFO orchestrator[orch_technical_20260722_075758_b8713f75]: acquired the backtest execution lock
+2026-07-22 07:57:58,731 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:58:14,285 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:58:14,286 INFO orchestrator[orch_technical_20260722_075758_b8713f75]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:58:14,944 INFO run_strategy_queue: job[5] exited 1 in 18s
+2026-07-22 07:58:14,945 ERROR run_strategy_queue: job[5] failed (exit 1)
+2026-07-22 07:58:14,947 INFO run_strategy_queue: launching job[6] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name C4 --top-n 10 --report-suffix queue_748664eaea30_job6
+2026-07-22 07:58:17,045 INFO orchestrator backtest starting: channel=technical strategy_id=ta_c4_21d_20260722 run_id=orch_technical_20260722_075817_62b8d177 horizon_bucket=21_day
+2026-07-22 07:58:17,045 INFO orchestrator[orch_technical_20260722_075817_62b8d177]: acquired the backtest execution lock
+2026-07-22 07:58:17,052 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:58:32,604 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:58:32,605 INFO orchestrator[orch_technical_20260722_075817_62b8d177]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:58:33,270 INFO run_strategy_queue: job[6] exited 1 in 18s
+2026-07-22 07:58:33,271 ERROR run_strategy_queue: job[6] failed (exit 1)
+2026-07-22 07:58:33,273 INFO run_strategy_queue: launching job[7] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name C5 --top-n 10 --report-suffix queue_748664eaea30_job7
+2026-07-22 07:58:35,372 INFO orchestrator backtest starting: channel=technical strategy_id=ta_c5_63d_20260722 run_id=orch_technical_20260722_075835_8f00e49a horizon_bucket=63_day
+2026-07-22 07:58:35,372 INFO orchestrator[orch_technical_20260722_075835_8f00e49a]: acquired the backtest execution lock
+2026-07-22 07:58:35,380 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:58:50,934 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:58:50,934 INFO orchestrator[orch_technical_20260722_075835_8f00e49a]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:58:51,611 INFO run_strategy_queue: job[7] exited 1 in 18s
+2026-07-22 07:58:51,612 ERROR run_strategy_queue: job[7] failed (exit 1)
+2026-07-22 07:58:51,613 INFO run_strategy_queue: launching job[8] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name C6 --top-n 10 --report-suffix queue_748664eaea30_job8
+2026-07-22 07:58:53,425 INFO orchestrator backtest starting: channel=technical strategy_id=ta_c6_63d_20260722 run_id=orch_technical_20260722_075853_8f7a999e horizon_bucket=63_day
+2026-07-22 07:58:53,425 INFO orchestrator[orch_technical_20260722_075853_8f7a999e]: acquired the backtest execution lock
+2026-07-22 07:58:53,432 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:08,987 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:59:08,988 INFO orchestrator[orch_technical_20260722_075853_8f7a999e]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 121, in get_ohlcv
+    # (build prompt: "GET /api/v1/ohlcv/{ticker}?from=&to=&adjusted=true")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 962, in _get
+    
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 07:59:09,588 INFO run_strategy_queue: job[8] exited 1 in 18s
+2026-07-22 07:59:09,588 ERROR run_strategy_queue: job[8] failed (exit 1)
+2026-07-22 07:59:09,590 INFO run_strategy_queue: launching job[9] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name C7 --top-n 10 --report-suffix queue_748664eaea30_job9
+2026-07-22 07:59:11,569 INFO orchestrator backtest starting: channel=technical strategy_id=ta_c7_21d_20260722 run_id=orch_technical_20260722_075911_31e52244 horizon_bucket=21_day
+2026-07-22 07:59:11,569 INFO orchestrator[orch_technical_20260722_075911_31e52244]: acquired the backtest execution lock
+2026-07-22 07:59:11,577 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:11,584 INFO orchestrator[orch_technical_20260722_075911_31e52244]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:12,202 INFO run_strategy_queue: job[9] exited 1 in 3s
+2026-07-22 07:59:12,202 ERROR run_strategy_queue: job[9] failed (exit 1)
+2026-07-22 07:59:12,205 INFO run_strategy_queue: launching job[10] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name D1 --top-n 10 --report-suffix queue_748664eaea30_job10
+2026-07-22 07:59:14,070 INFO orchestrator backtest starting: channel=technical strategy_id=ta_d1_5d_20260722 run_id=orch_technical_20260722_075914_8703bc3b horizon_bucket=5_day
+2026-07-22 07:59:14,070 INFO orchestrator[orch_technical_20260722_075914_8703bc3b]: acquired the backtest execution lock
+2026-07-22 07:59:14,078 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:14,085 INFO orchestrator[orch_technical_20260722_075914_8703bc3b]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:14,666 INFO run_strategy_queue: job[10] exited 1 in 2s
+2026-07-22 07:59:14,667 ERROR run_strategy_queue: job[10] failed (exit 1)
+2026-07-22 07:59:14,668 INFO run_strategy_queue: launching job[11] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name D2 --top-n 10 --report-suffix queue_748664eaea30_job11
+2026-07-22 07:59:16,851 INFO orchestrator backtest starting: channel=technical strategy_id=ta_d2_5d_20260722 run_id=orch_technical_20260722_075916_6ce52df0 horizon_bucket=5_day
+2026-07-22 07:59:16,852 INFO orchestrator[orch_technical_20260722_075916_6ce52df0]: acquired the backtest execution lock
+2026-07-22 07:59:16,859 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:16,866 INFO orchestrator[orch_technical_20260722_075916_6ce52df0]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:17,451 INFO run_strategy_queue: job[11] exited 1 in 3s
+2026-07-22 07:59:17,451 ERROR run_strategy_queue: job[11] failed (exit 1)
+2026-07-22 07:59:17,458 INFO run_strategy_queue: launching job[12] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name D3 --top-n 10 --report-suffix queue_748664eaea30_job12
+2026-07-22 07:59:19,624 INFO orchestrator backtest starting: channel=technical strategy_id=ta_d3_5d_20260722 run_id=orch_technical_20260722_075919_ef8875b6 horizon_bucket=5_day
+2026-07-22 07:59:19,624 INFO orchestrator[orch_technical_20260722_075919_ef8875b6]: acquired the backtest execution lock
+2026-07-22 07:59:19,631 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:19,639 INFO orchestrator[orch_technical_20260722_075919_ef8875b6]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:20,243 INFO run_strategy_queue: job[12] exited 1 in 3s
+2026-07-22 07:59:20,244 ERROR run_strategy_queue: job[12] failed (exit 1)
+2026-07-22 07:59:20,246 INFO run_strategy_queue: launching job[13] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name D4 --top-n 10 --report-suffix queue_748664eaea30_job13
+2026-07-22 07:59:22,103 INFO orchestrator backtest starting: channel=technical strategy_id=ta_d4_21d_20260722 run_id=orch_technical_20260722_075922_2f072d83 horizon_bucket=21_day
+2026-07-22 07:59:22,103 INFO orchestrator[orch_technical_20260722_075922_2f072d83]: acquired the backtest execution lock
+2026-07-22 07:59:22,110 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:22,118 INFO orchestrator[orch_technical_20260722_075922_2f072d83]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:22,727 INFO run_strategy_queue: job[13] exited 1 in 2s
+2026-07-22 07:59:22,728 ERROR run_strategy_queue: job[13] failed (exit 1)
+2026-07-22 07:59:22,730 INFO run_strategy_queue: launching job[14] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name E1 --top-n 10 --report-suffix queue_748664eaea30_job14
+2026-07-22 07:59:24,869 INFO orchestrator backtest starting: channel=technical strategy_id=ta_e1_63d_20260722 run_id=orch_technical_20260722_075924_441ea4ba horizon_bucket=63_day
+2026-07-22 07:59:24,869 INFO orchestrator[orch_technical_20260722_075924_441ea4ba]: acquired the backtest execution lock
+2026-07-22 07:59:24,876 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:24,884 INFO orchestrator[orch_technical_20260722_075924_441ea4ba]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:25,509 INFO run_strategy_queue: job[14] exited 1 in 3s
+2026-07-22 07:59:25,510 ERROR run_strategy_queue: job[14] failed (exit 1)
+2026-07-22 07:59:25,510 INFO run_strategy_queue: launching job[15] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name E2 --top-n 10 --report-suffix queue_748664eaea30_job15
+2026-07-22 07:59:27,717 INFO orchestrator backtest starting: channel=technical strategy_id=ta_e2_63d_20260722 run_id=orch_technical_20260722_075927_62b2b345 horizon_bucket=63_day
+2026-07-22 07:59:27,717 INFO orchestrator[orch_technical_20260722_075927_62b2b345]: acquired the backtest execution lock
+2026-07-22 07:59:27,725 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:27,732 INFO orchestrator[orch_technical_20260722_075927_62b2b345]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:28,345 INFO run_strategy_queue: job[15] exited 1 in 3s
+2026-07-22 07:59:28,346 ERROR run_strategy_queue: job[15] failed (exit 1)
+2026-07-22 07:59:28,352 INFO run_strategy_queue: launching job[16] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name E3 --top-n 10 --report-suffix queue_748664eaea30_job16
+2026-07-22 07:59:30,538 INFO orchestrator backtest starting: channel=technical strategy_id=ta_e3_63d_20260722 run_id=orch_technical_20260722_075930_9af4013e horizon_bucket=63_day
+2026-07-22 07:59:30,538 INFO orchestrator[orch_technical_20260722_075930_9af4013e]: acquired the backtest execution lock
+2026-07-22 07:59:30,546 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:30,553 INFO orchestrator[orch_technical_20260722_075930_9af4013e]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 132, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 972, in _get
+    response = _get_with_retry(client, url, params=params)
+               ^^^^^^^^^^^^^^^
+NameError: name '_get_with_retry' is not defined
+2026-07-22 07:59:31,164 INFO run_strategy_queue: job[16] exited 1 in 3s
+2026-07-22 07:59:31,165 ERROR run_strategy_queue: job[16] failed (exit 1)
+2026-07-22 07:59:31,167 INFO run_strategy_queue: launching job[17] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name E4 --top-n 10 --report-suffix queue_748664eaea30_job17
+2026-07-22 07:59:32,872 INFO orchestrator backtest starting: channel=technical strategy_id=ta_e4_63d_20260722 run_id=orch_technical_20260722_075932_cce1fc1b horizon_bucket=63_day
+2026-07-22 07:59:32,873 INFO orchestrator[orch_technical_20260722_075932_cce1fc1b]: acquired the backtest execution lock
+2026-07-22 07:59:32,877 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 07:59:48,427 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 07:59:48,427 WARNING DataStoreClient: 503 from http://localhost:8000/api/v1/ohlcv/20MICRONS (attempt 1/6) — retrying in 2.0s
+2026-07-22 08:00:05,973 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 08:00:05,973 WARNING DataStoreClient: 503 from http://localhost:8000/api/v1/ohlcv/20MICRONS (attempt 2/6) — retrying in 4.0s
+2026-07-22 08:00:25,520 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 08:00:25,521 WARNING DataStoreClient: 503 from http://localhost:8000/api/v1/ohlcv/20MICRONS (attempt 3/6) — retrying in 8.0s
+2026-07-22 08:00:49,067 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 08:00:49,068 WARNING DataStoreClient: 503 from http://localhost:8000/api/v1/ohlcv/20MICRONS (attempt 4/6) — retrying in 16.0s
+2026-07-22 08:01:20,615 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 08:01:20,615 WARNING DataStoreClient: 503 from http://localhost:8000/api/v1/ohlcv/20MICRONS (attempt 5/6) — retrying in 32.0s
+2026-07-22 08:02:08,164 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 08:02:08,164 INFO orchestrator[orch_technical_20260722_075932_cce1fc1b]: released the backtest execution lock
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 343, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 332, in main
+    run_orchestrator_backtest(
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 238, in run_orchestrator_backtest
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_orchestrator_backtest.py", line 106, in _fetch_real_ohlcv
+    rows = client.get_ohlcv(ticker, from_dt, to_dt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 153, in get_ohlcv
+    response = self._get(f"/api/v1/ohlcv/{ticker}", params=params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/datastore/client.py", line 994, in _get
+    response.raise_for_status()
+  File "/home/amit/projects/AlphaLens/.venv/lib/python3.11/site-packages/httpx/_models.py", line 763, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+2026-07-22 08:02:08,714 INFO run_strategy_queue: job[17] exited 1 in 158s
+2026-07-22 08:02:08,715 ERROR run_strategy_queue: job[17] failed (exit 1)
+2026-07-22 08:02:08,722 INFO run_strategy_queue: launching job[18] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python -m backtest.run_orchestrator_backtest --channel technical --start-date 2015-01-01 --end-date 2026-07-22 --template-name E5 --top-n 10 --report-suffix queue_748664eaea30_job18
+2026-07-22 08:02:10,213 INFO orchestrator backtest starting: channel=technical strategy_id=ta_e5_21d_20260722 run_id=orch_technical_20260722_080210_b4e8d60e horizon_bucket=21_day
+2026-07-22 08:02:10,213 INFO orchestrator[orch_technical_20260722_080210_b4e8d60e]: acquired the backtest execution lock
+2026-07-22 08:02:10,218 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-07-22 08:02:25,770 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 08:02:25,771 WARNING DataStoreClient: 503 from http://localhost:8000/api/v1/ohlcv/20MICRONS (attempt 1/6) — retrying in 2.0s
+2026-07-22 08:02:43,317 INFO HTTP Request: GET http://localhost:8000/api/v1/ohlcv/20MICRONS?from=2015-01-01&to=2026-07-22 "HTTP/1.1 503 Service Unavailable"
+2026-07-22 08:02:43,318 WARNING DataStoreClient: 503 from http://localhost:8000/api/v1/ohlcv/20MICRONS (attempt 2/6) — retrying in 4.0s

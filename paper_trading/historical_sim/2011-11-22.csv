@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-11-22,FSL,BUY,7.292266571696478,3,09:15:00,6.715477125347605,15:30:00,2011-11-23,thesis_broken,miss,-1.8183588401662796,-0.08311813719773985,,,,,,

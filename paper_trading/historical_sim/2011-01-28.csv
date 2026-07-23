@@ -1,0 +1,5 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-01-28,JMFINANCIL,BUY,18.60870569434551,3,09:15:00,17.353783345015852,15:30:00,2011-02-04,thesis_broken,miss,-3.989304826899719,-0.07145947157610788,,,,,,
+2011-01-28,MANALIPETC,BUY,12.4,82475,09:15:00,11.35,15:30:00,2011-02-08,thesis_broken,miss,-90712.10326748004,-0.08869951135483875,,,,,,
+2011-01-28,PRAENG,BUY,14.5,1,09:15:00,13.2,15:30:00,2011-02-08,thesis_broken,miss,-1.358320334,-0.09367726441379311,,,,,,
+2011-01-28,BOMDYEING,BUY,77.22000000000001,9818,09:15:00,66.38,15:30:00,2011-02-09,thesis_broken,miss,-109476.4528005484,-0.14440023237814048,,,,,,

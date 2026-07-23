@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-01-03,TIJARIA,BUY,8.45,1,09:15:00,7.65,15:30:00,2012-03-23,thesis_broken,miss,-0.8339866773999987,-0.0986966482130176,,,,,,

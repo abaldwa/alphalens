@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaLens — Momentum Explained</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --surface: #ffffff; --surface-2: #eceae4; --border: #dcd8cf;
+    --text: #221f1a; --text-dim: #6b6558; --text-faint: #9b9585;
+    --accent: #2f5d8a; --accent-soft: #e4ecf3;
+    --ok: #2f7a4f; --ok-soft: #e3f1e7; --warn: #96691a; --warn-soft: #f5ecd8;
+    --crit: #a13f3f; --crit-soft: #f5e2e2; --rule: #cfc9bc;
+    --display: Georgia, "Iowan Old Style", "Palatino Linotype", "URW Palladio", serif;
+    --body: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "IBM Plex Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181c; --surface:#1d2025; --surface-2:#23262c; --border:#34383f; --text:#e7e4dc; --text-dim:#a6a196; --text-faint:#726d61; --accent:#7fa8d4; --accent-soft:#24313f; --ok:#6fbf8f; --ok-soft:#1e2f24; --warn:#d3ab5c; --warn-soft:#332a17; --crit:#d98686; --crit-soft:#382322; --rule:#34383f; }
+  }
+  :root[data-theme="dark"] { --bg:#16181c; --surface:#1d2025; --surface-2:#23262c; --border:#34383f; --text:#e7e4dc; --text-dim:#a6a196; --text-faint:#726d61; --accent:#7fa8d4; --accent-soft:#24313f; --ok:#6fbf8f; --ok-soft:#1e2f24; --warn:#d3ab5c; --warn-soft:#332a17; --crit:#d98686; --crit-soft:#382322; --rule:#34383f; }
+  :root[data-theme="light"] { --bg:#f4f2ee; --surface:#ffffff; --surface-2:#eceae4; --border:#dcd8cf; --text:#221f1a; --text-dim:#6b6558; --text-faint:#9b9585; --accent:#2f5d8a; --accent-soft:#e4ecf3; --ok:#2f7a4f; --ok-soft:#e3f1e7; --warn:#96691a; --warn-soft:#f5ecd8; --crit:#a13f3f; --crit-soft:#f5e2e2; --rule:#cfc9bc; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--body); font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .page { max-width: 1180px; margin: 0 auto; padding: 0 clamp(20px,4vw,56px) 96px; }
+  header.masthead { padding: 56px 0 28px; border-bottom: 1px solid var(--rule); margin-bottom: 40px; }
+  .backlink { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; color:var(--text-faint); text-decoration:none; margin-bottom:18px; }
+  .backlink:hover { color: var(--accent); }
+  .kicker { font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px; }
+  h1.title { font-family:var(--display); font-weight:400; font-size:clamp(30px,4.2vw,44px); line-height:1.12; margin:0 0 14px; text-wrap:balance; max-width:20ch; }
+  .dek { font-size:17px; color:var(--text-dim); max-width:66ch; margin:0; }
+  .meta-row { display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:22px; font-family:var(--mono); font-size:12.5px; color:var(--text-faint); }
+  .meta-row strong { color:var(--text-dim); font-weight:500; }
+  .layout { display:grid; grid-template-columns:210px minmax(0,1fr); gap:52px; align-items:start; }
+  @media (max-width:860px) { .layout{grid-template-columns:1fr;} nav.toc{display:none;} }
+  nav.toc { position:sticky; top:32px; font-family:var(--mono); font-size:12.5px; }
+  nav.toc .toc-label { text-transform:uppercase; letter-spacing:.1em; color:var(--text-faint); margin-bottom:12px; font-size:11px; }
+  nav.toc ol { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; border-left:1px solid var(--rule); }
+  nav.toc a { display:block; padding:5px 0 5px 14px; color:var(--text-dim); text-decoration:none; border-left:2px solid transparent; margin-left:-1px; }
+  nav.toc a:hover { color:var(--text); border-left-color:var(--text-faint); }
+  main { min-width:0; }
+  section.module { margin-bottom:60px; scroll-margin-top:24px; }
+  .module-head { display:flex; align-items:baseline; gap:14px; margin-bottom:6px; }
+  .module-tag { font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); background:var(--accent-soft); padding:3px 8px; border-radius:2px; white-space:nowrap; }
+  h2 { font-family:var(--display); font-weight:400; font-size:27px; margin:0; text-wrap:balance; }
+  .module-sub { color:var(--text-dim); font-size:15px; margin:10px 0 26px; max-width:70ch; }
+  h3 { font-family:var(--body); font-weight:600; font-size:15px; margin:30px 0 10px; color:var(--text); }
+  p { max-width:70ch; color:var(--text); }
+  code { font-family:var(--mono); font-size:.88em; background:var(--surface-2); padding:1px 5px; border-radius:3px; color:var(--text); }
+  ol.flow { list-style:none; margin:0 0 20px; padding:0; display:flex; flex-direction:column; gap:0; border-left:2px solid var(--border); max-width:70ch; }
+  ol.flow li { position:relative; padding:4px 0 4px 22px; margin:0; font-size:14.5px; color:var(--text-dim); }
+  ol.flow li::before { content:""; position:absolute; left:-5px; top:12px; width:8px; height:8px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
+  ol.flow li strong { color:var(--text); font-weight:600; }
+  .table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:4px; margin:6px 0 28px; }
+  table.metrics { border-collapse:collapse; width:100%; min-width:560px; font-size:13.7px; }
+  table.metrics caption { text-align:left; font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); padding:10px 14px 8px; background:var(--surface-2); }
+  table.metrics th, table.metrics td { text-align:left; padding:9px 14px; border-top:1px solid var(--border); vertical-align:top; }
+  table.metrics thead th { font-family:var(--mono); font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); background:var(--surface-2); border-top:none; }
+  table.metrics tbody tr:hover { background:var(--surface-2); }
+  table.metrics td.metric { font-weight:600; white-space:nowrap; }
+  table.metrics td.count { font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--accent); text-align:right; }
+  table.metrics td.desc { color:var(--text-dim); }
+  .badge { display:inline-block; font-family:var(--mono); font-size:10.5px; padding:2px 7px; border-radius:3px; background:var(--accent-soft); color:var(--accent); margin-right:6px; }
+  .callout { border:1px solid var(--border); border-left:3px solid var(--accent); background:var(--surface); border-radius:0 4px 4px 0; padding:14px 18px; margin:20px 0; max-width:70ch; font-size:14.5px; color:var(--text-dim); }
+  .callout strong { color:var(--text); }
+  .callout.warn { border-left-color: var(--warn); }
+  hr.divider { border:none; border-top:1px solid var(--rule); margin:56px 0; }
+  footer { font-family:var(--mono); font-size:12px; color:var(--text-faint); padding-top:24px; border-top:1px solid var(--rule); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="masthead">
+    <a class="backlink" href="backtest-paper-trading.html">&larr; Backtest, Paper Trading &amp; Forward Testing</a>
+    <p class="kicker">AlphaLens — Explain Series</p>
+    <h1 class="title">Momentum</h1>
+    <p class="dek">Systematic trailing-momentum ranking across fixed market-cap-rank bands — independent 3/6/9/12-month lookbacks, never blended into one composite score.</p>
+    <div class="meta-row">
+      <span><strong>Scope</strong> FeatureBacklog.md ML38</span>
+      <span><strong>Universe</strong> 4 fixed market-cap-rank bands + a mixed band</span>
+      <span><strong>Screens</strong> Overview · Portfolio · Rebalance · Universe</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <p class="toc-label">On this page</p>
+      <ol>
+        <li><a href="#what">What it is</a></li>
+        <li><a href="#universe">Universe — rank bands</a></li>
+        <li><a href="#signal">Trailing momentum signal</a></li>
+        <li><a href="#live">Live ranking &amp; rebalance</a></li>
+        <li><a href="#metrics">Metrics — ML38's 3</a></li>
+        <li><a href="#status">Status &amp; unification</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <section class="module" id="what">
+        <div class="module-head"><span class="module-tag">Overview</span><h2>What it is</h2></div>
+        <p class="module-sub">Momentum is deliberately the simplest strategy in AlphaLens — no ML model, no signal threshold tuning, just trailing price return ranked within a fixed universe and rebalanced on a schedule. That simplicity is the point: it's the strategy easiest to reason about and stress-test, and its backtest engine (<code>backtest/momentum_backtest.py</code>) was the first to get calendar-day CAGR/XIRR methodology, later generalized into the unified Backtest module's <code>core/metrics.py</code>.</p>
+      </section>
+
+      <section class="module" id="universe">
+        <div class="module-head"><span class="module-tag">features/momentum_universe.py</span><h2>Universe — fixed market-cap-rank bands</h2></div>
+        <p class="module-sub">Constituents are fixed on the first real trading day of each year and never recomputed mid-year, even if ranks shift — a stock's rank a decade ago is what decided its band membership at the time, not its rank today.</p>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Band</th><th>Rank range</th><th>Proxy for</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">Band 1</td><td class="desc">1–50 by market cap</td><td class="desc">"Nifty 50"</td></tr>
+              <tr><td class="metric">Band 2</td><td class="desc">51–100</td><td class="desc">"Nifty Next 50"</td></tr>
+              <tr><td class="metric">Band 3</td><td class="desc">100–150</td><td class="desc">Mid-cap</td></tr>
+              <tr><td class="metric">Band 4</td><td class="desc">150–200</td><td class="desc">Mid/small-cap</td></tr>
+              <tr><td class="metric">Band 5</td><td class="desc">100–200 (mixed)</td><td class="desc">A single wider ranking spanning Bands 3+4, rather than two narrower rankings — user-requested 2026-07-14</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><code>nifty500_proxy_universe()</code> also provides a broader Nifty-500-equivalent universe including delisted names, so survivorship bias doesn't creep into a strategy that's implicitly benchmarked against the real index.</p>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="signal">
+        <div class="module-head"><span class="module-tag">features/momentum_signal.py</span><h2>Trailing momentum signal</h2></div>
+        <p class="module-sub"><code>trailing_momentum()</code> computes each ticker's percentage price return over a trailing lookback, ending at the most recent real close on or before the as-of date — 3/6/9/12 real months, approximated as 63/126/189/252 trading days at the codebase's standard 21-trading-days-per-month convention.</p>
+        <ol class="flow">
+          <li><strong>Independent rankings.</strong> Each of the 4 lookbacks is its own ranking — never blended into a composite score, per ML38's confirmed scope.</li>
+          <li><strong>top_n_by_momentum()</strong> selects the top-N tickers within a band for a given lookback's ranking.</li>
+          <li><strong>orthogonalize_momentum_vs_factors()</strong> can strip out correlation with other known factors, so a momentum ranking isn't secretly just re-discovering a size or value effect.</li>
+        </ol>
+      </section>
+
+      <section class="module" id="live">
+        <div class="module-head"><span class="module-tag">features/momentum_live.py</span><h2>Live ranking &amp; rebalance</h2></div>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Function</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">compute_daily_ranking()</td><td class="desc">Today's momentum ranking for a given strategy configuration</td></tr>
+              <tr><td class="metric">is_rebalance_day() / next_rebalance_date()</td><td class="desc">Determines whether today is a scheduled rebalance day for a strategy, and when the next one falls</td></tr>
+              <tr><td class="metric">compute_rebalance_suggestions()</td><td class="desc">What to buy/sell/hold to bring the live portfolio back in line with the current ranking</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="metrics">
+        <div class="module-head"><span class="module-tag">backtest/momentum_metrics.py</span><h2>Metrics — ML38's confirmed 3</h2></div>
+        <p class="module-sub">ML38's scope deliberately kept the tracked metric set small and specific — not the full Backtest scorecard — per an explicit 2026-07-14 user decision:</p>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Metric</th><th>Basis</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">Total Return</td><td class="desc">Net-of-cost, whole-run, per variant</td></tr>
+              <tr><td class="metric">CAGR</td><td class="desc">Calendar-day/365.25 over the real elapsed experimentation period — the methodology later adopted as the Backtest module's canonical primary CAGR</td></tr>
+              <tr><td class="metric">Churn Factor</td><td class="desc">Bought + sold count per rebalance, reported both as a per-rebalance series and an annualized average</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><code>xirr()</code> was added later (also 2026-07-14) specifically for SIP comparisons — plain CAGR only handles a single lump sum in/out, so a monthly-SIP variant needs the money-weighted rate instead.</p>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="status">
+        <div class="module-head"><span class="module-tag">Roadmap</span><h2>Status &amp; unification</h2></div>
+        <p class="module-sub">Momentum currently has its own standalone backtest engine (<code>momentum_backtest.py</code>) and a separate manual trade journal, built the same week as ML38 shipped. Per <code>BacktestUmbrellaPlan.md</code>, both are slated to fold into the unified Backtest module: the signal logic (<code>trailing_momentum_from_panel</code>) stays, but portfolio/SIP/metrics delegate to the shared <code>core/</code> modules, and the manual trade journal migrates onto the same paper-trading schema Technical, Fundamental, and ML already share — accepting some workflow migration so all four channels end up on one consistent paper-trading UI instead of Momentum staying a special case.</p>
+        <div class="callout">
+          <strong>Research artifacts.</strong> Momentum's 732-variant grid backtest ledger and year-on-year report are published as standalone Claude artifacts rather than local dashboard screens — linked directly from the Momentum nav section.
+        </div>
+      </section>
+
+      <footer>
+        AlphaLens internal reference · sources: features/&#123;momentum_universe,momentum_signal,momentum_live&#125;.py, backtest/&#123;momentum_backtest,momentum_metrics,momentum_tax&#125;.py, BacktestUmbrellaPlan.md
+      </footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

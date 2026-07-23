@@ -1,0 +1,5 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-06-20,ESCORTS,BUY,95.88116339920795,2,09:15:00,90.44508570893028,15:30:00,2011-08-01,thesis_broken,miss,-11.643441101072625,-0.060718084179863054,,,,,,
+2011-06-20,JAYNECOIND,BUY,20.65,1,09:15:00,19.2,15:30:00,2011-08-05,thesis_broken,miss,-1.5330561998000007,-0.07424000967554484,,,,,,
+2011-06-20,PTC,BUY,72.35,1,09:15:00,68.2,15:30:00,2011-08-19,thesis_broken,miss,-4.440998356199998,-0.061382147286800255,,,,,,
+2011-06-20,TATACOMM,BUY,179.07116014371366,1,09:15:00,241.42729245273685,15:30:00,2012-02-22,target_achieved,hit,61.63589162837846,0.3441977567963068,,,,,,

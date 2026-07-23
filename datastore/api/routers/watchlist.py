@@ -55,6 +55,20 @@ _ATR_MULTIPLIER = 1.5  # realistic-target fallback: horizon-scaled ATR band, use
 # the quantile model has no q50_return for a ticker/date (never a fixed 15%)
 
 
+def _build_price_map(price_df: pd.DataFrame) -> dict:
+    """
+    REV26 (2026-07-21 review): a plain `dict(zip(...))` here would let a
+    NaN `close` (fetchdf() surfaces a NULL float as float('nan'), not None)
+    reach DailyWatchlistRow's float fields — `if price is not None` below
+    doesn't catch NaN. ohlcv_adjusted.close is schema-NOT-NULL today so this
+    isn't reachable via that table alone, but this cast is the same cheap,
+    always-correct belt-and-suspenders pattern already applied in
+    fundamentals.py/sector_accumulation.py wherever a DataFrame's float
+    column feeds a Pydantic response model, in case that ever changes.
+    """
+    return {t: (c if pd.notna(c) else None) for t, c in zip(price_df["ticker"], price_df["close"])}
+
+
 @router.get("/current", response_model=WatchlistResponse)
 async def get_watchlist_current() -> WatchlistResponse:
     """Top 20 tickers by mb_probability, from the most recent ml_multibagger date.
@@ -97,6 +111,56 @@ async def get_watchlist_current() -> WatchlistResponse:
             f"{len(low_liquidity_tickers)} additional sub-Rs20cr-ADTV picks shown separately (ML27)."
         ),
     )
+
+
+@router.get("/pillar_summary")
+async def get_ml_pillar_summary() -> dict:
+    """Home page pillar-outcome card: buy-signal count + avg forward
+    q50_return for whichever of the 5d/21d/63d horizon models has the most
+    recent signal date. No win-rate/success-rate table exists for ML
+    signals anywhere in this codebase (unlike Technical's
+    strategy_confidence_summary) — top_strategy/success_rate stay null
+    rather than fabricating a number; per project memory, ml_signals has
+    historically been close to a single-date snapshot, so a small/zero
+    recommendation_count here reflects real data availability, not a bug."""
+    best: Optional[tuple] = None  # (date, model_name, horizon_label)
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
+        for model_name, horizon_label, _horizon_days in _HORIZON_MODELS:
+            latest = conn.execute(
+                "SELECT MAX(date) FROM ml_signals WHERE model_name = ? AND buy_prob IS NOT NULL",
+                [model_name],
+            ).fetchone()
+            query_date = latest[0] if latest else None
+            if query_date is not None and (best is None or query_date > best[0]):
+                best = (query_date, model_name, horizon_label)
+
+        if best is None:
+            return {"as_of_date": None, "available": False, "recommendation_count": 0,
+                    "avg_expected_return_pct": None, "top_strategy": None, "top_strategy_success_rate_pct": None}
+
+        query_date, model_name, horizon_label = best
+        row = conn.execute(
+            """
+            SELECT COUNT(*), AVG(q50_return)
+            FROM ml_signals
+            WHERE date = ? AND model_name = ? AND buy_prob IS NOT NULL
+              AND ticker NOT IN (
+                  SELECT ticker FROM ml_signals
+                  WHERE date = ? AND model_name = 'pnd_detector' AND pnd_block = TRUE
+              )
+            """,
+            [query_date, model_name, query_date],
+        ).fetchone()
+
+    count, avg_return = row if row else (0, None)
+    return {
+        "as_of_date": str(query_date),
+        "available": True,
+        "recommendation_count": int(count or 0),
+        "avg_expected_return_pct": float(avg_return * 100) if avg_return is not None else None,
+        "top_strategy": f"ML {horizon_label} signal",
+        "top_strategy_success_rate_pct": None,
+    }
 
 
 @router.get("/daily", response_model=DailyWatchlistResponse)
@@ -172,7 +236,7 @@ async def get_daily_watchlist(
                     """,
                     tickers,
                 ).fetchdf()
-            price_map = dict(zip(price_df["ticker"], price_df["close"]))
+            price_map = _build_price_map(price_df)
 
             for ticker, buy_prob, direction, q10, q50, q90 in sig_rows:
                 price = price_map.get(ticker)

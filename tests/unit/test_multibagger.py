@@ -248,19 +248,27 @@ class TestTopWatchlistExcludesPnD:
 class TestFindAnalogues:
     def test_returns_n_results_sorted_by_similarity(self):
         query = dict(HISTORICAL_MULTIBAGGER_ARCHIVE[0]["features"])
-        results = find_analogues("TEST", n=3, feature_vector=query)
+        results = find_analogues("TEST", n=3, feature_vector=query, acknowledge_synthetic_archive=True)
 
         assert len(results) == 3
         scores = [r.similarity_score for r in results]
         assert scores == sorted(scores, reverse=True)
         assert results[0].stock_name == HISTORICAL_MULTIBAGGER_ARCHIVE[0]["stock_name"]
+        assert results[0].disclaimer  # every result carries the synthetic-archive disclaimer
 
     def test_no_feature_vector_and_no_saved_matrix_returns_empty(self, tmp_path, monkeypatch):
         import systems.ml_signal_engine.models.multibagger.analogue_miner as am
 
         monkeypatch.setattr(am, "FEATURES_DAILY_DIR", tmp_path)
-        results = find_analogues("NOFEATURES", n=3)
+        results = find_analogues("NOFEATURES", n=3, acknowledge_synthetic_archive=True)
         assert results == []
+
+    def test_raises_without_explicit_acknowledgement(self):
+        """2026-07-19 Fix 4: caller must consciously opt in to the
+        synthetic archive rather than silently getting results."""
+        query = dict(HISTORICAL_MULTIBAGGER_ARCHIVE[0]["features"])
+        with pytest.raises(RuntimeError, match="SYNTHETIC"):
+            find_analogues("TEST", n=3, feature_vector=query)
 
 
 class TestMultibaggerModelTraining:

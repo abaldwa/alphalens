@@ -426,9 +426,21 @@ def load_exit_training_data_from_db(logs_dir=None, min_closed_positions: int = M
 
     Parameters
     ----------
-    logs_dir : Path, optional
-        Defaults to scripts/paper_trading_tracker.py's PaperTradingTracker
-        default ("./paper_trading/executions").
+    logs_dir : Path or None, optional
+        If given, reads ONLY this directory (unchanged behavior — existing
+        callers/tests that pass an explicit dir are unaffected). If None
+        (default), reads from BOTH real sources (2026-07-20 fix, so this
+        model isn't permanently stuck on however few real forward-time
+        trading days have accumulated):
+          - "./paper_trading/executions" — real forward-time paper trades,
+            Gate-7-counted.
+          - "./paper_trading/historical_sim" — real historical bootstrap
+            replay (scripts/run_paper_trading_sim.py): real pre-trained
+            models run day-by-day over real past OHLCV/features with no
+            retraining and no fabricated data — genuine closed positions,
+            just not forward-time ones, so they never count toward Gate 7
+            (that gate only ever counts dated files under executions/),
+            but they ARE real enough to train this exit model on.
     min_closed_positions : int
         Minimum number of closed (exit_price populated) trades required.
 
@@ -440,26 +452,31 @@ def load_exit_training_data_from_db(logs_dir=None, min_closed_positions: int = M
     Raises
     ------
     RuntimeError
-        If fewer than `min_closed_positions` real closed trades are found.
+        If fewer than `min_closed_positions` real closed trades are found
+        across every searched directory.
     """
     from pathlib import Path as _Path
 
-    logs_dir = _Path(logs_dir) if logs_dir else _Path("./paper_trading/executions")
+    search_dirs = [_Path(logs_dir)] if logs_dir else [
+        _Path("./paper_trading/executions"), _Path("./paper_trading/historical_sim"),
+    ]
     closed_trades = []
-    if logs_dir.exists():
-        for log_file in sorted(logs_dir.glob("*.csv")):
-            df = pd.read_csv(log_file)
-            df = df[df["exit_price"].notna() & (df["exit_price"] != "")]
-            closed_trades.append(df)
+    for d in search_dirs:
+        if d.exists():
+            for log_file in sorted(d.glob("*.csv")):
+                df = pd.read_csv(log_file)
+                df = df[df["exit_price"].notna() & (df["exit_price"] != "")]
+                closed_trades.append(df)
 
     n_closed = sum(len(df) for df in closed_trades)
     if n_closed < min_closed_positions:
         raise RuntimeError(
-            f"Only {n_closed} closed paper-trading positions found in {logs_dir} — "
+            f"Only {n_closed} closed paper-trading positions found in {search_dirs} — "
             f"need at least {min_closed_positions} real closed trades to train "
             "ExitSignalModel. There is no synthetic-data fallback. Continue running "
-            "scripts/paper_trading_tracker.py paper trading until enough closed "
-            "positions accumulate. See BuildLog.md 'Real data sourcing — Exit Signal'."
+            "scripts/paper_trading_tracker.py paper trading (or scripts/run_paper_trading_sim.py "
+            "for a real historical bootstrap) until enough closed positions accumulate. "
+            "See BuildLog.md 'Real data sourcing — Exit Signal'."
         )
 
     trades = pd.concat(closed_trades, ignore_index=True)

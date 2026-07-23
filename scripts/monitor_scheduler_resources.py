@@ -38,9 +38,10 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-LOG_PATH = Path("/home/amit/projects/AlphaLens/datastore/logs/scheduler_resource_monitor.log")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+LOG_PATH = REPO_ROOT / "datastore/logs/scheduler_resource_monitor.log"
 ENV_OVERRIDE_PATH = Path.home() / ".config/alphalens/scheduler.env"
-PIPELINE_LOG_DB_PATH = Path("/home/amit/projects/AlphaLens/datastore/normalised/pipeline_log.db")
+PIPELINE_LOG_DB_PATH = REPO_ROOT / "datastore/normalised/pipeline_log.db"
 
 # Available-memory thresholds (percent of total) that trigger throttling.
 LOW_MEM_PCT = 20

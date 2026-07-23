@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-11-02,GENESYS,BUY,154.75,2,09:15:00,137.95,15:30:00,2012-12-20,thesis_broken,miss,-34.84483747400003,-0.11258428909208411,,,,,,

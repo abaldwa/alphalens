@@ -39,7 +39,7 @@ the ordering or the merge SQL shape is spelled out.
 
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
 # Higher number wins a real (both-sides-non-NULL) conflict.
 # F5 (2026-07-10): "external_csv" is scripts/ingest_external_fundamentals.py's
@@ -121,4 +121,53 @@ def build_priority_update_clause(columns: Iterable[str]) -> str:
         "COALESCE(fundamentals.fundamentals_source_priority, 0) "
         "THEN excluded.fundamentals_source_priority ELSE fundamentals.fundamentals_source_priority END"
     )
+    # 2026-07-19 full-codebase-review Fix 5: restatement-versioning audit
+    # trail. Tracks WHEN the currently-winning source's value was ingested
+    # — "whichever source won, use its ingestion timestamp" (same
+    # winner-tracking semantics as fundamentals_source/_priority above),
+    # NOT "most recent write wins" (which would defeat the priority
+    # ordering this whole module exists to enforce). Purely additive/audit
+    # — does not change which value wins a conflict, does not alter any
+    # existing stored fundamentals value, and does not change PIT
+    # filtering (get_fundamentals_pit still filters on announcement_date
+    # only). Lets a later pass detect "this quarter's numbers were
+    # silently overwritten by a restatement after date X" without having
+    # to diff full snapshots.
+    clauses.append(
+        "as_of_ingested = CASE "
+        "WHEN excluded.fundamentals_source_priority >= "
+        "COALESCE(fundamentals.fundamentals_source_priority, 0) "
+        "THEN excluded.as_of_ingested ELSE fundamentals.as_of_ingested END"
+    )
     return ", ".join(clauses)
+
+
+def append_fundamentals_history(conn: Any, ticker: str, fiscal_year: int, quarter: int) -> None:
+    """
+    2026-07-20 (BacktestUmbrellaPlan.md Truthful Review Gap #2 fix): append
+    a real snapshot of the just-upserted (ticker, fiscal_year, quarter) row
+    into the genuinely append-only fundamentals_history table.
+
+    Call this immediately after your normal `INSERT ... ON CONFLICT ... DO
+    UPDATE` upsert into `fundamentals` commits — it re-reads whatever the
+    upsert just left in `fundamentals` (the real post-merge winning values,
+    not the raw incoming write, since a write that loses the priority
+    comparison shouldn't record a false history entry) and appends it,
+    stamped with the real wall-clock time this snapshot was recorded.
+
+    This is deliberately a re-SELECT of the current row, not a hand-passed
+    dict of columns: fundamentals_history is schema-cloned from
+    `fundamentals` via `CREATE TABLE ... AS SELECT * FROM fundamentals
+    WHERE 1=0` (datastore/schema/create_normalised.py), so this function
+    works unchanged as that table's ~65 columns evolve — no writer needs
+    to enumerate them.
+    """
+    conn.execute(
+        """
+        INSERT INTO fundamentals_history
+        SELECT nextval('fundamentals_history_id_seq'), current_timestamp, f.*
+        FROM fundamentals f
+        WHERE f.ticker = ? AND f.fiscal_year = ? AND f.quarter = ?
+        """,
+        [ticker, fiscal_year, quarter],
+    )

@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-07-21,JHS,BUY,41.15,25564,09:15:00,37.75,15:30:00,2011-08-02,thesis_broken,miss,-91148.67426939111,-0.08664663634993917,,,,,,

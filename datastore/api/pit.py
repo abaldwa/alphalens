@@ -13,6 +13,7 @@ SOLID: Single Responsibility — all PIT logic is isolated here for 100% testabi
 
 import logging
 from datetime import datetime, timedelta
+from typing import Any, List
 
 import pandas as pd
 
@@ -60,6 +61,72 @@ def enforce_pit_fundamentals(
     )
 
     return df_pit.sort_values(by=announcement_date_col, ascending=True)
+
+
+def get_fundamentals_pit(conn: Any, tickers: List[str], as_of: datetime) -> pd.DataFrame:
+    """
+    2026-07-20 (BacktestUmbrellaPlan.md Truthful Review Gap #2 fix):
+    genuinely point-in-time fundamentals, reading the append-only
+    `fundamentals_history` table (datastore/schema/create_normalised.py,
+    features/fundamental_source_priority.append_fundamentals_history)
+    instead of the live, mutable `fundamentals` table.
+
+    Filters on BOTH real PIT keys:
+    - `announcement_date <= as_of` (SPEC-DS-003, same filter
+      enforce_pit_fundamentals already applies)
+    - `recorded_at <= as_of` (NEW — when this snapshot was actually
+      written to the DB). Without this second filter, a restatement
+      recorded today for FY2018Q1 would leak into a backtest run "as of"
+      2018 — the exact lookahead-bias bug this function exists to close.
+
+    Takes the LATEST `recorded_at` snapshot per (ticker, fiscal_year,
+    quarter) among rows satisfying both filters — i.e. "the most
+    up-to-date value a trader could have actually known as of `as_of`",
+    not the first-ever or the globally-latest value.
+
+    Parameters
+    ----------
+    conn : an open DuckDB connection (any read mode).
+    tickers : candidate ticker list to restrict the query to.
+    as_of : reference date — both PIT filters above are applied against it.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per (ticker, fiscal_year, quarter) that was knowable as
+        of `as_of`, using each such quarter's latest as-of-`as_of`
+        snapshot. Empty DataFrame (with no columns) if `tickers` is empty
+        or `fundamentals_history` has no matching rows — never raises on
+        missing data, consistent with the No-Mock-Data Policy (missing
+        real data is reported as absence, not fabricated).
+    """
+    if not isinstance(as_of, datetime):
+        raise ValueError(f"as_of must be datetime, got {type(as_of)}")
+    if not tickers:
+        return pd.DataFrame()
+
+    placeholders = ",".join("?" for _ in tickers)
+    df = conn.execute(
+        f"""
+        SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY ticker, fiscal_year, quarter ORDER BY recorded_at DESC
+            ) AS rn
+            FROM fundamentals_history
+            WHERE ticker IN ({placeholders})
+              AND announcement_date <= ?
+              AND recorded_at <= ?
+        )
+        WHERE rn = 1
+        """,
+        list(tickers) + [as_of.date(), as_of],
+    ).df()
+
+    if df.empty:
+        return df
+    return df.drop(columns=["rn", "history_id", "recorded_at"]).sort_values(
+        by="announcement_date", ascending=True
+    ).reset_index(drop=True)
 
 
 def enforce_pit_shareholding(

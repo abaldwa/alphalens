@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-12-03,AKSHOPTFBR,BUY,16.7,62140,09:15:00,13.25,15:30:00,2010-12-09,thesis_broken,miss,-218556.87770789606,-0.21060891834730544,,,,,,

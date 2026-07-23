@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-05-26,IFCI,BUY,41.42064675174013,22,09:15:00,40.02601218097447,15:30:00,2011-06-23,thesis_broken,miss,-34.34710889941448,-0.037692125670033605,,,,,,
+2011-05-26,PRAKASH,BUY,61.9,1,09:15:00,55.0,15:30:00,2011-08-09,thesis_broken,miss,-7.148967494799997,-0.11549220508562193,,,,,,

@@ -1,0 +1,5 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-03-26,PENINLAND,BUY,32.5,489,09:15:00,30.05,15:30:00,2012-05-08,thesis_broken,miss,-1261.9710971099994,-0.07940670738461535,,,,,,
+2012-03-26,CENTEXT,BUY,2.35,6759,09:15:00,2.1,15:30:00,2012-05-08,thesis_broken,miss,-1753.6355015957997,-0.11040507072340423,,,,,,
+2012-03-26,INFOMEDIA,BUY,8.45,235,09:15:00,7.3,15:30:00,2012-05-11,thesis_broken,miss,-278.23686918899966,-0.14011676655621286,,,,,,
+2012-03-26,VASCONEQ,BUY,41.45,12,09:15:00,38.0,15:30:00,2012-05-14,thesis_broken,miss,-43.40058856080003,-0.0872549026151991,,,,,,

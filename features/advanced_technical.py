@@ -333,12 +333,19 @@ def _apply_fracdiff(series: np.ndarray, d: float) -> np.ndarray:
 
 def _optimal_fracdiff_d(log_prices: np.ndarray, target_adf_threshold: float = -3.5) -> float:
     """
-    Find minimum d such that the fracdiff series is stationary (ADF stat < threshold).
+    Find minimum d such that the fracdiff series is stationary, via a real
+    Augmented Dickey-Fuller test (statsmodels.tsa.stattools.adfuller) on
+    each candidate fracdiff series — stationary means the ADF test
+    statistic is below `target_adf_threshold` (2026-07-19 full-codebase-
+    review Fix 10: this previously used a lag-1-autocorrelation proxy
+    instead of a real ADF test, despite the docstring/parameter implying
+    otherwise — see BuildLog.md for the prior mislabeled version).
 
-    Binary search over d in [0, 1]. Falls back to d=1.0 if scipy is unavailable.
+    Binary search over d in [0, 1]. Falls back to d=1.0 if adfuller can't
+    be computed (insufficient valid points, or a numerical failure).
     Returns the optimal d as a scalar feature.
     """
-    from scipy.stats import pearsonr
+    from statsmodels.tsa.stattools import adfuller
 
     lo, hi, best_d = 0.0, 1.0, 1.0
     n = len(log_prices)
@@ -352,14 +359,12 @@ def _optimal_fracdiff_d(log_prices: np.ndarray, target_adf_threshold: float = -3
         if len(valid) < 16:
             lo = mid
             continue
-        # Lightweight stationarity proxy: autocorrelation at lag 1 shrinks as d grows
-        # Full ADF would be correct but is expensive; AR(1) coefficient ≈ ρ₁
-        if len(valid) > 2:
-            rho, _ = pearsonr(valid[:-1], valid[1:])
-        else:
-            rho = 1.0
-        # Treat rho < 0.3 as "stationary enough"
-        if rho < 0.30:
+        try:
+            adf_stat = adfuller(valid, autolag="AIC")[0]
+        except (ValueError, np.linalg.LinAlgError):
+            lo = mid
+            continue
+        if adf_stat < target_adf_threshold:
             best_d = mid
             hi = mid
         else:

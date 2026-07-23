@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-06-09,BLBLIMITED,BUY,6.4,169407,09:15:00,5.9,15:30:00,2011-06-13,thesis_broken,miss,-89064.27145244158,-0.08214709199999998,,,,,,

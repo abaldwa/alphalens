@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-09-15,TATAPOWER,BUY,89.27237099223473,1,09:15:00,84.84602691902892,15:30:00,2011-11-23,thesis_broken,miss,-4.785405762394717,-0.05360455546555352,,,,,,

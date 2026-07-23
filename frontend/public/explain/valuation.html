@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaLens — Valuation Explained</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --surface: #ffffff; --surface-2: #eceae4; --border: #dcd8cf;
+    --text: #221f1a; --text-dim: #6b6558; --text-faint: #9b9585;
+    --accent: #2f5d8a; --accent-soft: #e4ecf3;
+    --ok: #2f7a4f; --ok-soft: #e3f1e7; --warn: #96691a; --warn-soft: #f5ecd8;
+    --crit: #a13f3f; --crit-soft: #f5e2e2; --rule: #cfc9bc;
+    --display: Georgia, "Iowan Old Style", "Palatino Linotype", "URW Palladio", serif;
+    --body: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "IBM Plex Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181c; --surface:#1d2025; --surface-2:#23262c; --border:#34383f; --text:#e7e4dc; --text-dim:#a6a196; --text-faint:#726d61; --accent:#7fa8d4; --accent-soft:#24313f; --ok:#6fbf8f; --ok-soft:#1e2f24; --warn:#d3ab5c; --warn-soft:#332a17; --crit:#d98686; --crit-soft:#382322; --rule:#34383f; }
+  }
+  :root[data-theme="dark"] { --bg:#16181c; --surface:#1d2025; --surface-2:#23262c; --border:#34383f; --text:#e7e4dc; --text-dim:#a6a196; --text-faint:#726d61; --accent:#7fa8d4; --accent-soft:#24313f; --ok:#6fbf8f; --ok-soft:#1e2f24; --warn:#d3ab5c; --warn-soft:#332a17; --crit:#d98686; --crit-soft:#382322; --rule:#34383f; }
+  :root[data-theme="light"] { --bg:#f4f2ee; --surface:#ffffff; --surface-2:#eceae4; --border:#dcd8cf; --text:#221f1a; --text-dim:#6b6558; --text-faint:#9b9585; --accent:#2f5d8a; --accent-soft:#e4ecf3; --ok:#2f7a4f; --ok-soft:#e3f1e7; --warn:#96691a; --warn-soft:#f5ecd8; --crit:#a13f3f; --crit-soft:#f5e2e2; --rule:#cfc9bc; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--body); font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .page { max-width: 1180px; margin: 0 auto; padding: 0 clamp(20px,4vw,56px) 96px; }
+  header.masthead { padding: 56px 0 28px; border-bottom: 1px solid var(--rule); margin-bottom: 40px; }
+  .backlink { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; color:var(--text-faint); text-decoration:none; margin-bottom:18px; }
+  .backlink:hover { color: var(--accent); }
+  .kicker { font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px; }
+  h1.title { font-family:var(--display); font-weight:400; font-size:clamp(30px,4.2vw,44px); line-height:1.12; margin:0 0 14px; text-wrap:balance; max-width:20ch; }
+  .dek { font-size:17px; color:var(--text-dim); max-width:66ch; margin:0; }
+  .meta-row { display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:22px; font-family:var(--mono); font-size:12.5px; color:var(--text-faint); }
+  .meta-row strong { color:var(--text-dim); font-weight:500; }
+  .layout { display:grid; grid-template-columns:210px minmax(0,1fr); gap:52px; align-items:start; }
+  @media (max-width:860px) { .layout{grid-template-columns:1fr;} nav.toc{display:none;} }
+  nav.toc { position:sticky; top:32px; font-family:var(--mono); font-size:12.5px; }
+  nav.toc .toc-label { text-transform:uppercase; letter-spacing:.1em; color:var(--text-faint); margin-bottom:12px; font-size:11px; }
+  nav.toc ol { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; border-left:1px solid var(--rule); }
+  nav.toc a { display:block; padding:5px 0 5px 14px; color:var(--text-dim); text-decoration:none; border-left:2px solid transparent; margin-left:-1px; }
+  nav.toc a:hover { color:var(--text); border-left-color:var(--text-faint); }
+  main { min-width:0; }
+  section.module { margin-bottom:60px; scroll-margin-top:24px; }
+  .module-head { display:flex; align-items:baseline; gap:14px; margin-bottom:6px; }
+  .module-tag { font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); background:var(--accent-soft); padding:3px 8px; border-radius:2px; white-space:nowrap; }
+  h2 { font-family:var(--display); font-weight:400; font-size:27px; margin:0; text-wrap:balance; }
+  .module-sub { color:var(--text-dim); font-size:15px; margin:10px 0 26px; max-width:70ch; }
+  h3 { font-family:var(--body); font-weight:600; font-size:15px; margin:30px 0 10px; color:var(--text); }
+  p { max-width:70ch; color:var(--text); }
+  code { font-family:var(--mono); font-size:.88em; background:var(--surface-2); padding:1px 5px; border-radius:3px; color:var(--text); }
+  ol.flow { list-style:none; margin:0 0 20px; padding:0; display:flex; flex-direction:column; gap:0; border-left:2px solid var(--border); max-width:70ch; }
+  ol.flow li { position:relative; padding:4px 0 4px 22px; margin:0; font-size:14.5px; color:var(--text-dim); }
+  ol.flow li::before { content:""; position:absolute; left:-5px; top:12px; width:8px; height:8px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
+  ol.flow li strong { color:var(--text); font-weight:600; }
+  .table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:4px; margin:6px 0 28px; }
+  table.metrics { border-collapse:collapse; width:100%; min-width:560px; font-size:13.7px; }
+  table.metrics caption { text-align:left; font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); padding:10px 14px 8px; background:var(--surface-2); }
+  table.metrics th, table.metrics td { text-align:left; padding:9px 14px; border-top:1px solid var(--border); vertical-align:top; }
+  table.metrics thead th { font-family:var(--mono); font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); background:var(--surface-2); border-top:none; }
+  table.metrics tbody tr:hover { background:var(--surface-2); }
+  table.metrics td.metric { font-weight:600; white-space:nowrap; }
+  table.metrics td.count { font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--accent); text-align:right; }
+  table.metrics td.desc { color:var(--text-dim); }
+  .badge { display:inline-block; font-family:var(--mono); font-size:10.5px; padding:2px 7px; border-radius:3px; background:var(--accent-soft); color:var(--accent); margin-right:6px; }
+  .callout { border:1px solid var(--border); border-left:3px solid var(--accent); background:var(--surface); border-radius:0 4px 4px 0; padding:14px 18px; margin:20px 0; max-width:70ch; font-size:14.5px; color:var(--text-dim); }
+  .callout strong { color:var(--text); }
+  .callout.warn { border-left-color: var(--warn); }
+  hr.divider { border:none; border-top:1px solid var(--rule); margin:56px 0; }
+  footer { font-family:var(--mono); font-size:12px; color:var(--text-faint); padding-top:24px; border-top:1px solid var(--rule); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="masthead">
+    <a class="backlink" href="backtest-paper-trading.html">&larr; Backtest, Paper Trading &amp; Forward Testing</a>
+    <p class="kicker">AlphaLens — Explain Series</p>
+    <h1 class="title">Valuation</h1>
+    <p class="dek">Damodaran-style intrinsic-value estimation: lifecycle-aware DCF, relative PE regression, Monte Carlo uncertainty, and a WACC × growth sensitivity grid on every ticker.</p>
+    <div class="meta-row">
+      <span><strong>Status</strong> 3 of 4 real (DCF, Relative, Batch) — Accuracy empty</span>
+      <span><strong>Engine</strong> systems/damodaran_valuation/</span>
+      <span><strong>Screens</strong> DCF · Relative · Batch · Accuracy</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <p class="toc-label">On this page</p>
+      <ol>
+        <li><a href="#what">What it is</a></li>
+        <li><a href="#lifecycle">Lifecycle classification</a></li>
+        <li><a href="#dcf">DCF models</a></li>
+        <li><a href="#relative">Relative valuation</a></li>
+        <li><a href="#sensitivity">Sensitivity &amp; Monte Carlo</a></li>
+        <li><a href="#outputs">Outputs</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <section class="module" id="what">
+        <div class="module-head"><span class="module-tag">Overview</span><h2>What it is</h2></div>
+        <p class="module-sub"><code>ValuationEngine.value_stock(ticker, as_of_date)</code> is the single entry point every screen calls. It loads point-in-time fundamentals and a macro risk-free rate, classifies the company's lifecycle stage, picks the DCF variant that stage implies, computes WACC, and returns one <code>ValuationResult</code> — intrinsic value, gap vs. market price, margin of safety, and every intermediate assumption, so nothing on screen is an unexplained number.</p>
+      </section>
+
+      <section class="module" id="lifecycle">
+        <div class="module-head"><span class="module-tag">damodaran_valuation/lifecycle</span><h2>Lifecycle classification</h2></div>
+        <p class="module-sub"><code>LifecycleClassifier</code> assigns a company to a stage first, because the "right" DCF model and terminal growth rate depend entirely on where a company sits in its life — a hyper-growth company and a declining one shouldn't share a valuation template.</p>
+        <p>Terminal growth rate is stage-dependent (0.02–0.06), not a flat assumption — the sensitivity grid centers on this stage-specific base case rather than a hardcoded 5%, since a DECLINING-stage stock's 2% base case would otherwise be misrepresented by a fixed anchor.</p>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="dcf">
+        <div class="module-head"><span class="module-tag">damodaran_valuation/dcf</span><h2>DCF models</h2></div>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Model</th><th>When it's used</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">FCFFTwoStageModel</td><td class="desc">Standard high-growth-then-terminal two-stage free-cash-flow-to-firm model — the default for most lifecycle stages</td></tr>
+              <tr><td class="metric">FCFFThreeStageModel</td><td class="desc">Adds a transitional middle stage for companies whose growth won't step down cleanly in one jump</td></tr>
+              <tr><td class="metric">ExcessReturnModel</td><td class="desc">Values based on return on invested capital vs. cost of capital, for stable/mature companies where FCFF projection is noisier than ROIC-based value creation</td></tr>
+              <tr><td class="metric">CommodityNormalizedModel</td><td class="desc">Normalizes cyclical commodity-linked earnings before projecting, for sectors where trailing fundamentals alone would misrepresent normal earning power</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><code>WACCCalculator</code> computes the discount rate from real inputs — cost of equity (risk-free rate + beta × equity risk premium), cost of debt, and capital-structure weights — rather than a flat assumed rate per sector.</p>
+      </section>
+
+      <section class="module" id="relative">
+        <div class="module-head"><span class="module-tag">damodaran_valuation/relative</span><h2>Relative valuation</h2></div>
+        <p class="module-sub"><code>RelativePERegression</code> regresses trailing PE against growth, ROE, and risk proxies across the peer set, so a stock's "fair" multiple is derived from what the market is actually paying for similar fundamentals right now — not a static sector-average PE.</p>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="sensitivity">
+        <div class="module-head"><span class="module-tag">Robustness</span><h2>Sensitivity grid &amp; Monte Carlo</h2></div>
+        <p class="module-sub">A single intrinsic-value point estimate hides how sensitive it is to two of the most debatable inputs in any DCF: the discount rate and the terminal growth assumption.</p>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">GET /valuation/&#123;ticker&#125;/sensitivity</td><td class="desc">Re-runs the DCF at every combination of WACC ±1–5 steps of 1% and terminal growth ±1–5 steps of 1% around the stage-specific base case, returning the full grid of intrinsic values</td></tr>
+              <tr><td class="metric">MonteCarloDCF</td><td class="desc">Samples across input uncertainty to produce a distribution of intrinsic values rather than one number, and a probability the stock is undervalued at the current price</td></tr>
+              <tr><td class="metric">3-scenario framing</td><td class="desc">Bull / base / bear intrinsic values with probability weights, shown alongside the point estimate</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <strong>Always displayed, never skipped.</strong> The sensitivity grid isn't an optional drill-down — every valuation response is expected to carry it, so a single confident-looking number never ships without its uncertainty band next to it.
+        </div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="outputs">
+        <div class="module-head"><span class="module-tag">Outputs</span><h2>What gets written</h2></div>
+        <div class="table-wrap">
+          <table class="metrics">
+            <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td class="metric">intrinsic_value / valuation_gap_pct</td><td class="desc">DCF fair value and its % gap to current market price</td></tr>
+              <tr><td class="metric">margin_of_safety</td><td class="desc">How far current price sits below intrinsic value, in Graham/Damodaran terms</td></tr>
+              <tr><td class="metric">wacc / cost_of_equity / terminal_value_pct</td><td class="desc">The discount-rate build and how much of total value is terminal-period</td></tr>
+              <tr><td class="metric">dcf_model_type</td><td class="desc">Which of the four DCF variants was actually used for this ticker</td></tr>
+              <tr><td class="metric">scenario_bull / base / bear</td><td class="desc">Three-scenario intrinsic values with probability weights</td></tr>
+              <tr><td class="metric">mc_probability_undervalued</td><td class="desc">Monte Carlo–derived probability the stock is undervalued at today's price</td></tr>
+              <tr><td class="metric">GET /valuation/accuracy/backtest</td><td class="desc">Endpoint exists to score historical valuation-call accuracy — the Accuracy screen consuming it is the one screen still a hardcoded empty state (SPEC-UI-009)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer>
+        AlphaLens internal reference · sources: systems/damodaran_valuation/&#123;valuation_engine,dcf/wacc,dcf/models,relative/pe_regression,scenarios/monte_carlo,lifecycle/classifier&#125;.py, datastore/api/routers/valuation.py, alphalens_docs/CLAUDE.md (SPEC-UI-009)
+      </footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

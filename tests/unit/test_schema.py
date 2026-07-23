@@ -77,6 +77,10 @@ NORMALISED_TABLE_COLUMNS = {
         # create_normalised.py's column comment and
         # features/fundamental_source_priority.py.
         "fundamentals_source", "fundamentals_source_priority",
+        # [AS BUILT, full-codebase-review Fix 5, 2026-07-19] restatement-
+        # versioning audit trail — see create_normalised.py's column
+        # comment and features/fundamental_source_priority.py.
+        "as_of_ingested",
     },
     "shareholding": {
         "ticker", "quarter_end_date", "filing_date", "promoter_pct",
@@ -222,6 +226,43 @@ class TestCreateNormalisedSchema:
                     "INSERT INTO shareholding (ticker, quarter_end_date, filing_date) "
                     "VALUES ('RELIANCE', '2025-03-31', NULL)"
                 )
+
+    def test_fundamentals_history_column_sync_self_heals(self):
+        """
+        REV11 (2026-07-21 review): fundamentals_history was cloned once from
+        fundamentals via `SELECT * WHERE 1=0` and never re-synced when a
+        later phase adds a column to fundamentals — simulate that drift
+        directly (add a column to fundamentals only, mirroring what a real
+        future _MIGRATE_ADDED_COLUMNS entry does) and confirm
+        _sync_fundamentals_history_columns re-aligns fundamentals_history so
+        append_fundamentals_history's positional `f.*` insert keeps working.
+        """
+        create_normalised.create_schema(in_memory=True)
+
+        with get_duckdb_connection(None) as conn:
+            conn.execute("ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS rev11_test_col DOUBLE")
+            history_cols_before = _duckdb_columns(conn, "fundamentals_history")
+            assert "rev11_test_col" not in history_cols_before
+
+            create_normalised._sync_fundamentals_history_columns(conn)
+
+            history_cols_after = _duckdb_columns(conn, "fundamentals_history")
+            assert "rev11_test_col" in history_cols_after
+
+            # The positional `f.*` insert append_fundamentals_history relies on
+            # must now succeed instead of raising a column-count mismatch.
+            conn.execute(
+                "INSERT INTO fundamentals (ticker, fiscal_year, quarter, quarter_end_date, "
+                "announcement_date, rev11_test_col) VALUES ('RELIANCE', 2025, 1, "
+                "'2025-03-31', '2025-05-01', 42.0)"
+            )
+            from features.fundamental_source_priority import append_fundamentals_history
+
+            append_fundamentals_history(conn, "RELIANCE", 2025, 1)
+            row = conn.execute(
+                "SELECT rev11_test_col FROM fundamentals_history WHERE ticker = 'RELIANCE'"
+            ).fetchone()
+            assert row[0] == pytest.approx(42.0)
 
 
 # ===== create_signals.py =====

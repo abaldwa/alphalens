@@ -62,11 +62,18 @@ TIER_REVIEW_FREQUENCY = "quarterly"
 
 # ---------------------------------------------------------------------------
 # SPEC-SYS-002: Daily Pipeline Completion
+#
+# PIPELINE_WINDOW_START/PIPELINE_WINDOW_HOURS were originally set here to
+# "15:30"/15 (3:30 PM, 15-hour window). Consolidated below (previously a
+# duplicate reassignment further down this file silently overrode these
+# values with the current 18:00/23-hour window — see the "23-hour pipeline
+# window (user-confirmed, 2026-07-02)" section) into a single definition to
+# avoid two competing constants for the same setting in one file.
 # ---------------------------------------------------------------------------
 PIPELINE_MAX_DURATION_MINUTES = 90
-PIPELINE_WINDOW_START = "15:30"  # 3:30 PM
+PIPELINE_WINDOW_START = "18:00"  # 6:00 PM IST (user-confirmed 2026-07-02; was 3:30 PM)
 PIPELINE_WINDOW_END = "09:15"  # 9:15 AM next day
-PIPELINE_WINDOW_HOURS = 15
+PIPELINE_WINDOW_HOURS = 23  # 23-hour window (user-confirmed 2026-07-02; was 15h)
 OPTION_CHAIN_SCRAPE_TIME = "15:25"  # Only fixed-time job; must run before market close
 
 # ---------------------------------------------------------------------------
@@ -159,6 +166,16 @@ SIGNALS_DUCKDB_PATH = SIGNALS_DIR / "signals.duckdb"
 # Store 5: Models
 MODEL_REGISTRY_PATH = MODELS_DIR / "registry.json"
 
+# Store 6: Backtest (DuckDB) — Unified Backtest & Paper Trading Umbrella, Phase 1
+# (BacktestUmbrellaPlan.md at the repo root). Own file rather than reusing
+# SIGNALS_DUCKDB_PATH: backtest_feature_log is a per-decision write-heavy log
+# (one row per candidate signal per rebalance date, across every channel's
+# every run), a different write pattern from signals.duckdb's once-daily
+# batch upserts, and keeping it separate means Phase-6's fine-tuning loop can
+# query/purge backtest history without contending with live signal reads.
+BACKTEST_DIR = DATASTORE_DIR / "backtest_store"
+BACKTEST_DUCKDB_PATH = BACKTEST_DIR / "backtest.duckdb"
+
 # Observability
 OBSERVABILITY_LOG_PATH = LOGS_DIR / "observability.jsonl"
 
@@ -228,10 +245,9 @@ DEFAULT_TRAINING_INTERVAL_DAYS = 28
 # Trigger at 18:00 IST; all pipeline + model training must complete by
 # 17:00 IST the next day.  Heavy tasks (feature backfill, fundamentals
 # scraping) are pushed to the weekend when the laptop isn't needed for
-# real-time signal generation.
+# real-time signal generation. (PIPELINE_WINDOW_START/PIPELINE_WINDOW_HOURS
+# for this window are defined once, above, under SPEC-SYS-002.)
 # ---------------------------------------------------------------------------
-PIPELINE_WINDOW_START = "18:00"  # Updated: 6PM IST (was 3:30 PM)
-PIPELINE_WINDOW_HOURS = 23       # Updated: 23-hour window (was 15 h)
 # Model training (2026-07-07: moved off weekdays onto the weekend — a real
 # production-grade retrain with real Optuna trials runs 3-4+ hours per
 # model and was contending with the 18:00 daily pipeline / DuckDB's
@@ -358,6 +374,21 @@ TOTAL_ROUNDTRIP_COST = 0.005
 SMALL_CAP_SLIPPAGE_PCT = 0.0030  # Applies when ADTV < INR 1 Cr
 
 # ---------------------------------------------------------------------------
+# Strategy confidence framework — backtest/strategy_confidence.py
+# ---------------------------------------------------------------------------
+# A strategy's win rate isn't shown to the user until it clears this many
+# independent trading dates of history (not signal-row count — see module
+# docstring for why that distinction matters).
+CONFIDENCE_MIN_INDEPENDENT_DATES = 60
+# Minimum dates within a single market regime for that regime's bucket to
+# count toward the "spans >=2 regimes" VALIDATED requirement.
+CONFIDENCE_MIN_DATES_PER_REGIME = 15
+# Deflated Sharpe Ratio threshold (SPEC-BT-001 rule 8) a strategy must clear,
+# after correcting for how many strategies were compared side by side, to
+# reach VALIDATED tier.
+CONFIDENCE_DSR_THRESHOLD = 0.95
+
+# ---------------------------------------------------------------------------
 # Credentials — SPEC-SEC-001: never hardcoded, loaded from environment only
 # ---------------------------------------------------------------------------
 FYERS_APP_ID = os.environ.get("FYERS_APP_ID")
@@ -372,6 +403,7 @@ TRENDLYNE_USERNAME = os.environ.get("TRENDLYNE_USERNAME")
 TRENDLYNE_PASSWORD = os.environ.get("TRENDLYNE_PASSWORD")
 TIJORI_USERNAME = os.environ.get("TIJORI_USERNAME")
 TIJORI_PASSWORD = os.environ.get("TIJORI_PASSWORD")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 # ---------------------------------------------------------------------------
 # FYERS historical backfill — SPEC-PIPE-001, SPEC-PIPE-002
@@ -401,13 +433,18 @@ SCREENER_RATE_LIMIT_SLEEP_SECONDS = 1.0
 # flush.
 SCREENER_BATCH_EXPORT_CHUNK_SIZE = 50
 # Conservative PIT defaults when Screener.in doesn't expose the real
-# disclosure date directly (SPEC-PIPE-003): NSE listing rules give
-# companies up to 45 days after quarter-end to announce results, and BSE
-# shareholding filings are due ~21 days after quarter-end
-# (alphalens_docs/03_data_pipeline.md). Using the regulatory deadline
-# rather than a shorter guess means a feature can never be backdated to a
-# date earlier than the data was truly knowable.
-FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS = 45
+# disclosure date directly (SPEC-PIPE-003): SEBI LODR Reg. 33 gives
+# companies up to 45 days after quarter-end to announce Q1-Q3 results,
+# but 60 days for Q4/annual results — a flat 45-day constant applied to
+# every quarter (as this was before 2026-07-19) under-delays Q4 rows by
+# up to 15 days, letting Q4-driven fundamentals (shares_outstanding
+# changes from buybacks/QIPs/bonus around fiscal year-end, etc.) leak
+# into PIT-filtered data before they were genuinely public knowledge.
+# BSE shareholding filings are due ~21 days after quarter-end for every
+# quarter, no Q4 exception (alphalens_docs/03_data_pipeline.md). Using
+# the regulatory deadline rather than a shorter guess means a feature can
+# never be backdated to a date earlier than the data was truly knowable.
+FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER = {1: 45, 2: 45, 3: 45, 4: 60}
 SHAREHOLDING_FILING_DELAY_DAYS = 21
 RESULTS_PENDING_THRESHOLD_DAYS = 70  # SPEC-PIPE-003: results_pending_flag
 # features/fundamental.py's ROIC: Screener.in exposes no reported EBIT or
@@ -504,13 +541,28 @@ TRENDLYNE_RATE_LIMIT_SLEEP_SECONDS = 1.0
 # deal + shareholding-pattern disclosures) — reuses SHAREHOLDING_FILING_DELAY_DAYS
 # as the conservative PIT default when Trendlyne doesn't expose its own
 # "last updated" timestamp directly, same reasoning as
-# FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS above.
+# FUNDAMENTALS_ANNOUNCEMENT_DELAY_DAYS_BY_QUARTER above.
 
 # ---------------------------------------------------------------------------
 # Tijori Finance Pro (sector-specific operational metrics) — SPEC-PIPE-003, P2.6
 # ---------------------------------------------------------------------------
 TIJORI_RAW_DIR = RAW_DIR / "tijori"
 TIJORI_RATE_LIMIT_SLEEP_SECONDS = 1.0
+
+# ---------------------------------------------------------------------------
+# Co-Pilot LLM (OpenRouter) — natural-language query to strategy spec
+# ---------------------------------------------------------------------------
+# OPENROUTER_API_KEY is defined in the Credentials block above. No fallback
+# key: llm_client.py raises if it's unset, never falls back to a canned
+# response (Absolute Rule 6 — no synthetic stand-ins for real LLM output).
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_TIMEOUT_SECONDS = 60
+COPILOT_DEDUP_SIMILARITY_THRESHOLD = 0.8
+# Backtest window when a strategy spec doesn't otherwise imply one — kept
+# short/deliberate rather than "as much history as exists" so a Co-Pilot
+# backtest returns quickly; real historical prices only, no synthetic fill.
+COPILOT_BACKTEST_YEARS = 3
 
 # ---------------------------------------------------------------------------
 # F&O features — SPEC-FEAT-004, P2.3
@@ -589,6 +641,14 @@ DATASTORE_API_PORT = int(os.environ.get("DATASTORE_API_PORT", "8000"))
 # while wiring features/matrix_builder.py, P1.1 — see BuildLog.md).
 DATASTORE_API_BASE_URL = f"http://{DATASTORE_API_HOST}:{DATASTORE_API_PORT}"
 
+# CORS origins allowed to call the API. Defaults cover the Vite dashboard's
+# dev server (5173) and local preview build (4173); production origins are
+# added via the FRONTEND_ORIGINS env var (comma-separated), SPEC-SEC-003.
+DATASTORE_API_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:4173",
+] + [o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
+
 # ---------------------------------------------------------------------------
 # Big Investor Activity — bulk/block deals + MF holdings (Phase A)
 # ---------------------------------------------------------------------------
@@ -631,3 +691,23 @@ if SNAPSHOT_RETENTION_N <= 0:
 # DuckDB connection to the same file is unsafe). Separate lock file since
 # publish can run outside the daily pipeline (e.g. a manual backfill).
 PUBLISH_RUN_LOCK_PATH = NORMALISED_DIR / ".publish_run.lock"
+
+# ---------------------------------------------------------------------------
+# REV27 (2026-07-21 review): DuckDB lock-conflict retry budget
+# (datastore/api/db.py::_connect_with_retry, SPEC-SCHED-013). Previously
+# hardcoded (4 attempts, 0.5s base -> ~3.5s worst-case wait). Moved here,
+# env-overridable, so an operator can extend the budget for a known-long
+# write (a full backfill, a universe-wide compute_features run) without a
+# code change. Default attempts raised 4 -> 6 (worst case ~15.5s:
+# 0.5+1+2+4+8) — still short enough not to hang an API request badly, long
+# enough to ride out more real write-step handoffs than before.
+#
+# This is a bounded retry, not a guarantee: a write step that holds the
+# write lock LONGER than this budget will still hard-fail a concurrent read
+# (the same failure class that crashed the scheduler once — see BuildLog.md
+# project memory). Operational rule: avoid starting a long write (full
+# backfill, universe-wide compute_features) while API read traffic is
+# expected, rather than relying on this retry alone.
+# ---------------------------------------------------------------------------
+DUCKDB_LOCK_RETRY_ATTEMPTS = int(os.environ.get("DUCKDB_LOCK_RETRY_ATTEMPTS", "6"))
+DUCKDB_LOCK_RETRY_BASE_DELAY_S = float(os.environ.get("DUCKDB_LOCK_RETRY_BASE_DELAY_S", "0.5"))

@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-02-14,JAYBARMARU,BUY,29.560000000000002,1,09:15:00,27.080000000000002,15:30:00,2011-08-04,thesis_broken,miss,-2.59889303952,-0.08791925032205683,,,,,,
+2011-02-14,JKLAKSHMI,BUY,43.4,1,09:15:00,41.25,15:30:00,2011-08-08,thesis_broken,miss,-2.3245587927999978,-0.05356126250691239,,,,,,
+2011-02-14,HIKAL,BUY,55.93,1,09:15:00,52.35,15:30:00,2011-11-17,thesis_broken,miss,-3.8049556055599965,-0.0680306741562667,,,,,,

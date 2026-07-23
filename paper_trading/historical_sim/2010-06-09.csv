@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-06-09,HINDALCO,BUY,126.35868486335823,1,09:15:00,167.36942011611424,15:30:00,2010-08-18,target_achieved,hit,40.50250899723656,0.320536012550583,,,,,,

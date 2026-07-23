@@ -7,9 +7,10 @@ from datastore.client import DataStoreClient
 
 
 class _DummyResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code: int = 200):
         self._payload = payload
         self.text = json.dumps(payload)
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
         return None
@@ -104,3 +105,54 @@ def test_get_index_ohlcv_empty_payload_returns_empty_df_with_columns(monkeypatch
     df = client.get_index_ohlcv("Nifty 500", datetime(2026, 1, 1), datetime(2026, 7, 1))
     assert df.empty
     assert list(df.columns) == ["date", "index_name", "open", "high", "low", "close", "volume"]
+
+
+class _SequenceDummyClient:
+    """Returns a different queued response on each successive .get() call —
+    for testing _get_with_retry's retry-then-succeed / retry-then-exhaust paths."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, params=None):
+        response = self._responses[min(self.calls, len(self._responses) - 1)]
+        self.calls += 1
+        return response
+
+
+def test_get_with_retry_succeeds_after_transient_503(monkeypatch):
+    from datastore.client import _get_with_retry
+
+    monkeypatch.setattr("datastore.client.time.sleep", lambda s: None)
+    responses = [_DummyResponse({}, status_code=503), _DummyResponse({"ok": True}, status_code=200)]
+    client = _SequenceDummyClient(responses)
+    response = _get_with_retry(client, "http://example.test/x")
+    assert response.status_code == 200
+    assert client.calls == 2
+
+
+def test_get_with_retry_gives_up_after_exhausting_attempts(monkeypatch):
+    from datastore.client import _RETRY_ATTEMPTS, _get_with_retry
+
+    monkeypatch.setattr("datastore.client.time.sleep", lambda s: None)
+    client = _SequenceDummyClient([_DummyResponse({}, status_code=503)])
+    response = _get_with_retry(client, "http://example.test/x")
+    assert response.status_code == 503
+    assert client.calls == _RETRY_ATTEMPTS
+
+
+def test_get_with_retry_does_not_retry_non_503_errors(monkeypatch):
+    from datastore.client import _get_with_retry
+
+    monkeypatch.setattr("datastore.client.time.sleep", lambda s: None)
+    client = _SequenceDummyClient([_DummyResponse({}, status_code=404)])
+    response = _get_with_retry(client, "http://example.test/x")
+    assert response.status_code == 404
+    assert client.calls == 1

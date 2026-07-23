@@ -1,0 +1,3 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2011-02-11,HBLENGINE,BUY,18.5604331895683,1,09:15:00,16.899762851554296,15:30:00,2011-06-20,thesis_broken,miss,-1.7353221078623022,-0.09349577621052628,,,,,,
+2011-02-11,EIMCOELECO,BUY,223.1,1,09:15:00,208.75,15:30:00,2011-08-04,thesis_broken,miss,-15.247328725199992,-0.06834302431734644,,,,,,

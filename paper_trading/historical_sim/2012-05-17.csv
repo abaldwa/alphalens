@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-17,CGPOWER,BUY,36.280646105681406,123,09:15:00,34.1109766817847,15:30:00,2012-05-25,thesis_broken,miss,-284.81800300344275,-0.06382448409568374,,,,,,

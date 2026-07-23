@@ -1,0 +1,2 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2010-05-06,BALRAMCHIN,BUY,65.65080363305681,1,09:15:00,62.06428404750674,15:30:00,2010-12-09,thesis_broken,miss,-3.8505731576361626,-0.058652338502331806,,,,,,

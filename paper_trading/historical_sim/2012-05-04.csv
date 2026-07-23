@@ -1,0 +1,4 @@
+date,ticker,signal_type,entry_price,quantity,entry_time,exit_price,exit_time,exit_date,exit_type,target_outcome,pnl,pnl_pct,model_name,buy_prob,meta_label_prob,q10_return,q50_return,q90_return
+2012-05-04,PFC,BUY,29.438980376803386,34629,09:15:00,27.833045036687253,15:30:00,2012-05-09,thesis_broken,miss,-59712.22622139263,-0.05857341543447387,,,,,,
+2012-05-04,TANLA,BUY,6.15,165763,09:15:00,5.6,15:30:00,2012-05-14,thesis_broken,miss,-95269.94132260559,-0.09345298630894328,,,,,,
+2012-05-04,VIPIND,BUY,83.7,12179,09:15:00,77.6,15:30:00,2012-06-04,thesis_broken,miss,-78391.9493937717,-0.07690142294384718,,,,,,

@@ -48,6 +48,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+from config.settings import DUCKDB_LOCK_RETRY_ATTEMPTS, DUCKDB_LOCK_RETRY_BASE_DELAY_S
+
 try:
     import duckdb
 except ImportError:
@@ -55,12 +57,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# SPEC-SCHED-013: retry budget for a transient DuckDB lock conflict (another
-# process briefly holding the file open). Total worst-case wait ~3.5s
-# (0.5+1.0+2.0) — short enough not to make an API request hang noticeably,
-# long enough to ride out a quick write-step handoff.
-DUCKDB_LOCK_RETRY_ATTEMPTS = 4
-DUCKDB_LOCK_RETRY_BASE_DELAY_S = 0.5
+# SPEC-SCHED-013 / REV27: retry budget for a transient DuckDB lock conflict
+# (another process briefly holding the file open). Now sourced from
+# config.settings (env-overridable) — see that module's REV27 comment for
+# the worst-case-wait math and the operational rule this retry does NOT
+# replace (don't hold a long write open while API traffic is expected).
 
 
 # Global connection pools (simple implementation; upgrade to proper pooling if needed)
