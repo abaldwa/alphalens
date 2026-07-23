@@ -1,0 +1,148 @@
+{
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "A2",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "B4",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "B5",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "C1",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "C2",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "C3",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "C4",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "C5",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "C6",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "C7",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "D1",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "D2",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "D3",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "D4",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "E1",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "E2",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "E3",
+      "top_n": 10
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2015-01-01",
+      "end_date": "2026-07-22",
+      "template_name": "E4",
+      "top_n": 10
+    }
+  ]
+}

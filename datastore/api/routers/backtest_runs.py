@@ -56,6 +56,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import psutil
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -494,19 +495,39 @@ class ActiveQueuesResponse(BaseModel):
     queue_ids: List[str]
 
 
+def _queue_runner_is_alive(queue_id: str) -> bool:
+    """True iff a `run_strategy_queue` process for this queue_id is still
+    running. A queue's trigger log/progress file has no way to record that
+    its own process was killed or crashed without writing a final summary
+    (e.g. killed by systemd-oomd, or the host restarting mid-run) — without
+    this check, list_active_queues() would report such a queue as "running"
+    forever, which is exactly what showed up as phantom entries in the
+    Backtest page's Active Strategies board (2026-07-22)."""
+    needle = f"--report-suffix {queue_id}"
+    for proc in psutil.process_iter(["cmdline"]):
+        try:
+            cmdline = proc.info["cmdline"]
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if cmdline and "run_strategy_queue" in " ".join(cmdline) and needle in " ".join(cmdline):
+            return True
+    return False
+
+
 @router.get("/queue/active", response_model=ActiveQueuesResponse)
 async def list_active_queues(limit: int = Query(10, le=50)) -> ActiveQueuesResponse:
     """Queue_ids still running (a trigger log exists with no final summary
-    yet), most-recently-triggered first — lets the Backtest page discover
-    and display a queue's progress even if it was triggered from a
-    different browser session, the CLI, or an API call rather than this
-    page's own panel (which otherwise only knows about queues it
-    personally triggered, via client-side state)."""
+    yet, AND the run_strategy_queue process is actually still alive),
+    most-recently-triggered first — lets the Backtest page discover and
+    display a queue's progress even if it was triggered from a different
+    browser session, the CLI, or an API call rather than this page's own
+    panel (which otherwise only knows about queues it personally
+    triggered, via client-side state)."""
     if not _QUEUE_LOGS_DIR.exists():
         return ActiveQueuesResponse(queue_ids=[])
     log_files = sorted(_QUEUE_LOGS_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
     active = [
         p.stem for p in log_files
-        if not (_REPORTS_DIR / f"strategy_queue_{p.stem}.json").exists()
+        if not (_REPORTS_DIR / f"strategy_queue_{p.stem}.json").exists() and _queue_runner_is_alive(p.stem)
     ]
     return ActiveQueuesResponse(queue_ids=active[:limit])

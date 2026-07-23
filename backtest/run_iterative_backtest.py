@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from backtest.batch_common import exclusive_backtest_lock
 from backtest.core.feature_log import FeatureLogWriter
 from backtest.iterative_retrain import (
     DEFAULT_MAX_ITERATIONS,
@@ -64,41 +65,45 @@ def run_iterative_backtest(
     run_started = time.monotonic()
 
     logger.info("Iterative retrain starting: REAL data (config.universe.get_tickers() via DataStoreClient)")
-    ohlcv = _fetch_real_universe(max_real_tickers, min_history_days)
-    sector_map = _real_sector_map()
-    benchmark = _fetch_real_benchmark()
-    benchmark_index = _fetch_real_benchmark_index()
-    universe_tickers = set(get_tickers())
-    historical_tickers = _fetch_historical_tickers()
+    # Held across the entire real-work window — same system-wide
+    # sequential-execution requirement as run_orchestrator_backtest.py;
+    # see batch_common.exclusive_backtest_lock's docstring.
+    with exclusive_backtest_lock(label="iterative_retrain"):
+        ohlcv = _fetch_real_universe(max_real_tickers, min_history_days)
+        sector_map = _real_sector_map()
+        benchmark = _fetch_real_benchmark()
+        benchmark_index = _fetch_real_benchmark_index()
+        universe_tickers = set(get_tickers())
+        historical_tickers = _fetch_historical_tickers()
 
-    pnd_X, pnd_y = load_pnd_training_data_from_db()
-    pnd_detector = PnDDetector(random_state=seed)
-    pnd_detector.train(pnd_X, pnd_y)
+        pnd_X, pnd_y = load_pnd_training_data_from_db()
+        pnd_detector = PnDDetector(random_state=seed)
+        pnd_detector.train(pnd_X, pnd_y)
 
-    exit_X, urgency, exit_type, duration, event = load_exit_training_data_from_db()
-    exit_model = ExitSignalModel(random_state=seed)
-    exit_model.train_full(exit_X, urgency, exit_type, duration, event)
+        exit_X, urgency, exit_type, duration, event = load_exit_training_data_from_db()
+        exit_model = ExitSignalModel(random_state=seed)
+        exit_model.train_full(exit_X, urgency, exit_type, duration, event)
 
-    engine_kwargs = dict(
-        ohlcv=ohlcv, pnd_detector=pnd_detector, exit_model=exit_model, signal_model_cls=Signal5DModel,
-        sector_map=sector_map, horizon_days=horizon_days, initial_capital=1_000_000.0, sizing_mode="equal_weight",
-        n_target_positions=10, optuna_trials=5, random_state=seed, n_folds=folds,
-        benchmark=benchmark, universe_tickers=universe_tickers, historical_tickers=historical_tickers,
-        benchmark_index=benchmark_index,
-    )
-
-    create_backtest_schema(BACKTEST_DUCKDB_PATH)
-    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn:
-        feature_log_writer = FeatureLogWriter(conn)
-        loop = RetrainLoop(
-            engine_kwargs=engine_kwargs, strategy_id="signal_5d_metalabeler_retrain",
-            feature_log_writer=feature_log_writer, conn=conn, max_iterations=max_iterations,
-            plateau_patience=plateau_patience, min_dsr_threshold=min_dsr_threshold,
-            max_random_feature_accuracy=max_random_feature_accuracy, folds=folds,
+        engine_kwargs = dict(
+            ohlcv=ohlcv, pnd_detector=pnd_detector, exit_model=exit_model, signal_model_cls=Signal5DModel,
+            sector_map=sector_map, horizon_days=horizon_days, initial_capital=1_000_000.0, sizing_mode="equal_weight",
+            n_target_positions=10, optuna_trials=5, random_state=seed, n_folds=folds,
+            benchmark=benchmark, universe_tickers=universe_tickers, historical_tickers=historical_tickers,
+            benchmark_index=benchmark_index,
         )
-        result = loop.run(combined_ohlcv_max_date=ohlcv["date"].max())
-        feature_log_writer.flush()
-        conn.commit()
+
+        create_backtest_schema(BACKTEST_DUCKDB_PATH)
+        with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn:
+            feature_log_writer = FeatureLogWriter(conn)
+            loop = RetrainLoop(
+                engine_kwargs=engine_kwargs, strategy_id="signal_5d_metalabeler_retrain",
+                feature_log_writer=feature_log_writer, conn=conn, max_iterations=max_iterations,
+                plateau_patience=plateau_patience, min_dsr_threshold=min_dsr_threshold,
+                max_random_feature_accuracy=max_random_feature_accuracy, folds=folds,
+            )
+            result = loop.run(combined_ohlcv_max_date=ohlcv["date"].max())
+            feature_log_writer.flush()
+            conn.commit()
 
     runtime_seconds = time.monotonic() - run_started
 

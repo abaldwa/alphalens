@@ -56,6 +56,7 @@ import pandas as pd
 from backtest.adapters.fundamental_adapter import FundamentalAdapter
 from backtest.adapters.momentum_adapter import MomentumAdapter
 from backtest.adapters.technical_adapter import TechnicalAdapter
+from backtest.batch_common import exclusive_backtest_lock
 from backtest.core.engine import BacktestOrchestrator, OrchestratorConfig
 from backtest.core.feature_log import FeatureLogWriter
 from backtest.core.horizon import HorizonBucket
@@ -227,52 +228,59 @@ def run_orchestrator_backtest(
         f"orchestrator backtest starting: channel={channel} strategy_id={strategy_id} "
         f"run_id={run_id} horizon_bucket={horizon.value}"
     )
-    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
-    sector_map = _real_sector_map()
-    config = _build_config(ohlcv, sector_map)
+    # Held across the entire real-work window (data fetch through DB write)
+    # — user-confirmed requirement: backtests run strictly sequentially,
+    # never concurrently, even across independently-triggered queues/direct
+    # triggers (see batch_common.exclusive_backtest_lock's docstring: two
+    # concurrently-running queues previously starved each other on DB-lock
+    # contention and started failing outright).
+    with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
+        ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+        sector_map = _real_sector_map()
+        config = _build_config(ohlcv, sector_map)
 
-    if channel == "technical":
-        if not template_name:
-            raise ValueError("channel=technical requires --template-name")
-        adapter = TechnicalAdapter(template_name=template_name, top_n=top_n, sector_lookup=sector_map)
-    elif channel == "fundamental":
-        if not preset:
-            raise ValueError("channel=fundamental requires --preset")
-        adapter = FundamentalAdapter(preset=preset, top_n=top_n, sector_lookup=sector_map)
-    elif channel == "momentum":
-        price_panel = ohlcv.pivot(index="date", columns="ticker", values="close")
-        adapter = MomentumAdapter(price_panel=price_panel, top_n=top_n, lookback_months=lookback_months, sector_lookup=sector_map)
-    else:
-        raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
+        if channel == "technical":
+            if not template_name:
+                raise ValueError("channel=technical requires --template-name")
+            adapter = TechnicalAdapter(template_name=template_name, top_n=top_n, sector_lookup=sector_map)
+        elif channel == "fundamental":
+            if not preset:
+                raise ValueError("channel=fundamental requires --preset")
+            adapter = FundamentalAdapter(preset=preset, top_n=top_n, sector_lookup=sector_map)
+        elif channel == "momentum":
+            price_panel = ohlcv.pivot(index="date", columns="ticker", values="close")
+            adapter = MomentumAdapter(price_panel=price_panel, top_n=top_n, lookback_months=lookback_months, sector_lookup=sector_map)
+        else:
+            raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
 
-    run = BacktestRun(
-        run_id=run_id, channel=channel, strategy_id=strategy_id, horizon_bucket=horizon,
-        mode="backtest", universe_spec=universe_spec, start_date=start_date, end_date=end_date,
-        capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
-        config={
-            "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-            "max_tickers": max_tickers, "min_history_days": min_history_days,
-        },
-    )
+        run = BacktestRun(
+            run_id=run_id, channel=channel, strategy_id=strategy_id, horizon_bucket=horizon,
+            mode="backtest", universe_spec=universe_spec, start_date=start_date, end_date=end_date,
+            capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
+            config={
+                "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
+                "max_tickers": max_tickers, "min_history_days": min_history_days,
+            },
+        )
 
-    create_backtest_schema(BACKTEST_DUCKDB_PATH)
-    # market_regimes lives in the normalised-schema DB (DUCKDB_PATH), a
-    # separate file from BACKTEST_DUCKDB_PATH — a second, read-only
-    # connection, opened only when a regime breakdown was actually
-    # requested (regime_index_name=None skips it entirely).
-    regime_cm = (
-        get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False)
-        if regime_index_name
-        else _no_regime_conn()
-    )
-    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn, regime_cm as regime_conn:
-        feature_log_writer = FeatureLogWriter(conn)
-        result = BacktestOrchestrator(
-            feature_log_writer=feature_log_writer, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500"
-        ).run(run, adapter, config)
-        feature_log_writer.flush()
-        save_run_result(conn, result)
-        conn.commit()
+        create_backtest_schema(BACKTEST_DUCKDB_PATH)
+        # market_regimes lives in the normalised-schema DB (DUCKDB_PATH), a
+        # separate file from BACKTEST_DUCKDB_PATH — a second, read-only
+        # connection, opened only when a regime breakdown was actually
+        # requested (regime_index_name=None skips it entirely).
+        regime_cm = (
+            get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False)
+            if regime_index_name
+            else _no_regime_conn()
+        )
+        with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn, regime_cm as regime_conn:
+            feature_log_writer = FeatureLogWriter(conn)
+            result = BacktestOrchestrator(
+                feature_log_writer=feature_log_writer, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500"
+            ).run(run, adapter, config)
+            feature_log_writer.flush()
+            save_run_result(conn, result)
+            conn.commit()
 
     runtime_seconds = time.monotonic() - run_started
     logger.info(f"orchestrator backtest finished in {runtime_seconds:.1f}s: {json.dumps(result.metrics, default=str)}")

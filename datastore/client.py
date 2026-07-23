@@ -17,6 +17,7 @@ consumer code.
 """
 
 import logging
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +27,37 @@ import pandas as pd
 from config.settings import DATASTORE_API_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+# A 503 from the API means a transient DuckDB write-lock conflict
+# (datastore/api/main.py's duckdb_lock_conflict_handler) — e.g. the
+# ingestion scheduler holding a long-lived connection open. Caught live:
+# a multi-hour backtest queue died outright on the FIRST such response,
+# with no retry at all, even though the conflict was gone moments later.
+# Retried here rather than left to blow up the whole caller.
+_RETRYABLE_STATUS_CODES = {503}
+_RETRY_ATTEMPTS = 6
+_RETRY_BASE_DELAY_S = 2.0
+
+
+def _get_with_retry(client: httpx.Client, url: str, params: Optional[Dict[str, Any]] = None) -> httpx.Response:
+    """GET with backoff retry on a transient 503 (see module docstring
+    above _RETRYABLE_STATUS_CODES). Does NOT call raise_for_status() —
+    callers do that themselves on the final response, same as before."""
+    last_response: Optional[httpx.Response] = None
+    for attempt in range(_RETRY_ATTEMPTS):
+        response = client.get(url, params=params)
+        if response.status_code not in _RETRYABLE_STATUS_CODES:
+            return response
+        last_response = response
+        if attempt == _RETRY_ATTEMPTS - 1:
+            break
+        delay = _RETRY_BASE_DELAY_S * (2**attempt)
+        logger.warning(
+            f"DataStoreClient: {response.status_code} from {url} (attempt {attempt + 1}/{_RETRY_ATTEMPTS}) "
+            f"— retrying in {delay:.1f}s"
+        )
+        time.sleep(delay)
+    return last_response  # exhausted retries — caller's raise_for_status() surfaces it
 
 
 class DataStoreClient:
@@ -153,7 +185,7 @@ class DataStoreClient:
         }
         url = f"{self._base_url}/api/v1/ohlcv/_bulk"
         with httpx.Client(timeout=120.0) as hclient:
-            response = hclient.get(url, params=params)
+            response = _get_with_retry(hclient, url, params=params)
         response.raise_for_status()
 
         payload = json.loads(response.text)
@@ -217,7 +249,7 @@ class DataStoreClient:
         # not passed as a query param.
         url = f"{self._base_url}/api/v1/ohlcv/index/{quote(index_name, safe='')}"
         with httpx.Client(timeout=60.0) as hclient:
-            response = hclient.get(url, params=params)
+            response = _get_with_retry(hclient, url, params=params)
         response.raise_for_status()
 
         payload = json.loads(response.text)
@@ -958,7 +990,7 @@ class DataStoreClient:
         """
         url = f"{self._base_url}{path}"
         with httpx.Client(timeout=self._timeout) as client:
-            response = client.get(url, params=params)
+            response = _get_with_retry(client, url, params=params)
             response.raise_for_status()
             return response.json()
 

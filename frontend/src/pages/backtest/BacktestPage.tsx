@@ -608,12 +608,18 @@ function expandJob(job: ActiveJob, data: unknown): BoardItem[] {
     | undefined
 
   if (queueData?.jobs?.length) {
+    // dismissId is the parent queue's id on every expanded row (not just the
+    // fallback case below) — a stuck/dead queue can otherwise never be
+    // removed once it has per-job breakdown data, since that data keeps
+    // rendering from the last cached query result even after the queue
+    // process itself has died (2026-07-22: this is exactly what made dead
+    // queues accumulate in the board with no way to clear them).
     return queueData.jobs.map((j) => ({
       key: `${job.id}#${j.job_index}`,
       label: j.label,
       idLabel: `${job.id} · job ${j.job_index + 1}`,
       status: j.status,
-      dismissId: null,
+      dismissId: job.id,
     }))
   }
   if (queueData?.summary?.results.length) {
@@ -622,7 +628,7 @@ function expandJob(job: ActiveJob, data: unknown): BoardItem[] {
       label: describeQueueJob(r.job),
       idLabel: `${job.id} · job ${r.job_index + 1}`,
       status: r.returncode === 0 ? 'completed' : 'failed',
-      dismissId: null,
+      dismissId: job.id,
     }))
   }
   // No breakdown available yet (just submitted, or an older queue that
@@ -684,7 +690,7 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
                       >
                         {item.status}
                       </Badge>
-                      {bucket === 'completed' && item.dismissId ? (
+                      {item.dismissId ? (
                         <button
                           type="button"
                           onClick={() => onDismiss(item.dismissId!)}
@@ -1530,19 +1536,38 @@ export function BacktestPage() {
   // Discovers queues running elsewhere (a different browser session, the
   // CLI, a direct API call) and pulls them into this board — the
   // Queued/In Progress/Completed board otherwise only knows about jobs
-  // triggered from this exact page load. Checked once on mount, not
-  // polled continuously — an already-registered queue keeps updating via
-  // RunsStatusBoard's own per-job status queries regardless.
+  // triggered from this exact page load. Polled (not just checked on
+  // mount) so it can also PRUNE: a queue this page registered can die
+  // (killed, host restarted, crashed) without ever posting a terminal
+  // status, in which case it would otherwise sit in the Queued/In
+  // Progress bucket forever with stale cached data (2026-07-22 incident —
+  // /api/v1/backtest/queue/active is the authoritative "is this queue's
+  // process actually still alive" signal once its own liveness check was
+  // fixed; anything it stops reporting and that hasn't reached a genuine
+  // 'completed' status locally gets removed here).
   useEffect(() => {
-    listActiveQueues().then((res) => {
-      setActiveJobs((prev) => {
-        const known = new Set(prev.map((j) => j.id))
-        const discovered = res.queue_ids
-          .filter((id) => !known.has(id))
-          .map((id): ActiveJob => ({ id, kind: 'queue', label: 'Strategy queue (discovered)' }))
-        return discovered.length ? [...discovered, ...prev] : prev
+    const reconcile = () => {
+      listActiveQueues().then((res) => {
+        const aliveIds = new Set(res.queue_ids)
+        setActiveJobs((prev) => {
+          const known = new Set(prev.map((j) => j.id))
+          const discovered = res.queue_ids
+            .filter((id) => !known.has(id))
+            .map((id): ActiveJob => ({ id, kind: 'queue', label: 'Strategy queue (discovered)' }))
+
+          const pruned = prev.filter((j) => {
+            if (j.kind !== 'queue' || aliveIds.has(j.id)) return true
+            const cached = queryClient.getQueryData<{ status?: string }>(['active-job-status', 'queue', j.id])
+            return cached?.status === 'completed'
+          })
+
+          return discovered.length || pruned.length !== prev.length ? [...discovered, ...pruned] : prev
+        })
       })
-    })
+    }
+    reconcile()
+    const interval = setInterval(reconcile, 15000)
+    return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
