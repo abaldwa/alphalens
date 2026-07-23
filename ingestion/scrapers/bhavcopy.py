@@ -21,9 +21,7 @@ caller's import needs to change (SOLID-S: quality logic has one home).
 
 import io
 import logging
-import time
 from datetime import datetime
-from typing import Optional
 
 import pandas as pd
 import requests
@@ -32,6 +30,7 @@ from config.etf_exclusions import ETF_TICKERS as _FALLBACK_ETF_TICKERS
 from config.settings import MIN_STOCKS_FOR_INFERENCE, RAW_DIR
 from features.technical import BENCHMARK_TICKERS
 from ingestion.quality.validator import ANOMALY_PCT_CHANGE_THRESHOLD, validate_bhavcopy  # noqa: F401
+from ingestion.scrapers._retry import RETRY_DELAY_SECONDS, retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +64,6 @@ REQUIRED_COLUMNS = [
 EQ_SERIES = {"EQ"}
 EXCLUDED_SERIES = {"BE", "BL", "SM", "ST"}
 MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 2
 
 
 def _nse_session() -> requests.Session:
@@ -121,26 +119,25 @@ def _fetch_bhavcopy_csv(trade_date: datetime) -> pd.DataFrame:
     """
     url = NSE_BHAVCOPY_URL_TEMPLATE.format(ddmmyyyy=trade_date.strftime("%d%m%Y"))
 
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            session = _nse_session()
-            response = session.get(url, timeout=15)
-            response.raise_for_status()
-            return pd.read_csv(io.StringIO(response.text))
-        except (requests.RequestException, pd.errors.ParserError) as exc:
-            last_exc = exc
-            logger.warning(
-                f"Bhavcopy fetch attempt {attempt}/{MAX_RETRIES} failed "
-                f"for {trade_date.date()}: {exc}"
-            )
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
+    def _fetch() -> pd.DataFrame:
+        session = _nse_session()
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        return pd.read_csv(io.StringIO(response.text))
 
-    raise ConnectionError(
-        f"Failed to download bhavcopy for {trade_date.date()} "
-        f"after {MAX_RETRIES} attempts: {last_exc}"
-    )
+    try:
+        return retry_call(
+            _fetch,
+            retries=MAX_RETRIES,
+            label=f"Bhavcopy fetch for {trade_date.date()}",
+            wait_seconds=RETRY_DELAY_SECONDS,
+            exceptions=(requests.RequestException, pd.errors.ParserError),
+        )
+    except ConnectionError as exc:
+        raise ConnectionError(
+            f"Failed to download bhavcopy for {trade_date.date()} "
+            f"after {MAX_RETRIES} attempts: {exc}"
+        ) from exc
 
 
 def _save_raw(trade_date: datetime, raw: pd.DataFrame) -> None:
