@@ -98,7 +98,7 @@ class FundamentalAdapter:
         for ticker in sorted(target - self._currently_held):
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
-                conviction=_composite_strength(self._last_ratios[ticker]),
+                conviction=_composite_strength(self._last_ratios[ticker]), template=self.preset,
             ))
 
         self._currently_held = target

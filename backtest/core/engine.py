@@ -55,6 +55,7 @@ class Signal:
     sector: str = "Unknown"
     conviction: float = 0.0  # higher = prioritized first when capital is constrained
     adtv_cr: Optional[float] = None
+    template: Optional[str] = None  # screener template name / fundamental preset that generated this signal (strategy identity for PerTemplateExitPolicy routing); None if the adapter doesn't track one
 
 
 class StrategyAdapter(Protocol):
@@ -336,7 +337,7 @@ class BacktestOrchestrator:
                     data_gaps.append(DataGap(signal.ticker, execution_date, "no_adtv_data_position_sized_uncapped"))
                 portfolio.buy(
                     signal.ticker, config.sector_lookup(signal.ticker), fill_prices[signal.ticker], execution_date,
-                    prices, adtv_cr=signal.adtv_cr,
+                    prices, adtv_cr=signal.adtv_cr, template=signal.template, pillar=adapter.channel,
                 )
 
             portfolio.record_equity(as_of, prices)

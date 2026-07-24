@@ -90,7 +90,7 @@ class TechnicalAdapter:
             result = self._last_results[ticker]
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
-                conviction=result.score,
+                conviction=result.score, template=self.template_name,
             ))
 
         self._currently_held = target

@@ -31,3 +31,6 @@ logs/
 
 # A25 rollback snapshots (generated, multi-GB, not source)
 datastore/snapshots/
+
+# Backtest DuckDB store (generated, multi-GB, not source)
+datastore/backtest_store/

@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-07-23T23:32:01.806062",
+  "requested_phases": [
+    "3",
+    "2"
+  ],
+  "execution_order": [
+    "3",
+    "2"
+  ],
+  "results": [
+    {
+      "phase": "3",
+      "returncode": 1,
+      "elapsed_s": 14353.075118269
+    }
+  ],
+  "all_passed": false
+}

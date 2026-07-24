@@ -1,0 +1,124 @@
+{
+  "model_name": "signal_5d_p2baseline",
+  "from_date": null,
+  "to_date": null,
+  "generated_at": "2026-07-23T21:58:40.152300+05:30",
+  "integrity_passed": true,
+  "integrity_detail": {
+    "critical_failures": []
+  },
+  "aggregate": {
+    "cagr_mean": 0.07572053911826519,
+    "sharpe_mean": 0.2970567400589756,
+    "max_drawdown_worst": -0.18102658309179828,
+    "win_rate_mean": 0.5504233016184165,
+    "profit_factor_mean": 113.07597822253187,
+    "total_trades": 1583,
+    "excess_return_mean": null,
+    "benchmark_cagr_mean": null,
+    "n_partial_folds_excluded": 1,
+    "cagr_mean_full_periods_only": 0.0946506738978315,
+    "sharpe_mean_full_periods_only": 0.3713209250737195,
+    "integrity_check_08_fold_stability": {
+      "passed": true,
+      "detail": "std(fold_sharpes)=0.460 (threshold < 0.5)"
+    },
+    "integrity_check_09_benchmarks": {
+      "passed": false,
+      "detail": "no fold_returns/benchmark_returns provided"
+    },
+    "integrity_check_10_random_feature": {
+      "passed": false,
+      "detail": "random feature accuracy=0.524 (band [0.48, 0.52])"
+    },
+    "deflated_sharpe_ratio": 0.9996847394919042
+  },
+  "folds": [
+    {
+      "fold_index": 0,
+      "train_start": "2021-07-26 00:00:00",
+      "train_end": "2022-03-25 00:00:00",
+      "test_start": "2022-04-01 00:00:00",
+      "test_end": "2023-03-31 00:00:00",
+      "cagr": -0.042668076273653766,
+      "sharpe": -0.15948901760794854,
+      "max_drawdown": -0.18102658309179828,
+      "win_rate": 0.8909090909090909,
+      "profit_factor": 51.28796807081023,
+      "n_trades": 1155,
+      "final_equity": 957994.7652141089,
+      "benchmark_cagr": null,
+      "benchmark_sharpe": null,
+      "excess_return": null
+    },
+    {
+      "fold_index": 1,
+      "train_start": "2021-07-26 00:00:00",
+      "train_end": "2023-03-28 00:00:00",
+      "test_start": "2023-04-03 00:00:00",
+      "test_end": "2024-03-28 00:00:00",
+      "cagr": 0.3712976503377603,
+      "sharpe": 1.0701800275544182,
+      "max_drawdown": -0.0956421004045332,
+      "win_rate": 0.9109311740890689,
+      "profit_factor": 362.627602455154,
+      "n_trades": 247,
+      "final_equity": 1361026.8427525237,
+      "benchmark_cagr": null,
+      "benchmark_sharpe": null,
+      "excess_return": null
+    },
+    {
+      "fold_index": 2,
+      "train_start": "2021-07-26 00:00:00",
+      "train_end": "2024-03-26 00:00:00",
+      "test_start": "2024-04-01 00:00:00",
+      "test_end": "2025-03-28 00:00:00",
+      "cagr": 0.049973121527219444,
+      "sharpe": 0.5745926903484082,
+      "max_drawdown": -0.05707080303482781,
+      "win_rate": 0.9502762430939227,
+      "profit_factor": 151.46432058669524,
+      "n_trades": 181,
+      "final_equity": 1049160.7140361152,
+      "benchmark_cagr": null,
+      "benchmark_sharpe": null,
+      "excess_return": null
+    },
+    {
+      "fold_index": 3,
+      "train_start": "2021-07-26 00:00:00",
+      "train_end": "2025-03-26 00:00:00",
+      "test_start": "2025-04-01 00:00:00",
+      "test_end": "2026-03-30 00:00:00",
+      "cagr": 0.0,
+      "sharpe": 0.0,
+      "max_drawdown": 0.0,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "n_trades": 0,
+      "final_equity": 1000000.0,
+      "benchmark_cagr": null,
+      "benchmark_sharpe": null,
+      "excess_return": null
+    },
+    {
+      "fold_index": 4,
+      "train_start": "2021-07-26 00:00:00",
+      "train_end": "2026-03-25 00:00:00",
+      "test_start": "2026-04-01 00:00:00",
+      "test_end": "2026-07-23 00:00:00",
+      "cagr": 0.0,
+      "sharpe": 0.0,
+      "max_drawdown": 0.0,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "n_trades": 0,
+      "final_equity": 1000000.0,
+      "benchmark_cagr": null,
+      "benchmark_sharpe": null,
+      "excess_return": null
+    }
+  ],
+  "runtime_seconds": 8471.847761553
+}
