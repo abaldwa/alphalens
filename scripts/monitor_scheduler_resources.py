@@ -70,11 +70,14 @@ def read_meminfo() -> dict:
 def current_worker_settings() -> tuple[int, int]:
     if not ENV_OVERRIDE_PATH.exists():
         return DEFAULT_HMM_WORKERS, DEFAULT_PRELOAD_WORKERS
+    tracked_keys = {"HMM_FEATURE_WORKERS", "FEATURE_CACHE_PRELOAD_WORKERS"}
     values = {}
     for line in ENV_OVERRIDE_PATH.read_text().splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
-            values[k.strip()] = int(v.strip())
+            k = k.strip()
+            if k in tracked_keys:
+                values[k] = int(v.strip())
     return (
         values.get("HMM_FEATURE_WORKERS", DEFAULT_HMM_WORKERS),
         values.get("FEATURE_CACHE_PRELOAD_WORKERS", DEFAULT_PRELOAD_WORKERS),
@@ -83,9 +86,18 @@ def current_worker_settings() -> tuple[int, int]:
 
 def write_worker_settings(hmm_workers: int, preload_workers: int) -> None:
     ENV_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    other_lines = []
+    if ENV_OVERRIDE_PATH.exists():
+        for line in ENV_OVERRIDE_PATH.read_text().splitlines():
+            if "=" in line:
+                k = line.split("=", 1)[0].strip()
+                if k in ("HMM_FEATURE_WORKERS", "FEATURE_CACHE_PRELOAD_WORKERS"):
+                    continue
+            other_lines.append(line)
     ENV_OVERRIDE_PATH.write_text(
         f"HMM_FEATURE_WORKERS={hmm_workers}\n"
         f"FEATURE_CACHE_PRELOAD_WORKERS={preload_workers}\n"
+        + "".join(f"{line}\n" for line in other_lines)
     )
 
 
