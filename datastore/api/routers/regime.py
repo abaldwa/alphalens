@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from config.settings import DUCKDB_PATH, SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from datastore.api.schemas import RegimeHistoryResponse, RegimeHistoryRow, RegimeResponse
+from systems.regime.market_regime import METHOD_NAME
 from systems.regime.regime_store import list_regime_segments
 
 logger = logging.getLogger(__name__)
@@ -119,12 +120,27 @@ async def get_market_regimes(
     ),
     start_date: Optional[date_type] = Query(None, description="Restrict to segments overlapping this date range"),
     end_date: Optional[date_type] = Query(None, description="Restrict to segments overlapping this date range"),
+    method: str = Query(
+        METHOD_NAME,
+        description=(
+            "Classification method, e.g. '20pct_threshold_v1' (default — matches original "
+            "single-threshold behavior), '15pct_threshold_v1', '10pct_threshold_v1', "
+            "'5pct_threshold_v1'. Backfilled by scripts/backfill_market_regimes.py."
+        ),
+    ),
 ) -> MarketRegimeSegmentListResponse:
     """Rule-based Bull/Bear/Sideways date-range segments for `index_name`
-    (backfilled by scripts/backfill_market_regimes.py) — the Backtest
-    module's per-regime performance breakdown reads this."""
+    under one classification `method` (backfilled by
+    scripts/backfill_market_regimes.py) — the Backtest module's per-regime
+    performance breakdown, and its Market Regime Timeline comparison across
+    thresholds, both read this. Defaults to the original 20% threshold
+    method for backward compatibility with any caller not passing `method`
+    explicitly; the Backtest page calls this 4x (once per threshold) to
+    render its stacked timeline comparison."""
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=True) as conn:
-        rows = list_regime_segments(conn, index_name, as_of=as_of, start_date=start_date, end_date=end_date)
+        rows = list_regime_segments(
+            conn, index_name, as_of=as_of, start_date=start_date, end_date=end_date, method=method
+        )
     return MarketRegimeSegmentListResponse(
         index_name=index_name, segments=[MarketRegimeSegmentResponse(**r) for r in rows]
     )

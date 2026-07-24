@@ -142,10 +142,19 @@ class TestLookaheadLeakage:
 
         clean_panel = self._panel(n_days)
         fuzzed_panel = self._panel(n_days, seed_future_from=clean_panel.index[fuzz_boundary_idx])
-        # Truncate both panels to the boundary — a real Walk-Forward run at that
-        # point in history could not have seen anything past it regardless.
-        truncated_clean = clean_panel.iloc[: fuzz_boundary_idx + 1]
-        truncated_fuzzed = fuzzed_panel.iloc[: fuzz_boundary_idx + 1]  # identical to truncated_clean by construction
+        # Truncate both panels to STRICTLY BEFORE the boundary — a real
+        # Walk-Forward run at that point in history could not have seen
+        # anything at-or-past it regardless. _panel's seed_future_from
+        # fuzzes index >= fuzz_boundary_idx (inclusive), so the truncation
+        # must stop at fuzz_boundary_idx (exclusive) for the two truncated
+        # panels to actually be identical — an off-by-one here (previously
+        # `: fuzz_boundary_idx + 1`, which included the first-fuzzed row in
+        # the supposedly "clean" truncated_fuzzed panel) was silently masked
+        # before the orchestrator's daily exit-policy pass started reading
+        # every trading day's price rather than only rebalance dates', so it
+        # never actually observed that boundary row before now.
+        truncated_clean = clean_panel.iloc[:fuzz_boundary_idx]
+        truncated_fuzzed = fuzzed_panel.iloc[:fuzz_boundary_idx]  # identical to truncated_clean by construction
 
         def run_up_to_boundary(panel):
             adapter = MomentumAdapter(price_panel=panel, top_n=1, lookback_months=3)

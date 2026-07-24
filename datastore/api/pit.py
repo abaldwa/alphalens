@@ -114,8 +114,8 @@ def get_fundamentals_pit(conn: Any, tickers: List[str], as_of: datetime) -> pd.D
             ) AS rn
             FROM fundamentals_history
             WHERE ticker IN ({placeholders})
-              AND announcement_date <= ?
-              AND recorded_at <= ?
+              AND CAST(announcement_date AS DATE) <= ?
+              AND CAST(recorded_at AS TIMESTAMP) <= ?
         )
         WHERE rn = 1
         """,

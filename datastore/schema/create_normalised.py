@@ -939,7 +939,20 @@ _CREATE_MARKET_REGIMES = """
         -- NULL for a still-open trailing segment that hasn't confirmed yet.
         move_pct DOUBLE,
         computed_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-        PRIMARY KEY (index_name, start_date)
+        -- PK widened from (index_name, start_date) to include method
+        -- [AS BUILT, 2026-07-24, multi-threshold regime timelines]: once
+        -- classify_regimes() gained a threshold_pct parameter (5/10/15/20%),
+        -- the SAME index_name can now have multiple methods' segments
+        -- stored side by side, and they are NOT guaranteed to have distinct
+        -- start_dates — every method's very first segment starts on
+        -- prices.index[0] (the first date of the whole series), which is
+        -- identical across all thresholds for the same index. Without
+        -- `method` in the PK, backfilling a second threshold would
+        -- silently overwrite the first threshold's opening segment via the
+        -- ON CONFLICT upsert in save_regime_segments(). See
+        -- _migrate_market_regimes_pk() below for the additive migration
+        -- that widens this PK on any pre-existing database.
+        PRIMARY KEY (index_name, method, start_date)
     )
 """
 
@@ -1140,6 +1153,40 @@ def _sync_fundamentals_history_columns(conn) -> None:
         logger.info(f"Synced missing column onto fundamentals_history: {col_name} {data_type}")
 
 
+def _migrate_market_regimes_pk(conn) -> None:
+    """Widen market_regimes' PRIMARY KEY from (index_name, start_date) to
+    (index_name, method, start_date) on any pre-existing database still
+    created under the old DDL. DuckDB has no ALTER TABLE ... DROP/ADD
+    CONSTRAINT for primary keys, so this recreates the table under the new
+    DDL and copies every existing row across — purely additive, no data is
+    dropped. Idempotent: skips straight through once the live PK already
+    includes `method` (checked via duckdb_constraints(), not a guess)."""
+    exists = conn.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'market_regimes'"
+    ).fetchone()
+    if not exists:
+        return  # freshly created by the _ALL_TABLES loop above, already on the new DDL
+
+    pk_cols = conn.execute(
+        "SELECT constraint_column_names FROM duckdb_constraints() "
+        "WHERE table_name = 'market_regimes' AND constraint_type = 'PRIMARY KEY'"
+    ).fetchone()
+    if pk_cols and "method" in pk_cols[0]:
+        return  # already widened
+
+    logger.info("Widening market_regimes PRIMARY KEY to (index_name, method, start_date)")
+    conn.execute("ALTER TABLE market_regimes RENAME TO market_regimes_old_pk")
+    conn.execute(_CREATE_MARKET_REGIMES)
+    conn.execute(
+        "INSERT INTO market_regimes "
+        "(index_name, regime, start_date, end_date, confirmed_date, method, move_pct, computed_at) "
+        "SELECT index_name, regime, start_date, end_date, confirmed_date, method, move_pct, computed_at "
+        "FROM market_regimes_old_pk"
+    )
+    conn.execute("DROP TABLE market_regimes_old_pk")
+    logger.info("market_regimes PRIMARY KEY widened; all rows preserved")
+
+
 def _migrate_dropped_columns(conn) -> None:
     """Drop any columns that were removed from the schema in a later phase."""
     for table_name, cols in _DROP_ORPHAN_COLUMNS.items():
@@ -1209,6 +1256,7 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
         _migrate_added_columns(conn)
         _sync_fundamentals_history_columns(conn)
         _migrate_dropped_columns(conn)
+        _migrate_market_regimes_pk(conn)
 
     logger.info(f"Normalised schema ready at {db_path if db_path else ':memory:'}")
 

@@ -52,6 +52,11 @@ class Position:
     # that don't tag entries (paper trading sim scripts, older callers).
     template: Optional[str] = None
     pillar: Optional[str] = None
+    # Market-cap rank (1=largest) within config.universe.get_market_cap_rank_map()
+    # at buy time, so trades can be bucketed by market-cap tier after the fact
+    # (trade_log CSV's stock_rank column). None when market cap data isn't
+    # available for the ticker (config/universe.py's "not yet sourced" case).
+    entry_market_cap_rank: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.peak_price is None:
@@ -70,6 +75,9 @@ class Trade:
     pnl_pct: float
     cost_inr: float
     exit_reason: str
+    # Carried over from Position.entry_market_cap_rank at close time — see
+    # that field's docstring.
+    entry_market_cap_rank: Optional[int] = None
 
 
 class PortfolioSimulator:

@@ -3,7 +3,7 @@
 // BacktestUmbrellaPlan.md at the repo root). Distinct from the existing
 // legacy backtest_reports.py passthrough (still used by src/pages/ml/backtest.tsx)
 // — this module is the new cross-channel run listing/detail/feature-log API.
-import { apiGet, apiPost } from './client'
+import { API_BASE_URL, apiGet, apiPost } from './client'
 
 export type BacktestChannel = 'technical' | 'fundamental' | 'ml' | 'momentum'
 export type BacktestMode = 'backtest' | 'walk_forward' | 'paper'
@@ -83,6 +83,7 @@ export interface BacktestRunSummary {
 
 export interface BacktestRunListResponse {
   runs: BacktestRunSummary[]
+  total_count: number
 }
 
 export interface BacktestRunLineageResponse {
@@ -104,7 +105,13 @@ export interface FeatureLogResponse {
   rows: FeatureLogRow[]
 }
 
-export function listBacktestRuns(filters?: { channel?: BacktestChannel; mode?: BacktestMode; strategy_id?: string; limit?: number }) {
+export function listBacktestRuns(filters?: {
+  channel?: BacktestChannel
+  mode?: BacktestMode
+  strategy_id?: string
+  limit?: number
+  sort_by?: 'created_at' | 'cagr'
+}) {
   return apiGet<BacktestRunListResponse>('/api/v1/backtest/runs', filters as Record<string, string | number | boolean | undefined>)
 }
 
@@ -343,6 +350,68 @@ export interface MarketRegimeSegmentListResponse {
   segments: MarketRegimeSegment[]
 }
 
-export function getMarketRegimes(indexName = 'Nifty 500') {
-  return apiGet<MarketRegimeSegmentListResponse>('/api/v1/macro/market_regimes', { index_name: indexName })
+// method: classification method, e.g. "20pct_threshold_v1" (default —
+// matches the backend's own default, preserving prior single-threshold
+// behavior), "15pct_threshold_v1", "10pct_threshold_v1", "5pct_threshold_v1".
+// The Backtest page's regime-threshold comparison calls this 4x, once per
+// threshold, rather than fetching all methods in one response.
+export function getMarketRegimes(indexName = 'Nifty 500', method?: string) {
+  return apiGet<MarketRegimeSegmentListResponse>('/api/v1/macro/market_regimes', {
+    index_name: indexName,
+    ...(method ? { method } : {}),
+  })
+}
+
+// Experiments comparison page (datastore/api/routers/backtest_runs.py's
+// GET /experiments) — one row per backtest_runs entry, metrics unpacked
+// from metrics_json, for comparing Entry-template x Exit-variant
+// combinations across the 270-job experiment_matrix_45x6.json queue.
+export type ExitPolicyVariant =
+  | 'baseline'
+  | 'condition'
+  | 'combined'
+  | 'trailing'
+  | 'atr_adaptive'
+  | 'regime_conditional'
+
+export interface ExperimentRow {
+  run_id: string
+  strategy_id: string
+  channel: BacktestChannel
+  exit_policy_variant: ExitPolicyVariant | null
+  regime_label: 'bull' | 'bear' | 'sideways' | null
+  horizon_bucket: string
+  created_at: string
+  cagr: number | null
+  xirr: number | null
+  sortino: number | null
+  calmar: number | null
+  max_drawdown: number | null
+  win_rate: number | null
+  profit_factor: number | null
+  avg_days_held: number | null
+  n_trades: number | null
+  excess_return: number | null
+  has_trade_log: boolean
+}
+
+export interface ExperimentListResponse {
+  experiments: ExperimentRow[]
+}
+
+export function listBacktestExperiments(filters?: {
+  strategy_id?: string
+  channel?: BacktestChannel
+  exit_policy_variant?: ExitPolicyVariant
+  regime_label?: string
+  limit?: number
+}) {
+  return apiGet<ExperimentListResponse>('/api/v1/backtest/experiments', filters as Record<string, string | number | boolean | undefined>)
+}
+
+// Trade-log CSV download — a plain same-origin-to-API link, not fetched
+// via apiGet (it's a file stream, not JSON); the API never hands back the
+// raw filesystem path, only this run_id-scoped route.
+export function experimentTradeLogUrl(runId: string): string {
+  return `${API_BASE_URL}/api/v1/backtest/experiments/${runId}/trade_log`
 }

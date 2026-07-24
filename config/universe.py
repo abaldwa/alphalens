@@ -24,6 +24,8 @@ To populate with Nifty 500 only (phase_1), run:
 """
 
 import logging
+from datetime import datetime
+from typing import Any, Dict, List
 
 import pandas as pd
 
@@ -220,6 +222,132 @@ def get_top_adtv_tickers(n: int) -> list[str]:
     """
     df = load_universe().sort_values("adtv_cr", ascending=False)
     return df["ticker"].tolist()[:n]
+
+
+def get_market_cap_rank_map() -> dict:
+    """
+    {ticker: rank} across the filtered universe, ranked by market_cap_cr
+    descending (rank 1 = largest market cap) — lets callers bucket trades
+    by market-cap tier (large/mid/small) after the fact.
+
+    This is a single static snapshot of today's universe CSV, not a
+    point-in-time-correct rank as of any given historical trade date (no
+    PIT market-cap history is wired into the backtest engine yet) — treat
+    it as an approximate size bucket, not an exact historical rank.
+
+    Tickers with market_cap_cr == 0 ("not yet sourced", see
+    load_universe()'s docstring) are omitted entirely rather than given a
+    fabricated rank; callers should treat a missing key as "unknown", not
+    "smallest".
+
+    Returns
+    -------
+    dict
+        {ticker: rank (1-indexed int)}, only for tickers with real
+        market_cap_cr data.
+    """
+    df = load_universe().sort_values("market_cap_cr", ascending=False).reset_index(drop=True)
+    return {
+        row["ticker"]: idx + 1
+        for idx, row in df.iterrows()
+        if row["market_cap_cr"] > 0
+    }
+
+
+def get_market_cap_rank_map_as_of(conn: Any, tickers: List[str], as_of_date) -> Dict[str, int]:
+    """
+    {ticker: rank} ranked by a genuinely point-in-time market cap as of
+    `as_of_date` (rank 1 = largest) — the PIT-correct replacement for
+    get_market_cap_rank_map()'s static current-snapshot rank.
+
+    market_cap(ticker, as_of_date) = shares_outstanding * close, where:
+      - shares_outstanding is the latest quarter's value knowable as of
+        as_of_date, from datastore.api.pit.get_fundamentals_pit (gated on
+        BOTH announcement_date <= as_of_date AND recorded_at <= as_of_date
+        — no lookahead, no restatement leakage).
+      - close is `ticker`'s ohlcv_adjusted close on the latest trading day
+        <= as_of_date (no future price used).
+
+    Tickers missing either shares_outstanding or a close price as of
+    as_of_date are OMITTED from the returned map entirely — never given a
+    fabricated or fallback rank. Callers (e.g.
+    backtest.core.engine.BacktestOrchestrator) must treat a missing key as
+    "unknown", not "smallest", exactly as get_market_cap_rank_map() already
+    documents for its own missing-data case.
+
+    Parameters
+    ----------
+    conn : Any
+        Open DuckDB connection to the normalised-schema DB (config.settings
+        .DUCKDB_PATH) — the one hosting both `fundamentals_history` and
+        `ohlcv_adjusted`. Any read mode is fine.
+    tickers : List[str]
+        Candidate tickers to rank (e.g. every ticker bought on this date).
+    as_of_date : date | datetime
+        Reference date. A bare `date` is upgraded to a midnight `datetime`
+        since get_fundamentals_pit requires a datetime.
+
+    Returns
+    -------
+    Dict[str, int]
+        {ticker: rank (1-indexed int)}, only for tickers with both a known
+        shares_outstanding and a known close price as of as_of_date. Empty
+        dict if `tickers` is empty or no ticker has both.
+    """
+    from datastore.api.pit import get_fundamentals_pit
+
+    if not tickers:
+        return {}
+
+    as_of_dt = as_of_date if isinstance(as_of_date, datetime) else datetime.combine(as_of_date, datetime.min.time())
+
+    fundamentals = get_fundamentals_pit(conn, tickers, as_of_dt)
+    if fundamentals.empty or "shares_outstanding" not in fundamentals.columns:
+        return {}
+
+    # get_fundamentals_pit already returns one row per (ticker, fiscal_year,
+    # quarter) using each quarter's latest as-of-as_of_dt snapshot, sorted
+    # by announcement_date ascending — take the LAST row per ticker (the
+    # most recent quarter known as of as_of_date), same "latest known"
+    # semantics as the function's own docstring.
+    shares_by_ticker = (
+        fundamentals.dropna(subset=["shares_outstanding"])
+        .groupby("ticker", as_index=True)
+        .last()["shares_outstanding"]
+        .to_dict()
+    )
+    if not shares_by_ticker:
+        return {}
+
+    candidate_tickers = list(shares_by_ticker.keys())
+    placeholders = ",".join("?" for _ in candidate_tickers)
+    as_of_key = as_of_dt.date() if isinstance(as_of_dt, datetime) else as_of_dt
+    price_df = conn.execute(
+        f"""
+        SELECT ticker, close FROM (
+            SELECT ticker, close, ROW_NUMBER() OVER (
+                PARTITION BY ticker ORDER BY date DESC
+            ) AS rn
+            FROM ohlcv_adjusted
+            WHERE ticker IN ({placeholders}) AND date <= ?
+        )
+        WHERE rn = 1
+        """,
+        candidate_tickers + [as_of_key],
+    ).df()
+
+    close_by_ticker = dict(zip(price_df["ticker"], price_df["close"]))
+
+    market_caps = {
+        ticker: shares_by_ticker[ticker] * close_by_ticker[ticker]
+        for ticker in candidate_tickers
+        if ticker in close_by_ticker
+    }
+    if not market_caps:
+        return {}
+
+    ranked = sorted(market_caps.items(), key=lambda kv: kv[1], reverse=True)
+    return {ticker: idx + 1 for idx, (ticker, _mcap) in enumerate(ranked)}
 
 
 def get_isin_to_ticker_map() -> dict:

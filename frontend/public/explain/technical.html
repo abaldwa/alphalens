@@ -98,6 +98,7 @@
         <li><a href="#features">Feature base</a></li>
         <li><a href="#screener">Screener library</a></li>
         <li><a href="#alerts">Alerts</a></li>
+        <li><a href="#exit">Exit criterion</a></li>
         <li><a href="#outputs">Outputs &amp; metrics</a></li>
       </ol>
     </nav>
@@ -148,6 +149,14 @@
       <section class="module" id="alerts">
         <div class="module-head"><span class="module-tag">Daily</span><h2>Alerts</h2></div>
         <p class="module-sub"><code>DailyAlertChecker</code> runs once per pipeline cycle, evaluates the day's feature matrix against the same condition language the screener uses, and persists any firings to <code>alert_store.py</code> — surfaced on the Alerts screen without the user needing to re-run a screener manually.</p>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="module" id="exit">
+        <div class="module-head"><span class="module-tag">Experimentation</span><h2>Exit criterion</h2></div>
+        <p class="module-sub">Every template above is an entry rule only — exit is a separate, per-strategy question, now handled by a 6-variant exit system (baseline stop/target, condition-based, combined, trailing, ATR-adaptive, regime-conditional) sitting on top of the Orchestrator backtest engine.</p>
+        <p>This is still experimentation mode: a 270-job matrix (45 strategies × 6 exit variants) is what determines which Entry+Exit combination wins per template, not a fixed answer baked into the screener itself. See each template's derived baseline stop%/target% and condition-based exit rule, plus the full variant breakdown, in the <a href="/explain/backtest-guide.html#exit-system-overview"><strong>Exit criterion system reference →</strong></a>, and current per-run results on the live <code>/backtest-experiments</code> page.</p>
       </section>
 
       <hr class="divider" />

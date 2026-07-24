@@ -58,6 +58,7 @@ import { MacroPage } from '@/pages/macro/MacroPage'
 import { SymbolOverviewPage } from '@/pages/symbol/SymbolOverviewPage'
 
 import { BacktestPage } from '@/pages/backtest/BacktestPage'
+import { ExperimentsPage } from '@/pages/backtest/ExperimentsPage'
 
 /**
  * Single route tree for the SPA (replaces the former Vite multi-HTML-entry
@@ -121,6 +122,7 @@ export const router = createBrowserRouter([
   { path: '/big_investors-mf_holdings', element: <BigInvestorsMfHoldingsPage /> },
 
   { path: '/backtest', element: <BacktestPage /> },
+  { path: '/backtest-experiments', element: <ExperimentsPage /> },
 
   { path: '/ops', element: <OpsPage /> },
   { path: '/macro', element: <MacroPage /> },

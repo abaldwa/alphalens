@@ -199,6 +199,7 @@ class StrategyPortfolio:
         self, ticker: str, sector: str, price: float, date, prices: Dict[str, float],
         adtv_cr: Optional[float] = None, entry_atr_pct: Optional[float] = None,
         template: Optional[str] = None, pillar: Optional[str] = None,
+        market_cap_rank: Optional[int] = None,
     ) -> Optional[Position]:
         if not self.can_buy(ticker, sector, price, prices, adtv_cr):
             return None
@@ -209,6 +210,7 @@ class StrategyPortfolio:
         position = Position(
             ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty,
             entry_atr_pct=entry_atr_pct, template=template, pillar=pillar,
+            entry_market_cap_rank=market_cap_rank,
         )
         self.positions[ticker] = position
         return position
@@ -253,6 +255,7 @@ class StrategyPortfolio:
             ticker=position.ticker, entry_date=position.entry_date, exit_date=date,
             entry_price=position.entry_price, exit_price=price, quantity=qty,
             pnl_inr=pnl_inr, pnl_pct=pnl_pct, cost_inr=cost, exit_reason=reason,
+            entry_market_cap_rank=position.entry_market_cap_rank,
         )
         self.trades.append(trade)
         return trade

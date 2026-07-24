@@ -385,6 +385,90 @@ class TestExecutionTiming:
         assert any(g["reason"] == "no_price_for_buy_signal" for g in result.data_gaps)
 
 
+class _StopBreachExitModel:
+    """Deterministic stand-in for PerTemplateExitPolicy: signals an urgent
+    exit purely off unrealised_pnl_pct breaching a flat -5% stop, and NEVER
+    off days_held — proves the daily exit-policy pass and the "no forced
+    max-holding-days" requirement independently of the real production
+    PerTemplateExitPolicy default (covered separately below)."""
+
+    def predict_full(self, X: pd.DataFrame) -> pd.DataFrame:
+        urgency = X["unrealised_pnl_pct"].apply(lambda pnl: 90.0 if pnl <= -0.05 else 45.0)
+        return pd.DataFrame({"exit_urgency": urgency}, index=X.index)
+
+
+class TestExitPolicy:
+    """backtest/core/engine.py's BacktestOrchestrator._apply_exit_policy —
+    checked every trading day, independent of the rebalance-cadence
+    rotation logic (task: exit-policy wiring + no forced max-hold-days)."""
+
+    def test_stop_breach_triggers_mid_cycle_exit_before_next_rebalance(self):
+        # D63 bucket -> 63-day rebalance cadence; a 50-day window has exactly
+        # ONE rebalance date (day 0), so the adapter never gets a second
+        # chance to emit a sell signal — any trade closed here can only be
+        # the daily exit-policy pass, not rotation.
+        trading_days = pd.date_range("2020-01-01", periods=50, freq="D")
+        first_rebalance = trading_days[0].date()
+        adapter = _FixedSignalAdapter(signals_by_date={
+            first_rebalance: [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0)],
+        })
+        run = _run(horizon_bucket=HorizonBucket.D63, end_date=trading_days[-1].date())
+
+        # Flat at 100 through day 39 (past the D63 bucket's 21-day
+        # min_holding_days floor), then a -10% gap on day 40 — a real stop
+        # breach the exit policy must act on well before the next (day-63,
+        # out-of-window) rebalance.
+        def price_lookup(ticker, as_of_date):
+            day_index = (pd.Timestamp(as_of_date) - pd.Timestamp(first_rebalance)).days
+            return 100.0 if day_index < 40 else 90.0
+
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"], price_lookup=price_lookup,
+        )
+        result = BacktestOrchestrator(exit_model=_StopBreachExitModel()).run(run, adapter, config)
+
+        assert result.metrics["n_trades"] == 1  # only the exit-policy pass could have closed it in this window
+
+    def test_flat_price_not_force_exited_by_elapsed_days_alone(self):
+        # Same stub policy, but price never breaches the stop for the whole
+        # window — days_held grows large (49), yet the stub never inspects
+        # days_held at all, so nothing should ever close the position.
+        trading_days = pd.date_range("2020-01-01", periods=50, freq="D")
+        first_rebalance = trading_days[0].date()
+        adapter = _FixedSignalAdapter(signals_by_date={
+            first_rebalance: [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0)],
+        })
+        run = _run(horizon_bucket=HorizonBucket.D63, end_date=trading_days[-1].date())
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"], price=100.0),
+        )
+        result = BacktestOrchestrator(exit_model=_StopBreachExitModel()).run(run, adapter, config)
+
+        assert result.metrics["n_trades"] == 0
+
+    def test_default_exit_model_never_force_exits_on_elapsed_days_alone(self):
+        # Uses the REAL production default (PerTemplateExitPolicy with the
+        # max-holding-days barrier disabled, per _build_default_exit_model)
+        # over a window far longer than RuleBasedExitPolicy's own
+        # MAX_HOLD_DAYS=21 bootstrap default, at a flat price that never
+        # touches stop/target — proves the sentinel override actually took
+        # effect end-to-end, not just at the unit level.
+        trading_days = pd.date_range("2020-01-01", periods=120, freq="D")
+        first_rebalance = trading_days[0].date()
+        adapter = _FixedSignalAdapter(signals_by_date={
+            first_rebalance: [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0)],
+        })
+        run = _run(horizon_bucket=HorizonBucket.D63, end_date=trading_days[-1].date())
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"], price=100.0),
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)  # no exit_model override -> production default
+
+        assert result.metrics["n_trades"] == 0
+
+
 class TestFeatureLogIntegration:
     def test_feature_log_writer_receives_one_record_per_signal(self):
         from backtest.core.feature_log import FeatureLogWriter
@@ -410,3 +494,128 @@ class TestFeatureLogIntegration:
                 "SELECT COUNT(*) FROM backtest_feature_log WHERE run_id = ?", [run.run_id]
             ).fetchone()[0]
         assert n >= 1
+
+
+class TestTradeLogCsv:
+    def test_finalize_writes_trade_log_csv_with_correct_rows(self):
+        import csv
+
+        from backtest.core.engine import REPORTS_DIR
+
+        trading_days = pd.date_range("2020-01-01", periods=30, freq="B")
+        first_rebalance = trading_days[0].date()
+        later_rebalance = trading_days[5].date()
+        signals_by_date = {
+            first_rebalance: [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0)],
+            later_rebalance: [Signal(ticker="RELIANCE", action="sell", sector="Energy", conviction=1.0)],
+        }
+        adapter = _FixedSignalAdapter(signals_by_date=signals_by_date)
+        run = _run(horizon_bucket=HorizonBucket.D5)
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"], price=100.0),
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)
+        assert result.metrics["n_trades"] == 1
+
+        csv_path = REPORTS_DIR / f"trade_log_{run.run_id}.csv"
+        try:
+            assert csv_path.exists()
+            with open(csv_path, newline="") as fh:
+                rows = list(csv.DictReader(fh))
+            assert list(rows[0].keys()) == [
+                "ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank",
+            ]
+            assert len(rows) == 1
+            row = rows[0]
+            assert row["ticker"] == "RELIANCE"
+            assert int(row["qty"]) > 0
+            assert row["buy_price"] == "100.0"
+            assert row["sale_price"] == "100.0"
+            assert str(first_rebalance) in row["buy_date"]
+            assert str(later_rebalance) in row["sale_date"]
+            # stock_rank is blank unless config.universe's market cap data
+            # resolves this synthetic test ticker — never fabricated.
+            assert row["stock_rank"] == "" or row["stock_rank"].isdigit()
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+    def test_finalize_writes_header_only_csv_for_zero_trade_run(self):
+        import csv
+
+        from backtest.core.engine import REPORTS_DIR
+
+        trading_days = pd.date_range("2020-01-01", periods=10, freq="B")
+        adapter = _FixedSignalAdapter(signals_by_date={})
+        run = _run()
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"]),
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)
+        assert result.metrics["n_trades"] == 0
+
+        csv_path = REPORTS_DIR / f"trade_log_{run.run_id}.csv"
+        try:
+            assert csv_path.exists()
+            with open(csv_path, newline="") as fh:
+                rows = list(csv.reader(fh))
+            assert rows == [["ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank"]]
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+
+class TestExitPolicyVariantAndTradeLogPath:
+    def test_result_carries_exit_policy_variant_and_matching_trade_log_path(self):
+        from backtest.core.engine import REPORTS_DIR
+
+        trading_days = pd.date_range("2020-01-01", periods=10, freq="B")
+        adapter = _FixedSignalAdapter(signals_by_date={})
+        run = _run()
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"]),
+        )
+        result = BacktestOrchestrator(exit_policy_variant="trailing").run(run, adapter, config)
+        expected_path = REPORTS_DIR / f"trade_log_{run.run_id}.csv"
+        try:
+            assert result.exit_policy_variant == "trailing"
+            assert result.trade_log_path == str(expected_path)
+            assert expected_path.exists()
+        finally:
+            expected_path.unlink(missing_ok=True)
+
+    def test_exit_policy_variant_defaults_to_none_when_not_passed(self):
+        trading_days = pd.date_range("2020-01-01", periods=10, freq="B")
+        adapter = _FixedSignalAdapter(signals_by_date={})
+        run = _run()
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"]),
+        )
+        from backtest.core.engine import REPORTS_DIR
+
+        result = BacktestOrchestrator().run(run, adapter, config)
+        csv_path = REPORTS_DIR / f"trade_log_{run.run_id}.csv"
+        try:
+            assert result.exit_policy_variant is None
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+    def test_regime_label_none_when_no_regime_conn(self):
+        trading_days = pd.date_range("2020-01-01", periods=10, freq="B")
+        adapter = _FixedSignalAdapter(signals_by_date={})
+        run = _run()
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE"]),
+        )
+        from backtest.core.engine import REPORTS_DIR
+
+        result = BacktestOrchestrator().run(run, adapter, config)
+        csv_path = REPORTS_DIR / f"trade_log_{run.run_id}.csv"
+        try:
+            assert result.regime_label is None
+            assert result.regime_breakdown == []
+        finally:
+            csv_path.unlink(missing_ok=True)

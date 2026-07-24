@@ -134,6 +134,38 @@ class TestComputeMetricsStandaloneFixture:
         assert result.cagr is not None
         assert result.xirr is not None
         assert result.max_drawdown < 0
+        assert result.avg_days_held is None  # no holding_days passed
+
+
+class TestAvgDaysHeld:
+    """avg_days_held: mean (exit_date - entry_date).days across closed trades
+    (backtest/core/engine.py's BacktestOrchestrator._finalize derives this
+    list from portfolio.trades and passes it through as holding_days)."""
+
+    def _base_kwargs(self, **overrides):
+        kwargs = dict(
+            equity_curve=pd.Series([1_000_000.0, 1_100_000.0], index=pd.date_range("2020-01-01", periods=2, freq="6ME")),
+            cash_flows=[("2020-01-01", -1_000_000.0), ("2020-06-01", 1_100_000.0)],
+            trade_pnls=[10_000.0, 20_000.0, -5_000.0],
+            trade_values=[100_000.0, 100_000.0, 100_000.0],
+            distinct_tickers=["A", "B", "C"],
+            start_date="2020-01-01", end_date="2020-06-01",
+            total_contributed=1_000_000.0,
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_mean_of_holding_days_across_closed_trades(self):
+        result = compute_metrics(**self._base_kwargs(holding_days=[10, 20, 30]))
+        assert result.avg_days_held == pytest.approx(20.0)
+
+    def test_none_when_no_trades(self):
+        result = compute_metrics(**self._base_kwargs(holding_days=[]))
+        assert result.avg_days_held is None
+
+    def test_none_when_holding_days_not_supplied(self):
+        result = compute_metrics(**self._base_kwargs())
+        assert result.avg_days_held is None
 
 
 class TestComputeMetricsAgainstRealData:

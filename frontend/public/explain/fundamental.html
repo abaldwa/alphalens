@@ -93,6 +93,7 @@
         <li><a href="#composites">Composite scores</a></li>
         <li><a href="#peers">Peer ranking</a></li>
         <li><a href="#screener">Screener presets</a></li>
+        <li><a href="#exit">Exit criterion</a></li>
         <li><a href="#status">What's built vs. missing</a></li>
       </ol>
     </nav>
@@ -145,6 +146,12 @@
       <section class="module" id="screener">
         <div class="module-head"><span class="module-tag">Presets</span><h2>Screener presets</h2></div>
         <p class="module-sub"><code>matches_screener_preset()</code> evaluates a stock's ratio set against named preset criteria (e.g. quality/growth/value archetypes) for the Fundamental Screener screen — the same "named, documented condition set" philosophy as Technical Analysis's 42 templates, scaled to fundamentals.</p>
+      </section>
+
+      <section class="module" id="exit">
+        <div class="module-head"><span class="module-tag">Experimentation</span><h2>Exit criterion</h2></div>
+        <p class="module-sub">Fundamental screener presets are entry rules only; exit runs through the same 6-variant system as Technical (baseline stop/target, condition-based, combined, trailing, ATR-adaptive, regime-conditional). Baseline stop%/target% is set per preset: <code>quality_compounder</code> stop 8% / target 20%, <code>garp</code> stop 6% / target 15%, <code>turnaround</code> stop 10% / target 25% — wider than Technical's, reflecting the longer hold typical of a fundamental thesis.</p>
+        <p>Like Technical, this is experimentation mode — the 270-job backtest matrix (45 strategies × 6 exit variants) decides which Entry+Exit pairing wins per preset. See the <a href="/explain/backtest-guide.html#exit-system-overview"><strong>Exit criterion system reference →</strong></a> for the full variant breakdown, and the live <code>/backtest-experiments</code> page for current per-run results.</p>
       </section>
 
       <hr class="divider" />

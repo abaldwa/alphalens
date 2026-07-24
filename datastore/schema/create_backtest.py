@@ -68,6 +68,22 @@ _CREATE_BACKTEST_RUNS = """
         -- in real deployments (CREATE TABLE IF NOT EXISTS alone would not
         -- reach an already-created table).
         regime_breakdown_json VARCHAR,
+        -- Experiment-comparison convenience columns (added after
+        -- backtest_runs already existed in real deployments — see the
+        -- ALTER TABLE ADD COLUMN IF NOT EXISTS calls below, same pattern
+        -- as regime_breakdown_json above):
+        --   exit_policy_variant: which of EXIT_POLICY_VARIANTS
+        --     (backtest/core/engine.py) this run used, NULL if the caller
+        --     built exit_model directly rather than via the variant factory.
+        --   regime_label: single dominant-regime summary derived from
+        --     regime_breakdown_json (see engine.py::_finalize), NULL when
+        --     no one regime holds a strict majority of the run's days.
+        --   trade_log_path: filesystem path to this run's
+        --     trade_log_{run_id}.csv (backtest/core/engine.py::
+        --     _write_trade_log), NULL only if trade-log writing failed.
+        exit_policy_variant VARCHAR,
+        regime_label VARCHAR,
+        trade_log_path VARCHAR,
         -- Phase 6 hard boundary (BacktestUmbrellaPlan.md Phase 6 requirement
         -- #6): only a human-approved action may ever set this true. No code
         -- path in the fine-tuning loop is permitted to write TRUE here —
@@ -129,6 +145,9 @@ def create_backtest_schema(db_path: Optional[Path] = None, in_memory: bool = Fal
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS regime_breakdown_json VARCHAR")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS exit_policy_variant VARCHAR")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS regime_label VARCHAR")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS trade_log_path VARCHAR")
 
     logger.info(f"Backtest schema ready at {db_path if db_path else ':memory:'}")
 

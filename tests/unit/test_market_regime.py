@@ -14,6 +14,7 @@ from systems.regime.market_regime import (
     BULL_BEAR_THRESHOLD_PCT,
     SIDEWAYS_WINDOW_TRADING_DAYS,
     classify_regimes,
+    method_name,
 )
 
 
@@ -85,3 +86,53 @@ class TestClassifyRegimes:
         )
         segs = classify_regimes(s)
         assert segs  # doesn't raise, produces something sensible
+
+
+class TestThresholdPct:
+    def test_default_threshold_matches_module_constant(self):
+        prices = [100.0, 95.0, 90.0, 85.0, 79.0, 85.0, 92.0, 100.0]
+        assert classify_regimes(_series(prices)) == classify_regimes(
+            _series(prices), threshold_pct=BULL_BEAR_THRESHOLD_PCT
+        )
+
+    def test_lower_threshold_confirms_more_and_shorter_segments(self):
+        # A choppy series with several ~7-12% swings: a 5% threshold should
+        # confirm many more (and individually shorter) Bull/Bear flips than
+        # the 20% threshold, which should mostly stay Sideways/undecided
+        # over the same swings.
+        prices = [
+            100, 93, 100, 108, 100, 92, 99, 107, 98, 90,
+            97, 105, 96, 88, 95, 103, 94, 86, 93, 101,
+        ]
+        segs_5pct = classify_regimes(_series([float(p) for p in prices]), threshold_pct=0.05)
+        segs_20pct = classify_regimes(_series([float(p) for p in prices]), threshold_pct=0.20)
+
+        confirmed_5pct = [s for s in segs_5pct if s.regime in ("bull", "bear")]
+        confirmed_20pct = [s for s in segs_20pct if s.regime in ("bull", "bear")]
+        assert len(confirmed_5pct) > len(confirmed_20pct)
+
+        if confirmed_5pct:
+            avg_len_5pct = sum((s.end_date - s.start_date).days for s in confirmed_5pct) / len(confirmed_5pct)
+            avg_len_20pct = (
+                sum((s.end_date - s.start_date).days for s in confirmed_20pct) / len(confirmed_20pct)
+                if confirmed_20pct
+                else float("inf")
+            )
+            assert avg_len_5pct <= avg_len_20pct
+
+    def test_threshold_pct_changes_move_pct_confirmation_bar(self):
+        # A clean 8% rally from a trough: confirms Bull at 5% threshold,
+        # does NOT confirm at 20%.
+        prices = [100.0, 96.0, 92.0, 92.0 * 1.081]
+        segs_5pct = classify_regimes(_series(prices), threshold_pct=0.05)
+        segs_20pct = classify_regimes(_series(prices), threshold_pct=0.20)
+        assert any(s.regime == "bull" for s in segs_5pct)
+        assert not any(s.regime == "bull" for s in segs_20pct)
+
+
+class TestMethodName:
+    def test_encodes_threshold_as_integer_percent(self):
+        assert method_name(0.20) == "20pct_threshold_v1"
+        assert method_name(0.15) == "15pct_threshold_v1"
+        assert method_name(0.10) == "10pct_threshold_v1"
+        assert method_name(0.05) == "5pct_threshold_v1"

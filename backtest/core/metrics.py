@@ -53,6 +53,7 @@ class BacktestMetrics:
     excess_return: Optional[float]
     benchmark_status: str  # "ok" | "insufficient_benchmark_history"
     cash_position_series: List[Dict] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
+    avg_days_held: Optional[float] = None  # mean (exit_date - entry_date).days across closed trades; None if n_trades == 0
 
 
 def calendar_cagr(starting_capital: float, ending_value: float, start_date, end_date) -> Optional[float]:
@@ -175,6 +176,7 @@ def compute_metrics(
     total_contributed: float,
     benchmark_equity_curve: Optional[pd.Series] = None,
     cash_position_series: Optional[List[Dict]] = None,
+    holding_days: Optional[List[float]] = None,
 ) -> BacktestMetrics:
     """
     Single entry point every adapter's backtest/walk-forward run calls once
@@ -217,6 +219,7 @@ def compute_metrics(
         excess_return=excess_return,
         benchmark_status=bench_status,
         cash_position_series=cash_position_series or [],
+        avg_days_held=(float(np.mean(holding_days)) if holding_days else None),
     )
 
 

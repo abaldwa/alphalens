@@ -151,6 +151,14 @@ export const NAV_SECTIONS: NavSection[] = [
     id: 'backtest',
     label: 'Backtest',
     href: '/backtest',
+    subItems: [
+      { id: 'index', label: 'Runs', href: '/backtest' },
+      {
+        id: 'experiments',
+        label: 'Experiments',
+        href: '/backtest-experiments',
+      },
+    ],
   },
   {
     id: 'big_investors',

@@ -67,11 +67,26 @@ class RegimeSegment:
     move_pct: Optional[float]  # % move from the anchor that confirmed this segment; None while still open/unconfirmed
 
 
-def classify_regimes(prices: pd.Series) -> List[RegimeSegment]:
+def method_name(threshold_pct: float) -> str:
+    """The `method` string persisted alongside segments produced with this
+    threshold — encodes the threshold so different-threshold segments for
+    the same index are distinguishable (e.g. "5pct_threshold_v1",
+    "20pct_threshold_v1")."""
+    return f"{int(round(threshold_pct * 100))}pct_threshold_v1"
+
+
+def classify_regimes(prices: pd.Series, threshold_pct: float = BULL_BEAR_THRESHOLD_PCT) -> List[RegimeSegment]:
     """
     prices: a pandas Series of close prices indexed by date (ascending,
     trading-day index — gaps for holidays/weekends are fine), for ONE
     index. NaNs are dropped before classification.
+
+    threshold_pct: the Bull/Bear confirmation threshold as a fraction (e.g.
+    0.20 for 20%, 0.05 for 5%). Defaults to BULL_BEAR_THRESHOLD_PCT (20%),
+    preserving prior behavior for any existing caller that doesn't pass
+    this explicitly. Lower thresholds confirm regime flips off smaller
+    moves, producing MORE, SHORTER segments than a higher threshold on the
+    same price series.
 
     Returns contiguous, non-overlapping RegimeSegment objects covering
     prices.index[0] through prices.index[-1]. The LAST segment is always
@@ -123,12 +138,12 @@ def classify_regimes(prices: pd.Series) -> List[RegimeSegment]:
         rally = (values[i] - values[trough_idx]) / values[trough_idx] if values[trough_idx] else 0.0
         drawdown = (values[peak_idx] - values[i]) / values[peak_idx] if values[peak_idx] else 0.0
 
-        if regime != "bull" and rally >= BULL_BEAR_THRESHOLD_PCT:
+        if regime != "bull" and rally >= threshold_pct:
             emit(trough_idx - 1, i, trough_idx)
             regime = "bull"
             peak_idx = i
             trough_idx = i
-        elif regime != "bear" and drawdown >= BULL_BEAR_THRESHOLD_PCT:
+        elif regime != "bear" and drawdown >= threshold_pct:
             emit(peak_idx - 1, i, peak_idx)
             regime = "bear"
             peak_idx = i

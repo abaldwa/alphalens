@@ -28,18 +28,34 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+import csv
+import hashlib
+
+from backtest.core.horizon import HorizonBucket
 from backtest.momentum_backtest import MomentumBacktester, MomentumBacktestResult
 from backtest.momentum_metrics import cagr, churn_factor, total_return, xirr
 from backtest.momentum_tax import compute_total_tax, post_tax_ending_value
-from config.settings import DUCKDB_PATH
+from backtest.strategy_id import build_strategy_id
+from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
+from datastore.schema.create_strategy_catalog import create_strategy_catalog_schema
 from features.momentum_signal import LOOKBACK_MONTHS, lookback_trading_days, load_price_panel
 from features.momentum_universe import (
     RANK_BANDS,
     all_yearly_full_rankings,
     yearly_band_universes_from_rankings,
 )
+
+# 2026-07-24 user request (backtest sweep expansion): two wider bands
+# beyond momentum_universe.py's own RANK_BANDS (which cap at rank 200,
+# the ML38-scoped set used by the live rebalance-suggestion system).
+# Kept local to this script rather than appended to the shared RANK_BANDS
+# constant so the live system's band numbering/behavior is untouched.
+# rank_band_tickers()/full_rank_universe() already support rank_end > 200
+# via their own max(rank_end, MAX_TRACKED_RANK) — no new ranking logic
+# needed, only wider (band_id, rank_start, rank_end) tuples.
+WIDE_BANDS = [(6, 251, 500), (7, 501, 800)]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -84,6 +100,7 @@ def _summarize(result: MomentumBacktestResult, top_n: int, min_momentum: Optiona
 
     closed = [t for t in txns if t["status"] == "closed"]
     win_rate = (sum(1 for t in closed if t["sell_price"] > t["buy_price"]) / len(closed)) if closed else None
+    avg_days_held = (sum(t["holding_days"] for t in closed) / len(closed)) if closed else None
 
     total_tax = compute_total_tax(txns)
     post_tax_value = post_tax_ending_value(result.ending_value, txns)
@@ -106,6 +123,7 @@ def _summarize(result: MomentumBacktestResult, top_n: int, min_momentum: Optiona
         "win_rate": win_rate,
         "n_closed_trades": len(closed),
         "n_open_trades": len(txns) - len(closed),
+        "avg_days_held": avg_days_held,
         "total_tax": total_tax,
         "post_tax_ending_value": post_tax_value,
         "post_tax_cagr": post_tax_cagr,
@@ -146,14 +164,70 @@ def _sip_summary(
     }
 
 
-def run_experimentation(years_back: int = 10) -> Dict:
-    end_date = now_ist().date()
+def _variant_key(band_id: int, rank_start: int, rank_end: int, lookback_months: int, rebalance_name: str, top_n: int) -> str:
+    descriptor = f"band{band_id}_{rank_start}-{rank_end}_top{top_n}_{lookback_months}m_{rebalance_name}"
+    return descriptor
+
+
+def _write_trade_book_csv(descriptor: str, txns: List[Dict]) -> Path:
+    """One CSV per variant, matching the Technical/Fundamental trade-book
+    convention (backtest/export_trade_book.py) — ticker, buy/sell date &
+    price, days held, P&L. holding_days is None for still-open positions
+    (no sell_date yet), left blank rather than fabricated."""
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    csv_path = REPORTS_DIR / f"trade_book_{descriptor}.csv"
+    with open(csv_path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["ticker", "buy_date", "buy_price", "sell_date", "sell_price", "days_held", "pnl", "status"])
+        for t in txns:
+            pnl = (t["sell_price"] - t["buy_price"]) * t["qty"] if t["sell_price"] is not None else None
+            writer.writerow([
+                t["ticker"], t["buy_date"], t["buy_price"], t.get("sell_date"), t.get("sell_price"),
+                t.get("holding_days"), pnl, t["status"],
+            ])
+    return csv_path
+
+
+def _upsert_strategy_catalog(descriptor: str, params: Dict, run_date) -> None:
+    """One strategy_catalog row per momentum variant config. Momentum
+    variants don't go through BacktestOrchestrator/backtest_runs, so
+    latest_run_id here is this script's own descriptor-derived key, not a
+    real backtest_runs.run_id — the catalog's FK is documented as
+    value-level, not a DB foreign key, so this is consistent with that."""
+    horizon = HorizonBucket.D21 if params["lookback_months"] <= 3 else (
+        HorizonBucket.D63 if params["lookback_months"] <= 9 else HorizonBucket.Y1
+    )
+    strategy_id = build_strategy_id("momentum", descriptor, horizon, as_of=run_date.date())
+    params_json = json.dumps(params, default=str)
+    strategy_key = hashlib.sha1(f"momentum|{descriptor}|{params_json}".encode()).hexdigest()
+    create_strategy_catalog_schema(BACKTEST_DUCKDB_PATH)
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn:
+        conn.execute(
+            """
+            INSERT INTO strategy_catalog
+                (strategy_key, channel, descriptor, params_json, latest_run_id, first_run_at, last_run_at, n_runs)
+            VALUES (?, 'momentum', ?, ?, ?, ?, ?, 1)
+            ON CONFLICT (strategy_key) DO UPDATE SET
+                latest_run_id = excluded.latest_run_id,
+                last_run_at = excluded.last_run_at,
+                n_runs = strategy_catalog.n_runs + 1
+            """,
+            [strategy_key, descriptor, params_json, strategy_id, run_date, run_date],
+        )
+        conn.commit()
+
+
+def run_experimentation(
+    years_back: int = 10, write_trade_books: bool = True, end_date: Optional[date] = None,
+) -> Dict:
+    end_date = end_date or now_ist().date()
     start_date = date(end_date.year - years_back, end_date.month, end_date.day)
 
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
-        logger.info("Computing yearly full market-cap rankings (top 200) %s..%s", start_date, end_date)
+        max_rank = max(rank_end for _, _, rank_end in RANK_BANDS + WIDE_BANDS)
+        logger.info("Computing yearly full market-cap rankings (top %d) %s..%s", max_rank, start_date, end_date)
         yearly_rankings = all_yearly_full_rankings(
-            conn, start_date.isoformat(), end_date.isoformat(), include_delisted=True,
+            conn, start_date.isoformat(), end_date.isoformat(), max_rank=max_rank, include_delisted=True,
         )  # 2026-07-20 survivorship-bias fix — BacktestUmbrellaPlan.md Gap #1
         if not yearly_rankings:
             raise RuntimeError("No real ohlcv_adjusted rows found in the requested date range — cannot run.")
@@ -167,8 +241,9 @@ def run_experimentation(years_back: int = 10) -> Dict:
         if price_panel.empty:
             raise RuntimeError("Price panel came back empty for the candidate ticker set — cannot run.")
 
+    run_date = now_ist()
     variants = []
-    for band_id, rank_start, rank_end in RANK_BANDS:
+    for band_id, rank_start, rank_end in RANK_BANDS + WIDE_BANDS:
         yearly_universes = yearly_band_universes_from_rankings(yearly_rankings, rank_start, rank_end)
         for lookback_months in LOOKBACK_MONTHS:
             lookback_days = lookback_trading_days(lookback_months)
@@ -191,12 +266,16 @@ def run_experimentation(years_back: int = 10) -> Dict:
                     result = engine.run()
                     summary = _summarize(result, top_n)
                     sip = _sip_summary(price_panel, yearly_universes, lookback_days, rebalance_days, top_n)
+                    descriptor = _variant_key(band_id, rank_start, rank_end, lookback_months, rebalance_name, top_n)
+                    variant_params = {
+                        "band_id": band_id, "rank_start": rank_start, "rank_end": rank_end,
+                        "lookback_months": lookback_months, "rebalance_period": rebalance_name, "top_n": top_n,
+                    }
+                    if write_trade_books:
+                        _write_trade_book_csv(descriptor, result.transactions)
+                        _upsert_strategy_catalog(descriptor, variant_params, run_date)
                     variants.append({
-                        "band_id": band_id,
-                        "rank_start": rank_start,
-                        "rank_end": rank_end,
-                        "lookback_months": lookback_months,
-                        "rebalance_period": rebalance_name,
+                        **variant_params,
                         **summary,
                         **sip,
                     })
@@ -253,9 +332,12 @@ def run_min_momentum_comparison(years_back: int, variants_to_test: List[Dict]) -
 def main():
     parser = argparse.ArgumentParser(description="Run ML38 momentum strategy experimentation")
     parser.add_argument("--years-back", type=int, default=10)
+    parser.add_argument("--end-date", type=str, default=None, help="YYYY-MM-DD; defaults to today")
+    parser.add_argument("--no-trade-books", action="store_true", help="Skip per-variant CSV/catalog writes")
     args = parser.parse_args()
 
-    report = run_experimentation(years_back=args.years_back)
+    end_date = date.fromisoformat(args.end_date) if args.end_date else None
+    report = run_experimentation(years_back=args.years_back, write_trade_books=not args.no_trade_books, end_date=end_date)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = REPORTS_DIR / f"momentum_experimentation_{now_ist().strftime('%Y%m%d_%H%M%S')}.json"

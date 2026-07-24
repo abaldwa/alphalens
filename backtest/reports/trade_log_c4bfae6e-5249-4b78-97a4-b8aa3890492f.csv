@@ -1,0 +1,2 @@
+ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank
+TARGETCO,400,2020-01-01,50.0,2020-01-08,100.0,

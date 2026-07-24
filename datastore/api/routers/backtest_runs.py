@@ -58,9 +58,10 @@ from typing import Any, Dict, List, Optional
 
 import psutil
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backtest.core.run_store import get_run, get_run_lineage, get_signal_counts, list_runs
+from backtest.core.run_store import count_runs, get_run, get_run_lineage, get_signal_counts, list_experiments, list_runs
 from backtest.core.feature_log import query_feature_log
 from config.settings import BACKTEST_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
@@ -107,6 +108,7 @@ class BacktestRunSummary(BaseModel):
 
 class BacktestRunListResponse(BaseModel):
     runs: List[BacktestRunSummary]
+    total_count: int
 
 
 class BacktestRunLineageResponse(BaseModel):
@@ -143,13 +145,16 @@ async def list_backtest_runs(
     mode: Optional[str] = Query(None, description="Filter: backtest | walk_forward | paper"),
     strategy_id: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
+    sort_by: str = Query("created_at", description="'created_at' (most recent first) or 'cagr' (highest CAGR first)"),
 ) -> BacktestRunListResponse:
-    """List runs across all four channels, most recent first — the unified
-    view Phase 4's frontend results table renders."""
+    """List runs across all four channels — the unified view Phase 4's
+    frontend results table renders. Defaults to most-recent-first; pass
+    sort_by=cagr for the "Top N by CAGR" leaderboard view."""
     with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
-        rows = list_runs(conn, channel=channel, mode=mode, strategy_id=strategy_id, limit=limit)
+        rows = list_runs(conn, channel=channel, mode=mode, strategy_id=strategy_id, limit=limit, sort_by=sort_by)
         signal_counts = get_signal_counts(conn, [r["run_id"] for r in rows])
-    return BacktestRunListResponse(runs=[_summary(r, signal_counts) for r in rows])
+        total = count_runs(conn, channel=channel, mode=mode, strategy_id=strategy_id)
+    return BacktestRunListResponse(runs=[_summary(r, signal_counts) for r in rows], total_count=total)
 
 
 @router.get("/runs/{run_id}", response_model=BacktestRunSummary)
@@ -187,6 +192,113 @@ async def get_backtest_run_feature_log(run_id: str) -> FeatureLogResponse:
     for r in rows:
         r["as_of_date"] = str(r["as_of_date"])
     return FeatureLogResponse(run_id=run_id, rows=[FeatureLogRow(**r) for r in rows])
+
+
+class ExperimentRow(BaseModel):
+    """One backtest_runs row for the Experiments comparison page — the
+    270-job exit-variant x template/preset matrix (backtest/reports/
+    experiment_matrix_45x6.json). Metrics are unpacked from metrics_json
+    (backtest/core/metrics.py's BacktestMetrics — no `sharpe` field exists
+    there, only `sortino`/`calmar`; `sortino` is surfaced here as the
+    risk-adjusted ratio for "which Entry+Exit combination wins" comparison)
+    rather than nesting the raw dict, so the frontend table can sort/filter
+    on these columns directly."""
+
+    run_id: str
+    strategy_id: str
+    channel: str
+    exit_policy_variant: Optional[str] = None
+    regime_label: Optional[str] = None
+    horizon_bucket: str
+    created_at: str
+    cagr: Optional[float] = None
+    xirr: Optional[float] = None
+    sortino: Optional[float] = None
+    calmar: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    win_rate: Optional[float] = None
+    profit_factor: Optional[float] = None
+    avg_days_held: Optional[float] = None
+    n_trades: Optional[int] = None
+    excess_return: Optional[float] = None
+    # True iff trade_log_path was recorded for this run — the frontend
+    # renders the download link/button only when this is true, rather than
+    # exposing the raw filesystem path itself (that path is server-side
+    # only; download goes through GET /experiments/{run_id}/trade_log).
+    has_trade_log: bool = False
+
+
+class ExperimentListResponse(BaseModel):
+    experiments: List[ExperimentRow]
+
+
+def _experiment_row(row: dict) -> ExperimentRow:
+    metrics = row.get("metrics") or {}
+    return ExperimentRow(
+        run_id=row["run_id"],
+        strategy_id=row["strategy_id"],
+        channel=row["channel"],
+        exit_policy_variant=row.get("exit_policy_variant"),
+        regime_label=row.get("regime_label"),
+        horizon_bucket=row["horizon_bucket"],
+        created_at=row["created_at"],
+        cagr=metrics.get("cagr"),
+        xirr=metrics.get("xirr"),
+        sortino=metrics.get("sortino"),
+        calmar=metrics.get("calmar"),
+        max_drawdown=metrics.get("max_drawdown"),
+        win_rate=metrics.get("win_rate"),
+        profit_factor=metrics.get("profit_factor"),
+        avg_days_held=metrics.get("avg_days_held"),
+        n_trades=metrics.get("n_trades"),
+        excess_return=metrics.get("excess_return"),
+        has_trade_log=bool(row.get("trade_log_path")),
+    )
+
+
+@router.get("/experiments", response_model=ExperimentListResponse)
+async def list_backtest_experiments(
+    strategy_id: Optional[str] = Query(None),
+    channel: Optional[str] = Query(None, description="technical | fundamental | ml | momentum"),
+    exit_policy_variant: Optional[str] = Query(
+        None, description="baseline | condition | combined | trailing | atr_adaptive | regime_conditional"
+    ),
+    regime_label: Optional[str] = Query(None, description="bull | bear | sideways"),
+    limit: int = Query(500, le=2000),
+) -> ExperimentListResponse:
+    """Backing endpoint for the Experiments page — every run in
+    backtest_runs (most recent first), unpacked to the metrics the page
+    compares Entry-template x Exit-variant combinations on. Empty
+    `experiments: []` (not an error) when the table has no rows yet, e.g.
+    before the 270-job experiment_matrix_45x6.json queue has started
+    populating it."""
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
+        rows = list_experiments(
+            conn,
+            strategy_id=strategy_id,
+            channel=channel,
+            exit_policy_variant=exit_policy_variant,
+            regime_label=regime_label,
+            limit=limit,
+        )
+    return ExperimentListResponse(experiments=[_experiment_row(r) for r in rows])
+
+
+@router.get("/experiments/{run_id}/trade_log")
+async def download_experiment_trade_log(run_id: str) -> FileResponse:
+    """Streams a run's trade_log_{run_id}.csv by run_id — never exposes
+    the raw server-side trade_log_path to the client; the frontend only
+    ever links to this route."""
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
+        row = get_run(conn, run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    trade_log_path = row.get("trade_log_path")
+    if not trade_log_path or not Path(trade_log_path).exists():
+        raise HTTPException(status_code=404, detail=f"No trade log on disk for run '{run_id}'")
+    return FileResponse(
+        trade_log_path, media_type="text/csv", filename=f"trade_log_{run_id}.csv"
+    )
 
 
 class IterativeRetrainTriggerResponse(BaseModel):
@@ -383,6 +495,8 @@ class StrategyQueueJob(BaseModel):
     preset: Optional[str] = None
     top_n: Optional[int] = None
     lookback_months: Optional[int] = None
+    exit_variant: Optional[str] = None
+    regime_method: Optional[str] = None
     horizon_days: Optional[int] = None
     seed: Optional[int] = None
     max_real_tickers: Optional[int] = None

@@ -104,6 +104,23 @@ class BacktestRunResult:
     # orchestrator wasn't given a regime_conn (regime breakdown is opt-in,
     # not required for every run).
     regime_breakdown: List[Dict[str, Any]] = field(default_factory=list)
+    # Which of EXIT_POLICY_VARIANTS (backtest/core/engine.py) this run used —
+    # threaded through from BacktestOrchestrator(exit_policy_variant=...) so
+    # experiment comparison can group/filter runs by exit strategy. None for
+    # any caller that doesn't pass it (e.g. older direct BacktestOrchestrator
+    # construction that predates the 6 selectable variants).
+    exit_policy_variant: Optional[str] = None
+    # Convenience single-label summary of regime_breakdown: the regime with
+    # a strict majority of this run's n_days, or None when no single regime
+    # dominates (or regime_breakdown is empty — no regime_conn was given).
+    # regime_breakdown itself remains the source of truth for the full
+    # per-regime split; this is only a queryable shorthand.
+    regime_label: Optional[str] = None
+    # Filesystem path to this run's trade_log_{run_id}.csv (written by
+    # BacktestOrchestrator._write_trade_log()), so a saved run row can be
+    # joined back to its trade-level detail without recomputing the path
+    # convention. None only if trade-log writing itself failed.
+    trade_log_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)

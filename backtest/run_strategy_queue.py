@@ -64,7 +64,7 @@ REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 _ORCHESTRATOR_FLAGS = {
     "channel", "strategy_id", "horizon_bucket", "start_date", "end_date", "capital_mode", "initial_capital",
     "sip_amount", "universe_spec", "max_tickers", "min_history_days", "template_name", "preset", "top_n",
-    "lookback_months",
+    "lookback_months", "exit_variant", "regime_method",
 }
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",
@@ -122,7 +122,14 @@ def _job_label(job: Dict[str, Any]) -> str:
     descriptor = job.get("template_name") or job.get("preset")
     if not descriptor and channel == "momentum":
         descriptor = f"top{job.get('top_n', '?')}_{job.get('lookback_months', '?')}m"
-    return f"{channel} · {descriptor}" if descriptor else (channel or "job")
+    label = f"{channel} · {descriptor}" if descriptor else (channel or "job")
+    exit_variant = job.get("exit_variant")
+    if exit_variant:
+        label += f" [{exit_variant}]"
+    regime_method = job.get("regime_method")
+    if regime_method:
+        label += f" ({regime_method})"
+    return label
 
 
 def _write_progress(path: Path, jobs: List[Dict[str, Any]], statuses: List[str]) -> None:

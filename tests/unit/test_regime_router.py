@@ -33,12 +33,20 @@ def _seed_market_regimes_db(tmp_path, monkeypatch):
     return duckdb_path
 
 
-def _insert_market_regime(db_path, regime, start_date, end_date, confirmed_date, move_pct, index_name="Nifty 500"):
+def _insert_market_regime(
+    db_path, regime, start_date, end_date, confirmed_date, move_pct, index_name="Nifty 500", method=None
+):
+    # Default method matches GET /api/v1/macro/market_regimes' own default
+    # (METHOD_NAME, the 20% threshold) so tests that don't care about the
+    # multi-threshold `method` filter still get their rows back without
+    # passing `method` explicitly on every request.
+    from systems.regime.market_regime import METHOD_NAME as _DEFAULT_METHOD
+
     with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
         conn.execute(
             "INSERT INTO market_regimes (index_name, regime, start_date, end_date, confirmed_date, method, move_pct) "
-            "VALUES (?, ?, ?, ?, ?, 'test_method', ?)",
-            [index_name, regime, start_date, end_date, confirmed_date, move_pct],
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [index_name, regime, start_date, end_date, confirmed_date, method or _DEFAULT_METHOD, move_pct],
         )
 
 
@@ -193,3 +201,31 @@ class TestGetMarketRegimes:
         segs = resp.json()["segments"]
         assert len(segs) == 1
         assert segs[0]["regime"] == "bull"
+
+    def test_method_param_filters_to_requested_threshold(self, tmp_path, monkeypatch):
+        # Same index_name, same start_date across two methods — exercises
+        # the widened (index_name, method, start_date) PK: both rows must
+        # persist side by side rather than one clobbering the other, and
+        # `method` must correctly select between them.
+        db_path = _seed_market_regimes_db(tmp_path, monkeypatch)
+        _insert_market_regime(
+            db_path, "bull", date(2020, 1, 1), date(2020, 6, 1), date(2020, 6, 1), 0.21, method="20pct_threshold_v1"
+        )
+        _insert_market_regime(
+            db_path, "bear", date(2020, 1, 1), date(2020, 3, 1), date(2020, 3, 1), -0.06, method="5pct_threshold_v1"
+        )
+        client = TestClient(app)
+
+        resp_20 = client.get(
+            "/api/v1/macro/market_regimes", params={"index_name": "Nifty 500", "method": "20pct_threshold_v1"}
+        )
+        assert [s["regime"] for s in resp_20.json()["segments"]] == ["bull"]
+
+        resp_5 = client.get(
+            "/api/v1/macro/market_regimes", params={"index_name": "Nifty 500", "method": "5pct_threshold_v1"}
+        )
+        assert [s["regime"] for s in resp_5.json()["segments"]] == ["bear"]
+
+        # Default (no method passed) preserves prior single-threshold behavior.
+        resp_default = client.get("/api/v1/macro/market_regimes", params={"index_name": "Nifty 500"})
+        assert [s["regime"] for s in resp_default.json()["segments"]] == ["bull"]

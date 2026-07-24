@@ -141,6 +141,107 @@ class TestFeatureLog:
         assert rows[0]["feature_vector"] == {"rsi_14": 55.0}
 
 
+class TestExperiments:
+    def test_empty_store_returns_empty_list(self, client):
+        response = client.get("/api/v1/backtest/experiments")
+        assert response.status_code == 200
+        assert response.json()["experiments"] == []
+
+    def test_lists_runs_with_unpacked_metrics(self, client, tmp_path):
+        run = _run(strategy_id="ta_5d_breakout")
+        trade_log = tmp_path / f"trade_log_{run.run_id}.csv"
+        trade_log.write_text("ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank\n")
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(
+                conn,
+                _result(
+                    run,
+                    metrics={
+                        "cagr": 0.22, "sortino": 1.4, "calmar": 0.9, "max_drawdown": -0.18,
+                        "win_rate": 0.6, "profit_factor": 1.8, "avg_days_held": 12.5,
+                        "n_trades": 40, "excess_return": 0.05, "xirr": 0.21,
+                    },
+                    exit_policy_variant="baseline",
+                    regime_label="bull",
+                    trade_log_path=str(trade_log),
+                ),
+            )
+        response = client.get("/api/v1/backtest/experiments")
+        assert response.status_code == 200
+        rows = response.json()["experiments"]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["strategy_id"] == "ta_5d_breakout"
+        assert row["exit_policy_variant"] == "baseline"
+        assert row["regime_label"] == "bull"
+        assert row["sortino"] == 1.4
+        assert row["cagr"] == 0.22
+        assert row["max_drawdown"] == -0.18
+        assert row["win_rate"] == 0.6
+        assert row["profit_factor"] == 1.8
+        assert row["avg_days_held"] == 12.5
+        assert row["n_trades"] == 40
+        assert row["excess_return"] == 0.05
+        assert row["has_trade_log"] is True
+
+    def test_row_without_trade_log_has_false_flag(self, client):
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(conn, _result(_run()))
+        response = client.get("/api/v1/backtest/experiments")
+        assert response.json()["experiments"][0]["has_trade_log"] is False
+
+    def test_filters_by_strategy_id_channel_and_exit_variant(self, client):
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(
+                conn, _result(_run(strategy_id="s1", channel="technical"), exit_policy_variant="baseline")
+            )
+            save_run_result(
+                conn, _result(_run(strategy_id="s2", channel="momentum"), exit_policy_variant="trailing")
+            )
+        response = client.get("/api/v1/backtest/experiments", params={"strategy_id": "s1"})
+        rows = response.json()["experiments"]
+        assert len(rows) == 1 and rows[0]["strategy_id"] == "s1"
+
+        response = client.get("/api/v1/backtest/experiments", params={"channel": "momentum"})
+        rows = response.json()["experiments"]
+        assert len(rows) == 1 and rows[0]["channel"] == "momentum"
+
+        response = client.get("/api/v1/backtest/experiments", params={"exit_policy_variant": "trailing"})
+        rows = response.json()["experiments"]
+        assert len(rows) == 1 and rows[0]["exit_policy_variant"] == "trailing"
+
+    def test_filters_by_regime_label(self, client):
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(conn, _result(_run(strategy_id="s1"), regime_label="bull"))
+            save_run_result(conn, _result(_run(strategy_id="s2"), regime_label="bear"))
+        response = client.get("/api/v1/backtest/experiments", params={"regime_label": "bear"})
+        rows = response.json()["experiments"]
+        assert len(rows) == 1 and rows[0]["strategy_id"] == "s2"
+
+
+class TestExperimentTradeLogDownload:
+    def test_returns_404_for_unknown_run(self, client):
+        response = client.get("/api/v1/backtest/experiments/does-not-exist/trade_log")
+        assert response.status_code == 404
+
+    def test_returns_404_when_no_trade_log_recorded(self, client):
+        run = _run()
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(conn, _result(run))
+        response = client.get(f"/api/v1/backtest/experiments/{run.run_id}/trade_log")
+        assert response.status_code == 404
+
+    def test_streams_csv_when_present(self, client, tmp_path):
+        run = _run()
+        trade_log = tmp_path / f"trade_log_{run.run_id}.csv"
+        trade_log.write_text("ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank\nRELIANCE,10,2020-01-01,100,2020-01-10,110,1\n")
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(conn, _result(run, trade_log_path=str(trade_log)))
+        response = client.get(f"/api/v1/backtest/experiments/{run.run_id}/trade_log")
+        assert response.status_code == 200
+        assert "RELIANCE" in response.text
+
+
 class TestQueueStatusAndDiscovery:
     def _patch_queue_dirs(self, tmp_path, monkeypatch):
         reports_dir = tmp_path / "reports"

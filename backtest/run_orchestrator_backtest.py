@@ -42,6 +42,7 @@ separate read path needed.
 
 import argparse
 import contextlib
+import hashlib
 import json
 import logging
 import time
@@ -57,7 +58,7 @@ from backtest.adapters.fundamental_adapter import FundamentalAdapter
 from backtest.adapters.momentum_adapter import MomentumAdapter
 from backtest.adapters.technical_adapter import TechnicalAdapter
 from backtest.batch_common import exclusive_backtest_lock
-from backtest.core.engine import BacktestOrchestrator, OrchestratorConfig
+from backtest.core.engine import EXIT_POLICY_VARIANTS, BacktestOrchestrator, OrchestratorConfig, build_exit_model_for_variant
 from backtest.core.feature_log import FeatureLogWriter
 from backtest.core.horizon import HorizonBucket
 from backtest.core.run_context import BacktestRun
@@ -74,8 +75,10 @@ from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
 from config.timezone import now_ist
 from config.universe import get_tickers
 from datastore.api.db import get_duckdb_connection
+from backtest.export_trade_book import export_trade_book
 from datastore.client import DataStoreClient
 from datastore.schema.create_backtest import create_backtest_schema
+from datastore.schema.create_strategy_catalog import create_strategy_catalog_schema
 from systems.technical_analysis.screener.templates import TEMPLATE_STYLE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -160,6 +163,38 @@ def _build_config(ohlcv: pd.DataFrame, sector_map: Dict[str, str]) -> Orchestrat
     )
 
 
+def build_technical_feature_lookup():
+    """Callable[[ticker, as_of_date], Dict[str, float]] returning that
+    ticker's real technical indicator snapshot (sma_200_ratio, rsi_14,
+    adx_14, etc. — the full daily feature Parquet row) as of a date —
+    used as BacktestOrchestrator's technical_feature_lookup so
+    ConditionBasedExitPolicy sees the SAME indicator values ScreenerEngine/
+    TechnicalAdapter already read for entry screening (features/technical.
+    py::compute_technical_features, materialized into config.settings.
+    FEATURES_DAILY_DIR), never recomputed. Caches one date's whole feature
+    Parquet per call (systems.technical_analysis.screener.engine.
+    ScreenerEngine._load_df) rather than re-reading it once per ticker per
+    day."""
+    from systems.technical_analysis.screener.engine import ScreenerEngine
+
+    engine = ScreenerEngine()
+    cache: Dict[str, Optional[pd.DataFrame]] = {}
+
+    def lookup(ticker: str, as_of: date_type) -> Dict[str, float]:
+        date_str = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+        if date_str not in cache:
+            cache[date_str] = engine._load_df(date_str)
+        df = cache[date_str]
+        if df is None or "ticker" not in df.columns:
+            return {}
+        row = df.loc[df["ticker"] == ticker]
+        if row.empty:
+            return {}
+        return row.iloc[0].to_dict()
+
+    return lookup
+
+
 def _resolve_horizon_bucket(
     channel: str, horizon_bucket: Optional[str], template_name: Optional[str], preset: Optional[str],
     lookback_months: int,
@@ -206,6 +241,8 @@ def run_orchestrator_backtest(
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
     lookback_months: int = 6, run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
+    exit_policy_variant: str = "baseline",
+    regime_method: Optional[str] = None,
 ) -> dict:
     horizon = _resolve_horizon_bucket(channel, horizon_bucket, template_name, preset, lookback_months)
 
@@ -213,15 +250,18 @@ def run_orchestrator_backtest(
     run_date = now_ist()
     run_id = run_id or f"orch_{channel}_{run_date.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
+    # descriptor is the channel-specific "what strategy is this" bit: the
+    # template name, the preset name, or a top-N/lookback summary for
+    # momentum (which has no single named descriptor of its own). Computed
+    # unconditionally (not just when strategy_id is auto-built) since
+    # strategy_catalog needs it regardless of whether the caller passed an
+    # explicit strategy_id.
+    descriptor = {
+        "technical": template_name, "fundamental": preset,
+        "momentum": f"top{top_n}_{lookback_months}m",
+    }[channel]
     if not strategy_id:
-        # Codified strategy_id (backtest/strategy_id.py) — descriptor is
-        # the channel-specific "what strategy is this" bit: the template
-        # name, the preset name, or a top-N/lookback summary for momentum
-        # (which has no single named descriptor of its own).
-        descriptor = {
-            "technical": template_name, "fundamental": preset,
-            "momentum": f"top{top_n}_{lookback_months}m",
-        }[channel]
+        # Codified strategy_id (backtest/strategy_id.py)
         strategy_id = build_strategy_id(channel, descriptor, horizon, as_of=run_date.date())
 
     logger.info(
@@ -275,12 +315,69 @@ def run_orchestrator_backtest(
         )
         with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn, regime_cm as regime_conn:
             feature_log_writer = FeatureLogWriter(conn)
+            exit_model = build_exit_model_for_variant(
+                exit_policy_variant, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500",
+            )
+            # ConditionBasedExitPolicy (and CompositeExitPolicy wrapping it)
+            # need live technical indicator values per ticker/day — only
+            # wired for channel=="technical" (the only channel with a real
+            # screener-template `template` to re-check); other channels'
+            # exit_ctx rows simply won't carry these columns, which
+            # ConditionBasedExitPolicy already treats as "never triggers".
+            technical_feature_lookup = build_technical_feature_lookup() if channel == "technical" else None
+            # Tag the saved exit_policy_variant with a non-default regime
+            # method so experiments comparing 5/10/15/20% thresholds against
+            # the SAME strategy+variant stay distinguishable in backtest_runs
+            # without a schema migration (regime_method itself isn't a
+            # persisted column — see BacktestOrchestrator.__init__ docstring).
+            from systems.regime.market_regime import METHOD_NAME as _DEFAULT_REGIME_METHOD
+            saved_exit_policy_variant = exit_policy_variant
+            if regime_method and regime_method != _DEFAULT_REGIME_METHOD:
+                saved_exit_policy_variant = f"{exit_policy_variant}__{regime_method}"
+
             result = BacktestOrchestrator(
-                feature_log_writer=feature_log_writer, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500"
+                feature_log_writer=feature_log_writer, regime_conn=regime_conn,
+                regime_index_name=regime_index_name or "Nifty 500", exit_model=exit_model,
+                technical_feature_lookup=technical_feature_lookup, exit_policy_variant=saved_exit_policy_variant,
+                regime_method=regime_method,
             ).run(run, adapter, config)
             feature_log_writer.flush()
             save_run_result(conn, result)
+
+            # strategy_catalog upsert (2026-07-24 addition, additive only —
+            # does not affect run/simulation logic): one row per distinct
+            # strategy CONFIGURATION, keyed on channel+descriptor+params so
+            # re-running the same config updates the existing row instead
+            # of duplicating.
+            create_strategy_catalog_schema(BACKTEST_DUCKDB_PATH)
+            catalog_params = {
+                "template_name": template_name, "preset": preset, "top_n": top_n,
+                "lookback_months": lookback_months, "exit_policy_variant": saved_exit_policy_variant,
+                "regime_method": regime_method,
+            }
+            catalog_params_json = json.dumps(catalog_params, default=str)
+            strategy_key = hashlib.sha1(f"{channel}|{descriptor}|{catalog_params_json}".encode()).hexdigest()
+            conn.execute(
+                """
+                INSERT INTO strategy_catalog
+                    (strategy_key, channel, descriptor, params_json, latest_run_id, first_run_at, last_run_at, n_runs)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT (strategy_key) DO UPDATE SET
+                    latest_run_id = excluded.latest_run_id,
+                    last_run_at = excluded.last_run_at,
+                    n_runs = strategy_catalog.n_runs + 1
+                """,
+                [strategy_key, channel, descriptor, catalog_params_json, run_id, run_date, run_date],
+            )
             conn.commit()
+
+            # Enriched trade-book CSV (entry/exit reason + indicator
+            # values) — pure post-processing over data already written
+            # above. Reuses `conn` (still open here) rather than opening a
+            # second connection to the same file, which DuckDB rejects
+            # while a read-write connection is already held.
+            if result.trade_log_path:
+                export_trade_book(run_id, Path(result.trade_log_path), conn=conn)
 
     runtime_seconds = time.monotonic() - run_started
     logger.info(f"orchestrator backtest finished in {runtime_seconds:.1f}s: {json.dumps(result.metrics, default=str)}")
@@ -327,6 +424,26 @@ def main() -> None:
         "--regime-index", default="Nifty 500",
         help="Index (in market_regimes) for the per-Bull/Bear/Sideways performance breakdown. Pass '' to skip it.",
     )
+    parser.add_argument(
+        "--exit-variant", default="baseline", choices=list(EXIT_POLICY_VARIANTS),
+        help=(
+            "Exit policy variant (backtest/core/engine.py::build_exit_model_for_variant): "
+            "baseline (today's PerTemplateExitPolicy, default — no behavior change if omitted), "
+            "condition (ConditionBasedExitPolicy), combined (baseline OR condition), "
+            "trailing (TrailingStopExitPolicy), atr_adaptive (ATRAdaptiveExitPolicy), "
+            "regime_conditional (RegimeConditionalExitPolicy)."
+        ),
+    )
+    parser.add_argument(
+        "--regime-method", default=None,
+        help=(
+            "Which market_regimes classification threshold to use for the exit-policy `regime` "
+            "column AND regime_breakdown (systems/regime/market_regime.py): e.g. '20pct_threshold_v1' "
+            "(default, matches METHOD_NAME), '15pct_threshold_v1', '10pct_threshold_v1', "
+            "'5pct_threshold_v1'. Only matters for --exit-variant regime_conditional and for "
+            "per-regime performance breakdown; other variants ignore it."
+        ),
+    )
     args = parser.parse_args()
 
     run_orchestrator_backtest(
@@ -336,6 +453,7 @@ def main() -> None:
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months, run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
+        exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
     )
 
 

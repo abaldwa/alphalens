@@ -349,6 +349,8 @@
       <li><a class="top-link" href="#strategy-id">2. What goes in strategy_id</a></li>
       <li><a class="top-link" href="#mode">3. Backtest vs Walk-Forward</a></li>
       <li><a class="top-link" href="#technical-strategies">4. Technical strategy reference</a></li>
+      <li><a class="top-link" href="#exit-system-overview">&nbsp;&nbsp;4a. Exit criterion system</a></li>
+      <li><a class="top-link" href="#entry-exit-table">&nbsp;&nbsp;4b. Entry/Exit reference table</a></li>
     </ul>
     <div id="toc-style-groups"></div>
   </nav>
@@ -604,6 +606,49 @@ parsed.run_date        # date(2026, 7, 22)</code></pre>
         <dt>Trend Following</dt><dd>Position trades lasting months. Defaults to <span class="pill">63_day</span>.</dd>
       </div>
 
+      <h3 id="exit-system-overview">Exit criterion system — 6 variants, still in experimentation mode</h3>
+      <p class="measure-wide">Every template above only ever specified an <em>entry</em> rule — until this session, there
+      was no exit logic anywhere in the docs. There now is, but deliberately as a menu of six selectable exit
+      variants rather than one fixed answer, because a 270-job backtest matrix (45 strategies × 6 exit variants) is
+      what determines empirically which Entry+Exit pairing actually wins per strategy — not a design opinion baked
+      in up front.</p>
+      <div class="kv">
+        <dt>baseline</dt><dd>Flat stop%/target% by style group (see each template card below), no forced max-hold-days
+        — exits only on stop, target, or the ML exit-urgency signal.</dd>
+        <dt>condition</dt><dd>Derived from the template's own entry conditions, inverted and relaxed, OR'd together
+        (volume/pattern/hurst/rank/proximity/range-type entry conditions are excluded — they don't invert cleanly).
+        See each template card's <strong>Exit Criterion</strong> block below for the per-template derivation.</dd>
+        <dt>combined</dt><dd>Baseline OR condition-based — whichever triggers first.</dd>
+        <dt>trailing</dt><dd>Same stop%/target% as baseline, except the stop is measured from the peak price reached
+        since entry, not from the entry price — target is unchanged.</dd>
+        <dt>atr_adaptive</dt><dd>Stop = 1.5× ATR%, target = 3.0× ATR% — scales per-position with realized volatility
+        instead of using a flat percentage.</dd>
+        <dt>regime_conditional</dt><dd>Baseline stop scaled 0.7× in a <strong>Bear</strong> regime (tighter), 1.3× in
+        <strong>Bull</strong> (looser), 1.0× in <strong>Sideways</strong> — see §&nbsp;"Which market phase does this
+        strategy work in?" above for how regimes are classified.</dd>
+      </div>
+      <p class="callout"><strong>Experimentation mode — nothing here is final.</strong> The 270-job matrix
+      (Technical + Fundamental templates × these 6 exit variants) is what selects the winning combination per
+      strategy, tracked run-by-run on the live <strong>Experiments</strong> page (<code>/backtest-experiments</code>)
+      with Sortino, CAGR, max drawdown, win rate, avg days held, and trade count per run, plus a downloadable
+      per-run trade-log CSV (<code>ticker</code>, <code>qty</code>, <code>buy_date</code>, <code>buy_price</code>,
+      <code>sale_date</code>, <code>sale_price</code>, <code>stock_rank</code>) for manual audit. The stop%/target%
+      and condition-exit rule shown on each template card below is the <em>baseline</em> and <em>condition</em>
+      variant respectively — treat them as the current default, not a conclusion.</p>
+
+      <h3 id="entry-exit-table">Entry / Exit reference table</h3>
+      <p class="measure-wide">One row per template — condensed entry criteria, the flat baseline stop%/target%, and
+      the derived condition-based exit rule. Full entry-criterion text and links live on each template's own card
+      further down.</p>
+      <div class="table-wrap">
+        <table id="entry-exit-table-el">
+          <thead>
+            <tr><th>Template</th><th>Style</th><th>Entry Criterion</th><th class="num">Baseline Exit</th><th>Condition-Based Exit</th></tr>
+          </thead>
+          <tbody id="entry-exit-table-body"></tbody>
+        </table>
+      </div>
+
       <div id="template-groups"></div>
     </section>
   </main>
@@ -618,6 +663,62 @@ parsed.run_date        # date(2026, 7, 22)</code></pre>
     "Volatility":       { cls: "volatility", horizon: "21-day",  desc: "Compression-then-expansion setups — the trade is the breakout, not the squeeze itself." }
   };
   var STYLE_ORDER = ["Momentum", "Trend Following", "Mean Reversion", "Volatility"];
+
+  // Baseline exit stop%/target% by style (flat, no forced max-hold-days) —
+  // one of the 6 selectable exit variants; see #exit-system-overview.
+  var BASELINE_EXIT = {
+    "Momentum":        { stop: 4,   target: 10 },
+    "Trend Following":  { stop: 5,   target: 12 },
+    "Mean Reversion":   { stop: 3,   target: 6  },
+    "Volatility":       { stop: 4.5, target: 9  }
+  };
+
+  // Derive the "condition" exit variant from a template's own entry `cond` array:
+  // invert + relax each recognized indicator condition, OR'd together. Volume,
+  // pattern-score, hurst, rank/percentile, proximity-to-high, and range-type
+  // ("between X and Y") entry conditions are excluded — they don't invert cleanly.
+  function deriveConditionExit(conds) {
+    var clauses = [];
+    conds.forEach(function (c) {
+      var m;
+      if (/200-day SMA/i.test(c)) {
+        clauses.push("Close falls below 200-day SMA");
+      } else if (/50-day SMA/i.test(c)) {
+        clauses.push("Close falls below 50-day SMA");
+      } else if (/20-day SMA/i.test(c)) {
+        clauses.push("Close falls below 20-day SMA");
+      }
+      if ((m = c.match(/ADX\(14\)\s*[>≥]\s*(\d+)/))) {
+        clauses.push("ADX(14) < " + (parseInt(m[1], 10) - 2));
+      }
+      if ((m = c.match(/RSI\(14\)\s*<\s*(\d+)/)) || (m = c.match(/RSI\(14\)[^0-9]*\bunder\s+(\d+)/i))) {
+        clauses.push("RSI(14) > " + (parseInt(m[1], 10) + 5));
+      } else if ((m = c.match(/RSI\(14\)\s*[>≥]\s*(\d+)/)) || (m = c.match(/RSI\(14\)[^0-9]*\bover\s+(\d+)/i))) {
+        clauses.push("RSI(14) < " + (parseInt(m[1], 10) - 5));
+      }
+      if (/MACD histogram (positive|turning positive)/i.test(c)) {
+        clauses.push("MACD histogram turns negative (< 0)");
+      }
+      if (/10-day return\s*[>]\s*[\d.]+%/i.test(c) || /Positive 10-day return/i.test(c)) {
+        clauses.push("10-day return turns negative (< 0%)");
+      }
+      if (/EMA8\s*(above|&gt;)\s*EMA21/i.test(c)) {
+        clauses.push("EMA8 crosses below EMA21");
+      }
+      if (/Close above EMA8/i.test(c)) {
+        clauses.push("Close falls below EMA8");
+      }
+      if (/Supertrend direction bullish/i.test(c)) {
+        clauses.push("Supertrend direction turns bearish");
+      }
+      if (/above the Ichimoku cloud/i.test(c)) {
+        clauses.push("Price closes below the Ichimoku cloud");
+      }
+    });
+    var seen = {}, out = [];
+    clauses.forEach(function (cl) { if (!seen[cl]) { seen[cl] = true; out.push(cl); } });
+    return out;
+  }
 
   // Sourced directly from systems/technical_analysis/screener/templates.py —
   // name, category, description, inline rationale comments, and TEMPLATE_STYLE.
@@ -687,6 +788,24 @@ parsed.run_date        # date(2026, 7, 22)</code></pre>
   });
   document.getElementById("toc-style-groups").innerHTML = tocHtml;
 
+  // ---- Entry/Exit reference table (one row per template) ----
+  var tableRows = "";
+  TEMPLATES.forEach(function (t) {
+    var base = BASELINE_EXIT[t.s];
+    var condExit = deriveConditionExit(t.cond);
+    var condExitText = condExit.length
+      ? condExit.join(" OR ")
+      : "No condition-based exit rule (structural entry only)";
+    tableRows += '<tr>';
+    tableRows += '<td>' + tplLink(t.n) + '</td>';
+    tableRows += '<td><span class="badge badge-' + STYLE_META[t.s].cls + '">' + t.s + '</span></td>';
+    tableRows += '<td style="max-width:26ch;">' + t.cond.join("; ") + '</td>';
+    tableRows += '<td class="num mono">stop ' + base.stop + '% / target ' + base.target + '%</td>';
+    tableRows += '<td style="max-width:30ch;">' + condExitText + '</td>';
+    tableRows += '</tr>';
+  });
+  document.getElementById("entry-exit-table-body").innerHTML = tableRows;
+
   // ---- Main content: one card grid per style ----
   var groupsHtml = "";
   STYLE_ORDER.forEach(function (style) {
@@ -697,10 +816,21 @@ parsed.run_date        # date(2026, 7, 22)</code></pre>
     groupsHtml += '<p class="style-desc">' + meta.desc + '</p>';
     groupsHtml += '<div class="tpl-grid">';
     byStyle[style].forEach(function (t) {
+      var base = BASELINE_EXIT[t.s];
+      var condExit = deriveConditionExit(t.cond);
+      var condExitText = condExit.length
+        ? condExit.map(function (c) { return '<li>' + c + '</li>'; }).join('')
+        : '<li>No condition-based exit rule (structural entry conditions only) — relies on stop/target only.</li>';
       groupsHtml += '<article class="tpl-card" id="tpl-' + t.n + '" style="--tpl-accent: var(--' + meta.cls + ')">';
       groupsHtml += '<div class="tpl-head"><span class="tpl-code">' + t.n + '</span><span class="pill">cat ' + t.c + '</span></div>';
       groupsHtml += '<h4>' + t.d + '</h4>';
+      groupsHtml += '<div class="eyebrow" style="margin-bottom:0.2rem;">Entry Criterion</div>';
       groupsHtml += '<ul>' + t.cond.map(function (c) { return '<li>' + c + '</li>'; }).join('') + '</ul>';
+      groupsHtml += '<div class="eyebrow" style="margin-bottom:0.2rem;">Exit Criterion</div>';
+      groupsHtml += '<ul><li>Baseline: stop ' + base.stop + '% / target ' + base.target + '%</li>' + condExitText + '</ul>';
+      groupsHtml += '<p style="margin:0.2rem 0 0.4rem; font-size:0.76rem; color:var(--text-dim);">One of 6 selectable ' +
+        'exit variants under empirical comparison — see <a href="#exit-system-overview">exit criterion system</a> ' +
+        'and the live <code>/backtest-experiments</code> results.</p>';
       groupsHtml += '<div class="tpl-footer"><span class="badge badge-' + meta.cls + '">' + meta.horizon + '</span><a class="back" href="#technical-strategies">↑ index</a></div>';
       groupsHtml += '</article>';
     });

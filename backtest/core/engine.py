@@ -28,9 +28,11 @@ ticker/date is EXCLUDED from the run and recorded in the returned
 BacktestRunResult.data_gaps — never interpolated or defaulted.
 """
 
+import csv
 import logging
 from dataclasses import dataclass, field
 from datetime import date as date_type
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Protocol
 
 import pandas as pd
@@ -38,12 +40,106 @@ import pandas as pd
 from backtest.core.horizon import HorizonBucket, sizing_for
 from backtest.core.metrics import compute_metrics
 from backtest.core.portfolio import SipConfig, StrategyPortfolio
-from backtest.portfolio import Position
+from backtest.portfolio import Position, PortfolioSimulator
 from backtest.core.regime_breakdown import compute_regime_breakdown
 from backtest.core.run_context import BacktestRun, BacktestRunResult
 from backtest.core.tax import fy_tax_cash_flows
 
+# Same directory the run_*_backtest.py scripts use for their
+# ``orchestrator_{run_id}.json`` / ``phase*_{run_id}.json`` reports, so the
+# trade-log CSV written below always lands next to the JSON report for a run.
+REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+
 logger = logging.getLogger(__name__)
+
+# Effectively "no forced max-holding-days exit" for the orchestrator's default
+# exit policy (explicit user requirement, 2026-07-24: positions run until a
+# real stop-loss/target/urgency signal fires, never force-closed on elapsed
+# days alone). RuleBasedExitPolicy's max_hold_days must be a positive int
+# (its __init__ rejects <= 0 and float('inf') can't survive
+# PerTemplateExitPolicy's int(...) cast), so instead of disabling the
+# day-count barrier we set it to a sentinel far beyond any realistic
+# backtest/paper-trading holding period — the stop/target/PnD barriers
+# remain the only day-to-day triggers in practice.
+_NO_MAX_HOLD_DAYS_SENTINEL = 10**9
+
+
+def _build_default_exit_model():
+    """PerTemplateExitPolicy(build_default_template_params()), with every
+    template's (and the untagged-position default's) max_hold_days
+    replaced by _NO_MAX_HOLD_DAYS_SENTINEL — see that constant's docstring.
+    Local imports: keeps engine.py's module-level import graph free of a
+    hard dependency on systems/ml_signal_engine for callers (e.g. plain
+    orchestration tests) that never touch exit_model."""
+    from systems.ml_signal_engine.models.exit.per_template_exit_policy import (
+        PerTemplateExitPolicy,
+        build_default_template_params,
+    )
+    from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy
+
+    template_params = {
+        name: {**params, "max_hold_days": _NO_MAX_HOLD_DAYS_SENTINEL}
+        for name, params in build_default_template_params().items()
+    }
+    return PerTemplateExitPolicy(
+        template_params,
+        default_policy=RuleBasedExitPolicy(max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL),
+    )
+
+
+EXIT_POLICY_VARIANTS = (
+    "baseline", "condition", "combined", "trailing", "atr_adaptive", "regime_conditional",
+)
+
+
+def build_exit_model_for_variant(variant: str, regime_conn=None, regime_index_name: str = "Nifty 500"):
+    """Constructs the exit_model for one of EXIT_POLICY_VARIANTS — the
+    factory backtest/run_orchestrator_backtest.py's --exit-variant CLI flag
+    calls into. "baseline" (the default) reproduces today's
+    _build_default_exit_model() exactly, so omitting --exit-variant is a
+    no-op for every existing caller.
+
+    Local imports: same rationale as _build_default_exit_model() above —
+    keeps this module's import graph free of a hard systems.ml_signal_engine
+    dependency for callers that never touch exit_model.
+    """
+    from systems.ml_signal_engine.models.exit.atr_adaptive_exit_policy import ATRAdaptiveExitPolicy
+    from systems.ml_signal_engine.models.exit.composite_exit_policy import CompositeExitPolicy
+    from systems.ml_signal_engine.models.exit.condition_based_exit_policy import ConditionBasedExitPolicy
+    from systems.ml_signal_engine.models.exit.per_template_exit_policy import (
+        build_default_template_params,
+    )
+    from systems.ml_signal_engine.models.exit.regime_conditional_exit_policy import RegimeConditionalExitPolicy
+    from systems.ml_signal_engine.models.exit.trailing_stop_exit_policy import TrailingStopExitPolicy
+
+    if variant == "baseline":
+        return _build_default_exit_model()
+
+    if variant == "condition":
+        return ConditionBasedExitPolicy()
+
+    if variant == "combined":
+        return CompositeExitPolicy([_build_default_exit_model(), ConditionBasedExitPolicy()])
+
+    if variant == "trailing":
+        # TrailingStopExitPolicy has no per-template router of its own yet
+        # (unlike PerTemplateExitPolicy) — a single global TrailingStopExitPolicy
+        # (bootstrap flat target/stop numbers) is used here; a per-template
+        # trailing-stop router is a documented follow-up, not built today.
+        return TrailingStopExitPolicy(max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL)
+
+    if variant == "atr_adaptive":
+        return ATRAdaptiveExitPolicy(max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL)
+
+    if variant == "regime_conditional":
+        template_params = {
+            name: {**params, "max_hold_days": _NO_MAX_HOLD_DAYS_SENTINEL}
+            for name, params in build_default_template_params().items()
+        }
+        return RegimeConditionalExitPolicy(template_params)
+
+    raise ValueError(f"unknown exit_policy_variant {variant!r}; must be one of {EXIT_POLICY_VARIANTS}")
+
 
 SignalAction = str  # "buy" | "sell" | "forced_close" | "hold"
 
@@ -147,7 +243,11 @@ class BacktestOrchestrator:
     StrategyPortfolio created inside run().
     """
 
-    def __init__(self, feature_log_writer=None, regime_conn=None, regime_index_name: str = "Nifty 500") -> None:
+    def __init__(
+        self, feature_log_writer=None, regime_conn=None, regime_index_name: str = "Nifty 500",
+        exit_model=None, technical_feature_lookup=None, exit_policy_variant: Optional[str] = None,
+        regime_method: Optional[str] = None,
+    ) -> None:
         """feature_log_writer: optional backtest.core.feature_log.FeatureLogWriter.
         None is valid — orchestration/metrics tests that don't need a live
         DuckDB connection can omit it; production callers always supply one.
@@ -159,10 +259,110 @@ class BacktestOrchestrator:
         given, the result's regime_breakdown is populated
         (backtest/core/regime_breakdown.py); when None (the default), it's
         left empty — regime breakdown is opt-in, not required for every run.
+
+        exit_model: optional object implementing predict_full(exit_ctx_df) ->
+        DataFrame[exit_urgency, ...] (same contract as PerTemplateExitPolicy/
+        RuleBasedExitPolicy/ExitSignalModel). Checked EVERY trading day (not
+        just rebalance dates) against every open position, independent of
+        the rebalance-cadence rotation logic (see run()'s daily exit-policy
+        pass). Defaults to PerTemplateExitPolicy(build_default_template_
+        params()) with the max-holding-days barrier disabled (this IS the
+        intended production default now, not an opt-in) — pass an explicit
+        exit_model only to override it (e.g. tests, or a future ML
+        ExitSignalModel once trained).
+
+        technical_feature_lookup: optional Callable[[str, date], Dict[str,
+        float]] returning that ticker's real technical indicator snapshot
+        (sma_200_ratio, rsi_14, adx_14, macd_hist, etc. — the SAME values
+        TechnicalAdapter/ScreenerEngine already read from the daily feature
+        Parquet for entry screening, see backtest/run_orchestrator_backtest.
+        py's build_technical_feature_lookup()) as of that date. When given,
+        every column it returns is merged into the daily exit_ctx passed to
+        exit_model.predict_full() — this is how ConditionBasedExitPolicy
+        (systems/ml_signal_engine/models/exit/condition_based_exit_policy.
+        py) gets the live indicator values it needs to re-check each
+        template's own entry conditions. None (the default) is valid — the
+        exit_ctx simply won't carry those columns, and any exit policy that
+        references them (only ConditionBasedExitPolicy today) treats the
+        corresponding rules as never-triggered rather than erroring
+        (see that policy's docstring) — no behavior change for existing
+        callers that don't pass this.
+
+        exit_policy_variant: optional label naming which of EXIT_POLICY_VARIANTS
+        produced `exit_model` (e.g. via build_exit_model_for_variant()) — purely
+        descriptive, carried through onto BacktestRunResult.exit_policy_variant
+        for experiment comparison in the backtest_runs table. None (the default)
+        is valid — callers that construct exit_model directly rather than via
+        the variant factory simply get a NULL exit_policy_variant in the saved
+        run row.
+
+        regime_method: which market_regimes classification threshold to use
+        for BOTH the exit-policy `regime` column (RegimeConditionalExitPolicy)
+        and regime_breakdown reporting - e.g. "20pct_threshold_v1" (default,
+        systems.regime.market_regime.METHOD_NAME), "15pct_threshold_v1",
+        "10pct_threshold_v1", "5pct_threshold_v1" (backfilled by
+        scripts/backfill_market_regimes.py). None (the default) resolves to
+        METHOD_NAME at first use - lets experiment queues re-run the SAME
+        strategy/exit-variant combo against every threshold to see how
+        regime-sensitivity assumptions hold up.
         """
         self._feature_log_writer = feature_log_writer
         self._regime_conn = regime_conn
         self._regime_index_name = regime_index_name
+        self._regime_method = regime_method
+        self._exit_model = exit_model if exit_model is not None else _build_default_exit_model()
+        self._technical_feature_lookup = technical_feature_lookup
+        self._exit_policy_variant = exit_policy_variant
+        # Bull/Bear/Sideways segments (systems/regime/regime_store.
+        # list_regime_segments), fetched once and cached for the life of
+        # this orchestrator instance — used to tag each exit_ctx row with
+        # its day's `regime` for RegimeConditionalExitPolicy. None until the
+        # first _regime_for_date() call (lazy: a run with no regime_conn,
+        # or whose exit_model never looks at `regime`, never pays this
+        # query's cost).
+        self._regime_segments_cache: Optional[List[Dict[str, Any]]] = None
+        # {as_of_date: {ticker: rank}} — a genuinely point-in-time market-cap
+        # rank map, one entry per DISTINCT buy date actually encountered (not
+        # per ticker, not per trade), lazily computed and cached the first
+        # time any ticker needs a rank for that date so every other buy on
+        # the same rebalance date reuses the same day's rank map instead of
+        # re-querying PIT fundamentals/prices per trade. See
+        # _get_market_cap_rank_for_date()'s docstring.
+        self._market_cap_rank_maps_by_date: Dict[Any, Dict[str, int]] = {}
+
+    def _get_market_cap_rank_for_date(self, ticker: str, as_of_date, all_buy_tickers_this_date: Optional[List[str]] = None) -> Optional[int]:
+        """Point-in-time {ticker: rank} for `as_of_date`, batched by date and
+        cached per orchestrator instance (config.universe.
+        get_market_cap_rank_map_as_of, ranked by shares_outstanding * close
+        as actually knowable on as_of_date — no lookahead). Requires
+        self._regime_conn (the normalised-schema DB connection hosting both
+        fundamentals_history and ohlcv_adjusted — see __init__'s docstring);
+        with no regime_conn, or if a ticker has no PIT shares_outstanding/
+        price as of as_of_date, this returns None rather than falling back
+        to any static/current-snapshot rank — a silent fallback would
+        reintroduce the exact lookahead bug this replaces get_market_cap_
+        rank_map() to fix."""
+        if as_of_date not in self._market_cap_rank_maps_by_date:
+            if self._regime_conn is None:
+                logger.warning(
+                    "no regime_conn (normalised-schema DB) available; trade_log stock_rank will be blank for %s",
+                    as_of_date,
+                )
+                self._market_cap_rank_maps_by_date[as_of_date] = {}
+            else:
+                try:
+                    from config.universe import get_market_cap_rank_map_as_of
+
+                    self._market_cap_rank_maps_by_date[as_of_date] = get_market_cap_rank_map_as_of(
+                        self._regime_conn, all_buy_tickers_this_date or [ticker], as_of_date,
+                    )
+                except Exception:
+                    logger.warning(
+                        "PIT market cap rank map unavailable for %s; trade_log stock_rank will be blank",
+                        as_of_date, exc_info=True,
+                    )
+                    self._market_cap_rank_maps_by_date[as_of_date] = {}
+        return self._market_cap_rank_maps_by_date[as_of_date].get(ticker)
 
     def run(self, run: BacktestRun, adapter: StrategyAdapter, config: OrchestratorConfig) -> BacktestRunResult:
         if run.channel != adapter.channel:
@@ -173,6 +373,7 @@ class BacktestOrchestrator:
         rebalance_dates = config.trading_days[::cadence]
         if len(rebalance_dates) == 0:
             raise ValueError("no rebalance dates in the supplied trading_days for this cadence")
+        rebalance_date_set = set(rebalance_dates)
 
         sip = SipConfig(amount=run.sip_amount) if run.capital_mode == "sip" and run.sip_amount else None
         portfolio = StrategyPortfolio(
@@ -188,8 +389,32 @@ class BacktestOrchestrator:
             if config.refit_cadence_days else set()
         )
 
-        for as_of_date in rebalance_dates:
+        for as_of_date in config.trading_days:
             as_of = as_of_date.date() if hasattr(as_of_date, "date") else as_of_date
+            is_rebalance_date = as_of_date in rebalance_date_set
+            # Tickers the rotation logic below already bought/sold THIS day —
+            # excluded from the daily exit-policy pass so it never double-
+            # handles a same-day rotation decision (e.g. re-evaluating a
+            # ticker sold moments ago, or a brand-new buy with days_held=0).
+            executed_tickers: set = set()
+            prices: Dict[str, float] = {}
+
+            if not is_rebalance_date:
+                # Non-rebalance day: no re-screening/re-sizing/corporate-
+                # action reconciliation (those remain cadence-driven, per
+                # the task's "rebalance cadence continues operating
+                # unchanged" instruction) — just mark held positions to
+                # market so the daily exit-policy pass below and the equity
+                # curve both see today's real prices.
+                for ticker in list(portfolio.positions.keys()):
+                    price = config.price_lookup(ticker, as_of)
+                    if price is not None:
+                        prices[ticker] = price
+                    else:
+                        data_gaps.append(DataGap(ticker, as_of, "no_price_marking_open_position_at_last_known_price"))
+                self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
+                portfolio.record_equity(as_of, prices)
+                continue
 
             # Walk-Forward retraining (Phase 2.5, BacktestUmbrellaPlan.md "Walk-Forward
             # Module"): only called for adapters that implement an optional refit()
@@ -274,6 +499,7 @@ class BacktestOrchestrator:
             for signal in signals:
                 self._log_feature(run.run_id, signal.ticker, as_of, run.horizon_bucket, adapter, signal.action)
                 distinct_tickers.append(signal.ticker)
+                executed_tickers.add(signal.ticker)
 
             # REV17 (2026-07-21 review): a signal generated at as_of used to
             # always fill at that SAME day's own close — overstating fill
@@ -312,6 +538,12 @@ class BacktestOrchestrator:
                         if price is not None:
                             fill_prices[ticker] = price
 
+            # All tickers that will be bought at execution_date THIS rebalance
+            # — passed to _get_market_cap_rank_for_date so the first buy of
+            # the date computes (and caches) the whole day's PIT rank map in
+            # one batched query, instead of one PIT query per ticker.
+            buy_tickers_this_execution_date = [s.ticker for s in signals if s.action == "buy"]
+
             # sells before buys, so freed cash is available for the same rebalance's buys
             for signal in sorted((s for s in signals if s.action == "sell"), key=lambda s: -s.conviction):
                 if signal.ticker not in fill_prices:
@@ -338,7 +570,16 @@ class BacktestOrchestrator:
                 portfolio.buy(
                     signal.ticker, config.sector_lookup(signal.ticker), fill_prices[signal.ticker], execution_date,
                     prices, adtv_cr=signal.adtv_cr, template=signal.template, pillar=adapter.channel,
+                    market_cap_rank=self._get_market_cap_rank_for_date(
+                        signal.ticker, execution_date, buy_tickers_this_execution_date,
+                    ),
                 )
+
+            # Daily exit-policy pass (task requirement: checked EVERY trading
+            # day, not just rebalance dates) — runs on rebalance days too,
+            # AFTER rotation's own sells/buys, skipping any ticker rotation
+            # already touched today via executed_tickers.
+            self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
 
             portfolio.record_equity(as_of, prices)
 
@@ -350,6 +591,114 @@ class BacktestOrchestrator:
             execution_timing=config.execution_timing,
         )
 
+    def _regime_for_date(self, as_of: date_type) -> Optional[str]:
+        """Bull/Bear/Sideways label (lowercase, systems.regime.market_regime.
+        Regime's own convention) confirmed as of `as_of`, or None with no
+        regime_conn / no segment covers that date. Segments are fetched
+        once per orchestrator instance (self._regime_segments_cache) since
+        run() calls this once per trading day per open position — refetching
+        per call would be one DuckDB round-trip per day for no benefit
+        (market_regimes doesn't change mid-run)."""
+        if self._regime_conn is None:
+            return None
+        if self._regime_segments_cache is None:
+            from systems.regime.market_regime import METHOD_NAME
+            from systems.regime.regime_store import list_regime_segments
+
+            try:
+                # market_regimes stores multiple thresholds' segments side by
+                # side (see datastore/api/routers/regime.py) — exit-policy
+                # regime gating must use one fixed, deliberately-chosen
+                # method, defaulting to the canonical 20% threshold but
+                # overridable via self._regime_method for experimentation.
+                self._regime_segments_cache = list_regime_segments(
+                    self._regime_conn, self._regime_index_name,
+                    method=self._regime_method or METHOD_NAME,
+                )
+            except Exception:
+                logger.warning("regime segments unavailable; exit_ctx rows will have no `regime`", exc_info=True)
+                self._regime_segments_cache = []
+        for seg in self._regime_segments_cache:
+            if seg["start_date"] <= as_of <= seg["end_date"]:
+                return seg["regime"]
+        return None
+
+    def _apply_exit_policy(
+        self, portfolio: StrategyPortfolio, prices: Dict[str, float], as_of: date_type, executed_tickers: set,
+    ) -> None:
+        """Per-position stop-loss/target/urgency exit check, run every trading
+        day (see run()'s docstring/comments) independent of rebalance-cadence
+        rotation. Builds the same exit_ctx shape PerTemplateExitPolicy/
+        RuleBasedExitPolicy expect (entry_price, days_held, unrealised_pnl_pct,
+        drawdown_from_peak, atr_pct, momentum_3m, pnd_score, template, pillar)
+        from real, already-known position/price data only — momentum_3m and
+        pnd_score default to 0.0 (neutral/no-signal) since this orchestrator
+        has no momentum-panel or pump-and-dump feature source wired in yet;
+        atr_pct comes from Position.entry_atr_pct when a caller populated it,
+        else NaN (RuleBasedExitPolicy's documented flat-percentage fallback).
+
+        Binary action mapping (backtest/portfolio.py's
+        PortfolioSimulator.exit_action_for_urgency, reused rather than
+        reimplemented): only 'immediate_exit' triggers a real sell here —
+        StrategyPortfolio has no partial-reduce operation, so 'reduce_position'
+        cannot be honored and is treated the same as 'monitor'/'hold' (no
+        portfolio action). Uses reason="exit_model_urgent" — already the
+        recognized reason string StrategyPortfolio.sell() bypasses the
+        horizon bucket's min_holding_days floor for (a real stop-loss must be
+        able to fire before that floor elapses), and is distinct from
+        rotation's reason="signal" / corporate-action reasons in trade logs.
+        """
+        candidate_tickers = [t for t in portfolio.positions if t not in executed_tickers]
+        rows = []
+        row_tickers = []
+        # Computed once per call (one calendar day), not per ticker — the
+        # regime doesn't vary by ticker, only by date.
+        regime = self._regime_for_date(as_of)
+        for ticker in candidate_tickers:
+            price = prices.get(ticker)
+            if price is None:
+                continue  # no real price today for this ticker — never fabricate one to evaluate barriers
+            position = portfolio.positions[ticker]
+            if price > position.peak_price:
+                position.peak_price = price
+            days_held = (pd.Timestamp(as_of) - pd.Timestamp(position.entry_date)).days
+            unrealised_pnl_pct = (price - position.entry_price) / position.entry_price if position.entry_price else 0.0
+            drawdown_from_peak = (price - position.peak_price) / position.peak_price if position.peak_price else 0.0
+            row = {
+                "entry_price": position.entry_price,
+                "price": price,
+                "peak_price": position.peak_price,
+                "days_held": days_held,
+                "unrealised_pnl_pct": unrealised_pnl_pct,
+                "drawdown_from_peak": drawdown_from_peak,
+                "atr_pct": position.entry_atr_pct if position.entry_atr_pct is not None else float("nan"),
+                "momentum_3m": 0.0,
+                "pnd_score": 0.0,
+                "template": position.template,
+                "pillar": position.pillar,
+                "regime": regime,
+            }
+            if self._technical_feature_lookup is not None:
+                try:
+                    row.update(self._technical_feature_lookup(ticker, as_of) or {})
+                except Exception:
+                    logger.warning(
+                        "technical_feature_lookup failed for %s on %s; exit_ctx row has no live indicator "
+                        "values (condition-based exit rules simply won't trigger for it)", ticker, as_of, exc_info=True,
+                    )
+            rows.append(row)
+            row_tickers.append(ticker)
+
+        if not rows:
+            return
+
+        exit_ctx = pd.DataFrame(rows, index=row_tickers)
+        urgency = self._exit_model.predict_full(exit_ctx)["exit_urgency"]
+        for ticker in row_tickers:
+            action = PortfolioSimulator.exit_action_for_urgency(float(urgency.loc[ticker]))
+            if action == "immediate_exit":
+                portfolio.sell(ticker, prices[ticker], as_of, reason="exit_model_urgent")
+
     def _log_feature(self, run_id, ticker, as_of, horizon_bucket, adapter: StrategyAdapter, action: str) -> None:
         if self._feature_log_writer is None:
             return
@@ -357,6 +706,56 @@ class BacktestOrchestrator:
             run_id=run_id, ticker=ticker, as_of_date=as_of, horizon_bucket=horizon_bucket,
             feature_vector=adapter.feature_vector(ticker, as_of), decision_taken=action,
         )
+
+    def _write_trade_log(self, run_id: str, trades: List[Any]) -> Path:
+        """Write one CSV row per closed trade for audit purposes.
+
+        Always writes a file for every run (even zero-trade runs, in which
+        case only the header row is written) so trade-level detail is never
+        opt-in or lost.
+
+        stock_rank is `t.entry_market_cap_rank` — a genuinely point-in-time
+        market-cap rank (rank 1 = largest) as of the trade's actual
+        execution/buy date, computed by
+        _get_market_cap_rank_for_date()/config.universe.
+        get_market_cap_rank_map_as_of(). This used to be a single static
+        snapshot of the CURRENT universe CSV's market_cap_cr column (see the
+        now-superseded get_market_cap_rank_map()), applied identically
+        regardless of how long ago the trade actually happened — not a true
+        historical rank. It is blank ("") when PIT fundamentals/price data
+        wasn't available for that ticker/date, never a fallback to that
+        static snapshot.
+
+        pnl_inr/exit_reason (2026-07-24 addition) are read straight off the
+        already-computed Trade record (backtest/portfolio.py) — this method
+        only writes MORE of what StrategyPortfolio._close() already
+        recorded; it does not change what trades get made or how. Added so
+        backtest/export_trade_book.py can build a full trade book (entry/
+        exit reason + P&L) without re-deriving pnl or guessing which exit
+        condition fired.
+        """
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        csv_path = REPORTS_DIR / f"trade_log_{run_id}.csv"
+        with open(csv_path, "w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow([
+                "ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank",
+                "pnl_inr", "pnl_pct", "exit_reason",
+            ])
+            for t in trades:
+                writer.writerow([
+                    t.ticker,
+                    t.quantity,
+                    t.entry_date,
+                    t.entry_price,
+                    t.exit_date,
+                    t.exit_price,
+                    t.entry_market_cap_rank if t.entry_market_cap_rank is not None else "",
+                    t.pnl_inr,
+                    t.pnl_pct,
+                    t.exit_reason,
+                ])
+        return csv_path
 
     def _finalize(
         self, run: BacktestRun, portfolio: StrategyPortfolio, data_gaps: List[DataGap],
@@ -377,6 +776,9 @@ class BacktestOrchestrator:
 
         trade_pnls = [t.pnl_inr for t in portfolio.trades]
         trade_values = [t.entry_price * t.quantity for t in portfolio.trades]
+        holding_days = [
+            (pd.Timestamp(t.exit_date) - pd.Timestamp(t.entry_date)).days for t in portfolio.trades
+        ]
         start_date = trading_days[0].date() if hasattr(trading_days[0], "date") else trading_days[0]
         end_date = trading_days[-1].date() if hasattr(trading_days[-1], "date") else trading_days[-1]
 
@@ -385,21 +787,38 @@ class BacktestOrchestrator:
             trade_values=trade_values, distinct_tickers=distinct_tickers,
             start_date=start_date, end_date=end_date, total_contributed=portfolio.total_contributed,
             cash_position_series=portfolio.cash_position_series,
+            holding_days=holding_days,
         )
 
         regime_breakdown: List[Dict[str, Any]] = []
         if self._regime_conn is not None:
             from dataclasses import asdict as _asdict
 
+            from systems.regime.market_regime import METHOD_NAME
             from systems.regime.regime_store import list_regime_segments
 
             segments = list_regime_segments(
-                self._regime_conn, self._regime_index_name, start_date=start_date, end_date=end_date
+                self._regime_conn, self._regime_index_name, start_date=start_date, end_date=end_date,
+                method=self._regime_method or METHOD_NAME,
             )
             regime_breakdown = [
                 _asdict(row)
                 for row in compute_regime_breakdown(equity_curve, portfolio.trades, start_date, end_date, segments)
             ]
+
+        trade_log_path = self._write_trade_log(run.run_id, portfolio.trades)
+
+        # Dominant-regime convenience label: only populated when one regime
+        # holds a strict majority of this run's n_days — otherwise NULL,
+        # since regime_breakdown (already carried in full) is the source of
+        # truth for ambiguous/mixed runs and we don't want to fabricate a
+        # misleading single label for them.
+        regime_label: Optional[str] = None
+        total_days = sum(row["n_days"] for row in regime_breakdown)
+        if total_days > 0:
+            dominant = max(regime_breakdown, key=lambda row: row["n_days"])
+            if dominant["n_days"] / total_days > 0.5:
+                regime_label = dominant["regime"]
 
         from dataclasses import asdict
         return BacktestRunResult(
@@ -409,4 +828,7 @@ class BacktestOrchestrator:
             refit_log=[{"as_of_date": r.as_of_date.isoformat(), "model_version": r.model_version} for r in (refit_log or [])],
             execution_timing=execution_timing,
             regime_breakdown=regime_breakdown,
+            exit_policy_variant=self._exit_policy_variant,
+            regime_label=regime_label,
+            trade_log_path=str(trade_log_path),
         )

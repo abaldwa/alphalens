@@ -1,0 +1,1233 @@
+{
+  "generated_at": "2026-07-24T21:02:13.730402",
+  "total_jobs": 198,
+  "jobs_run": 68,
+  "results": [
+    {
+      "job_index": 0,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 136.51440403799643
+    },
+    {
+      "job_index": 1,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 136.60676564900496
+    },
+    {
+      "job_index": 2,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 137.58171427100024
+    },
+    {
+      "job_index": 3,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 134.4020795680117
+    },
+    {
+      "job_index": 4,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 137.45400335900194
+    },
+    {
+      "job_index": 5,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 132.25983118799923
+    },
+    {
+      "job_index": 6,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C5",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 124.73399631699431
+    },
+    {
+      "job_index": 7,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C5",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 131.3552265460021
+    },
+    {
+      "job_index": 8,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C5",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 131.71872994599107
+    },
+    {
+      "job_index": 9,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C5",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 116.67024617899733
+    },
+    {
+      "job_index": 10,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C5",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 124.91404352500103
+    },
+    {
+      "job_index": 11,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C5",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 126.07667400999344
+    },
+    {
+      "job_index": 12,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C6",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 126.772373202999
+    },
+    {
+      "job_index": 13,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C6",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 101.78367146399978
+    },
+    {
+      "job_index": 14,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C6",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 102.61203360599757
+    },
+    {
+      "job_index": 15,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C6",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 117.35429115299485
+    },
+    {
+      "job_index": 16,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C6",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 132.46231556500425
+    },
+    {
+      "job_index": 17,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C6",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 128.4397867719963
+    },
+    {
+      "job_index": 18,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C7",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 91.9348400660092
+    },
+    {
+      "job_index": 19,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C7",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 90.90138113200373
+    },
+    {
+      "job_index": 20,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C7",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 91.785699140004
+    },
+    {
+      "job_index": 21,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C7",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 92.25350003299536
+    },
+    {
+      "job_index": 22,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C7",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 95.5662343599979
+    },
+    {
+      "job_index": 23,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "C7",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 96.05381324701011
+    },
+    {
+      "job_index": 24,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 101.67852746399876
+    },
+    {
+      "job_index": 25,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 98.85880721399735
+    },
+    {
+      "job_index": 26,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 99.09872197099321
+    },
+    {
+      "job_index": 27,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 98.69421487899672
+    },
+    {
+      "job_index": 28,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 96.63044443800754
+    },
+    {
+      "job_index": 29,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 97.81396326300455
+    },
+    {
+      "job_index": 30,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 130.6960487680044
+    },
+    {
+      "job_index": 31,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 136.43017281900393
+    },
+    {
+      "job_index": 32,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 133.93169781100005
+    },
+    {
+      "job_index": 33,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 133.37871575199824
+    },
+    {
+      "job_index": 34,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 138.97792467000545
+    },
+    {
+      "job_index": 35,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 130.7662920159928
+    },
+    {
+      "job_index": 36,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 98.54464445299527
+    },
+    {
+      "job_index": 37,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 100.82033770700218
+    },
+    {
+      "job_index": 38,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 98.662402122005
+    },
+    {
+      "job_index": 39,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 97.15709106299619
+    },
+    {
+      "job_index": 40,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 99.83825273899129
+    },
+    {
+      "job_index": 41,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 99.38537842601363
+    },
+    {
+      "job_index": 42,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 93.30366432799201
+    },
+    {
+      "job_index": 43,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 94.1418575610005
+    },
+    {
+      "job_index": 44,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 94.74427648499841
+    },
+    {
+      "job_index": 45,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 94.10288014500111
+    },
+    {
+      "job_index": 46,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 95.73584054800449
+    },
+    {
+      "job_index": 47,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "D4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 98.56194419799431
+    },
+    {
+      "job_index": 48,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 130.77883930799726
+    },
+    {
+      "job_index": 49,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 138.8175003570068
+    },
+    {
+      "job_index": 50,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 136.5746669069922
+    },
+    {
+      "job_index": 51,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 118.53773337199527
+    },
+    {
+      "job_index": 52,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 133.3204414010106
+    },
+    {
+      "job_index": 53,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E1",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 131.5542901709996
+    },
+    {
+      "job_index": 54,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 131.2124796059943
+    },
+    {
+      "job_index": 55,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 127.1462668049935
+    },
+    {
+      "job_index": 56,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 134.35878016000788
+    },
+    {
+      "job_index": 57,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 122.43426948500564
+    },
+    {
+      "job_index": 58,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 134.1345818080008
+    },
+    {
+      "job_index": 59,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E2",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 131.7012347849959
+    },
+    {
+      "job_index": 60,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 94.75788125899271
+    },
+    {
+      "job_index": 61,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 93.27783604200522
+    },
+    {
+      "job_index": 62,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 95.50130378299218
+    },
+    {
+      "job_index": 63,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 85.3574653960095
+    },
+    {
+      "job_index": 64,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 73.62495478100027
+    },
+    {
+      "job_index": 65,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E3",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 72.244512795005
+    },
+    {
+      "job_index": 66,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 74.13374570400629
+    },
+    {
+      "job_index": 67,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "technical",
+        "template_name": "E4",
+        "top_n": 10,
+        "start_date": "2023-01-01",
+        "end_date": "2026-07-01",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "exit_variant": "condition"
+      },
+      "returncode": 1,
+      "elapsed_s": 34.08156731299823
+    }
+  ],
+  "all_passed": false,
+  "runtime_seconds": 7594.102548152994
+}

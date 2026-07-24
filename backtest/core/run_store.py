@@ -39,14 +39,18 @@ def save_run_result(conn, result: BacktestRunResult) -> None:
             (run_id, parent_run_id, channel, strategy_id, horizon_bucket, mode, universe_spec,
              start_date, end_date, capital_mode, initial_capital, sip_amount, sip_cadence_days,
              random_seed, config_hash, config_json, created_at,
-             metrics_json, data_gaps_json, integrity_passed, integrity_detail_json, regime_breakdown_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             metrics_json, data_gaps_json, integrity_passed, integrity_detail_json, regime_breakdown_json,
+             exit_policy_variant, regime_label, trade_log_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (run_id) DO UPDATE SET
             metrics_json = excluded.metrics_json,
             data_gaps_json = excluded.data_gaps_json,
             integrity_passed = excluded.integrity_passed,
             integrity_detail_json = excluded.integrity_detail_json,
-            regime_breakdown_json = excluded.regime_breakdown_json
+            regime_breakdown_json = excluded.regime_breakdown_json,
+            exit_policy_variant = excluded.exit_policy_variant,
+            regime_label = excluded.regime_label,
+            trade_log_path = excluded.trade_log_path
         """,
         [
             run.run_id, run.parent_run_id, run.channel, run.strategy_id, run.horizon_bucket.value,
@@ -56,6 +60,7 @@ def save_run_result(conn, result: BacktestRunResult) -> None:
             json.dumps(result.metrics, default=str), json.dumps(result.data_gaps, default=str),
             result.integrity_passed, json.dumps(result.integrity_detail, default=str),
             json.dumps(result.regime_breakdown, default=str),
+            result.exit_policy_variant, result.regime_label, result.trade_log_path,
         ],
     )
     logger.info(f"Saved backtest run {run.run_id} ({run.channel}/{run.strategy_id}/{run.horizon_bucket.value})")
@@ -66,6 +71,7 @@ _COLUMNS = (
     "start_date", "end_date", "capital_mode", "initial_capital", "sip_amount", "sip_cadence_days",
     "random_seed", "config_hash", "config_json", "created_at", "metrics_json", "data_gaps_json",
     "integrity_passed", "integrity_detail_json", "live_eligible", "regime_breakdown_json",
+    "exit_policy_variant", "regime_label", "trade_log_path",
 )
 
 
@@ -89,11 +95,27 @@ def get_run(conn, run_id: str) -> Optional[Dict[str, Any]]:
     return _row_to_dict(row) if row else None
 
 
+_SORT_COLUMNS = {
+    "created_at": "created_at",
+    # cagr lives inside metrics_json (a JSON string column, not a native
+    # field) — TRY_CAST + json_extract_string so a run with no metrics yet
+    # (metrics_json NULL) or a non-numeric/missing cagr sorts as NULL
+    # (NULLS LAST) rather than erroring or floating to the top.
+    "cagr": "TRY_CAST(json_extract_string(metrics_json, '$.cagr') AS DOUBLE)",
+}
+
+
 def list_runs(
     conn, channel: Optional[str] = None, mode: Optional[str] = None,
-    strategy_id: Optional[str] = None, limit: int = 100,
+    strategy_id: Optional[str] = None, limit: int = 100, sort_by: str = "created_at",
 ) -> List[Dict[str, Any]]:
-    """List runs, most recent first, optionally filtered by channel/mode/strategy_id."""
+    """List runs, optionally filtered by channel/mode/strategy_id.
+
+    sort_by: "created_at" (default, most recent first) or "cagr" (highest
+    CAGR first, NULLS LAST — the Backtest page's "Top N by CAGR" view).
+    """
+    if sort_by not in _SORT_COLUMNS:
+        raise ValueError(f"sort_by must be one of {sorted(_SORT_COLUMNS)}, got {sort_by!r}")
     where = []
     params: List[Any] = []
     if channel is not None:
@@ -105,6 +127,69 @@ def list_runs(
     if strategy_id is not None:
         where.append("strategy_id = ?")
         params.append(strategy_id)
+    where_clause = f"WHERE {' AND '.join(where)}" if where else ""
+    order_col = _SORT_COLUMNS[sort_by]
+    params.append(limit)
+    rows = conn.execute(
+        f"SELECT {', '.join(_COLUMNS)} FROM backtest_runs {where_clause} "
+        f"ORDER BY {order_col} DESC NULLS LAST LIMIT ?",
+        params,
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def count_runs(
+    conn, channel: Optional[str] = None, mode: Optional[str] = None, strategy_id: Optional[str] = None,
+) -> int:
+    """Total matching row count, ignoring any page/limit — lets a caller
+    show "N runs total" even when list_runs()'s own `limit` truncates the
+    rows actually returned (e.g. the Backtest page's run counter, which
+    otherwise freezes at the default limit=100 once the real count passes
+    it)."""
+    where = []
+    params: List[Any] = []
+    if channel is not None:
+        where.append("channel = ?")
+        params.append(channel)
+    if mode is not None:
+        where.append("mode = ?")
+        params.append(mode)
+    if strategy_id is not None:
+        where.append("strategy_id = ?")
+        params.append(strategy_id)
+    where_clause = f"WHERE {' AND '.join(where)}" if where else ""
+    return conn.execute(f"SELECT COUNT(*) FROM backtest_runs {where_clause}", params).fetchone()[0]
+
+
+def list_experiments(
+    conn,
+    strategy_id: Optional[str] = None,
+    channel: Optional[str] = None,
+    exit_policy_variant: Optional[str] = None,
+    regime_label: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """List runs for the Experiments comparison page (270-job exit-variant
+    x template/preset matrix, experiment_matrix_45x6.json) — most recent
+    first, optionally filtered by strategy_id/channel/exit_policy_variant/
+    regime_label. Unlike list_runs(), this doesn't filter on `mode` (every
+    exit-variant matrix job is a plain 'backtest' mode run today, but this
+    view shouldn't silently hide walk_forward/paper rows should the matrix
+    ever grow to include them)."""
+    where = []
+    params: List[Any] = []
+    if strategy_id is not None:
+        where.append("strategy_id = ?")
+        params.append(strategy_id)
+    if channel is not None:
+        where.append("channel = ?")
+        params.append(channel)
+    if exit_policy_variant is not None:
+        where.append("exit_policy_variant = ?")
+        params.append(exit_policy_variant)
+    if regime_label is not None:
+        where.append("regime_label = ?")
+        params.append(regime_label)
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
     params.append(limit)
     rows = conn.execute(
