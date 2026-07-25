@@ -158,6 +158,11 @@ export const NAV_SECTIONS: NavSection[] = [
         label: 'Experiments',
         href: '/backtest-experiments',
       },
+      {
+        id: 'regimes',
+        label: 'Market Regimes',
+        href: '/backtest-regimes',
+      },
     ],
   },
   {

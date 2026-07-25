@@ -148,9 +148,28 @@ def _write_progress(path: Path, jobs: List[Dict[str, Any]], statuses: List[str])
     path.write_text(json.dumps(payload, indent=2, default=str))
 
 
+def _load_prior_completed(progress_path: Path, n_jobs: int) -> List[bool]:
+    """Best-effort read of a progress file from an earlier (crashed/killed)
+    invocation with the same report_suffix — used to skip jobs that already
+    reached 'completed' rather than re-running the whole queue from job 0
+    after a reboot, OOM kill, or other unclean process death."""
+    completed = [False] * n_jobs
+    if not progress_path.exists():
+        return completed
+    try:
+        prior = json.loads(progress_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return completed
+    for entry in prior.get("jobs", []):
+        i = entry.get("job_index")
+        if isinstance(i, int) and 0 <= i < n_jobs and entry.get("status") == "completed":
+            completed[i] = True
+    return completed
+
+
 def run_queue(
-    jobs: List[Dict[str, Any]], min_free_mb: float = 2048.0, wait_timeout_s: float = 600.0,
-    stop_on_failure: bool = True, report_suffix: Optional[str] = None,
+    jobs: List[Dict[str, Any]], min_free_mb: float = 3072.0, wait_timeout_s: float = 600.0,
+    stop_on_failure: bool = True, report_suffix: Optional[str] = None, resume: bool = True,
 ) -> Dict[str, Any]:
     if not jobs:
         raise ValueError("jobs is empty — nothing to schedule")
@@ -160,11 +179,19 @@ def run_queue(
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     progress_path = REPORTS_DIR / f"strategy_queue_progress_{suffix}.json"
 
-    statuses = ["queued"] * len(jobs)
+    prior_completed = _load_prior_completed(progress_path, len(jobs)) if resume else [False] * len(jobs)
+    statuses = ["completed" if c else "queued" for c in prior_completed]
+    if any(prior_completed):
+        logger.info(
+            f"run_strategy_queue: resuming {suffix} — skipping "
+            f"{sum(prior_completed)}/{len(jobs)} job(s) already completed"
+        )
     _write_progress(progress_path, jobs, statuses)
 
     results = []
     for i, job in enumerate(jobs):
+        if prior_completed[i]:
+            continue
         wait_for_headroom(min_free_mb, wait_timeout_s, label="run_strategy_queue")
         statuses[i] = "running"
         _write_progress(progress_path, jobs, statuses)
@@ -181,12 +208,16 @@ def run_queue(
                 _write_progress(progress_path, jobs, statuses)
                 break
 
+    n_skipped_prior = sum(prior_completed)
     summary = {
         "generated_at": datetime.now().isoformat(),
         "total_jobs": len(jobs),
         "jobs_run": len(results),
+        "jobs_skipped_already_completed": n_skipped_prior,
         "results": results,
-        "all_passed": all(r["returncode"] == 0 for r in results) and len(results) == len(jobs),
+        "all_passed": (
+            all(r["returncode"] == 0 for r in results) and len(results) + n_skipped_prior == len(jobs)
+        ),
         "runtime_seconds": time.monotonic() - run_started,
     }
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -205,13 +236,21 @@ def main() -> None:
         )
     )
     parser.add_argument("--queue-file", required=True, help="Path to a JSON file: {\"jobs\": [ {...}, ... ]}")
-    parser.add_argument("--min-free-mb", type=float, default=2048.0)
+    parser.add_argument("--min-free-mb", type=float, default=3072.0)
     parser.add_argument("--wait-timeout-s", type=float, default=600.0)
     parser.add_argument(
         "--continue-on-failure", action="store_true",
         help="Keep running later jobs even after one fails (default: stop the queue on the first failure)",
     )
     parser.add_argument("--report-suffix", default=None)
+    parser.add_argument(
+        "--no-resume", action="store_true",
+        help=(
+            "Ignore any existing progress file for this --report-suffix and re-run every job from "
+            "scratch (default: skip jobs a prior run with the same suffix already marked 'completed' "
+            "— safe to re-invoke after a crash, OOM kill, or reboot)"
+        ),
+    )
     args = parser.parse_args()
 
     with open(args.queue_file) as fh:
@@ -221,6 +260,7 @@ def main() -> None:
     summary = run_queue(
         jobs=jobs, min_free_mb=args.min_free_mb, wait_timeout_s=args.wait_timeout_s,
         stop_on_failure=not args.continue_on_failure, report_suffix=args.report_suffix,
+        resume=not args.no_resume,
     )
     print(json.dumps(summary, indent=2, default=str))
     sys.exit(0 if summary["all_passed"] else 1)

@@ -27,7 +27,6 @@ import {
   listBacktestRuns,
   getBacktestRunLineage,
   getBacktestRunFeatureLog,
-  getMarketRegimes,
   listActiveQueues,
   triggerIterativeRetrain,
   getIterativeRetrainStatus,
@@ -51,145 +50,18 @@ import {
 
 const CHANNELS: BacktestChannel[] = ['technical', 'fundamental', 'ml', 'momentum']
 const MODES: BacktestMode[] = ['backtest', 'walk_forward', 'paper']
+const CHANNEL_LABEL: Record<BacktestChannel, string> = {
+  technical: 'Technical',
+  fundamental: 'Fundamental',
+  ml: 'Machine Learning',
+  momentum: 'Momentum',
+}
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10)
 }
 
 const HORIZON_BUCKETS = ['5_day', '21_day', '63_day', '1_year', 'multibagger', 'custom'] as const
-
-const REGIME_COLOR: Record<string, string> = {
-  bull: 'bg-green/70',
-  bear: 'bg-red/70',
-  sideways: 'bg-muted-foreground/40',
-}
-
-// Four thresholds the classifier can be run at (systems/regime/
-// market_regime.py's threshold_pct param) — 20% is the original/default
-// method; 15/10/5% were added so strategies with regime-conditional exits
-// can visually compare how sensitive the Bull/Bear/Sideways segmentation
-// is to the threshold choice before picking which one (if any) drives
-// exit logic. Order here is the stacking order top-to-bottom.
-const REGIME_THRESHOLDS = [
-  { pct: 20, method: '20pct_threshold_v1', label: '20% threshold (default)' },
-  { pct: 15, method: '15pct_threshold_v1', label: '15% threshold' },
-  { pct: 10, method: '10pct_threshold_v1', label: '10% threshold' },
-  { pct: 5, method: '5pct_threshold_v1', label: '5% threshold' },
-] as const
-
-// Shared bar renderer for one threshold's timeline — extracted so the 4
-// stacked rows (one per threshold) all render identically; only the
-// fetched segments differ.
-function RegimeBar({ label, method }: { label: string; method: string }) {
-  const regimes = useQuery({
-    queryKey: ['market-regimes', 'Nifty 500', method],
-    queryFn: () => getMarketRegimes('Nifty 500', method),
-  })
-
-  const segments = regimes.data?.segments ?? []
-  if (regimes.isLoading) {
-    return <div className="text-xs text-muted-foreground">Loading {label}…</div>
-  }
-  if (!segments.length) {
-    return (
-      <div className="text-xs text-muted-foreground">
-        {label}: no segments backfilled yet (run scripts/backfill_market_regimes.py)
-      </div>
-    )
-  }
-
-  const start = new Date(segments[0].start_date).getTime()
-  const end = new Date(segments[segments.length - 1].end_date).getTime()
-  const totalMs = Math.max(end - start, 1)
-
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-xs font-medium text-foreground">
-        <span>{label}</span>
-        <span className="text-muted-foreground">
-          {segments.length} segment{segments.length === 1 ? '' : 's'}
-        </span>
-      </div>
-      <div className="flex h-8 w-full overflow-hidden rounded-[var(--radius-token)] border border-border">
-        {segments.map((s, i) => {
-          const segStart = new Date(s.start_date).getTime()
-          const segEnd = new Date(s.end_date).getTime()
-          const widthPct = (Math.max(segEnd - segStart, 1) / totalMs) * 100
-          return (
-            <div
-              key={i}
-              title={`${s.regime} · ${s.start_date} → ${s.end_date}${s.move_pct != null ? ` · ${(s.move_pct * 100).toFixed(1)}%` : ''}`}
-              className={cn('h-full border-r border-border/50 last:border-r-0', REGIME_COLOR[s.regime] ?? 'bg-muted')}
-              style={{ width: `${widthPct}%` }}
-            />
-          )
-        })}
-      </div>
-      <div className="mt-1 text-[11px] text-muted-foreground">
-        {segments[0].start_date} → {segments[segments.length - 1].end_date}
-      </div>
-    </div>
-  )
-}
-
-function MarketRegimeTimeline() {
-  // All four thresholds visible by default (checked=visible) — the whole
-  // point of this comparison view is seeing all of them side by side; the
-  // checkboxes let the user narrow in on one or two once they've formed an
-  // opinion, rather than having to opt each one in first.
-  const [visible, setVisible] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(REGIME_THRESHOLDS.map((t) => [t.method, true])),
-  )
-
-  return (
-    <Card className="mt-4">
-      <CardHeader>
-        <CardTitle>Market Regime Timeline (Nifty 500)</CardTitle>
-        <CardDescription>
-          Bull/Bear/Sideways date-range segments (rule-based — see the Backtest Explainer), one row per Bull/Bear
-          confirmation threshold. Hover a band for exact dates. Compare how sensitive the classification is to the
-          threshold before choosing one for regime-conditional exit logic. The trailing segment on each row is
-          provisional and may still extend or reclassify.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-full bg-green/70" /> Bull
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-full bg-red/70" /> Bear
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-full bg-muted-foreground/40" /> Sideways
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-4 border-b border-border pb-3 text-xs">
-          {REGIME_THRESHOLDS.map((t) => (
-            <label key={t.method} className="flex cursor-pointer items-center gap-1.5">
-              <input
-                type="checkbox"
-                checked={visible[t.method] ?? true}
-                onChange={(e) => setVisible((prev) => ({ ...prev, [t.method]: e.target.checked }))}
-              />
-              {t.label}
-            </label>
-          ))}
-        </div>
-        <div className="space-y-4">
-          {REGIME_THRESHOLDS.filter((t) => visible[t.method]).map((t) => (
-            <RegimeBar key={t.method} label={t.label} method={t.method} />
-          ))}
-          {REGIME_THRESHOLDS.every((t) => !visible[t.method]) && (
-            <div className="text-xs text-muted-foreground">
-              All thresholds hidden — check a box above to show its timeline.
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
 
 function PaperTradingPanel() {
   const [channel, setChannel] = useState<BacktestChannel>('technical')
@@ -1473,15 +1345,47 @@ function strategyName(r: BacktestRunSummary): string {
   )
 }
 
+// Exit variant (backtest/run_orchestrator_backtest.py's --exit-variant flag,
+// e.g. "condition"/"trailing"/"atr_adaptive"/"regime_conditional"/"combined"/
+// "baseline") is stored in config_json for orchestrator jobs. Not every run
+// has one (older runs, non-orchestrator jobs) — those show as "—" rather
+// than guessing, since a wrong guess is worse than an honest unknown.
+const EXIT_VARIANT_LABEL: Record<string, string> = {
+  baseline: 'Baseline',
+  condition: 'Condition',
+  combined: 'Combined',
+  trailing: 'Trailing',
+  atr_adaptive: 'ATR Adaptive',
+  regime_conditional: 'Regime Conditional',
+}
+
+function exitStrategyLabel(r: BacktestRunSummary): string {
+  const variant = r.config?.exit_variant
+  if (!variant) return '—'
+  return EXIT_VARIANT_LABEL[variant] ?? variant
+}
+
 // DataTable renders its own <TableRow> internally with no row-click hook,
 // so "select a run to show its detail panel below" is wired through the
 // Strategy cell itself (a button) rather than the row — selectedRunId is
 // passed in so the selected run's cell can render as visibly active.
+//
+// One column set shared by all four per-channel tables (Technical/
+// Fundamental/ML/Momentum) — channel itself is dropped as a column since
+// it's now implied by which table a row is in, and Horizon is dropped per
+// user request, freeing up room for a Serial No. and Exit Strategy column.
 function buildRunColumns(
   selectedRunId: string | null,
   onSelect: (runId: string) => void,
 ): ColumnDef<BacktestRunSummary, unknown>[] {
   return [
+  {
+    id: 'serial_no',
+    header: '#',
+    size: 40,
+    meta: { align: 'right' },
+    cell: ({ row }) => <span className="text-muted-foreground">{row.index + 1}</span>,
+  },
   {
     id: 'strategy_name',
     accessorFn: strategyName,
@@ -1502,20 +1406,13 @@ function buildRunColumns(
     ),
   },
   {
-    accessorKey: 'channel',
-    header: 'Channel',
-    size: 100,
+    id: 'exit_strategy',
+    accessorFn: exitStrategyLabel,
+    header: 'Exit Strategy',
+    size: 120,
     cell: (i) => <Badge variant="outline">{i.getValue<string>()}</Badge>,
   },
-  { accessorKey: 'horizon_bucket', header: 'Horizon', size: 90, meta: { align: 'right' } },
   { accessorKey: 'mode', header: 'Mode', size: 90, meta: { priority: 'low' } },
-  {
-    id: 'period',
-    accessorFn: (r) => `${r.start_date} → ${r.end_date}`,
-    header: 'Period',
-    size: 170,
-    meta: { priority: 'low' },
-  },
   {
     id: 'cagr',
     accessorFn: (r) => r.metrics?.cagr ?? null,
@@ -1568,6 +1465,17 @@ function buildRunColumns(
     cell: ({ getValue }) => fmtNum(getValue<number | null>(), 0),
   },
   {
+    id: 'avg_days_held',
+    accessorFn: (r) => r.metrics?.avg_days_held ?? null,
+    header: 'Avg Trade Duration',
+    size: 100,
+    meta: { align: 'right', priority: 'low' },
+    cell: ({ getValue }) => {
+      const v = getValue<number | null>()
+      return v == null ? '—' : `${fmtNum(v, 1)}d`
+    },
+  },
+  {
     accessorKey: 'buy_signal_count',
     header: 'Buy Signals',
     size: 95,
@@ -1583,8 +1491,8 @@ function buildRunColumns(
 }
 
 export function BacktestPage() {
-  const [channel, setChannel] = useState<BacktestChannel | ''>('')
   const [mode, setMode] = useState<BacktestMode | ''>('')
+  const [runDate, setRunDate] = useState<string>('')
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   // Persisted so an in-flight trigger (a backtest can run for minutes) survives
   // a page reload instead of silently vanishing from the board.
@@ -1646,12 +1554,34 @@ export function BacktestPage() {
     [selectedRunId],
   )
 
-  const runs = useQuery({
-    queryKey: ['backtest-runs', channel, mode],
-    queryFn: () => listBacktestRuns({ channel: channel || undefined, mode: mode || undefined, sort_by: 'cagr' }),
+  // One query per channel (not one query re-filtered client-side) so each
+  // of the 4 tables below only re-fetches/re-sorts its own slice — sorting
+  // happens once, server-side (ORDER BY cagr DESC in run_store.py), not on
+  // every page render. limit=1000 replaces the old default-100 cap that
+  // silently truncated the "Top by CAGR" view once run counts grew.
+  const runQueries = useQueries({
+    queries: CHANNELS.map((c) => ({
+      queryKey: ['backtest-runs', c, mode],
+      queryFn: () => listBacktestRuns({ channel: c, mode: mode || undefined, sort_by: 'cagr', limit: 1000 }),
+    })),
   })
 
-  const selectedRun = runs.data?.runs.find((r) => r.run_id === selectedRunId) ?? null
+  const allRuns = useMemo(() => runQueries.flatMap((q) => q.data?.runs ?? []), [runQueries])
+
+  // Distinct run dates (YYYY-MM-DD, most recent first) — a dropdown filter
+  // instead of a "Run Date" column in every one of the 4 tables below, per
+  // user request to reclaim table width.
+  const runDates = useMemo(() => {
+    const set = new Set(allRuns.map((r) => r.created_at.slice(0, 10)))
+    return Array.from(set).sort().reverse()
+  }, [allRuns])
+
+  const selectedRun = allRuns.find((r) => r.run_id === selectedRunId) ?? null
+
+  function runsForChannel(channel: BacktestChannel) {
+    const data = runQueries[CHANNELS.indexOf(channel)]?.data?.runs ?? []
+    return runDate ? data.filter((r) => r.created_at.slice(0, 10) === runDate) : data
+  }
 
   return (
     <AppShell
@@ -1662,27 +1592,13 @@ export function BacktestPage() {
         <CardHeader>
           <CardTitle>Runs (Top by CAGR)</CardTitle>
           <CardDescription>
-            {runs.data?.total_count
-              ? runs.data.total_count > runs.data.runs.length
-                ? `${runs.data.total_count} run(s) total (showing top ${runs.data.runs.length} by CAGR)`
-                : `${runs.data.total_count} run(s), sorted by CAGR`
+            {allRuns.length
+              ? `${allRuns.length} run(s) loaded across Technical/Fundamental/ML/Momentum, sorted by CAGR`
               : 'No runs recorded yet'}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-3">
-            <select
-              className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
-              value={channel}
-              onChange={(e) => setChannel(e.target.value as BacktestChannel | '')}
-            >
-              <option value="">All channels</option>
-              {CHANNELS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
             <select
               className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
               value={mode}
@@ -1695,26 +1611,50 @@ export function BacktestPage() {
                 </option>
               ))}
             </select>
+            <select
+              className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+              value={runDate}
+              onChange={(e) => setRunDate(e.target.value)}
+            >
+              <option value="">All run dates</option>
+              {runDates.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {runs.error ? (
-            <p className="mt-4 text-sm text-red">Could not reach GET /api/v1/backtest/runs — {(runs.error as Error).message}</p>
-          ) : (
-            <div className="mt-4">
-              <DataTable
-                columns={runColumns}
-                data={runs.data?.runs ?? []}
-                isLoading={runs.isLoading}
-                placeholder="Search strategy, channel, horizon…"
-                emptyMessage="No runs yet — runs are written by backtest/core/run_store.py from a BacktestOrchestrator/WalkForwardRunner invocation (see BacktestUmbrellaPlan.md Phase 3), or triggered from the panels below."
-                maxHeight="600px"
-              />
-            </div>
-          )}
+          <div className="mt-4 space-y-6">
+            {CHANNELS.map((c) => {
+              const query = runQueries[CHANNELS.indexOf(c)]
+              const data = runsForChannel(c)
+              return (
+                <div key={c}>
+                  <h3 className="mb-2 text-sm font-semibold text-foreground">
+                    {CHANNEL_LABEL[c]}{' '}
+                    <span className="font-normal text-muted-foreground">({data.length})</span>
+                  </h3>
+                  {query?.error ? (
+                    <p className="text-sm text-red">
+                      Could not reach GET /api/v1/backtest/runs — {(query.error as Error).message}
+                    </p>
+                  ) : (
+                    <DataTable
+                      columns={runColumns}
+                      data={data}
+                      isLoading={query?.isLoading}
+                      placeholder="Search strategy, exit strategy…"
+                      emptyMessage="No runs yet — runs are written by backtest/core/run_store.py from a BacktestOrchestrator/WalkForwardRunner invocation (see BacktestUmbrellaPlan.md Phase 3), or triggered from the panels below."
+                      maxHeight="400px"
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </CardContent>
       </Card>
-
-      <MarketRegimeTimeline />
 
       <RunsStatusBoard jobs={activeJobs} onDismiss={dismissJob} />
 

@@ -26,6 +26,7 @@ export interface BacktestRunMetrics {
   excess_return: number | null
   benchmark_status: string
   cash_position_series: { date: string; cash: number }[]
+  avg_days_held: number | null
 }
 
 export interface BacktestDataGap {
@@ -42,6 +43,7 @@ export interface BacktestRunConfig {
   preset?: string | null
   top_n?: number | null
   lookback_months?: number | null
+  exit_variant?: string | null
 }
 
 // One row per Bull/Bear/Sideways market_regimes segment this run's window

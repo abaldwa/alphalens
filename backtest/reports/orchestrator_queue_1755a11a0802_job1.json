@@ -12,16 +12,17 @@
     "sip_amount": null,
     "sip_cadence_days": null,
     "random_seed": 0,
-    "run_id": "orch_technical_20260725_004303_c11a01c1",
+    "run_id": "orch_technical_20260725_062927_67e203b7",
     "parent_run_id": null,
-    "created_at": "2026-07-24 19:14:52.899175",
+    "created_at": "2026-07-25 01:01:26.872856",
     "config": {
       "template_name": "A1",
       "preset": null,
       "top_n": 10,
       "lookback_months": 6,
       "max_tickers": 800,
-      "min_history_days": 60
+      "min_history_days": 60,
+      "exit_variant": "condition"
     }
   },
   "metrics": {
@@ -13233,17 +13234,17 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "CORDSCABLE",
-      "as_of_date": "2024-02-20",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
       "ticker": "BEDMUTHA",
       "as_of_date": "2024-02-20",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
       "ticker": "ALMONDZ",
+      "as_of_date": "2024-02-20",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CORDSCABLE",
       "as_of_date": "2024-02-20",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13643,17 +13644,17 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
+      "ticker": "BEDMUTHA",
+      "as_of_date": "2024-03-20",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
       "ticker": "CORDSCABLE",
       "as_of_date": "2024-03-20",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
       "ticker": "ALMONDZ",
-      "as_of_date": "2024-03-20",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "BEDMUTHA",
       "as_of_date": "2024-03-20",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -14978,32 +14979,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "BANCOINDIA",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "BORORENEW",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "CORDSCABLE",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "AURUM",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "ALMONDZ",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "CAMS",
+      "ticker": "ASIANENE",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -15013,12 +14989,17 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "ASIANENE",
+      "ticker": "AURUM",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "CGCL",
+      "ticker": "BANCOINDIA",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "COUNCODOS",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -15028,7 +15009,27 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "COUNCODOS",
+      "ticker": "CAMS",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CGCL",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CORDSCABLE",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BORORENEW",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ALMONDZ",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -15483,22 +15484,22 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "CORDSCABLE",
-      "as_of_date": "2024-08-26",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
       "ticker": "AURUM",
       "as_of_date": "2024-08-26",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "ALMONDZ",
+      "ticker": "COUNCODOS",
       "as_of_date": "2024-08-26",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "COUNCODOS",
+      "ticker": "CORDSCABLE",
+      "as_of_date": "2024-08-26",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ALMONDZ",
       "as_of_date": "2024-08-26",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -15998,12 +15999,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "CORDSCABLE",
-      "as_of_date": "2024-09-24",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "AURUM",
+      "ticker": "GEEKAYWIRE",
       "as_of_date": "2024-09-24",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -16018,7 +16014,12 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "GEEKAYWIRE",
+      "ticker": "AURUM",
+      "as_of_date": "2024-09-24",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CORDSCABLE",
       "as_of_date": "2024-09-24",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -16428,7 +16429,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "AURUM",
+      "ticker": "GEEKAYWIRE",
       "as_of_date": "2024-10-24",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -16438,7 +16439,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "GEEKAYWIRE",
+      "ticker": "AURUM",
       "as_of_date": "2024-10-24",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -16753,7 +16754,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "ALMONDZ",
+      "ticker": "GEEKAYWIRE",
       "as_of_date": "2024-11-27",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -16763,7 +16764,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "GEEKAYWIRE",
+      "ticker": "ALMONDZ",
       "as_of_date": "2024-11-27",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -17023,12 +17024,12 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "ALMONDZ",
+      "ticker": "AURUM",
       "as_of_date": "2024-12-27",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "AURUM",
+      "ticker": "ALMONDZ",
       "as_of_date": "2024-12-27",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -17753,17 +17754,17 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "DABUR",
-      "as_of_date": "2026-02-03",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
       "ticker": "ARVEE",
       "as_of_date": "2026-02-03",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
       "ticker": "EMCURE",
+      "as_of_date": "2026-02-03",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "DABUR",
       "as_of_date": "2026-02-03",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -18149,6 +18150,6 @@
   ],
   "exit_policy_variant": "condition",
   "regime_label": "bull",
-  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_004303_c11a01c1.csv",
-  "runtime_seconds": 249.21391143799997
+  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_062927_67e203b7.csv",
+  "runtime_seconds": 253.2762045290001
 }

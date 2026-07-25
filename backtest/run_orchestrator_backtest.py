@@ -299,7 +299,7 @@ def run_orchestrator_backtest(
             capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-                "max_tickers": max_tickers, "min_history_days": min_history_days,
+                "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
             },
         )
 

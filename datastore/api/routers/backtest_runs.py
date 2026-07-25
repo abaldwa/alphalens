@@ -144,7 +144,7 @@ async def list_backtest_runs(
     channel: Optional[str] = Query(None, description="Filter: technical | fundamental | ml | momentum"),
     mode: Optional[str] = Query(None, description="Filter: backtest | walk_forward | paper"),
     strategy_id: Optional[str] = Query(None),
-    limit: int = Query(100, le=500),
+    limit: int = Query(1000, le=2000),
     sort_by: str = Query("created_at", description="'created_at' (most recent first) or 'cagr' (highest CAGR first)"),
 ) -> BacktestRunListResponse:
     """List runs across all four channels — the unified view Phase 4's
