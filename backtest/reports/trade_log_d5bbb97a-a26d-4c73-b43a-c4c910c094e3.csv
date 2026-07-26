@@ -1,0 +1,2 @@
+ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank,pnl_inr,pnl_pct,exit_reason
+ZOMBIE_CO,400,2020-01-01,50.0,2020-01-08,50.0,,-80.4418399999995,-0.004022091999999975,forced_close

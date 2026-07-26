@@ -1,0 +1,2 @@
+ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank,pnl_inr,pnl_pct,exit_reason
+ANDHRAPAP,430,2024-01-23,116.06,2025-01-29,85.72,,-13246.925718933606,-0.2654386007023954,signal
