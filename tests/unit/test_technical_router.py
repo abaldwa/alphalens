@@ -486,3 +486,77 @@ class TestMarketOverview:
         assert body["advances"] == 1
         assert body["declines"] == 1
         assert len(body["sector_breadth"]) >= 1
+
+
+def _seed_strategy_confidence_summary(db_path, rows):
+    """rows: list of dicts with strategy_id, wins, losses, pending, win_rate, tier
+    (regime defaults to 'ALL', the only regime /strategies/win_rates reads)."""
+    with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_confidence_summary (
+                strategy_id VARCHAR NOT NULL, regime VARCHAR NOT NULL,
+                wins INTEGER, losses INTEGER, pending INTEGER,
+                win_rate DOUBLE, wilson_lo DOUBLE, wilson_hi DOUBLE,
+                baseline_win_rate DOUBLE, delta_vs_baseline DOUBLE,
+                tier VARCHAR, reasons VARCHAR,
+                PRIMARY KEY (strategy_id, regime)
+            )
+            """
+        )
+        for r in rows:
+            conn.execute(
+                """
+                INSERT INTO strategy_confidence_summary
+                    (strategy_id, regime, wins, losses, pending, win_rate, wilson_lo,
+                     wilson_hi, baseline_win_rate, delta_vs_baseline, tier, reasons)
+                VALUES (?, 'ALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    r["strategy_id"], r["wins"], r["losses"], r.get("pending", 0),
+                    r["win_rate"], r.get("wilson_lo", r["win_rate"]),
+                    r.get("wilson_hi", r["win_rate"]), r.get("baseline_win_rate"),
+                    r.get("delta_vs_baseline"), r["tier"], r.get("reasons", ""),
+                ],
+            )
+
+
+class TestStrategyWinRates:
+    def test_validated_tier_ranks_above_preliminary_regardless_of_raw_win_rate(self, client):
+        # A24/model-review fix: a PRELIMINARY row with a lucky, small-sample
+        # win rate must not outrank a VALIDATED row with a lower win rate —
+        # tier is the primary sort key, win_rate desc only breaks ties within
+        # a tier. A1 and A2 share a style ("Trend Following" / "Momentum"
+        # respectively) is irrelevant here; each style bucket is sorted
+        # independently, so use two templates from the same style bucket
+        # (both Momentum: A2, C1) to exercise the within-bucket ordering.
+        _seed_strategy_confidence_summary(technical_router.SIGNALS_DUCKDB_PATH, [
+            {"strategy_id": "A2", "wins": 6, "losses": 4, "win_rate": 0.95,
+             "tier": "PRELIMINARY"},
+            {"strategy_id": "C1", "wins": 60, "losses": 40, "win_rate": 0.60,
+             "tier": "VALIDATED"},
+        ])
+
+        r = client.get("/api/v1/ta/strategies/win_rates")
+        assert r.status_code == 200, r.text
+        momentum_rows = r.json()["styles"]["Momentum"]
+        names = [row["template_name"] for row in momentum_rows]
+        assert names.index("C1") < names.index("A2"), (
+            "VALIDATED row (C1, lower raw win_rate) must sort above "
+            "PRELIMINARY row (A2, higher raw win_rate)"
+        )
+
+    def test_within_tier_sorted_by_win_rate_descending(self, client):
+        _seed_strategy_confidence_summary(technical_router.SIGNALS_DUCKDB_PATH, [
+            {"strategy_id": "A2", "wins": 50, "losses": 50, "win_rate": 0.50,
+             "tier": "VALIDATED"},
+            {"strategy_id": "C1", "wins": 70, "losses": 30, "win_rate": 0.70,
+             "tier": "VALIDATED"},
+        ])
+
+        r = client.get("/api/v1/ta/strategies/win_rates")
+        assert r.status_code == 200, r.text
+        momentum_rows = r.json()["styles"]["Momentum"]
+        names = [row["template_name"] for row in momentum_rows]
+        assert names.index("C1") < names.index("A2")

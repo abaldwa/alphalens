@@ -765,24 +765,24 @@ TEMPLATE_STYLE: Dict[str, str] = {
     "D4": "Momentum",          # IBD follow-through day
     "E1": "Trend Following",   # Turtle Donchian breakout
     "E2": "Trend Following",   # Minervini SEPA
-    "E3": "Trend Following",   # Piotroski F proxy (trend persistence quality)
+    "E3": "Momentum",           # Piotroski F proxy — flag_pattern_score + hurst_exp_21d only, no MA/ADX trend gate; hurst measures statistical persistence not a price-vs-MA trend
     "E4": "Trend Following",   # Sector rotation
     "E5": "Momentum",          # Earnings acceleration
     "E6": "Momentum",          # GARP momentum
     "E7": "Trend Following",   # Greenblatt Magic Formula proxy
     "F1": "Mean Reversion",    # Low RSI quality
     "F2": "Momentum",          # Momentum + volume
-    "F3": "Trend Following",   # Dividend/consistent growth proxy
+    "F3": "Momentum",           # Dividend/consistent growth proxy — flag_pattern_score + hurst_exp_21d only, no MA/ADX trend gate; hurst measures statistical persistence not a price-vs-MA trend
     "F4": "Trend Following",   # Compounder proxy
-    "F5": "Volatility",        # Cash flow king proxy (low-volume-ratio accumulation)
+    "F5": "Trend Following",   # Cash flow king proxy — flag_pattern_score + low volume_ratio_21d (quiet accumulation during a continuation pattern), no ATR/BB-width/breakout condition so not Volatility
     "F6": "Mean Reversion",    # Turnaround proxy
-    "F7": "Trend Following",   # Promoter confidence proxy
+    "F7": "Momentum",           # Promoter confidence proxy — flag_pattern_score + hurst_exp_21d only, no MA/ADX trend gate; hurst measures statistical persistence not a price-vs-MA trend
     "F8": "Momentum",          # PEG proxy (growth momentum)
     "S001": "Trend Following",  # EMA crossover
     "S002": "Trend Following",  # Supertrend breakout
     "S003": "Mean Reversion",   # RSI mean reversion
     "S004": "Trend Following",  # 52-week high breakout
-    "S005": "Mean Reversion",   # VWAP reversal
+    "S005": "Momentum",         # VWAP reversal — sma_20_ratio>1.0 + volume_ratio_21d>1.3, no oversold/oscillator condition; this is a breakout-on-volume continuation entry, not a snap-back-from-extreme reversion
     "S006": "Trend Following",  # Ichimoku cloud breakout
     "S008": "Momentum",        # MACD histogram
 }

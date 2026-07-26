@@ -1047,8 +1047,15 @@ async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
             tier=tier,
             reasons=str(s["reasons"]).split("; ") if s.get("reasons") else [],
         ))
+    # VALIDATED rows rank above PRELIMINARY ones regardless of raw win_rate —
+    # a lucky small-sample PRELIMINARY win rate shouldn't outrank a row that
+    # has actually earned the VALIDATED tier (sample size, multi-regime, DSR,
+    # baseline checks). win_rate desc is only the tie-break within a tier.
+    _tier_rank = {strategy_confidence.TIER_VALIDATED: 0, strategy_confidence.TIER_PRELIMINARY: 1}
     for s in styles:
-        styles[s].sort(key=lambda r: (r.win_rate is None, -(r.win_rate or 0)))
+        styles[s].sort(
+            key=lambda r: (_tier_rank.get(r.tier, 2), r.win_rate is None, -(r.win_rate or 0))
+        )
 
     return TAStrategyWinRateResponse(styles=styles)
 
