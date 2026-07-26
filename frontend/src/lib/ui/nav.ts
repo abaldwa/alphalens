@@ -64,6 +64,7 @@ export const NAV_SECTIONS: NavSection[] = [
     href: '/fundamental',
     subItems: [
       { id: 'dashboard', label: 'Dashboard', href: '/fundamental' },
+      { id: 'strategies', label: 'Strategies', href: '/fundamental-strategies' },
       { id: 'screener', label: 'Screener', href: '/fundamental-screener' },
       { id: 'peers', label: 'Peers', href: '/fundamental-peers' },
       { id: 'sector', label: 'Sector', href: '/fundamental-sector' },

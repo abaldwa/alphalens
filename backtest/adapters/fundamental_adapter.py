@@ -13,8 +13,23 @@ Reuses the same daily feature Parquet store technical_adapter.py reads
 .read_feature_day) and the real screener-preset logic already backing the
 live GET /api/v1/fundamental/screener endpoint
 (features/fundamental_composites.py::matches_screener_preset,
-SCREENER_PRESETS — quality_compounder / garp / turnaround). Neither is
-modified.
+SCREENER_PRESETS). Neither is modified.
+
+`preset` names any of the 26 features.fundamental_composites.
+STRATEGY_CATALOG strategies, not just a SCREENER_PRESETS key — see
+BESPOKE_PRESETS (piotroski_on_value/margin_of_safety/net_net, raw-PIT-
+financials strategies) and the SCORE_FUNCTIONS branch below (the 22
+continuous 0-100 composite scores — QGLP, Moat, Owner Earnings, etc. —
+added 2026-07-25 so every strategy in the catalog is actually
+backtestable, not just the 9 binary presets). A composite-score strategy
+ranks the whole universe by score and takes the top top_n, same "rank
+everyone, take the top N" idiom momentum_adapter.py already uses — it
+reuses this class's existing matched+_last_ratios+_composite_strength
+convergence point rather than duplicating a second ranking path: every
+scored ticker is added to `matched`, and _composite_strength summing a
+single-entry {"score": value} dict is exactly that ticker's score, so the
+existing top-N-by-composite-strength selection below sorts by score
+without any additional code.
 
 Real-data caveat this adapter does NOT need to re-litigate: raw
 fundamentals coverage is near-empty before 2020 (BacktestUmbrellaPlan.md
@@ -34,7 +49,7 @@ this adapter special-cases.
 """
 
 import logging
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -42,11 +57,30 @@ import pandas as pd
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
 from datastore.api.utils.feature_store import read_feature_day
-from features.fundamental_composites import SCREENER_PRESETS, matches_screener_preset
+from features.fundamental import FUNDAMENTAL_FEATURES
+from features.fundamental_composites import SCORE_FUNCTIONS, SCREENER_PRESETS, matches_screener_preset
+from features.governance import GOVERNANCE_FEATURES
 
 logger = logging.getLogger(__name__)
 
-RATIO_FEATURES = ("roe", "roce", "debt_to_equity", "revenue_growth_yoy", "pe_ratio", "eps_growth_yoy")
+# [2026-07-25 fix] Previously a narrow, hand-maintained subset — already
+# caused one real gap this session (several SCORE_FUNCTIONS composites
+# need multi-year/delta/governance fields this tuple didn't list).
+# Importing the full feature lists directly means every current and
+# future feature is available to every strategy automatically; no more
+# per-strategy whitelist to keep in sync by hand.
+RATIO_FEATURES = tuple(FUNDAMENTAL_FEATURES) + tuple(GOVERNANCE_FEATURES)
+
+# piotroski_on_value/margin_of_safety/net_net don't fit the SCREENER_PRESETS
+# z-score-threshold pattern (they compare raw rupee values — F-Score gate,
+# Graham Number, NCAV — to price, not sector z-scores; see
+# systems/fundamental_analysis/quality/*.py's module docstrings), so
+# they're handled as special preset names here rather than added to
+# SCREENER_PRESETS.
+PIOTROSKI_ON_VALUE_PRESET = "piotroski_on_value"
+MARGIN_OF_SAFETY_PRESET = "margin_of_safety"
+NET_NET_PRESET = "net_net"
+BESPOKE_PRESETS = (PIOTROSKI_ON_VALUE_PRESET, MARGIN_OF_SAFETY_PRESET, NET_NET_PRESET)
 
 
 class FundamentalAdapter:
@@ -54,14 +88,27 @@ class FundamentalAdapter:
 
     def __init__(
         self, preset: str, top_n: int = 10, sector_lookup: Optional[Dict[str, str]] = None,
+        db_conn: Optional[Any] = None,
     ) -> None:
-        if preset not in SCREENER_PRESETS:
-            raise ValueError(f"Unknown screener preset {preset!r}. Valid: {list(SCREENER_PRESETS.keys())}")
+        if preset not in BESPOKE_PRESETS and preset not in SCREENER_PRESETS and preset not in SCORE_FUNCTIONS:
+            raise ValueError(
+                f"Unknown screener preset {preset!r}. "
+                f"Valid: {list(SCREENER_PRESETS.keys()) + list(BESPOKE_PRESETS) + list(SCORE_FUNCTIONS.keys())}"
+            )
         if top_n <= 0:
             raise ValueError("top_n must be positive")
         self.preset = preset
         self.top_n = top_n
         self._sector_lookup = sector_lookup or {}
+        # db_conn is intentionally NOT required at construction time (unlike
+        # the initial version of this class) — callers that only have the
+        # DUCKDB_PATH connection available inside a `with get_duckdb_
+        # connection(...)` block (e.g. run_orchestrator_backtest.py) need to
+        # construct the adapter first and wire db_conn afterward, same
+        # deferred-wiring convention already used for the technical channel's
+        # `adapter._screener_cache_conn = conn`. Validated lazily in
+        # generate_signals() instead, right before it's actually needed.
+        self._db_conn = db_conn
         self._currently_held: set = set()
         self._last_ratios: Dict[str, Dict[str, float]] = {}  # ticker -> ratio dict, from the most recent call
 
@@ -70,7 +117,59 @@ class FundamentalAdapter:
         panel = read_feature_day(str(as_of_date))
         self._last_ratios = {}
 
-        if panel is None:
+        if self.preset in BESPOKE_PRESETS:
+            if self._db_conn is None:
+                raise ValueError(
+                    f"preset={self.preset!r} requires db_conn (needs raw fundamentals history) — "
+                    "set adapter._db_conn before calling generate_signals()"
+                )
+            as_of_dt = datetime.combine(as_of_date, datetime.min.time())
+            matched = []
+            if self.preset == PIOTROSKI_ON_VALUE_PRESET:
+                from systems.fundamental_analysis.quality.piotroski_on_value import compute_piotroski_on_value
+
+                for ticker in sorted(universe_set):
+                    result = compute_piotroski_on_value(self._db_conn, ticker, as_of_dt, feature_date_str=str(as_of_date))
+                    if result["passes"]:
+                        matched.append(ticker)
+                        self._last_ratios[ticker] = {"f_score": result["f_score"]}
+            elif self.preset == MARGIN_OF_SAFETY_PRESET:
+                from systems.fundamental_analysis.quality.margin_of_safety import compute_margin_of_safety
+
+                for ticker in sorted(universe_set):
+                    result = compute_margin_of_safety(self._db_conn, ticker, as_of_dt)
+                    if result["passes"]:
+                        matched.append(ticker)
+                        self._last_ratios[ticker] = {"margin_of_safety": result["margin_of_safety"]}
+            else:
+                from systems.fundamental_analysis.quality.net_net import compute_net_net
+
+                for ticker in sorted(universe_set):
+                    result = compute_net_net(self._db_conn, ticker, as_of_dt)
+                    if result["passes"]:
+                        matched.append(ticker)
+                        self._last_ratios[ticker] = {"ncav_per_share": result["ncav_per_share"]}
+        elif self.preset in SCORE_FUNCTIONS:
+            # Composite-score strategies (QGLP, Moat, Owner Earnings, etc.)
+            # have no binary pass/fail — every ticker with a computable
+            # score is a candidate, ranked by score. `matched` here is
+            # deliberately "everyone scored," not "everyone who passed a
+            # threshold": the top-N-by-composite-strength selection below
+            # (shared with the other two branches) does the actual ranking,
+            # since _composite_strength on a single-entry {"score": v} dict
+            # is exactly v.
+            score_fn = SCORE_FUNCTIONS[self.preset]
+            matched = []
+            if panel is not None:
+                in_universe = panel[panel["ticker"].isin(universe_set)]
+                for _, row in in_universe.iterrows():
+                    ratios = {c: row.get(c) for c in RATIO_FEATURES if c in in_universe.columns}
+                    score = score_fn(ratios)
+                    if score is None or (isinstance(score, float) and pd.isna(score)):
+                        continue
+                    matched.append(row["ticker"])
+                    self._last_ratios[row["ticker"]] = {"score": score}
+        elif panel is None:
             # No materialized feature snapshot for this date (No-Mock-Data
             # Policy: never fabricate one) — nothing new matches, but
             # existing holdings are still re-evaluated against an empty
@@ -82,7 +181,12 @@ class FundamentalAdapter:
             matched = []
             for _, row in in_universe.iterrows():
                 ratios = {c: row.get(c) for c in RATIO_FEATURES if c in in_universe.columns}
-                if matches_screener_preset(ratios, self.preset):
+                # sector_lookup was already required for Signal.sector below —
+                # reused here so preset-level sector exclusions (e.g. Magic
+                # Formula's Financial Services exclusion, see
+                # features/fundamental_composites.py::PRESET_EXCLUDED_SECTORS)
+                # apply in backtests too, not just the live API screener.
+                if matches_screener_preset(ratios, self.preset, sector=self._sector_lookup.get(row["ticker"])):
                     matched.append(row["ticker"])
                     self._last_ratios[row["ticker"]] = ratios
 

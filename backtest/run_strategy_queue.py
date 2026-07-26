@@ -148,23 +148,37 @@ def _write_progress(path: Path, jobs: List[Dict[str, Any]], statuses: List[str])
     path.write_text(json.dumps(payload, indent=2, default=str))
 
 
-def _load_prior_completed(progress_path: Path, n_jobs: int) -> List[bool]:
+# Statuses that mean "don't run this job again on resume" — "completed" is
+# a real prior success; "excluded" is an operator manually pulling one job
+# out of the run (e.g. it's spiking memory and needs investigation) without
+# discarding the rest of the queue. Deliberately distinct from "skipped"
+# (which _write_progress/run_queue already use internally to mean "the
+# queue stopped on an earlier failure before reaching this job" — that one
+# SHOULD be retried on resume, "excluded" should not).
+_RESUME_SKIP_STATUSES = {"completed", "excluded"}
+
+
+def _load_prior_resolved(progress_path: Path, n_jobs: int) -> Dict[int, str]:
     """Best-effort read of a progress file from an earlier (crashed/killed)
     invocation with the same report_suffix — used to skip jobs that already
-    reached 'completed' rather than re-running the whole queue from job 0
-    after a reboot, OOM kill, or other unclean process death."""
-    completed = [False] * n_jobs
+    reached 'completed' (or were manually 'excluded') rather than re-running
+    the whole queue from job 0 after a reboot, OOM kill, or other unclean
+    process death. Returns {job_index: prior_status}, preserving the actual
+    status string (not collapsing 'excluded' into 'completed') so a
+    re-written progress file doesn't misreport why a job was skipped."""
+    resolved: Dict[int, str] = {}
     if not progress_path.exists():
-        return completed
+        return resolved
     try:
         prior = json.loads(progress_path.read_text())
     except (json.JSONDecodeError, OSError):
-        return completed
+        return resolved
     for entry in prior.get("jobs", []):
         i = entry.get("job_index")
-        if isinstance(i, int) and 0 <= i < n_jobs and entry.get("status") == "completed":
-            completed[i] = True
-    return completed
+        status = entry.get("status")
+        if isinstance(i, int) and 0 <= i < n_jobs and status in _RESUME_SKIP_STATUSES:
+            resolved[i] = status
+    return resolved
 
 
 def run_queue(
@@ -179,18 +193,20 @@ def run_queue(
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     progress_path = REPORTS_DIR / f"strategy_queue_progress_{suffix}.json"
 
-    prior_completed = _load_prior_completed(progress_path, len(jobs)) if resume else [False] * len(jobs)
-    statuses = ["completed" if c else "queued" for c in prior_completed]
-    if any(prior_completed):
+    prior_resolved = _load_prior_resolved(progress_path, len(jobs)) if resume else {}
+    statuses = [prior_resolved.get(i, "queued") for i in range(len(jobs))]
+    if prior_resolved:
+        n_completed = sum(1 for s in prior_resolved.values() if s == "completed")
+        n_excluded = sum(1 for s in prior_resolved.values() if s == "excluded")
         logger.info(
-            f"run_strategy_queue: resuming {suffix} — skipping "
-            f"{sum(prior_completed)}/{len(jobs)} job(s) already completed"
+            f"run_strategy_queue: resuming {suffix} — skipping {n_completed} already-completed "
+            f"and {n_excluded} manually-excluded job(s) of {len(jobs)}"
         )
     _write_progress(progress_path, jobs, statuses)
 
     results = []
     for i, job in enumerate(jobs):
-        if prior_completed[i]:
+        if i in prior_resolved:
             continue
         wait_for_headroom(min_free_mb, wait_timeout_s, label="run_strategy_queue")
         statuses[i] = "running"
@@ -208,7 +224,7 @@ def run_queue(
                 _write_progress(progress_path, jobs, statuses)
                 break
 
-    n_skipped_prior = sum(prior_completed)
+    n_skipped_prior = len(prior_resolved)
     summary = {
         "generated_at": datetime.now().isoformat(),
         "total_jobs": len(jobs),

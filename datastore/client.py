@@ -184,7 +184,12 @@ class DataStoreClient:
             "to": to_date.date().isoformat(),
         }
         url = f"{self._base_url}/api/v1/ohlcv/_bulk"
-        with httpx.Client(timeout=120.0) as hclient:
+        # 2026-07-26: bumped 120s -> 300s (backtest-reviewer sign-off) — the
+        # orchestrator backtest queue now calls this for a full ~2300-ticker,
+        # 10-year universe pull (previously a per-ticker loop, see
+        # run_orchestrator_backtest.py::_fetch_real_ohlcv), a materially
+        # larger single payload than matrix_builder's existing call sites.
+        with httpx.Client(timeout=300.0) as hclient:
             response = _get_with_retry(hclient, url, params=params)
         response.raise_for_status()
 

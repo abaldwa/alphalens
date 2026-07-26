@@ -46,6 +46,7 @@ class TechnicalAdapter:
     def __init__(
         self, template_name: str, screener_engine: Optional[ScreenerEngine] = None,
         top_n: int = 10, sector_lookup: Optional[Dict[str, str]] = None,
+        screener_cache_conn=None,
     ) -> None:
         """
         template_name : one of the 42 pre-built screener templates
@@ -54,6 +55,19 @@ class TechnicalAdapter:
         screener_engine : injected for testability; defaults to a fresh
             ScreenerEngine() reading the real daily feature Parquet store.
         top_n : how many top-scored matches to hold at any time.
+        screener_cache_conn : optional open DuckDB connection to
+            BACKTEST_DUCKDB_PATH (backtest/run_orchestrator_backtest.py
+            wires this in for real technical-channel runs). When given,
+            entry-signal candidates are read from/written to the
+            technical_screener_cache table (backtest/core/screener_cache.py)
+            instead of always calling screener_engine.screen() live —
+            since screen()'s output for a given (template, date) is exit-
+            policy-agnostic, this lets every exit-variant job for the same
+            template reuse one computation (2026-07-25 fix, reviewed by
+            ml-rigor-reviewer + backtest-reviewer — see FeatureBacklog.md).
+            None (the default) preserves the original always-live behavior
+            exactly — every existing caller (tests, any adapter constructed
+            without this param) is unaffected.
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -61,14 +75,25 @@ class TechnicalAdapter:
         self.top_n = top_n
         self._engine = screener_engine or ScreenerEngine()
         self._sector_lookup = sector_lookup or {}
+        self._screener_cache_conn = screener_cache_conn
         self._currently_held: set = set()
         self._last_results: Dict[str, Any] = {}  # ticker -> ScreenerResult, from the most recent generate_signals() call
 
     def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
         universe_set = set(universe)
-        # Over-fetch (limit=top_n * 5) since results aren't pre-filtered to `universe`
-        # (ScreenerEngine screens its whole feature snapshot) — trimmed below.
-        results = self._engine.screen(self.template_name, date=str(as_of_date), limit=self.top_n * 5)
+        date_str = str(as_of_date)
+        if self._screener_cache_conn is not None:
+            from backtest.core.screener_cache import get_or_compute
+
+            # get_or_compute always returns every real full match (never
+            # limit-truncated to this adapter's own top_n) — see
+            # screener_cache.py's module docstring for why a shared cache
+            # must not be scoped to any one job's top_n.
+            results = get_or_compute(self._screener_cache_conn, self._engine, self.template_name, date_str)
+        else:
+            # Over-fetch (limit=top_n * 5) since results aren't pre-filtered to `universe`
+            # (ScreenerEngine screens its whole feature snapshot) — trimmed below.
+            results = self._engine.screen(self.template_name, date=date_str, limit=self.top_n * 5)
         in_universe = [r for r in results if r.ticker in universe_set]
         self._last_results = {r.ticker: r for r in in_universe}
 

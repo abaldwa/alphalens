@@ -18,6 +18,7 @@ import { FundamentalSectorPage } from '@/pages/fundamental/sector'
 import { FundamentalManagementPage } from '@/pages/fundamental/management'
 import { FundamentalThesisPage } from '@/pages/fundamental/thesis'
 import { FundamentalDeepDivePage } from '@/pages/fundamental/deep_dive'
+import { FundamentalStrategiesPage } from '@/pages/fundamental/strategies'
 
 import { ValuationPage } from '@/pages/valuation/ValuationPage'
 import { DcfPage } from '@/pages/valuation/dcf'
@@ -87,6 +88,7 @@ export const router = createBrowserRouter([
   { path: '/fundamental-management', element: <FundamentalManagementPage /> },
   { path: '/fundamental-thesis', element: <FundamentalThesisPage /> },
   { path: '/fundamental-deep_dive', element: <FundamentalDeepDivePage /> },
+  { path: '/fundamental-strategies', element: <FundamentalStrategiesPage /> },
 
   { path: '/valuation', element: <ValuationPage /> },
   { path: '/valuation-dcf', element: <DcfPage /> },

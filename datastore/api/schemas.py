@@ -1399,6 +1399,32 @@ class FAScoresResponse(BaseModel):
     quality_score: Optional[float] = None
     growth_score: Optional[float] = None
     management_quality_score: Optional[float] = None
+    # The 22 "composite_score"-kind strategies in features.fundamental_
+    # composites.STRATEGY_CATALOG (QGLP, Moat, Owner Earnings, etc.) — a
+    # generic map rather than 22 more named fields, since the catalog is
+    # expected to keep growing.
+    strategy_scores: Optional[Dict[str, Optional[float]]] = None
+
+
+class FAStrategyCatalogEntry(BaseModel):
+    """One row of GET /api/v1/fundamentals/screener/catalog."""
+
+    key: str
+    label: str
+    category: str
+    kind: str
+    description: str
+    # 2026-07-25: none of the 26 strategies have been backtested yet — this
+    # reflects real current state (features.fundamental_composites.
+    # BACKTESTED_STRATEGIES), not a placeholder, and should flip to True
+    # per-strategy only once each actually clears a walk-forward backtest.
+    backtested: bool = False
+
+
+class FAStrategyCatalogResponse(BaseModel):
+    """GET /api/v1/fundamentals/screener/catalog — all strategies for the frontend menu."""
+
+    strategies: List[FAStrategyCatalogEntry]
 
 
 # ===== Job Autoruns / Ops API (SPEC-SCHED-014) — exposes the scheduler

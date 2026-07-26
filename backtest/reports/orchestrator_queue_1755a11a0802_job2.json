@@ -12,16 +12,17 @@
     "sip_amount": null,
     "sip_cadence_days": null,
     "random_seed": 0,
-    "run_id": "orch_technical_20260725_004722_dacdd62e",
+    "run_id": "orch_technical_20260725_072749_b72fffe5",
     "parent_run_id": null,
-    "created_at": "2026-07-24 19:19:18.138051",
+    "created_at": "2026-07-25 01:59:46.472695",
     "config": {
       "template_name": "A1",
       "preset": null,
       "top_n": 10,
       "lookback_months": 6,
       "max_tickers": 800,
-      "min_history_days": 60
+      "min_history_days": 60,
+      "exit_variant": "combined"
     }
   },
   "metrics": {
@@ -13058,17 +13059,12 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "AURUM",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "CAMS",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
       "ticker": "BORORENEW",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "ASIANENE",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13078,12 +13074,17 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
+      "ticker": "CAMS",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
       "ticker": "BANCOINDIA",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "ASIANENE",
+      "ticker": "AURUM",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13768,12 +13769,12 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "EMCURE",
+      "ticker": "DABUR",
       "as_of_date": "2026-02-03",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "DABUR",
+      "ticker": "EMCURE",
       "as_of_date": "2026-02-03",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13979,6 +13980,6 @@
   ],
   "exit_policy_variant": "combined",
   "regime_label": "bull",
-  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_004722_dacdd62e.csv",
-  "runtime_seconds": 265.6452483160001
+  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_072749_b72fffe5.csv",
+  "runtime_seconds": 311.3934957429992
 }

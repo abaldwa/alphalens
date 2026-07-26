@@ -12,16 +12,17 @@
     "sip_amount": null,
     "sip_cadence_days": null,
     "random_seed": 0,
-    "run_id": "orch_technical_20260725_010104_3e8a94c7",
+    "run_id": "orch_technical_20260725_075007_f751e010",
     "parent_run_id": null,
-    "created_at": "2026-07-24 19:33:00.321352",
+    "created_at": "2026-07-25 02:21:33.557162",
     "config": {
       "template_name": "A1",
       "preset": null,
       "top_n": 10,
       "lookback_months": 6,
       "max_tickers": 800,
-      "min_history_days": 60
+      "min_history_days": 60,
+      "exit_variant": "regime_conditional"
     }
   },
   "metrics": {
@@ -13253,6 +13254,21 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
+      "ticker": "GEEKAYWIRE",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BORORENEW",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BANCOINDIA",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
       "ticker": "ASIANENE",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
@@ -13263,17 +13279,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "BORORENEW",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
       "ticker": "GOLDIAM",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "AURUM",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13283,17 +13289,12 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "BANCOINDIA",
+      "ticker": "AURUM",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
       "ticker": "CAMS",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "GEEKAYWIRE",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -14284,6 +14285,6 @@
   ],
   "exit_policy_variant": "regime_conditional",
   "regime_label": "bull",
-  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_010104_3e8a94c7.csv",
-  "runtime_seconds": 250.3314710479999
+  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_075007_f751e010.csv",
+  "runtime_seconds": 663.2954465719995
 }

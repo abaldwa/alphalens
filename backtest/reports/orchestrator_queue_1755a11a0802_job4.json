@@ -12,16 +12,17 @@
     "sip_amount": null,
     "sip_cadence_days": null,
     "random_seed": 0,
-    "run_id": "orch_technical_20260725_005634_5c6fb4cd",
+    "run_id": "orch_technical_20260725_073810_b2ecd31a",
     "parent_run_id": null,
-    "created_at": "2026-07-24 19:28:31.794707",
+    "created_at": "2026-07-25 02:10:11.814648",
     "config": {
       "template_name": "A1",
       "preset": null,
       "top_n": 10,
       "lookback_months": 6,
       "max_tickers": 800,
-      "min_history_days": 60
+      "min_history_days": 60,
+      "exit_variant": "atr_adaptive"
     }
   },
   "metrics": {
@@ -13298,7 +13299,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "ASIANENE",
+      "ticker": "EVEREADY",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13308,22 +13309,7 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "CGCL",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "EVEREADY",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
       "ticker": "CAMS",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "BORORENEW",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13333,7 +13319,22 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
+      "ticker": "ASIANENE",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
       "ticker": "GEEKAYWIRE",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BORORENEW",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CGCL",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -14163,12 +14164,12 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "DABUR",
+      "ticker": "AADHARHFC",
       "as_of_date": "2026-02-03",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "AADHARHFC",
+      "ticker": "DABUR",
       "as_of_date": "2026-02-03",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -14394,6 +14395,6 @@
   ],
   "exit_policy_variant": "atr_adaptive",
   "regime_label": "bull",
-  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_005634_5c6fb4cd.csv",
-  "runtime_seconds": 256.700085166
+  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_073810_b2ecd31a.csv",
+  "runtime_seconds": 309.820937864999
 }

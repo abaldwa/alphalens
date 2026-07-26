@@ -18,6 +18,11 @@ no composite flags) — same prompt-vs-doc divergence already documented in
 features/fundamental.py's module docstring; the P2.1 build prompt's
 literal list is implemented here.
 
+A 13th feature, institutional_ownership_pct (= fii_pct + dii_pct + mf_pct),
+was added later for the Under-followed Growth Improvers and
+Governance-Aware Quality Growth strategies — a rollup of fields already
+computed above, not new raw data.
+
 `mf_pct` here is the BSE shareholding-pattern aggregate (one number per
 quarter, `shareholding.mf_pct`) — distinct from the scheme-level monthly
 AMFI holdings detail (`mf_scheme_count`, `mf_new_entry_count`, etc.)
@@ -47,6 +52,10 @@ GOVERNANCE_FEATURES: List[str] = [
     "promoter_pct", "promoter_change_qoq", "promoter_pledge", "promoter_pledge_change_qoq",
     "fii_pct", "fii_change_qoq", "dii_pct", "dii_change_qoq", "mf_pct", "mf_change_qoq",
     "promoter_pledge_spiral_flag", "institutional_conviction_flag",
+    # Added for Under-followed Growth Improvers (percentile_rank_asc target)
+    # and Governance-Aware Quality Growth — simple rollup of the 3 existing
+    # institutional-ownership fields above, not a new data source.
+    "institutional_ownership_pct",
 ]
 
 # promoter_pledge_spiral_flag: pledge > this AND price falling over the lookback window
@@ -60,6 +69,13 @@ def _safe_change(current, prior) -> float:
     return current - prior
 
 
+def _sum_if_any_present(*values) -> float:
+    """Sum of the non-NaN values; NaN only if every value is missing (treats a
+    missing FII/DII/MF row as 0% of that category, not as unknown-total)."""
+    present = [v for v in values if v is not None and pd.notna(v)]
+    return float(sum(present)) if present else np.nan
+
+
 def compute_governance_features(
     client: DataStoreClient,
     ticker: str,
@@ -69,7 +85,7 @@ def compute_governance_features(
     ticker_ohlcv: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
-    Compute all 12 governance features for one ticker.
+    Compute all 13 governance features for one ticker.
 
     Parameters
     ----------
@@ -85,7 +101,7 @@ def compute_governance_features(
     Returns
     -------
     dict
-        feature_name -> value for all 12 GOVERNANCE_FEATURES. All-NaN
+        feature_name -> value for all 13 GOVERNANCE_FEATURES. All-NaN
         (flags 0) if no PIT-eligible shareholding row exists yet.
 
     Spec References
@@ -164,6 +180,9 @@ def compute_governance_features(
         "mf_change_qoq": _safe_change(latest.get("mf_pct"), prior("mf_pct")),
         "promoter_pledge_spiral_flag": spiral_flag,
         "institutional_conviction_flag": conviction_flag,
+        "institutional_ownership_pct": _sum_if_any_present(
+            latest.get("fii_pct"), latest.get("dii_pct"), latest.get("mf_pct")
+        ),
     }
 
 

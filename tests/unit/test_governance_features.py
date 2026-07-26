@@ -30,8 +30,10 @@ def _filing(qed, fd, **kwargs):
 
 
 class TestGovernanceFeatureCount:
-    def test_twelve_features(self):
-        assert len(GOVERNANCE_FEATURES) == 12
+    def test_thirteen_features(self):
+        # 12 original P2.1 features + institutional_ownership_pct (added
+        # for Under-followed Growth Improvers / Governance-Aware Quality Growth).
+        assert len(GOVERNANCE_FEATURES) == 13
 
 
 class TestComputeGovernanceFeatures:

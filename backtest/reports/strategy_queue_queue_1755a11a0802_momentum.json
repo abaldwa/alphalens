@@ -1,0 +1,670 @@
+{
+  "generated_at": "2026-07-25T19:59:14.373995",
+  "total_jobs": 36,
+  "jobs_run": 36,
+  "jobs_skipped_already_completed": 0,
+  "results": [
+    {
+      "job_index": 0,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 118.65804655699867
+    },
+    {
+      "job_index": 1,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 106.73940039000081
+    },
+    {
+      "job_index": 2,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 131.1640203679999
+    },
+    {
+      "job_index": 3,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 109.9329253699998
+    },
+    {
+      "job_index": 4,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 108.70688125699962
+    },
+    {
+      "job_index": 5,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 123.0778136200006
+    },
+    {
+      "job_index": 6,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "regime_conditional",
+        "regime_method": "5pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 114.96147346399994
+    },
+    {
+      "job_index": 7,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "regime_conditional",
+        "regime_method": "10pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 121.25583878199905
+    },
+    {
+      "job_index": 8,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 3,
+        "exit_variant": "regime_conditional",
+        "regime_method": "15pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 124.95597843099858
+    },
+    {
+      "job_index": 9,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 112.26629900999978
+    },
+    {
+      "job_index": 10,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 101.38878676599961
+    },
+    {
+      "job_index": 11,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 134.4881567400007
+    },
+    {
+      "job_index": 12,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 100.04373201400085
+    },
+    {
+      "job_index": 13,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 111.09165519499948
+    },
+    {
+      "job_index": 14,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 109.07051308700102
+    },
+    {
+      "job_index": 15,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "regime_conditional",
+        "regime_method": "5pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 111.31173716100056
+    },
+    {
+      "job_index": 16,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "regime_conditional",
+        "regime_method": "10pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 111.36496657600037
+    },
+    {
+      "job_index": 17,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 6,
+        "exit_variant": "regime_conditional",
+        "regime_method": "15pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 110.71922479299974
+    },
+    {
+      "job_index": 18,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 111.16069755900025
+    },
+    {
+      "job_index": 19,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 94.69315693499993
+    },
+    {
+      "job_index": 20,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 120.38254234800115
+    },
+    {
+      "job_index": 21,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 101.51897396300046
+    },
+    {
+      "job_index": 22,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 99.88852795000093
+    },
+    {
+      "job_index": 23,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 109.74272200999985
+    },
+    {
+      "job_index": 24,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "regime_conditional",
+        "regime_method": "5pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 112.91711593199943
+    },
+    {
+      "job_index": 25,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "regime_conditional",
+        "regime_method": "10pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 108.22956881000027
+    },
+    {
+      "job_index": 26,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 9,
+        "exit_variant": "regime_conditional",
+        "regime_method": "15pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 109.40962851199947
+    },
+    {
+      "job_index": 27,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "baseline"
+      },
+      "returncode": 0,
+      "elapsed_s": 94.6956039559991
+    },
+    {
+      "job_index": 28,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "condition"
+      },
+      "returncode": 0,
+      "elapsed_s": 100.45152960900123
+    },
+    {
+      "job_index": 29,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "combined"
+      },
+      "returncode": 0,
+      "elapsed_s": 109.54917631600074
+    },
+    {
+      "job_index": 30,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "trailing"
+      },
+      "returncode": 0,
+      "elapsed_s": 87.40185274000032
+    },
+    {
+      "job_index": 31,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "atr_adaptive"
+      },
+      "returncode": 0,
+      "elapsed_s": 95.50407502000053
+    },
+    {
+      "job_index": 32,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "regime_conditional"
+      },
+      "returncode": 0,
+      "elapsed_s": 102.4116734149975
+    },
+    {
+      "job_index": 33,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "regime_conditional",
+        "regime_method": "5pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 94.2296140110011
+    },
+    {
+      "job_index": 34,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "regime_conditional",
+        "regime_method": "10pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 101.1519777680005
+    },
+    {
+      "job_index": 35,
+      "kind": "orchestrator",
+      "job": {
+        "kind": "orchestrator",
+        "channel": "momentum",
+        "start_date": "2016-07-01",
+        "end_date": "2026-06-30",
+        "universe_spec": "curated",
+        "max_tickers": 800,
+        "min_history_days": 60,
+        "top_n": 10,
+        "lookback_months": 12,
+        "exit_variant": "regime_conditional",
+        "regime_method": "15pct_threshold_v1"
+      },
+      "returncode": 0,
+      "elapsed_s": 97.88029391300006
+    }
+  ],
+  "all_passed": true,
+  "runtime_seconds": 3912.4840413620004
+}

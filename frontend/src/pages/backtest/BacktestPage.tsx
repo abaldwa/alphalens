@@ -583,8 +583,13 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
     queries: jobs.map((job) => ({
       queryKey: ['active-job-status', job.kind, job.id],
       queryFn: () => fetchActiveJobStatus(job),
+      // 2026-07-26: 4000 -> 8000 — with multiple tabs open, per-tab per-job
+      // polling at 4s was contributing to near-continuous read-lock churn
+      // against the API's backtest.duckdb connections, starving out
+      // backtest jobs' write-connection retries (see
+      // config/settings.py's DUCKDB_WRITE_LOCK_RETRY_* comment).
       refetchInterval: (query: { state: { data?: { status?: string } } }) =>
-        query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 4000 : false,
+        query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 8000 : false,
     })),
   })
 
@@ -666,7 +671,7 @@ function IterativeRetrainPanel({ onTriggered }: { onTriggered: (job: ActiveJob) 
     // Poll while the loop is running (each iteration is a full walk-forward
     // backtest — this can run for a while); stop once it lands on a
     // terminal status so we're not polling forever.
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 5000 : false),
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 10000 : false),
   })
 
   async function handleTrigger() {
@@ -858,7 +863,7 @@ function OrchestratorTriggerPanel({
     queryKey: ['orchestrator-status', runId],
     queryFn: () => getOrchestratorStatus(runId!),
     enabled: !!runId,
-    refetchInterval: (query) => (query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 4000 : false),
+    refetchInterval: (query) => (query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 8000 : false),
   })
 
   useEffect(() => {
@@ -1090,7 +1095,7 @@ function StrategyQueuePanel({
     queryKey: ['strategy-queue-status', queueId],
     queryFn: () => getStrategyQueueStatus(queueId!),
     enabled: !!queueId,
-    refetchInterval: (query) => (query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 5000 : false),
+    refetchInterval: (query) => (query.state.data?.status === 'running' || query.state.data?.status === 'unknown' ? 10000 : false),
   })
 
   useEffect(() => {

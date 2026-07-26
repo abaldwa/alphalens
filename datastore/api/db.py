@@ -113,10 +113,35 @@ def _attach_fno_db(conn, path_key: str, read_only: bool) -> None:
     conn.execute("SET search_path = 'main,fno_db'")
 
 
-def _connect_with_retry(path_key: str, read_only: bool):
-    """SPEC-SCHED-013: retry-with-backoff on a transient DuckDB lock conflict."""
+def _connect_with_retry(
+    path_key: str, read_only: bool,
+    retry_attempts: Optional[int] = None, retry_base_delay_s: Optional[float] = None,
+    retry_max_delay_s: Optional[float] = None,
+):
+    """SPEC-SCHED-013: retry-with-backoff on a transient DuckDB lock conflict.
+
+    retry_attempts/retry_base_delay_s: per-call override of the module
+    defaults (DUCKDB_LOCK_RETRY_ATTEMPTS/DUCKDB_LOCK_RETRY_BASE_DELAY_S).
+    2026-07-26: added so a caller with a longer-than-usual tolerance for
+    waiting on a lock conflict (e.g. a backtest job's write connection,
+    which has no outer timeout) can use a wider budget than the API's
+    read-only endpoints, without widening the read-only path's budget too
+    — the two were previously forced to share one global setting.
+
+    retry_max_delay_s: 2026-07-26 follow-up — caps the exponential delay
+    (None = uncapped, the original behavior). Against a contending process
+    that briefly opens/closes read locks on a short, steady cycle (e.g. the
+    API's ~6-7s frontend-polling cadence), uncapped exponential backoff
+    quickly grows the per-attempt delay past that cycle length, so most
+    attempts land inside a lock window purely by bad luck and most of the
+    total budget is spent NOT retrying at all. Capping the delay keeps
+    attempts frequent enough, for enough of the budget, to reliably land in
+    a gap shorter than the cap.
+    """
+    attempts = retry_attempts if retry_attempts is not None else DUCKDB_LOCK_RETRY_ATTEMPTS
+    base_delay = retry_base_delay_s if retry_base_delay_s is not None else DUCKDB_LOCK_RETRY_BASE_DELAY_S
     last_exc = None
-    for attempt in range(DUCKDB_LOCK_RETRY_ATTEMPTS):
+    for attempt in range(attempts):
         try:
             conn = duckdb.connect(path_key, read_only=read_only)
             if path_key != ":memory:":
@@ -124,12 +149,14 @@ def _connect_with_retry(path_key: str, read_only: bool):
             return conn
         except duckdb.IOException as exc:
             last_exc = exc
-            if "Could not set lock" not in str(exc) or attempt == DUCKDB_LOCK_RETRY_ATTEMPTS - 1:
+            if "Could not set lock" not in str(exc) or attempt == attempts - 1:
                 raise
-            delay = DUCKDB_LOCK_RETRY_BASE_DELAY_S * (2**attempt)
+            delay = base_delay * (2**attempt)
+            if retry_max_delay_s is not None:
+                delay = min(delay, retry_max_delay_s)
             logger.warning(
                 f"DuckDB lock conflict on {path_key} (attempt {attempt + 1}/"
-                f"{DUCKDB_LOCK_RETRY_ATTEMPTS}) — retrying in {delay:.1f}s: {exc}"
+                f"{attempts}) — retrying in {delay:.1f}s: {exc}"
             )
             time.sleep(delay)
     raise last_exc  # pragma: no cover — unreachable, loop always returns or raises
@@ -140,6 +167,9 @@ def get_duckdb_connection(
     db_path: Optional[Path] = None,
     read_only: bool = False,
     persist: bool = True,
+    retry_attempts: Optional[int] = None,
+    retry_base_delay_s: Optional[float] = None,
+    retry_max_delay_s: Optional[float] = None,
 ) -> Iterator:
     """
     Context manager for DuckDB connections.
@@ -170,6 +200,14 @@ def get_duckdb_connection(
             would each get an independent, empty in-memory database instead
             of sharing state — breaking tests that seed an in-memory DB in
             one call and read it back in another.
+        retry_attempts: Optional override of DUCKDB_LOCK_RETRY_ATTEMPTS for
+            this call only (see _connect_with_retry). None (default) uses
+            the module-level setting.
+        retry_base_delay_s: Optional override of DUCKDB_LOCK_RETRY_BASE_DELAY_S
+            for this call only. None (default) uses the module-level setting.
+        retry_max_delay_s: Optional per-attempt delay cap (see
+            _connect_with_retry). None (default) means uncapped exponential
+            backoff.
 
     Yields:
         DuckDB connection object
@@ -192,7 +230,7 @@ def get_duckdb_connection(
     is_in_memory = path_key == ":memory:"
 
     if not persist and not is_in_memory:
-        conn = _connect_with_retry(path_key, read_only)
+        conn = _connect_with_retry(path_key, read_only, retry_attempts, retry_base_delay_s, retry_max_delay_s)
         try:
             yield conn
         finally:
@@ -201,7 +239,9 @@ def get_duckdb_connection(
 
     cache_key = f"{path_key}|read_only={read_only}"
     if cache_key not in _duckdb_connections:
-        _duckdb_connections[cache_key] = _connect_with_retry(path_key, read_only)
+        _duckdb_connections[cache_key] = _connect_with_retry(
+            path_key, read_only, retry_attempts, retry_base_delay_s, retry_max_delay_s,
+        )
 
     conn = _duckdb_connections[cache_key]
     try:

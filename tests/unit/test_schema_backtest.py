@@ -39,4 +39,4 @@ class TestCreateBacktestSchema:
 
     def test_list_tables(self):
         tables = create_backtest.list_tables()
-        assert set(tables["duckdb"]) == {"backtest_runs", "backtest_feature_log"}
+        assert set(tables["duckdb"]) == {"backtest_runs", "backtest_feature_log", "technical_screener_cache"}

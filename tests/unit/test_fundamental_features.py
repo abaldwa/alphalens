@@ -53,9 +53,15 @@ def _quarter(fy, q, qed, ann, revenue, **kwargs):
 
 
 class TestFundamentalFeatureCount:
-    def test_thirty_features_total(self):
-        assert len(FUNDAMENTAL_FEATURES) == 30
-        assert len(RATIO_FEATURES) == 27
+    def test_fifty_three_features_total(self):
+        # 30 original P2.1 features + 5 value/quality features (Piotroski-
+        # on-Value/Magic Formula/Quality-Value/FCF+LowDebt/GARP) + 18
+        # multi-year/delta/size/capital-allocation features (QGLP, Moat,
+        # Longevity, Turnaround, Earnings Re-rating, Contrarian Recovery,
+        # Capital Allocation Quality, Sector-Leader Compounders,
+        # Small-Cap Compounders, SMILE, etc.).
+        assert len(FUNDAMENTAL_FEATURES) == 54
+        assert len(RATIO_FEATURES) == 51
         assert len(STALENESS_FEATURES) == 3
         assert set(RATIO_FEATURES) | set(STALENESS_FEATURES) == set(FUNDAMENTAL_FEATURES)
 
@@ -121,6 +127,61 @@ class TestComputeFundamentalFeatures:
         # Confirms the call was bounded by as_of, not fetching all history
         _, kwargs = client.get_ohlcv.call_args
         assert kwargs["to_date"] == datetime(2025, 6, 10)
+
+
+class TestValueQualityFeatures:
+    """New features added for Piotroski-on-Value/Magic Formula/Quality-Value/
+    FCF+LowDebt/GARP: ev_ebit_yield, fcf_ev_yield, magic_formula_roc,
+    book_to_market, cfo_to_pat — all pure arithmetic over already-stored columns."""
+
+    def _client(self):
+        client = MagicMock()
+        client.get_fundamentals_history.return_value = [
+            _quarter(
+                2025, 1, "2025-03-31", "2025-05-15", revenue=1000.0,
+                ebit=200.0, pat=100.0, fcf=80.0, capex=20.0,
+                total_debt=300.0, cash_and_equivalents=100.0,
+                current_assets=500.0, current_liabilities=200.0,
+                property_plant_equipment=150.0, cwip=50.0,
+                book_value_per_share=50.0, shares_outstanding=1000,
+            ),
+        ]
+        client.get_ohlcv.return_value = [{"date": "2025-06-01", "close": 100.0}]
+        return client
+
+    def test_ev_ebit_yield_and_fcf_ev_yield(self):
+        # market_cap = 100 * 1000 / 1e7 = 0.01 (crore); EV = 0.01 + 300 - 100 = 200.01
+        feats = compute_fundamental_features(self._client(), "TEST", as_of=datetime(2025, 6, 10))
+        ev = 0.01 + 300.0 - 100.0
+        assert feats["ev_ebit_yield"] == pytest.approx(200.0 / ev)
+        assert feats["fcf_ev_yield"] == pytest.approx(80.0 / ev)
+
+    def test_magic_formula_roc(self):
+        # NWC = 500 - 200 = 300; net_fixed_assets = 150 + 50 = 200
+        feats = compute_fundamental_features(self._client(), "TEST", as_of=datetime(2025, 6, 10))
+        assert feats["magic_formula_roc"] == pytest.approx(200.0 / (300.0 + 200.0))
+
+    def test_book_to_market(self):
+        # book_value_equity = 50 * 1000 / 1e7 = 0.005 (crore); market_cap = 0.01
+        feats = compute_fundamental_features(self._client(), "TEST", as_of=datetime(2025, 6, 10))
+        assert feats["book_to_market"] == pytest.approx(0.005 / 0.01)
+
+    def test_cfo_to_pat(self):
+        # cfo_proxy = fcf + capex = 100.0
+        feats = compute_fundamental_features(self._client(), "TEST", as_of=datetime(2025, 6, 10))
+        assert feats["cfo_to_pat"] == pytest.approx(100.0 / 100.0)
+
+    def test_missing_inputs_yield_nan_not_crash(self):
+        client = MagicMock()
+        client.get_fundamentals_history.return_value = [
+            _quarter(2025, 1, "2025-03-31", "2025-05-15", revenue=1000.0),
+        ]
+        client.get_ohlcv.return_value = []
+        feats = compute_fundamental_features(client, "TEST", as_of=datetime(2025, 6, 10))
+        assert np.isnan(feats["ev_ebit_yield"])
+        assert np.isnan(feats["magic_formula_roc"])
+        assert np.isnan(feats["book_to_market"])
+        assert np.isnan(feats["cfo_to_pat"])
 
 
 class TestComputeStaleness:

@@ -69,6 +69,19 @@ export interface FAScreenerResponse {
   tickers: string[]
 }
 
+export interface FAStrategyCatalogEntry {
+  key: string
+  label: string
+  category: string
+  kind: 'preset' | 'composite_score' | 'bespoke'
+  description: string
+  backtested: boolean
+}
+
+export interface FAStrategyCatalogResponse {
+  strategies: FAStrategyCatalogEntry[]
+}
+
 export interface GovernanceRow {
   ticker: string
   quarter_end_date: string

@@ -711,3 +711,35 @@ PUBLISH_RUN_LOCK_PATH = NORMALISED_DIR / ".publish_run.lock"
 # ---------------------------------------------------------------------------
 DUCKDB_LOCK_RETRY_ATTEMPTS = int(os.environ.get("DUCKDB_LOCK_RETRY_ATTEMPTS", "6"))
 DUCKDB_LOCK_RETRY_BASE_DELAY_S = float(os.environ.get("DUCKDB_LOCK_RETRY_BASE_DELAY_S", "0.5"))
+
+# 2026-07-26 fix: a separate, longer retry budget for backtest jobs' own
+# read-write connection to BACKTEST_DUCKDB_PATH specifically (wired via
+# get_duckdb_connection(..., retry_attempts=..., retry_base_delay_s=...) in
+# backtest/run_orchestrator_backtest.py) — NOT the default above, which is
+# still what the API's read-only polling endpoints use. Reviewed by
+# ml-rigor-reviewer + backtest-reviewer: with 3+ browser tabs polling
+# queue/orchestrator status every ~3s, the API's near-continuous read-only
+# connections to backtest.duckdb increasingly starved out backtest jobs'
+# write-connection attempts before DUCKDB_LOCK_RETRY_ATTEMPTS's ~15.5s
+# budget elapsed (6+ job failures in ~2h, all
+# "Could not set lock ... Conflicting lock is held" against the API's PID).
+# 8 attempts / 1.0s base -> worst case ~127s (1+2+4+8+16+32+64), long enough
+# to ride out sustained read-lock churn; kept separate from the default so
+# the API's own read-only path (which shares _connect_with_retry) is not
+# slowed down by this widening.
+#
+# 2026-07-26 follow-up: 8 uncapped-exponential attempts still wasn't
+# enough — job[53] failed after all 8 attempts (~127s) with the SAME
+# polling-driven contention, because the later delays (16s/32s/64s) are
+# far wider than the observed ~6-7s frontend polling cycle, so most of the
+# 127s budget was spent NOT even trying. The fix is more attempts spread
+# across the window, not more total wait: cap each delay at
+# DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S so backoff still ramps up for the
+# first few tries (avoiding a thundering-herd retry burst) but then holds
+# at a delay shorter than a polling cycle, giving many more chances to
+# land in a gap. 16 attempts / 1.0s base / 10s cap -> worst case ~125s
+# (1+2+4+8+10*11), same order of total wait as before but double the
+# distinct attempts.
+DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS = int(os.environ.get("DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS", "16"))
+DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S = float(os.environ.get("DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S", "1.0"))
+DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S = float(os.environ.get("DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S", "10.0"))

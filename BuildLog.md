@@ -15119,3 +15119,146 @@ touched/new test file also run individually and green.
 `tests/unit/test_watchlist_daily_router.py`,
 `tests/unit/test_sector_accumulation.py`. New:
 `tests/unit/test_db_lock_retry.py`.
+
+## Fundamental Analysis: 26-Strategy Catalog, Model Review Fixes, and Backtest Engine Extension (2026-07-24/25)
+
+### Context
+User supplied two source documents: an initial 5-formula fundamental
+strategy set, then a larger "India-Specific Fundamental Analysis
+Strategy Catalog" adding 21 more (26 total, spanning Value/Quality/
+Growth/Governance/Contrarian). Scope explicitly confirmed by the user
+as all 26 strategies plus frontend navigation, not a subset.
+
+### Strategy catalog build-out
+- **`features/fundamental.py`**: grew from 30 to 54 features across two
+  passes — `VALUE_QUALITY_FEATURES` (5: ev_ebit_yield, fcf_ev_yield,
+  magic_formula_roc, book_to_market, cfo_to_pat), `MULTIYEAR_FEATURES`
+  (6: avg_roce_5y, margin_stability_5y, earnings_volatility_5y,
+  sales_cagr_5y, delta_roce_3y, avg_ebitda_margin_5y),
+  `DELTA_1Y_FEATURES` (8), `SIZE_AGE_FEATURES` (3, including
+  `company_age_years` — needs a real `listing_date`), and
+  `CAPITAL_ALLOCATION_FEATURES` (2). `compute_fundamental_features_panel`
+  gained a `listing_date_map` param; `features/matrix_builder.py` fixed
+  to fetch `client.get_listing_dates()` earlier and thread it through
+  (previously only used for corporate-action features, silently leaving
+  `company_age_years` NaN in the real daily build).
+- **`features/governance.py`**: added `institutional_ownership_pct`
+  (13th governance feature), summing fii/dii/mf pct with missing values
+  treated as 0%, not unknown.
+- **`systems/fundamental_analysis/`** (new package): quality/, growth/,
+  management/, contrarian/ subpackages implementing all 26 strategies.
+  Shared scoring logic (`weighted_zscore_composite`,
+  `combine_subscores`) extracted into a standalone `scoring_utils.py` to
+  avoid a circular import with `features/fundamental_composites.py`.
+- **`features/fundamental_composites.py`**: `STRATEGY_CATALOG` (26
+  entries: preset/composite_score/bespoke kinds), `SCORE_FUNCTIONS` (22
+  composite-score strategies), `SCREENER_PRESETS` (9 binary presets).
+- New endpoints (`datastore/api/routers/fundamentals.py`): `GET
+  /screener/catalog`, `GET /screener/changelog`; `/{ticker}/scores`
+  extended with `strategy_scores`.
+- Frontend: new `/fundamental-strategies` page grouping all 26 by
+  category with kind/backtested badges; screener preset selector
+  extended to all 12 presets with a `?preset=` URL param.
+
+### Model review (6-agent `/model-review`) and fixes
+Verdict: 5/6 ship-with-changes, 1 do-not-ship. Concrete defects found and
+fixed:
+- **cfo_proxy overclaim**: docstrings incorrectly described `fcf`-derived
+  CFO as an algebraic identity; `fcf` is actually a raw, unreliably-
+  parsed source field (`screener.py` sets it `None` with a comment to
+  that effect), not computed as cfo−capex anywhere in this codebase.
+  Corrected every docstring to say "approximation," not "identity."
+- **net_net.py unit bug**: `ncav_per_share = ncav / shares` mixed rupee
+  crore (`ncav`) with raw share count (`shares`) — fixed to `(ncav *
+  CRORE) / shares`.
+- **promoter_aligned.py pledge-severity bug**: alignment score used
+  `clip(promoter_pct - promoter_pledge, 0, 100)` (pledge treated as a
+  flat point deduction); changed to a multiplicative severity model,
+  `promoter_pct * (1 - pledge_frac)`.
+- **Silent renormalization on sparse composites**: `weighted_zscore_
+  composite`/`combine_subscores` previously renormalized weights over
+  whatever inputs were present, so a score backed by 1-of-4 factors
+  looked as confident as one backed by 4-of-4. Added a `MIN_COVERAGE =
+  0.5` gate — returns `None` (excluded from ranking) below 50% weighted
+  coverage instead of a misleadingly complete-looking number.
+- **Magic Formula sector distortion**: excluded Financial Services via
+  new `PRESET_EXCLUDED_SECTORS` (ROC is meaningless for banks/NBFCs);
+  threaded a `sector` param through `matches_screener_preset` and both
+  screener/pillar_summary endpoints.
+- **Honest "backtested" state**: added `BACKTESTED_STRATEGIES: set`
+  (currently empty) so the frontend's badge reflects reality — no
+  strategy is marked backtested until it's actually run and validated.
+- **GARP preset reproducibility**: user explicitly chose to modify the
+  preset in place rather than version it (`garp_v2`); added
+  `SCREENER_PRESET_CHANGELOG` so the in-place change is auditable
+  without reversing that decision.
+
+### Backtest engine extension (so all 26 strategies are backtestable)
+`FundamentalAdapter` previously only supported 9 binary presets + 3
+bespoke raw-financials strategies — the other 22 `SCORE_FUNCTIONS`
+composite strategies (QGLP, Moat, Owner Earnings, etc.) had no backtest
+path at all, only a per-ticker API value.
+- **`backtest/adapters/fundamental_adapter.py`**: constructor now
+  accepts any of the 26 `STRATEGY_CATALOG` keys; `RATIO_FEATURES`
+  replaced a hand-maintained subset with `tuple(FUNDAMENTAL_FEATURES) +
+  tuple(GOVERNANCE_FEATURES)` imported directly (avoids future
+  per-strategy whitelist drift); new `generate_signals()` branch for
+  `preset in SCORE_FUNCTIONS` scores the whole panel and reuses the
+  existing `matched` + `_last_ratios` + `_composite_strength`
+  convergence point for top-N ranking (a single-entry `{"score": v}`
+  dict summed by `_composite_strength` is exactly `v` — no parallel
+  ranking path needed). `db_conn` validation moved from constructor to
+  `generate_signals()` (lazy) so orchestrator callers can build the
+  adapter before a DB connection exists and wire it post-construction,
+  matching the existing `_screener_cache_conn` pattern.
+- **`backtest/run_orchestrator_backtest.py`**: added a `fundamentals_cm`
+  context manager (mirrors the existing `regime_cm` pattern) providing a
+  read-only DuckDB connection to bespoke-preset adapters; `--preset`
+  help text updated to describe all 26 catalog keys.
+- **`backtest/integrity_checker.py`**: `_FUNDAMENTALS_DERIVED_PATTERNS`
+  extended with 19 new compound-token patterns (avg_roce,
+  margin_stability, delta_roce, eps_acceleration, etc.) so PIT checks
+  correctly flag the new multi-year/delta features as
+  filing-restatement-sensitive; `company_age_years` deliberately
+  excluded (not restatement-sensitive).
+- **`backtest/run_integrity_check.py`** (new): reusable helper wiring a
+  completed run's equity curve into `WalkForwardValidator.
+  run_integrity_checks()` — builds fold Sharpes/returns via the
+  existing `split_data()` (no fold logic duplicated), defaults
+  `applied_roundtrip_cost_pct`/`applied_min_adt_inr` to
+  `config.settings` values and `hpo_dataset="none"` (correct for these
+  26 strategies — hardcoded weights, no HPO step). Raises `RuntimeError`
+  if any of the 7 CRITICAL_CHECKS fail. Not fundamental-specific —
+  equally usable for technical/momentum channels later.
+
+### Explicitly not done this session
+Per standing user instruction ("Do not try doing the backtests, unless I
+instruct"): the actual 26-strategy backtest run, its integrity-check
+pass, the cross-strategy correlation matrix, and flipping any
+`BACKTESTED_STRATEGIES` entries are fully planned
+(`unified-snacking-zebra` plan) but deliberately unexecuted.
+
+### Verification
+Full regression suite green after each fix pass (279 tests at the final
+checkpoint, zero regressions); `npm run build` clean for all frontend
+changes.
+
+### Files changed
+`features/fundamental.py`, `features/governance.py`,
+`features/fundamental_composites.py`, `features/matrix_builder.py`,
+`systems/fundamental_analysis/**` (new package),
+`datastore/api/schemas.py`, `datastore/api/routers/fundamentals.py`,
+`backtest/adapters/fundamental_adapter.py`,
+`backtest/run_orchestrator_backtest.py`, `backtest/integrity_checker.py`,
+`frontend/src/pages/fundamental/strategies.tsx` (new),
+`frontend/src/pages/fundamental/types.ts`,
+`frontend/src/pages/fundamental/screener.tsx`,
+`frontend/src/lib/ui/nav.ts`, `frontend/src/app/router.tsx`. New tests:
+`tests/unit/test_fundamental_multiyear.py`,
+`tests/unit/test_margin_of_safety.py`, `tests/unit/test_net_net.py`,
+`tests/unit/test_scoring_utils.py`, `tests/unit/test_promoter_aligned.py`,
+`tests/unit/test_run_integrity_check.py`; extended:
+`tests/unit/test_fundamental_composites.py`,
+`tests/unit/test_fundamental_adapter.py`,
+`tests/unit/test_fundamental_features.py`,
+`tests/unit/test_governance_features.py`.

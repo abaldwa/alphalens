@@ -54,7 +54,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from backtest.adapters.fundamental_adapter import FundamentalAdapter
+from backtest.adapters.fundamental_adapter import BESPOKE_PRESETS, FundamentalAdapter
 from backtest.adapters.momentum_adapter import MomentumAdapter
 from backtest.adapters.technical_adapter import TechnicalAdapter
 from backtest.batch_common import exclusive_backtest_lock
@@ -71,7 +71,10 @@ from backtest.strategy_id import (
     default_horizon_for_momentum,
     default_horizon_for_technical,
 )
-from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
+from config.settings import (
+    BACKTEST_DUCKDB_PATH, DUCKDB_PATH,
+    DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+)
 from config.timezone import now_ist
 from config.universe import get_tickers
 from datastore.api.db import get_duckdb_connection
@@ -92,30 +95,40 @@ HORIZON_BUCKET_MAP = {b.value: b for b in HorizonBucket}
 def _fetch_real_ohlcv(max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type) -> pd.DataFrame:
     """Real OHLCV (config.universe.get_tickers()'s curated universe) over
     exactly [start_date, end_date] — the run's own requested window, not
-    run_phase1_backtest.py's fixed 5-year lookback."""
+    run_phase1_backtest.py's fixed 5-year lookback.
+
+    2026-07-26 fix (backtest-reviewer sign-off): was a per-ticker
+    GET /ohlcv/{ticker} loop — measured at ~7-8s/ticker under API load, so a
+    ~2300-ticker universe took hours just to fetch before any backtest
+    compute started (FeatureBacklog A73). Switched to one
+    GET /ohlcv/_bulk call (same ohlcv_adjusted table, identical date-range
+    semantics) and filter to the requested universe/min_history_days
+    client-side. Row order becomes (ticker, date) alphabetical rather than
+    get_tickers()'s list order — confirmed harmless, nothing downstream
+    indexes into this DataFrame positionally.
+    """
     client = DataStoreClient()
     tickers = get_tickers()
     if max_tickers:
         tickers = tickers[:max_tickers]
+    ticker_set = set(tickers)
 
-    # DataStoreClient.get_ohlcv calls .date() on its from_date/to_date args
-    # (it's typed for datetime) — a plain date.fromisoformat() argparse
+    # DataStoreClient.get_ohlcv_bulk calls .date() on its from_date/to_date
+    # args (it's typed for datetime) — a plain date.fromisoformat() argparse
     # value has no .date() method, so these must be Timestamps, not dates.
     from_dt = pd.Timestamp(start_date)
     to_dt = pd.Timestamp(end_date)
 
-    frames = []
-    for ticker in tickers:
-        rows = client.get_ohlcv(ticker, from_dt, to_dt)
-        if len(rows) >= min_history_days:
-            df = pd.DataFrame(rows)[["date", "ticker", "close"]]
-            frames.append(df)
+    bulk = client.get_ohlcv_bulk(from_dt, to_dt)
+    bulk = bulk[bulk["ticker"].isin(ticker_set)][["date", "ticker", "close"]]
 
-    if not frames:
+    counts = bulk.groupby("ticker").size()
+    keep = counts[counts >= min_history_days].index
+    ohlcv = bulk[bulk["ticker"].isin(keep)].reset_index(drop=True)
+
+    if ohlcv.empty:
         raise ValueError(f"no ticker in the universe has >= {min_history_days} rows of real OHLCV in [{start_date}, {end_date}]")
 
-    ohlcv = pd.concat(frames, ignore_index=True)
-    ohlcv["date"] = pd.to_datetime(ohlcv["date"])
     logger.info(f"real data: {ohlcv['ticker'].nunique()}/{len(tickers)} universe tickers had >= {min_history_days} rows")
     return ohlcv
 
@@ -171,20 +184,40 @@ def build_technical_feature_lookup():
     ConditionBasedExitPolicy sees the SAME indicator values ScreenerEngine/
     TechnicalAdapter already read for entry screening (features/technical.
     py::compute_technical_features, materialized into config.settings.
-    FEATURES_DAILY_DIR), never recomputed. Caches one date's whole feature
-    Parquet per call (systems.technical_analysis.screener.engine.
-    ScreenerEngine._load_df) rather than re-reading it once per ticker per
-    day."""
+    FEATURES_DAILY_DIR), never recomputed.
+
+    Caches only the SINGLE most-recently-loaded date's feature Parquet, not
+    every date ever seen. This closure is built once per run and its
+    `lookup` is called by BacktestOrchestrator._apply_exit_policy() — which
+    runs every trading day, for every open position — for the entire life
+    of the run, walking `as_of` strictly forward in calendar order (see
+    core/engine.py's `for as_of_date in config.trading_days:` loop). A plain
+    `dict` keyed by date string (the original implementation) therefore
+    accumulated one full ~2,300-ticker DataFrame PER TRADING DAY with no
+    eviction — confirmed live via py-spy on a 10-year/800-ticker run
+    (2026-07-25, FeatureBacklog.md): ~2,500 trading days' worth of
+    never-freed DataFrames drove memory from a few hundred MB up past a 6GB
+    cgroup cap over ~1.5 hours, independent of exit-policy variant (this
+    lookup fires for every technical-channel run, not just
+    regime_conditional — that variant's OWN unrelated performance bug,
+    fixed the same session in regime_conditional_exit_policy.py, is what
+    surfaced this one by making a run run long enough to observe it).
+    Bounding the cache to size 1 is correct (not just a size limit that
+    happens to work): a date once passed is never looked up again within a
+    single run, so evicting anything but the current date loses nothing."""
     from systems.technical_analysis.screener.engine import ScreenerEngine
 
     engine = ScreenerEngine()
-    cache: Dict[str, Optional[pd.DataFrame]] = {}
+    cached_date: Optional[str] = None
+    cached_df: Optional[pd.DataFrame] = None
 
     def lookup(ticker: str, as_of: date_type) -> Dict[str, float]:
+        nonlocal cached_date, cached_df
         date_str = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
-        if date_str not in cache:
-            cache[date_str] = engine._load_df(date_str)
-        df = cache[date_str]
+        if date_str != cached_date:
+            cached_date = date_str
+            cached_df = engine._load_df(date_str)
+        df = cached_df
         if df is None or "ticker" not in df.columns:
             return {}
         row = df.loc[df["ticker"] == ticker]
@@ -303,7 +336,12 @@ def run_orchestrator_backtest(
             },
         )
 
-        create_backtest_schema(BACKTEST_DUCKDB_PATH)
+        create_backtest_schema(
+            BACKTEST_DUCKDB_PATH,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        )
         # market_regimes lives in the normalised-schema DB (DUCKDB_PATH), a
         # separate file from BACKTEST_DUCKDB_PATH — a second, read-only
         # connection, opened only when a regime breakdown was actually
@@ -313,7 +351,40 @@ def run_orchestrator_backtest(
             if regime_index_name
             else _no_regime_conn()
         )
-        with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=False, persist=False) as conn, regime_cm as regime_conn:
+        # [2026-07-25 fix] piotroski_on_value/margin_of_safety/net_net need
+        # raw fundamentals_history + ohlcv_adjusted from the normalised-
+        # schema DB (DUCKDB_PATH) — FundamentalAdapter previously required
+        # this at construction time (before any DB connection exists here),
+        # so orchestrator CLI runs of these 3 presets raised ValueError
+        # immediately. Same read-only-second-connection shape as regime_cm.
+        fundamentals_cm = (
+            get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False)
+            if channel == "fundamental" and preset in BESPOKE_PRESETS
+            else _no_regime_conn()
+        )
+        # 2026-07-26 fix: a wider lock-retry budget than the API's default
+        # (DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS/_BASE_DELAY_S vs.
+        # DUCKDB_LOCK_RETRY_ATTEMPTS/_BASE_DELAY_S) — this job has no outer
+        # timeout, unlike the API's read-only requests, so it can afford to
+        # wait out sustained read-lock churn from frontend status polling
+        # rather than hard-failing after ~15.5s. Reviewed by
+        # ml-rigor-reviewer + backtest-reviewer (see FeatureBacklog.md).
+        with get_duckdb_connection(
+            BACKTEST_DUCKDB_PATH, read_only=False, persist=False,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        ) as conn, regime_cm as regime_conn, fundamentals_cm as fundamentals_conn:
+            if channel == "technical":
+                # Wired post-construction (conn doesn't exist yet when
+                # `adapter` is built above) — shares entry-signal candidates
+                # across every exit-variant job for the same template via
+                # technical_screener_cache (backtest/core/screener_cache.py,
+                # 2026-07-25 fix — see FeatureBacklog.md).
+                adapter._screener_cache_conn = conn
+            elif channel == "fundamental" and preset in BESPOKE_PRESETS:
+                # Same deferred-wiring pattern as the technical branch above.
+                adapter._db_conn = fundamentals_conn
             feature_log_writer = FeatureLogWriter(conn)
             exit_model = build_exit_model_for_variant(
                 exit_policy_variant, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500",
@@ -349,7 +420,12 @@ def run_orchestrator_backtest(
             # strategy CONFIGURATION, keyed on channel+descriptor+params so
             # re-running the same config updates the existing row instead
             # of duplicating.
-            create_strategy_catalog_schema(BACKTEST_DUCKDB_PATH)
+            create_strategy_catalog_schema(
+                BACKTEST_DUCKDB_PATH,
+                retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+                retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+                retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+            )
             catalog_params = {
                 "template_name": template_name, "preset": preset, "top_n": top_n,
                 "lookback_months": lookback_months, "exit_policy_variant": saved_exit_policy_variant,
@@ -415,7 +491,15 @@ def main() -> None:
     parser.add_argument("--max-tickers", type=int, default=None)
     parser.add_argument("--min-history-days", type=int, default=60)
     parser.add_argument("--template-name", default=None, help="technical channel: one of the 42 screener templates")
-    parser.add_argument("--preset", default=None, help="fundamental channel: a features.fundamental_composites.SCREENER_PRESETS key")
+    parser.add_argument(
+        "--preset", default=None,
+        help=(
+            "fundamental channel: any of the 26 features.fundamental_composites.STRATEGY_CATALOG "
+            "keys — a SCREENER_PRESETS threshold, a BESPOKE_PRESETS raw-financials strategy "
+            "(piotroski_on_value/margin_of_safety/net_net), or a SCORE_FUNCTIONS composite "
+            "score (QGLP, Moat, Owner Earnings, etc. — ranked top-N by score, not binary pass/fail)"
+        ),
+    )
     parser.add_argument("--top-n", type=int, default=10)
     parser.add_argument("--lookback-months", type=int, default=6, help="momentum channel only")
     parser.add_argument("--run-id", default=None)

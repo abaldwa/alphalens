@@ -72,6 +72,41 @@ WORKING_CAPITAL_FEATURES = ["inventory_days", "receivable_days", "payable_days",
 VALUATION_FEATURES = ["pe_ratio", "pb_ratio", "ev_to_ebitda"]
 # SPEC-PIPE-003 (MANDATORY): always computed, never normalized (binary/bounded, not a ratio)
 STALENESS_FEATURES = ["days_since_results", "quarter_age_pct", "results_pending_flag"]
+# Value/quality composites (Piotroski-on-Value, Magic Formula, Quality-Value
+# Composite, FCF Yield + Low Debt, GARP) need a few extra ratios that aren't
+# covered by the P2.1 feature list above. All are pure arithmetic over
+# columns already computed in this function — no new raw data ingestion.
+# `net_working_capital`/`net_fixed_assets` are not stored anywhere; the
+# same formulas already used ad-hoc elsewhere in the codebase
+# (current_assets - current_liabilities in features/deep_forensic.py's
+# Altman Z X1 term; property_plant_equipment + cwip as a fixed-assets
+# proxy) are reused here rather than re-derived independently.
+VALUE_QUALITY_FEATURES = [
+    "ev_ebit_yield", "fcf_ev_yield", "magic_formula_roc", "book_to_market", "cfo_to_pat",
+]
+
+# Second wave of strategies (QGLP, Moat, Longevity, Turnaround, Earnings
+# Re-rating, Contrarian Recovery, Capital Allocation Quality, Sector-Leader
+# Compounders, etc.) need multi-year rolling stats and 1-year deltas that
+# aren't in either feature set above. All are pure arithmetic over
+# already-fetched history rows (same _find_quarter/_quarters_back helpers
+# used for the existing 3yr revenue CAGR) — no new raw data ingestion,
+# just a longer lookback window (see lookback_years default bump below).
+MULTIYEAR_FEATURES = [
+    "avg_roce_5y", "margin_stability_5y", "earnings_volatility_5y", "sales_cagr_5y", "delta_roce_3y",
+    "avg_ebitda_margin_5y",
+]
+DELTA_1Y_FEATURES = [
+    "eps_acceleration", "margin_expansion", "delta_roa_1y", "delta_current_ratio_1y",
+    "delta_long_term_debt_to_assets_1y", "delta_operating_cash_flow_1y",
+    "receivable_days_change", "inventory_days_change",
+]
+# company_age_years needs listing_date (stock_master, not the fundamentals
+# history rows this module otherwise relies on exclusively) — passed in by
+# the caller as an optional pre-fetched value, same pattern as
+# ticker_ohlcv, rather than this module making its own API call.
+SIZE_AGE_FEATURES = ["company_age_years", "dilution_3y", "market_cap"]
+CAPITAL_ALLOCATION_FEATURES = ["reinvestment_rate", "capital_allocation_efficiency"]
 
 # SPEC-FEAT-002: only the ratio-style features are sector-relative z-scored —
 # staleness flags are deliberately excluded (a 0/1 flag or a [0,1]-bounded
@@ -79,9 +114,10 @@ STALENESS_FEATURES = ["days_since_results", "quarter_age_pct", "results_pending_
 # its meaning).
 RATIO_FEATURES = (
     GROWTH_FEATURES + PROFITABILITY_FEATURES + CAPITAL_EFFICIENCY_FEATURES
-    + LEVERAGE_FEATURES + WORKING_CAPITAL_FEATURES + VALUATION_FEATURES
+    + LEVERAGE_FEATURES + WORKING_CAPITAL_FEATURES + VALUATION_FEATURES + VALUE_QUALITY_FEATURES
+    + MULTIYEAR_FEATURES + DELTA_1Y_FEATURES + SIZE_AGE_FEATURES + CAPITAL_ALLOCATION_FEATURES
 )
-FUNDAMENTAL_FEATURES: List[str] = RATIO_FEATURES + STALENESS_FEATURES  # 30 total
+FUNDAMENTAL_FEATURES: List[str] = RATIO_FEATURES + STALENESS_FEATURES  # 54 total
 
 
 def compute_staleness(announcement_date: datetime, current_date: datetime) -> Dict[str, float]:
@@ -175,9 +211,10 @@ def compute_fundamental_features(
     client: DataStoreClient,
     ticker: str,
     as_of: datetime,
-    lookback_years: int = 4,
+    lookback_years: int = 6,
     pre_loaded_rows: "Optional[List]" = None,
     ticker_ohlcv: "Optional[pd.DataFrame]" = None,
+    listing_date: "Optional[datetime]" = None,
 ) -> Dict[str, Any]:
     """
     Compute all 30 raw (not yet sector-z-scored) fundamental features for one ticker.
@@ -190,13 +227,19 @@ def compute_fundamental_features(
     as_of : datetime
         PIT reference date.
     lookback_years : int
-        History window requested from the API — must cover at least the
-        3-year CAGR's 12-quarter lookback plus one quarter of slack.
+        History window requested from the API — default 6 to cover the
+        5-year rolling stats' 20-quarter lookback plus slack (bumped from
+        4, which only covered the 3-year CAGR's 12 quarters).
+    listing_date : datetime, optional
+        stock_master.listing_date, pre-fetched by the caller (same pattern
+        as ticker_ohlcv) — used only for company_age_years. NaN if omitted.
 
     Returns
     -------
     dict
-        feature_name -> value for all 30 FUNDAMENTAL_FEATURES, or all-NaN
+        feature_name -> value for all 54 FUNDAMENTAL_FEATURES (30 P2.1 +
+        5 value/quality + 19 multi-year/delta/size/capital-allocation
+        features added for the second wave of strategies), or all-NaN
         with results_pending_flag=1 if no PIT-eligible quarter exists yet.
 
     Spec References
@@ -287,6 +330,126 @@ def compute_fundamental_features(
     total_debt_v, cash_v = v(latest, "total_debt"), v(latest, "cash_and_equivalents")
     inv_days, rec_days, pay_days = v(latest, "inventory_days"), v(latest, "receivable_days"), v(latest, "payable_days")
 
+    # Enterprise value, reused by both ev_to_ebitda (existing) and the new
+    # ev_ebit_yield/fcf_ev_yield features — same formula, computed once.
+    enterprise_value = (
+        market_cap + (total_debt_v if pd.notna(total_debt_v) else 0.0)
+        - (cash_v if pd.notna(cash_v) else 0.0)
+    ) if pd.notna(market_cap) else np.nan
+
+    ca, cl = v(latest, "current_assets"), v(latest, "current_liabilities")
+    net_working_capital = (ca - cl) if pd.notna(ca) and pd.notna(cl) else np.nan
+    ppe, cwip = v(latest, "property_plant_equipment"), v(latest, "cwip")
+    net_fixed_assets = (
+        (ppe if pd.notna(ppe) else 0.0) + (cwip if pd.notna(cwip) else 0.0)
+        if pd.notna(ppe) or pd.notna(cwip) else np.nan
+    )
+    # cfo_proxy = fcf + capex is an APPROXIMATION of operating cash flow,
+    # not an algebraic identity: `fcf` is a raw value from the upstream
+    # source (Trendlyne/NSE XBRL — ingestion/scrapers/screener.py does NOT
+    # compute it), not derived in this codebase as cfo - capex. If the
+    # source's FCF used a different capex figure/period than our own
+    # `capex` column, this will diverge from the company's actually
+    # reported operating cash flow. [2026-07-25 model-review correction —
+    # this comment previously implied exactness it doesn't have.]
+    cfo_proxy = (
+        v(latest, "fcf") + v(latest, "capex")
+        if pd.notna(v(latest, "fcf")) and pd.notna(v(latest, "capex")) else np.nan
+    )
+    book_value_equity = equity  # already CRORE-adjusted bvps*shares computed above
+
+    # ---- Multi-year rolling stats (5-year window = 20 quarters back) ----
+    five_yr_fy, five_yr_q = _quarters_back(fy, q, 20)
+    five_yr_window = history[
+        (history["fiscal_year"] > five_yr_fy) | ((history["fiscal_year"] == five_yr_fy) & (history["quarter"] >= five_yr_q))
+    ]
+    five_yr_base = _find_quarter(history, five_yr_fy, five_yr_q)
+    sales_cagr_5y = np.nan
+    if five_yr_base is not None and pd.notna(v(five_yr_base, "revenue")) and v(five_yr_base, "revenue") > 0 \
+            and pd.notna(v(latest, "revenue")) and v(latest, "revenue") > 0:
+        sales_cagr_5y = (v(latest, "revenue") / v(five_yr_base, "revenue")) ** (1.0 / 5.0) - 1.0
+
+    roce_series = pd.to_numeric(five_yr_window["roce"], errors="coerce").dropna() if "roce" in five_yr_window.columns else pd.Series(dtype=float)
+    avg_roce_5y = float(roce_series.mean()) if len(roce_series) else np.nan
+    margin_series = (
+        pd.to_numeric(five_yr_window["ebitda_margin"], errors="coerce").dropna()
+        if "ebitda_margin" in five_yr_window.columns else pd.Series(dtype=float)
+    )
+    margin_stability_5y = float(-margin_series.std()) if len(margin_series) >= 2 else np.nan
+    # Used by Normalization Value's normalized_ebit — an ebit_margin-over-
+    # full-cycle series isn't tracked separately from ebitda_margin, so the
+    # already-computed 5yr ebitda_margin window doubles as the cycle-average
+    # margin proxy (documented approximation, same tradeoff as roic's proxy above).
+    avg_ebitda_margin_5y = float(margin_series.mean()) if len(margin_series) else np.nan
+    eps_series = (
+        pd.to_numeric(five_yr_window["eps"], errors="coerce").dropna()
+        if "eps" in five_yr_window.columns else pd.Series(dtype=float)
+    )
+    # Coefficient of variation (stdev / mean|eps|) as an earnings-volatility
+    # proxy — computing a true stdev-of-YoY-growth series would need a
+    # second nested lookback per quarter; this is the same tradeoff
+    # documented for roic's flat-tax-rate approximation above.
+    earnings_volatility_5y = (
+        float(eps_series.std() / abs(eps_series.mean())) if len(eps_series) >= 2 and eps_series.mean() != 0 else np.nan
+    )
+
+    three_yr_fy, three_yr_q = _quarters_back(fy, q, 12)
+    three_yr_base = _find_quarter(history, three_yr_fy, three_yr_q)
+    delta_roce_3y = (
+        v(latest, "roce") - v(three_yr_base, "roce")
+        if pd.notna(v(latest, "roce")) and pd.notna(v(three_yr_base, "roce")) else np.nan
+    )
+
+    # ---- 1-year deltas (need one more quarter back from yoy_prior) ----
+    two_yr_fy, two_yr_q = _quarters_back(fy, q, 8)
+    two_yr_prior = _find_quarter(history, two_yr_fy, two_yr_q)
+    eps_growth_yoy = _safe_growth(v(latest, "eps"), v(yoy_prior, "eps"))
+    eps_growth_yoy_prior = _safe_growth(v(yoy_prior, "eps"), v(two_yr_prior, "eps"))
+    eps_acceleration = (
+        eps_growth_yoy - eps_growth_yoy_prior
+        if pd.notna(eps_growth_yoy) and pd.notna(eps_growth_yoy_prior) else np.nan
+    )
+    margin_expansion = (
+        v(latest, "ebitda_margin") - v(yoy_prior, "ebitda_margin")
+        if pd.notna(v(latest, "ebitda_margin")) and pd.notna(v(yoy_prior, "ebitda_margin")) else np.nan
+    )
+    roa_t = _safe_div(v(latest, "pat"), v(latest, "total_assets"))
+    roa_yoy = _safe_div(v(yoy_prior, "pat"), v(yoy_prior, "total_assets"))
+    delta_roa_1y = roa_t - roa_yoy if pd.notna(roa_t) and pd.notna(roa_yoy) else np.nan
+    cr_t = _safe_div(v(latest, "current_assets"), v(latest, "current_liabilities"))
+    cr_yoy = _safe_div(v(yoy_prior, "current_assets"), v(yoy_prior, "current_liabilities"))
+    delta_current_ratio_1y = cr_t - cr_yoy if pd.notna(cr_t) and pd.notna(cr_yoy) else np.nan
+    ltd_ta_t = _safe_div(v(latest, "borrowings_noncurrent"), v(latest, "total_assets"))
+    ltd_ta_yoy = _safe_div(v(yoy_prior, "borrowings_noncurrent"), v(yoy_prior, "total_assets"))
+    delta_long_term_debt_to_assets_1y = (
+        ltd_ta_t - ltd_ta_yoy if pd.notna(ltd_ta_t) and pd.notna(ltd_ta_yoy) else np.nan
+    )
+    cfo_proxy_yoy = (
+        v(yoy_prior, "fcf") + v(yoy_prior, "capex")
+        if pd.notna(v(yoy_prior, "fcf")) and pd.notna(v(yoy_prior, "capex")) else np.nan
+    )
+    delta_operating_cash_flow_1y = _safe_growth(cfo_proxy, cfo_proxy_yoy)
+    receivable_days_change = (
+        v(latest, "receivable_days") - v(yoy_prior, "receivable_days")
+        if pd.notna(v(latest, "receivable_days")) and pd.notna(v(yoy_prior, "receivable_days")) else np.nan
+    )
+    inventory_days_change = (
+        v(latest, "inventory_days") - v(yoy_prior, "inventory_days")
+        if pd.notna(v(latest, "inventory_days")) and pd.notna(v(yoy_prior, "inventory_days")) else np.nan
+    )
+
+    # ---- Size/age, reinvestment/capital-allocation ----
+    company_age_years = (
+        (as_of - listing_date).days / 365.25 if listing_date is not None else np.nan
+    )
+    dilution_3y = _safe_growth(v(latest, "shares_outstanding"), v(three_yr_base, "shares_outstanding"))
+    reinvestment_rate = _safe_div(v(latest, "capex"), cfo_proxy)
+    delta_ebit_1y = (
+        v(latest, "ebit") - v(yoy_prior, "ebit")
+        if pd.notna(v(latest, "ebit")) and pd.notna(v(yoy_prior, "ebit")) else np.nan
+    )
+    capital_allocation_efficiency = _safe_div(delta_ebit_1y, v(three_yr_base, "retained_earnings"))
+
     features: Dict[str, Any] = {
         # Growth (6)
         "revenue_growth_yoy": _safe_growth(v(latest, "revenue"), v(yoy_prior, "revenue")),
@@ -326,12 +489,42 @@ def compute_fundamental_features(
         # Valuation (3)
         "pe_ratio": _safe_div(close, v(latest, "eps")) if close is not None else np.nan,
         "pb_ratio": _safe_div(close, v(latest, "book_value_per_share")) if close is not None else np.nan,
-        "ev_to_ebitda": _safe_div(
-            (market_cap + (total_debt_v if pd.notna(total_debt_v) else 0.0)
-             - (cash_v if pd.notna(cash_v) else 0.0))
-            if pd.notna(market_cap) else np.nan,
-            v(latest, "ebitda"),
+        "ev_to_ebitda": _safe_div(enterprise_value, v(latest, "ebitda")),
+        # Value/quality features (Piotroski-on-Value, Magic Formula,
+        # Quality-Value Composite, FCF Yield + Low Debt, GARP).
+        "ev_ebit_yield": _safe_div(v(latest, "ebit"), enterprise_value),
+        "fcf_ev_yield": _safe_div(v(latest, "fcf"), enterprise_value),
+        "magic_formula_roc": _safe_div(
+            v(latest, "ebit"),
+            (net_working_capital + net_fixed_assets)
+            if pd.notna(net_working_capital) and pd.notna(net_fixed_assets) else np.nan,
         ),
+        "book_to_market": _safe_div(book_value_equity, market_cap),
+        "cfo_to_pat": _safe_div(cfo_proxy, v(latest, "pat")),
+        # Multi-year rolling stats (QGLP, Moat, Longevity, Sector-Leader,
+        # Capital Allocation Quality).
+        "avg_roce_5y": avg_roce_5y,
+        "margin_stability_5y": margin_stability_5y,
+        "earnings_volatility_5y": earnings_volatility_5y,
+        "sales_cagr_5y": sales_cagr_5y,
+        "delta_roce_3y": delta_roce_3y,
+        "avg_ebitda_margin_5y": avg_ebitda_margin_5y,
+        # 1-year deltas (Turnaround, Earnings Re-rating, Contrarian Recovery,
+        # Story+Numbers Confirmation).
+        "eps_acceleration": eps_acceleration,
+        "margin_expansion": margin_expansion,
+        "delta_roa_1y": delta_roa_1y,
+        "delta_current_ratio_1y": delta_current_ratio_1y,
+        "delta_long_term_debt_to_assets_1y": delta_long_term_debt_to_assets_1y,
+        "delta_operating_cash_flow_1y": delta_operating_cash_flow_1y,
+        "receivable_days_change": receivable_days_change,
+        "inventory_days_change": inventory_days_change,
+        # Size/age, reinvestment/capital allocation.
+        "company_age_years": company_age_years,
+        "dilution_3y": dilution_3y,
+        "market_cap": market_cap,
+        "reinvestment_rate": reinvestment_rate,
+        "capital_allocation_efficiency": capital_allocation_efficiency,
     }
     features.update(compute_staleness(latest["announcement_date"].to_pydatetime(), as_of))
     return features
@@ -370,10 +563,11 @@ def compute_fundamental_features_panel(
     sector_map: Dict[str, str],
     data_cache=None,
     ohlcv_panel: "Optional[pd.DataFrame]" = None,
+    listing_date_map: "Optional[Dict[str, datetime]]" = None,
 ) -> pd.DataFrame:
     """
-    Compute the full 30-feature fundamental panel for many tickers, with
-    the 27 ratio features sector-relative z-scored (SPEC-FEAT-002).
+    Compute the full 54-feature fundamental panel for many tickers, with
+    the 51 ratio features sector-relative z-scored (SPEC-FEAT-002).
 
     Parameters
     ----------
@@ -406,7 +600,8 @@ def compute_fundamental_features_panel(
                 ohlcv_panel[ohlcv_panel["ticker"] == ticker] if ohlcv_panel is not None else None
             )
             feats = compute_fundamental_features(
-                client, ticker, as_of, pre_loaded_rows=pre_rows, ticker_ohlcv=t_ohlcv
+                client, ticker, as_of, pre_loaded_rows=pre_rows, ticker_ohlcv=t_ohlcv,
+                listing_date=(listing_date_map or {}).get(ticker),
             )
         except httpx.RequestError as exc:
             logger.error(

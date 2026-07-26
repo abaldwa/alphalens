@@ -5321,6 +5321,78 @@
       "lookback_months": 12,
       "exit_variant": "regime_conditional",
       "regime_method": "15pct_threshold_v1"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2016-07-01",
+      "end_date": "2026-06-30",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "template_name": "B1",
+      "top_n": 10,
+      "exit_variant": "baseline"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2016-07-01",
+      "end_date": "2026-06-30",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "template_name": "B4",
+      "top_n": 10,
+      "exit_variant": "condition"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2016-07-01",
+      "end_date": "2026-06-30",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "template_name": "B4",
+      "top_n": 10,
+      "exit_variant": "atr_adaptive"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2016-07-01",
+      "end_date": "2026-06-30",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "template_name": "B4",
+      "top_n": 10,
+      "exit_variant": "regime_conditional"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2016-07-01",
+      "end_date": "2026-06-30",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "template_name": "B5",
+      "top_n": 10,
+      "exit_variant": "baseline"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "start_date": "2016-07-01",
+      "end_date": "2026-06-30",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "template_name": "B5",
+      "top_n": 10,
+      "exit_variant": "combined"
     }
   ]
 }

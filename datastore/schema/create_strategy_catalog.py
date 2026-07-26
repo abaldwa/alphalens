@@ -45,7 +45,11 @@ _CREATE_STRATEGY_CATALOG = """
 _STRATEGY_CATALOG_TABLES = {"strategy_catalog": _CREATE_STRATEGY_CATALOG}
 
 
-def create_strategy_catalog_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> None:
+def create_strategy_catalog_schema(
+    db_path: Optional[Path] = None, in_memory: bool = False,
+    retry_attempts: Optional[int] = None, retry_base_delay_s: Optional[float] = None,
+    retry_max_delay_s: Optional[float] = None,
+) -> None:
     """
     Create the strategy_catalog table. Idempotent — safe to call multiple times.
 
@@ -54,6 +58,12 @@ def create_strategy_catalog_schema(db_path: Optional[Path] = None, in_memory: bo
             config.settings.BACKTEST_DUCKDB_PATH.
         in_memory: If True, create the schema in an in-memory DuckDB
             (db_path is ignored). Used by tests.
+        retry_attempts, retry_base_delay_s: passed through to
+            get_duckdb_connection's lock-retry override (2026-07-26 fix —
+            this is called at the END of a backtest job, after potentially
+            hours of compute, so it needs the same wider write-lock retry
+            budget as the job's main write connection; see
+            run_orchestrator_backtest.py).
     """
     if in_memory:
         db_path = None
@@ -63,7 +73,10 @@ def create_strategy_catalog_schema(db_path: Optional[Path] = None, in_memory: bo
         db_path = BACKTEST_DUCKDB_PATH
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_duckdb_connection(db_path) as conn:
+    with get_duckdb_connection(
+        db_path, retry_attempts=retry_attempts, retry_base_delay_s=retry_base_delay_s,
+        retry_max_delay_s=retry_max_delay_s,
+    ) as conn:
         for table_name, ddl in _STRATEGY_CATALOG_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")

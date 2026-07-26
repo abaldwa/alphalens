@@ -108,6 +108,87 @@ class TestFeatureVector:
         assert "score" not in fv
 
 
+class TestScreenerCacheIntegration:
+    """Parity + cross-instance sharing coverage for the screener_cache-
+    wired path (2026-07-25, reviewed by ml-rigor-reviewer + backtest-
+    reviewer — see FeatureBacklog.md): screener_cache_conn=None must
+    remain byte-for-byte identical to the pre-existing always-live
+    behavior (every test above exercises exactly that, unchanged), and
+    when a cache conn IS wired in, results must be identical to the
+    live path while a second adapter for the same template/date makes
+    zero additional screen() calls."""
+
+    def test_cached_path_produces_identical_signals_to_live_path(self):
+        from datastore.api.db import get_duckdb_connection
+        from datastore.schema import create_backtest
+
+        results_by_date = {
+            "2020-01-01": [_FakeResult("A", 0.9), _FakeResult("B", 0.7), _FakeResult("C", 0.5)],
+        }
+        live_adapter = TechnicalAdapter(template_name="A1", top_n=2, screener_engine=_FakeScreenerEngine(results_by_date))
+        live_signals = live_adapter.generate_signals(["A", "B", "C"], date(2020, 1, 1), HorizonBucket.D21)
+
+        create_backtest.create_backtest_schema(in_memory=True)
+        with get_duckdb_connection(None) as conn:
+            cached_adapter = TechnicalAdapter(
+                template_name="A1", top_n=2, screener_engine=_FakeScreenerEngine(results_by_date),
+                screener_cache_conn=conn,
+            )
+            cached_signals = cached_adapter.generate_signals(["A", "B", "C"], date(2020, 1, 1), HorizonBucket.D21)
+
+        live_shape = {(s.ticker, s.action, s.conviction) for s in live_signals}
+        cached_shape = {(s.ticker, s.action, s.conviction) for s in cached_signals}
+        assert live_shape == cached_shape
+
+    def test_second_adapter_for_same_template_date_reuses_the_cache(self):
+        from datastore.api.db import get_duckdb_connection
+        from datastore.schema import create_backtest
+
+        engine1 = _FakeScreenerEngine({"2020-01-01": [_FakeResult("A", 0.9), _FakeResult("B", 0.7)]})
+
+        class _CountingWrapper:
+            def __init__(self, inner):
+                self._inner = inner
+                self.calls = 0
+
+            def screen(self, template_name, date=None, limit=50):
+                self.calls += 1
+                return self._inner.screen(template_name, date=date, limit=limit)
+
+        counting1 = _CountingWrapper(engine1)
+        create_backtest.create_backtest_schema(in_memory=True)
+        with get_duckdb_connection(None) as conn:
+            adapter1 = TechnicalAdapter(template_name="A1", top_n=2, screener_engine=counting1, screener_cache_conn=conn)
+            adapter1.generate_signals(["A", "B"], date(2020, 1, 1), HorizonBucket.D21)
+
+            # A second adapter instance — simulating a second exit-variant
+            # job's own TechnicalAdapter — sharing the same connection
+            # (same cached DuckDB file in a real multi-process run).
+            counting2 = _CountingWrapper(_FakeScreenerEngine({}))  # would return [] if actually called
+            adapter2 = TechnicalAdapter(template_name="A1", top_n=2, screener_engine=counting2, screener_cache_conn=conn)
+            signals2 = adapter2.generate_signals(["A", "B"], date(2020, 1, 1), HorizonBucket.D21)
+
+        assert counting1.calls == 1
+        assert counting2.calls == 0  # never hit the (empty-returning) engine — served entirely from cache
+        assert {s.ticker for s in signals2 if s.action == "buy"} == {"A", "B"}
+
+    def test_feature_vector_works_through_the_cached_path(self):
+        from datastore.api.db import get_duckdb_connection
+        from datastore.schema import create_backtest
+
+        engine = _FakeScreenerEngine({
+            "2020-01-01": [_FakeResult("A", 0.9, key_values={"rsi_14": 28.0})],
+        })
+        create_backtest.create_backtest_schema(in_memory=True)
+        with get_duckdb_connection(None) as conn:
+            adapter = TechnicalAdapter(template_name="A1", top_n=1, screener_engine=engine, screener_cache_conn=conn)
+            adapter.generate_signals(["A"], date(2020, 1, 1), HorizonBucket.D21)
+            fv = adapter.feature_vector("A", date(2020, 1, 1))
+        assert fv["matched"] is True
+        assert fv["score"] == 0.9
+        assert fv["feature__rsi_14"] == 28.0
+
+
 class TestRealScreenerIntegration:
     """No-Mock-Data Policy: exercises the adapter against the real
     ScreenerEngine + real daily feature Parquet store."""

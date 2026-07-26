@@ -468,6 +468,24 @@ def build_feature_matrix(
     sector_map = dict(zip(universe_meta["ticker"], universe_meta["sector"]))
     tier_map = dict(zip(universe_meta["ticker"], universe_meta["tier"]))
 
+    # 2026-07-07 (follow-up): listing_dates was never passed to the
+    # corp-action panel, so ipo_lockin_expiry_proximity/ipo_listing_age_months
+    # were always NaN regardless of stock_master coverage — see
+    # scripts/backfill_listing_dates_nse.py for the real NSE-sourced backfill
+    # that populated stock_master.listing_date for the first time (402/1626
+    # tickers, NSE's history only covers IPOs from ~2012 on).
+    #
+    # [2026-07-25 fix] Fetched here (moved earlier) so it can ALSO be passed
+    # to compute_fundamental_features_panel below — that panel's
+    # company_age_years feature needs the same listing_date_map and was
+    # silently NaN for the entire universe until this fix, despite being
+    # "wired" via the corp-action panel a few lines down.
+    try:
+        listing_dates = client.get_listing_dates()
+    except Exception as exc:
+        logger.warning(f"Could not fetch listing_dates for corp-action panel: {exc}")
+        listing_dates = {}
+
     # Pass universe_panel so per-ticker OHLCV price lookups (valuation close,
     # pledge spiral check, corp-action windows, post-earnings drift) all hit
     # memory instead of making per-ticker API calls — the data is already in
@@ -475,23 +493,13 @@ def build_feature_matrix(
     fundamental = compute_fundamental_features_panel(
         client, tickers, target_date, sector_map,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+        listing_date_map=listing_dates,
     )
     governance = compute_governance_features_panel(
         client, tickers, target_date,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
     )
     mf_holdings = compute_mf_holdings_features_panel(tickers, target_date, tier_map=tier_map)
-    # 2026-07-07 (follow-up): listing_dates was never passed here, so
-    # ipo_lockin_expiry_proximity/ipo_listing_age_months were always NaN
-    # regardless of stock_master coverage — see
-    # scripts/backfill_listing_dates_nse.py for the real NSE-sourced backfill
-    # that populated stock_master.listing_date for the first time (402/1626
-    # tickers, NSE's history only covers IPOs from ~2012 on).
-    try:
-        listing_dates = client.get_listing_dates()
-    except Exception as exc:
-        logger.warning(f"Could not fetch listing_dates for corp-action panel: {exc}")
-        listing_dates = {}
     corp_action = compute_corporate_action_features_panel(
         client, tickers, target_date, listing_dates=listing_dates,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,

@@ -111,18 +111,52 @@ class RegimeConditionalExitPolicy:
         templates = X["template"] if "template" in X.columns else pd.Series(None, index=X.index)
         regimes = X["regime"] if "regime" in X.columns else pd.Series(None, index=X.index)
 
-        target_pct = pd.Series(0.0, index=X.index)
-        stop_pct = pd.Series(0.0, index=X.index)  # negative fraction, RuleBasedExitPolicy convention
-        max_hold_days = pd.Series(0, index=X.index)
+        # Vectorized replacement for a former `for idx in X.index: ...
+        # .loc[idx] = ...` row-by-row loop (2026-07-25, reviewed by
+        # ml-rigor-reviewer + backtest-reviewer before landing — see
+        # BuildLog.md/FeatureBacklog.md): that loop was O(n) label-based
+        # `.loc` scalar writes per row across 3 separate Series, the only
+        # non-vectorized exit-policy class in this directory, and the
+        # confirmed root cause of regime_conditional backtest jobs using
+        # 6-10x more memory/CPU than every sibling variant on a full
+        # multi-year/multi-hundred-ticker run. Both reviewers confirmed the
+        # loop was correctness-safe (this refactor changes performance
+        # only, not output) — see tests/unit/test_regime_conditional_exit_policy.py's
+        # TestPredictFullVectorizedEquivalence for the byte-for-byte
+        # equivalence regression test they required before merging.
+        #
+        # Template lookup: Series.map(<Series indexed by template name>)
+        # returns NaN both for an unmatched string AND for a NaN/None
+        # template value (map() looks the raw cell up as a dict/Series key
+        # either way) — .fillna(default) then reproduces _base_params_for's
+        # exact "template is not None and template in self.template_params
+        # else default" fallback in one vectorized pass, no separate NaN
+        # branch needed.
+        if self.template_params:
+            params_df = pd.DataFrame.from_dict(self.template_params, orient="index")
+            target_map = params_df["target_pct"].astype(float)
+            stop_map = params_df["stop_pct"].astype(float).abs()
+            hold_map = params_df["max_hold_days"].astype(int)
+            target_pct = templates.map(target_map).fillna(self.default_target_pct).astype(float)
+            base_stop_pct = templates.map(stop_map).fillna(self.default_stop_pct).astype(float)
+            max_hold_days = templates.map(hold_map).fillna(self.default_max_hold_days).astype(int)
+        else:
+            target_pct = pd.Series(self.default_target_pct, index=X.index, dtype=float)
+            base_stop_pct = pd.Series(self.default_stop_pct, index=X.index, dtype=float)
+            max_hold_days = pd.Series(self.default_max_hold_days, index=X.index, dtype=int)
 
-        for idx in X.index:
-            base = self._base_params_for(templates.loc[idx] if pd.notna(templates.loc[idx]) else None)
-            regime_raw = regimes.loc[idx]
-            regime_key = str(regime_raw).strip().lower() if pd.notna(regime_raw) else None
-            multiplier = REGIME_STOP_MULTIPLIERS.get(regime_key, _DEFAULT_REGIME_MULTIPLIER)
-            target_pct.loc[idx] = base["target_pct"]
-            stop_pct.loc[idx] = -(base["stop_pct"] * multiplier)
-            max_hold_days.loc[idx] = base["max_hold_days"]
+        # Regime normalization: same "strip + lowercase, NaN -> None"
+        # convention as the original loop, applied to the whole column via
+        # pandas' vectorized .str accessor (not a per-row Python call) —
+        # only the non-null subset is touched, matching pd.notna(regime_raw)
+        # else None row-by-row.
+        regime_key = pd.Series(None, index=X.index, dtype=object)
+        regime_notna = regimes.notna()
+        if regime_notna.any():
+            regime_key.loc[regime_notna] = regimes.loc[regime_notna].astype(str).str.strip().str.lower()
+        multiplier = regime_key.map(REGIME_STOP_MULTIPLIERS).fillna(_DEFAULT_REGIME_MULTIPLIER)
+
+        stop_pct = -(base_stop_pct * multiplier)  # negative fraction, RuleBasedExitPolicy convention
 
         pnl = X["unrealised_pnl_pct"]
         days_held = X["days_held"]

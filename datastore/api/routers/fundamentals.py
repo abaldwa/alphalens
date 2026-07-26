@@ -43,6 +43,8 @@ from datastore.api.schemas import (
     FAScoresResponse,
     FAScreenerResponse,
     FASectorResponse,
+    FAStrategyCatalogEntry,
+    FAStrategyCatalogResponse,
     FundamentalsResponse,
     FundamentalsRow,
     FundamentalsWrite,
@@ -54,7 +56,11 @@ from datastore.api.utils.feature_store import read_feature_day, read_feature_row
 from datastore.api.utils.pdf import build_pdf_response
 from features.fundamental import RATIO_FEATURES, STALENESS_FEATURES
 from features.fundamental_composites import (
+    PRESET_EXCLUDED_SECTORS,
+    SCORE_FUNCTIONS,
+    SCREENER_PRESET_CHANGELOG,
     SCREENER_PRESETS,
+    STRATEGY_CATALOG,
     growth_score,
     management_quality_score,
     matches_screener_preset,
@@ -175,16 +181,31 @@ async def get_fundamentals_history_by_quarters(
 # same route-ordering reason /{ticker}/history is registered above
 # /{ticker} (this file's own earlier comment; FastAPI matches by
 # registration order, not specificity). =====
+PIOTROSKI_ON_VALUE_PRESET = "piotroski_on_value"
+MARGIN_OF_SAFETY_PRESET = "margin_of_safety"
+NET_NET_PRESET = "net_net"
+BESPOKE_PRESETS = (PIOTROSKI_ON_VALUE_PRESET, MARGIN_OF_SAFETY_PRESET, NET_NET_PRESET)
+
+
 @router.get("/screener", response_model=FAScreenerResponse)
 async def get_fundamental_screener(
-    preset: str = Query(..., description=f"One of: {', '.join(SCREENER_PRESETS.keys())}"),
+    preset: str = Query(
+        ..., description=f"One of: {', '.join(list(SCREENER_PRESETS.keys()) + list(BESPOKE_PRESETS))}"
+    ),
 ) -> FAScreenerResponse:
     """Tickers matching a named screener preset, evaluated against the
     latest day's sector-relative z-scored ratios — "quality compounder"
     etc. mean above/below sector peers, not an absolute % threshold (the
-    feature store only carries z-scores, see features/fundamental.py)."""
-    if preset not in SCREENER_PRESETS:
-        raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'. Valid: {list(SCREENER_PRESETS.keys())}")
+    feature store only carries z-scores, see features/fundamental.py).
+
+    `piotroski_on_value`/`margin_of_safety`/`net_net` are the 3 presets
+    that don't fit that pattern — they compare raw rupee values (F-Score
+    gate, Graham Number, NCAV) to price rather than sector z-scores, so
+    they're routed to their dedicated systems.fundamental_analysis.quality
+    modules instead of matches_screener_preset()."""
+    valid_presets = list(SCREENER_PRESETS.keys()) + list(BESPOKE_PRESETS)
+    if preset not in valid_presets:
+        raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'. Valid: {valid_presets}")
 
     resolved_date = resolve_date(None)
     if resolved_date is None:
@@ -194,10 +215,50 @@ async def get_fundamental_screener(
     if panel is None:
         return FAScreenerResponse(preset=preset, date=resolved_date)
 
-    matched = [
-        row["ticker"] for _, row in panel.iterrows()
-        if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
-    ]
+    if preset in BESPOKE_PRESETS:
+        from datetime import datetime as _datetime
+
+        as_of_dt = _datetime.strptime(resolved_date, "%Y-%m-%d")
+        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+            if preset == PIOTROSKI_ON_VALUE_PRESET:
+                from systems.fundamental_analysis.quality.piotroski_on_value import compute_piotroski_on_value
+
+                matched = [
+                    ticker for ticker in panel["ticker"]
+                    if compute_piotroski_on_value(conn, ticker, as_of_dt, feature_date_str=resolved_date)["passes"]
+                ]
+            elif preset == MARGIN_OF_SAFETY_PRESET:
+                from systems.fundamental_analysis.quality.margin_of_safety import compute_margin_of_safety
+
+                matched = [
+                    ticker for ticker in panel["ticker"]
+                    if compute_margin_of_safety(conn, ticker, as_of_dt)["passes"]
+                ]
+            else:
+                from systems.fundamental_analysis.quality.net_net import compute_net_net
+
+                matched = [
+                    ticker for ticker in panel["ticker"]
+                    if compute_net_net(conn, ticker, as_of_dt)["passes"]
+                ]
+    elif preset in PRESET_EXCLUDED_SECTORS:
+        # Magic Formula (and any future preset with a real sector
+        # exclusion, e.g. Greenblatt's Financials/NBFC/Insurance rule) —
+        # see features/fundamental_composites.py::PRESET_EXCLUDED_SECTORS
+        # for why sector-relative z-scoring alone doesn't substitute for this.
+        universe_raw = load_universe_raw()
+        sector_map = dict(zip(universe_raw["ticker"], universe_raw["sector"]))
+        matched = [
+            row["ticker"] for _, row in panel.iterrows()
+            if matches_screener_preset(
+                {c: row.get(c) for c in RATIO_FEATURES}, preset, sector=sector_map.get(row["ticker"]),
+            )
+        ]
+    else:
+        matched = [
+            row["ticker"] for _, row in panel.iterrows()
+            if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
+        ]
     # ML24 (2026-07-11): ranked/recommended screener output only — direct
     # ticker lookups (get_fundamental_ratios above) are intentionally
     # unaffected, per product decision (fundamentals aren't liquidity-
@@ -232,10 +293,20 @@ async def get_fundamentals_pillar_summary(
 
     from config.training_universe import filter_recommendable
 
-    matched = [
-        row["ticker"] for _, row in panel.iterrows()
-        if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
-    ]
+    if preset in PRESET_EXCLUDED_SECTORS:
+        universe_raw = load_universe_raw()
+        sector_map = dict(zip(universe_raw["ticker"], universe_raw["sector"]))
+        matched = [
+            row["ticker"] for _, row in panel.iterrows()
+            if matches_screener_preset(
+                {c: row.get(c) for c in RATIO_FEATURES}, preset, sector=sector_map.get(row["ticker"]),
+            )
+        ]
+    else:
+        matched = [
+            row["ticker"] for _, row in panel.iterrows()
+            if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
+        ]
     matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
 
     return {
@@ -345,6 +416,12 @@ async def get_fundamental_scores(ticker: str) -> FAScoresResponse:
 
     ratios = {c: row.get(c) for c in RATIO_FEATURES if c in row.index}
     governance = {c: row.get(c) for c in GOVERNANCE_FEATURES if c in row.index}
+    # Some strategies (Under-followed Growth Improvers, Governance-Aware
+    # Quality Growth, Promoter-Aligned Compounders) blend z-scored ratios
+    # with raw governance fields in one dict — same merged shape those
+    # composite functions expect.
+    combined = {**ratios, **governance}
+    strategy_scores = {key: fn(combined) for key, fn in SCORE_FUNCTIONS.items()}
 
     return FAScoresResponse(
         ticker=ticker,
@@ -352,7 +429,30 @@ async def get_fundamental_scores(ticker: str) -> FAScoresResponse:
         quality_score=quality_score(ratios),
         growth_score=growth_score(ratios),
         management_quality_score=management_quality_score(governance),
+        strategy_scores=strategy_scores,
     )
+
+
+@router.get("/screener/catalog", response_model=FAStrategyCatalogResponse)
+async def get_fundamental_strategy_catalog() -> FAStrategyCatalogResponse:
+    """All 26 fundamental strategies (features.fundamental_composites.
+    STRATEGY_CATALOG), grouped by investor-style category for the frontend
+    menu — see frontend/src/pages/fundamental/strategies.tsx."""
+    return FAStrategyCatalogResponse(
+        strategies=[
+            FAStrategyCatalogEntry(key=key, **meta) for key, meta in STRATEGY_CATALOG.items()
+        ]
+    )
+
+
+@router.get("/screener/changelog")
+async def get_screener_preset_changelog() -> dict:
+    """Auditable record of in-place SCREENER_PRESETS threshold changes
+    (features.fundamental_composites.SCREENER_PRESET_CHANGELOG) — so an
+    old backtest report referencing preset='X' can be cross-checked
+    against when X's definition last changed, rather than silently
+    misrepresenting what the preset means today vs. when the report ran."""
+    return {"changelog": SCREENER_PRESET_CHANGELOG}
 
 
 # F4 — mirrors dashboard/static/fundamental/js/thesis.js's RATIO_LABELS /

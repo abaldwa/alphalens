@@ -525,6 +525,7 @@ class TestTradeLogCsv:
                 rows = list(csv.DictReader(fh))
             assert list(rows[0].keys()) == [
                 "ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank",
+                "pnl_inr", "pnl_pct", "exit_reason",
             ]
             assert len(rows) == 1
             row = rows[0]
@@ -537,6 +538,14 @@ class TestTradeLogCsv:
             # stock_rank is blank unless config.universe's market cap data
             # resolves this synthetic test ticker — never fabricated.
             assert row["stock_rank"] == "" or row["stock_rank"].isdigit()
+            # Flat 100 entry/exit price: pnl is ~0 minus real transaction costs
+            # (never exactly 0), so assert the columns are populated/parseable
+            # rather than pin an exact cost-model-dependent value.
+            assert float(row["pnl_inr"]) <= 0.0
+            assert float(row["pnl_pct"]) <= 0.0
+            # portfolio.sell()'s default reason for a Signal(action="sell")
+            # exit (not a forced_close/exit_model_urgent path).
+            assert row["exit_reason"] == "signal"
         finally:
             csv_path.unlink(missing_ok=True)
 
@@ -560,7 +569,10 @@ class TestTradeLogCsv:
             assert csv_path.exists()
             with open(csv_path, newline="") as fh:
                 rows = list(csv.reader(fh))
-            assert rows == [["ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank"]]
+            assert rows == [[
+                "ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank",
+                "pnl_inr", "pnl_pct", "exit_reason",
+            ]]
         finally:
             csv_path.unlink(missing_ok=True)
 

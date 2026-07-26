@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, tickerColumn } from '@/lib/ui'
+import { AppShell, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 import type { FAScreenerResponse } from './types'
 
@@ -10,6 +11,15 @@ const PRESETS: [string, string][] = [
   ['quality_compounder', 'Quality Compounder'],
   ['garp', 'GARP'],
   ['turnaround', 'Turnaround'],
+  ['magic_formula', 'Magic Formula'],
+  ['quality_value', 'Quality Value'],
+  ['fcf_low_debt', 'FCF + Low Debt'],
+  ['deep_value_solvency', 'Deep Value + Solvency'],
+  ['cash_flow_backed_earnings', 'Cash-Flow-Backed Earnings'],
+  ['turnaround_recovery', 'Turnaround Recovery'],
+  ['piotroski_on_value', 'Piotroski-on-Value'],
+  ['margin_of_safety', 'Margin of Safety'],
+  ['net_net', 'Net-Net'],
 ]
 
 const PRESET_TOOLTIP: Record<string, string> = {
@@ -27,7 +37,11 @@ const columns: ColumnDef<TickerRow, unknown>[] = [
 ]
 
 export function FundamentalScreenerPage() {
-  const [preset, setPreset] = useState(PRESETS[0][0])
+  const [searchParams] = useSearchParams()
+  const presetParam = searchParams.get('preset')
+  const [preset, setPreset] = useState(
+    presetParam && PRESETS.some(([key]) => key === presetParam) ? presetParam : PRESETS[0][0]
+  )
 
   const screener = useQuery({
     queryKey: ['fa-screener', preset],
@@ -43,15 +57,19 @@ export function FundamentalScreenerPage() {
           <CardTitle>Preset</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex gap-2">
-            {PRESETS.map(([key, label]) => (
-              <span key={key} className="inline-flex items-center gap-1">
-                <Button variant={preset === key ? 'default' : 'outline'} onClick={() => setPreset(key)}>
+          <div className="flex items-center gap-2">
+            <select
+              className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+              value={preset}
+              onChange={(e) => setPreset(e.target.value)}
+            >
+              {PRESETS.map(([key, label]) => (
+                <option key={key} value={key}>
                   {label}
-                </Button>
-                {PRESET_TOOLTIP[key] && <InfoTooltip>{PRESET_TOOLTIP[key]}</InfoTooltip>}
-              </span>
-            ))}
+                </option>
+              ))}
+            </select>
+            {PRESET_TOOLTIP[preset] && <InfoTooltip>{PRESET_TOOLTIP[preset]}</InfoTooltip>}
           </div>
         </CardContent>
       </Card>

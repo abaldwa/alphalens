@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-25T06:37:07.530527",
+  "generated_at": "2026-07-26T07:27:07.116174",
   "jobs": [
     {
       "job_index": 0,
@@ -17,343 +17,343 @@
       "job_index": 2,
       "kind": "orchestrator",
       "label": "technical \u00b7 A1 [combined]",
-      "status": "running"
+      "status": "completed"
     },
     {
       "job_index": 3,
       "kind": "orchestrator",
       "label": "technical \u00b7 A1 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 4,
       "kind": "orchestrator",
       "label": "technical \u00b7 A1 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 5,
       "kind": "orchestrator",
       "label": "technical \u00b7 A1 [regime_conditional]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 6,
       "kind": "orchestrator",
       "label": "technical \u00b7 A2 [baseline]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 7,
       "kind": "orchestrator",
       "label": "technical \u00b7 A2 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 8,
       "kind": "orchestrator",
       "label": "technical \u00b7 A2 [combined]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 9,
       "kind": "orchestrator",
       "label": "technical \u00b7 A2 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 10,
       "kind": "orchestrator",
       "label": "technical \u00b7 A2 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 11,
       "kind": "orchestrator",
       "label": "technical \u00b7 A2 [regime_conditional]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 12,
       "kind": "orchestrator",
       "label": "technical \u00b7 A3 [baseline]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 13,
       "kind": "orchestrator",
       "label": "technical \u00b7 A3 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 14,
       "kind": "orchestrator",
       "label": "technical \u00b7 A3 [combined]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 15,
       "kind": "orchestrator",
       "label": "technical \u00b7 A3 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 16,
       "kind": "orchestrator",
       "label": "technical \u00b7 A3 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 17,
       "kind": "orchestrator",
       "label": "technical \u00b7 A3 [regime_conditional]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 18,
       "kind": "orchestrator",
       "label": "technical \u00b7 A4 [baseline]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 19,
       "kind": "orchestrator",
       "label": "technical \u00b7 A4 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 20,
       "kind": "orchestrator",
       "label": "technical \u00b7 A4 [combined]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 21,
       "kind": "orchestrator",
       "label": "technical \u00b7 A4 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 22,
       "kind": "orchestrator",
       "label": "technical \u00b7 A4 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 23,
       "kind": "orchestrator",
       "label": "technical \u00b7 A4 [regime_conditional]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 24,
       "kind": "orchestrator",
       "label": "technical \u00b7 B1 [baseline]",
-      "status": "queued"
+      "status": "excluded"
     },
     {
       "job_index": 25,
       "kind": "orchestrator",
       "label": "technical \u00b7 B1 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 26,
       "kind": "orchestrator",
       "label": "technical \u00b7 B1 [combined]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 27,
       "kind": "orchestrator",
       "label": "technical \u00b7 B1 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 28,
       "kind": "orchestrator",
       "label": "technical \u00b7 B1 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 29,
       "kind": "orchestrator",
       "label": "technical \u00b7 B1 [regime_conditional]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 30,
       "kind": "orchestrator",
       "label": "technical \u00b7 B2 [baseline]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 31,
       "kind": "orchestrator",
       "label": "technical \u00b7 B2 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 32,
       "kind": "orchestrator",
       "label": "technical \u00b7 B2 [combined]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 33,
       "kind": "orchestrator",
       "label": "technical \u00b7 B2 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 34,
       "kind": "orchestrator",
       "label": "technical \u00b7 B2 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 35,
       "kind": "orchestrator",
       "label": "technical \u00b7 B2 [regime_conditional]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 36,
       "kind": "orchestrator",
       "label": "technical \u00b7 B3 [baseline]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 37,
       "kind": "orchestrator",
       "label": "technical \u00b7 B3 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 38,
       "kind": "orchestrator",
       "label": "technical \u00b7 B3 [combined]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 39,
       "kind": "orchestrator",
       "label": "technical \u00b7 B3 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 40,
       "kind": "orchestrator",
       "label": "technical \u00b7 B3 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 41,
       "kind": "orchestrator",
       "label": "technical \u00b7 B3 [regime_conditional]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 42,
       "kind": "orchestrator",
       "label": "technical \u00b7 B4 [baseline]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 43,
       "kind": "orchestrator",
       "label": "technical \u00b7 B4 [condition]",
-      "status": "queued"
+      "status": "excluded"
     },
     {
       "job_index": 44,
       "kind": "orchestrator",
       "label": "technical \u00b7 B4 [combined]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 45,
       "kind": "orchestrator",
       "label": "technical \u00b7 B4 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 46,
       "kind": "orchestrator",
       "label": "technical \u00b7 B4 [atr_adaptive]",
-      "status": "queued"
+      "status": "excluded"
     },
     {
       "job_index": 47,
       "kind": "orchestrator",
       "label": "technical \u00b7 B4 [regime_conditional]",
-      "status": "queued"
+      "status": "excluded"
     },
     {
       "job_index": 48,
       "kind": "orchestrator",
       "label": "technical \u00b7 B5 [baseline]",
-      "status": "queued"
+      "status": "excluded"
     },
     {
       "job_index": 49,
       "kind": "orchestrator",
       "label": "technical \u00b7 B5 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 50,
       "kind": "orchestrator",
       "label": "technical \u00b7 B5 [combined]",
-      "status": "queued"
+      "status": "excluded"
     },
     {
       "job_index": 51,
       "kind": "orchestrator",
       "label": "technical \u00b7 B5 [trailing]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 52,
       "kind": "orchestrator",
       "label": "technical \u00b7 B5 [atr_adaptive]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 53,
       "kind": "orchestrator",
       "label": "technical \u00b7 B5 [regime_conditional]",
-      "status": "queued"
+      "status": "failed"
     },
     {
       "job_index": 54,
       "kind": "orchestrator",
       "label": "technical \u00b7 C1 [baseline]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 55,
       "kind": "orchestrator",
       "label": "technical \u00b7 C1 [condition]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 56,
       "kind": "orchestrator",
       "label": "technical \u00b7 C1 [combined]",
-      "status": "queued"
+      "status": "failed"
     },
     {
       "job_index": 57,
       "kind": "orchestrator",
       "label": "technical \u00b7 C1 [trailing]",
-      "status": "queued"
+      "status": "failed"
     },
     {
       "job_index": 58,
       "kind": "orchestrator",
       "label": "technical \u00b7 C1 [atr_adaptive]",
-      "status": "queued"
+      "status": "running"
     },
     {
       "job_index": 59,
@@ -2591,6 +2591,42 @@
       "job_index": 431,
       "kind": "orchestrator",
       "label": "momentum \u00b7 top10_12m [regime_conditional] (15pct_threshold_v1)",
+      "status": "queued"
+    },
+    {
+      "job_index": 432,
+      "kind": "orchestrator",
+      "label": "technical \u00b7 B1 [baseline]",
+      "status": "queued"
+    },
+    {
+      "job_index": 433,
+      "kind": "orchestrator",
+      "label": "technical \u00b7 B4 [condition]",
+      "status": "queued"
+    },
+    {
+      "job_index": 434,
+      "kind": "orchestrator",
+      "label": "technical \u00b7 B4 [atr_adaptive]",
+      "status": "queued"
+    },
+    {
+      "job_index": 435,
+      "kind": "orchestrator",
+      "label": "technical \u00b7 B4 [regime_conditional]",
+      "status": "queued"
+    },
+    {
+      "job_index": 436,
+      "kind": "orchestrator",
+      "label": "technical \u00b7 B5 [baseline]",
+      "status": "queued"
+    },
+    {
+      "job_index": 437,
+      "kind": "orchestrator",
+      "label": "technical \u00b7 B5 [combined]",
       "status": "queued"
     }
   ]

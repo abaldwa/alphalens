@@ -34,6 +34,46 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+# Re-exported so datastore/api/routers/fundamentals.py (and any other
+# existing consumer importing from this module) can pick up the 3 new
+# composite-score functions without changing its import style. Canonical
+# implementations live in systems/fundamental_analysis/{quality,growth}/ —
+# the location systems/copilot/strategy_spec.py and this module's own
+# docstring both said was "always meant to hold" this logic.
+from systems.fundamental_analysis.contrarian.normalization import normalization_value_score
+from systems.fundamental_analysis.contrarian.recovery import contrarian_recovery_score
+from systems.fundamental_analysis.growth.capital_efficiency import capital_efficiency_growth_score
+from systems.fundamental_analysis.growth.earnings_rerating import earnings_rerating_score
+from systems.fundamental_analysis.growth.garp import garp_score
+from systems.fundamental_analysis.growth.longevity import longevity_score
+from systems.fundamental_analysis.growth.qglp import qglp_score
+from systems.fundamental_analysis.growth.small_cap_compounders import small_cap_compounder_score
+from systems.fundamental_analysis.growth.smile import smile_score
+from systems.fundamental_analysis.growth.story_numbers import story_numbers_score
+from systems.fundamental_analysis.growth.under_followed import under_followed_growth_score
+from systems.fundamental_analysis.management.governance_quality_growth import governance_quality_growth_score
+from systems.fundamental_analysis.management.promoter_aligned import promoter_aligned_score
+from systems.fundamental_analysis.quality.capital_allocation import capital_allocation_score
+from systems.fundamental_analysis.quality.fcf_low_debt import fcf_low_debt_score
+from systems.fundamental_analysis.quality.magic_formula import magic_formula_score
+from systems.fundamental_analysis.quality.moat import moat_score
+from systems.fundamental_analysis.quality.owner_earnings import owner_earnings_score
+from systems.fundamental_analysis.quality.quality_value import quality_value_composite
+from systems.fundamental_analysis.quality.sector_leader import sector_leader_score
+from systems.fundamental_analysis.scoring_utils import weighted_zscore_composite
+
+__all__ = [
+    "quality_score", "growth_score", "management_quality_score", "select_peers",
+    "SCREENER_PRESETS", "matches_screener_preset", "STRATEGY_CATALOG", "SCORE_FUNCTIONS",
+    "PRESET_EXCLUDED_SECTORS", "SCREENER_PRESET_CHANGELOG", "BACKTESTED_STRATEGIES",
+    "quality_value_composite", "fcf_low_debt_score", "garp_score", "magic_formula_score",
+    "owner_earnings_score", "moat_score", "capital_allocation_score", "sector_leader_score",
+    "qglp_score", "longevity_score", "story_numbers_score", "earnings_rerating_score",
+    "small_cap_compounder_score", "smile_score", "under_followed_growth_score",
+    "capital_efficiency_growth_score", "governance_quality_growth_score", "promoter_aligned_score",
+    "contrarian_recovery_score", "normalization_value_score",
+]
+
 # Weights are documented, not tuned/backtested — same standing as the
 # documented-but-not-backtested weights already in this codebase's other
 # composite scores (e.g. forensic_classical.py's 20/40/20/20 split,
@@ -43,30 +83,12 @@ QUALITY_WEIGHTS = {"roe": 0.30, "roce": 0.30, "net_margin": 0.20, "debt_to_equit
 GROWTH_WEIGHTS = {"revenue_growth_yoy": 0.30, "eps_growth_yoy": 0.30, "revenue_cagr_3yr": 0.40}
 
 
-def _weighted_zscore_composite(ratios: Dict[str, float], weights: Dict[str, float]) -> Optional[float]:
-    """
-    Weighted sum of sector-relative z-scores, renormalized over whichever
-    inputs are actually non-NaN, mapped onto a 0-100 display scale via
-    `50 + 10 * weighted_z` (z is clipped to [-5, 5] upstream by
-    features.fundamental.Z_SCORE_CLIP, so this lands in roughly [0, 100]
-    before the final clip) — same display-scale convention
-    forensic_classical.py already uses for its 0-100 composite.
-
-    Returns None if every weighted input is NaN (e.g. a brand-new listing
-    with no PIT-eligible fundamentals yet).
-    """
-    total_weight = 0.0
-    weighted_sum = 0.0
-    for col, w in weights.items():
-        v = ratios.get(col)
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            continue
-        weighted_sum += w * v
-        total_weight += abs(w)
-    if total_weight == 0:
-        return None
-    weighted_z = weighted_sum / total_weight
-    return float(np.clip(50 + 10 * weighted_z, 0, 100))
+# Moved to systems/fundamental_analysis/scoring_utils.py so the new
+# quality_value/fcf_low_debt/magic_formula/garp scores (imported below)
+# can share it without this module importing back from that package.
+# Kept as a module-level alias since it's already imported elsewhere as
+# `features.fundamental_composites._weighted_zscore_composite`.
+_weighted_zscore_composite = weighted_zscore_composite
 
 
 def quality_score(ratios: Dict[str, float]) -> Optional[float]:
@@ -141,24 +163,98 @@ def select_peers(
     return sorted(candidates)[:k]
 
 
+# [2026-07-25 model-review fix] No preset ever had a version/changelog
+# mechanism, so an old backtest report referencing preset="X" gives no way
+# to tell, from the report alone, which threshold DEFINITION of X produced
+# it if X was later changed in place (backtest-reviewer's finding — this
+# had already happened once, to "garp", before this changelog existed).
+# Going forward, any in-place SCREENER_PRESETS mutation should get an
+# entry here so an auditor can at least look this dict up, even though the
+# backtest_runs table itself still doesn't stamp a preset version per run.
+SCREENER_PRESET_CHANGELOG: Dict[str, List[Dict[str, str]]] = {
+    "garp": [
+        {
+            "date": "2026-07-25",
+            "change": (
+                "Replaced {'revenue_growth_yoy': 0.5, 'pe_ratio': -0.5} with "
+                "{'revenue_growth_yoy': 0.5, 'eps_growth_yoy': 0.5, 'pe_ratio': -0.5} "
+                "(added EPS growth leg, matching the source formula catalog's GARP "
+                "definition more closely). Any backtest report with preset='garp' "
+                "dated before 2026-07-25 used the OLD (looser, 2-factor) definition."
+            ),
+        },
+    ],
+}
+
 # Screener presets operate on sector-relative z-scores (the only ratio
 # representation the feature Parquet carries) — "quality compounder" means
 # "above sector peers on these dimensions," not an absolute % threshold.
 SCREENER_PRESETS = {
     "quality_compounder": {"roe": 1.0, "roce": 1.0, "debt_to_equity": -0.5},  # min z-score per column (sign-adjusted)
-    "garp": {"revenue_growth_yoy": 0.5, "pe_ratio": -0.5},  # growth above peers, valuation below peers
+    # Replaced in place with the faithful GARP formula (growth + PE
+    # discipline) — previously just revenue_growth_yoy/pe_ratio at looser
+    # thresholds. Historical preset="garp" backtest re-runs will now match
+    # a different (stricter) set of tickers than before this change. See
+    # SCREENER_PRESET_CHANGELOG above for the auditable record of this change.
+    "garp": {"revenue_growth_yoy": 0.5, "eps_growth_yoy": 0.5, "pe_ratio": -0.5},
     "turnaround": {"revenue_growth_yoy": 1.0, "eps_growth_yoy": 1.0},  # strong recent acceleration vs peers
+    # Magic Formula: cheap on EV/EBIT and high return on capital, both above sector peers.
+    "magic_formula": {"ev_ebit_yield": 0.5, "magic_formula_roc": 0.5},
+    # Quality-Value Composite: cheap (EV/EBIT, book-to-market) + quality (ROCE/ROE), above sector peers.
+    "quality_value": {"ev_ebit_yield": 0.3, "book_to_market": 0.3, "roce": 0.3, "roe": 0.3},
+    # FCF Yield + Low Debt: strong cash generation, below-peer leverage, above-peer interest coverage.
+    "fcf_low_debt": {"fcf_ev_yield": 0.5, "debt_to_ebitda": -0.5, "interest_coverage": 0.3},
+    # Deep Value with Solvency Filter: cheap only if leverage/liquidity are also above-peer safe.
+    "deep_value_solvency": {
+        "book_to_market": 0.3, "ev_ebit_yield": 0.3,
+        "debt_to_equity": -0.3, "interest_coverage": 0.3, "current_ratio": 0.2,
+    },
+    # Cash-Flow-Backed Earnings: anti-manipulation filter — CFO/PAT and FCF/EV
+    # above peers, receivable days not deteriorating vs peers.
+    "cash_flow_backed_earnings": {
+        "cfo_to_pat": 0.5, "fcf_ev_yield": 0.3, "receivable_days_change": -0.3,
+    },
+    # Turnaround with Financial Recovery: ROA/current-ratio improving, leverage
+    # falling, margins expanding — all vs. sector peers, stricter than plain Turnaround.
+    "turnaround_recovery": {
+        "delta_roa_1y": 0.3, "delta_current_ratio_1y": 0.3,
+        "delta_long_term_debt_to_assets_1y": -0.3, "margin_expansion": 0.3,
+    },
+}
+
+# [2026-07-25 model-review fix] domain-expert's top finding: sector-relative
+# z-scoring does NOT fix Magic Formula's EV/EBIT-yield and NWC-based ROC
+# formulas being structurally meaningless for banks/NBFCs/insurers — EBIT
+# isn't a coherent concept when "revenue" is net interest income, and
+# "current liabilities" for a bank includes customer deposits (core
+# funding, not a working-capital drag). Comparing a bank's nonsensical
+# EV/EBIT-ROC only to other banks' equally nonsensical EV/EBIT-ROC still
+# ranks on noise. Greenblatt's own Magic Formula excludes Financials for
+# exactly this reason; that exclusion is a correctness fix, not optional.
+# This project's sector taxonomy (config/sector_index_map.py) has a single
+# "Financial Services" bucket covering banks/NBFCs/insurers — no separate
+# per-subsector values exist.
+PRESET_EXCLUDED_SECTORS: Dict[str, set] = {
+    "magic_formula": {"Financial Services"},
 }
 
 
-def matches_screener_preset(ratios: Dict[str, float], preset: str) -> bool:
+def matches_screener_preset(ratios: Dict[str, float], preset: str, sector: Optional[str] = None) -> bool:
     """True if every z-scored ratio in SCREENER_PRESETS[preset] clears its
     threshold (thresholds already sign-adjusted so 'pass' always means
     `value >= threshold`, e.g. pe_ratio's -0.5 means 'at least half a
     sector-std cheaper than peers'). Missing inputs fail the screen
-    (conservative — never include a ticker on incomplete data)."""
+    (conservative — never include a ticker on incomplete data).
+
+    `sector`, if supplied, is checked against PRESET_EXCLUDED_SECTORS —
+    tickers in an excluded sector always fail, regardless of ratios (see
+    that dict's comment for why). Callers that don't have sector on hand
+    for a given preset will simply never trigger this filter — a caller
+    upgrade, not a new required argument."""
     if preset not in SCREENER_PRESETS:
         raise ValueError(f"Unknown screener preset: {preset}")
+    if sector is not None and sector in PRESET_EXCLUDED_SECTORS.get(preset, set()):
+        return False
     for col, threshold in SCREENER_PRESETS[preset].items():
         v = ratios.get(col)
         if v is None or (isinstance(v, float) and np.isnan(v)):
@@ -168,3 +264,109 @@ def matches_screener_preset(ratios: Dict[str, float], preset: str) -> bool:
         if signed_v < signed_threshold:
             return False
     return True
+
+
+# Investor-style menu metadata for the frontend (GET /api/v1/fundamentals/
+# screener/catalog, datastore/api/routers/fundamentals.py) — all 26
+# strategies from the India-Specific Fundamental Analysis Strategy Catalog.
+# `kind` tells a caller how to run the strategy:
+#   "preset"          -> matches_screener_preset(ratios, key) via SCREENER_PRESETS
+#   "composite_score" -> SCORE_FUNCTIONS[key](ratios), a continuous 0-100 rank
+#   "bespoke"         -> a dedicated module under systems/fundamental_analysis/
+#                        that reads raw PIT financials directly (not the
+#                        z-scored panel) — piotroski_on_value, margin_of_safety, net_net.
+STRATEGY_CATALOG: Dict[str, Dict[str, str]] = {
+    "piotroski_on_value": {"label": "Piotroski-on-Value", "category": "Value", "kind": "bespoke",
+                            "description": "Cheap stocks filtered by Piotroski F-Score >= 8."},
+    "magic_formula": {"label": "Magic Formula", "category": "Value", "kind": "preset",
+                       "description": "Earnings yield + return on capital (Greenblatt)."},
+    "margin_of_safety": {"label": "Margin of Safety Value", "category": "Value", "kind": "bespoke",
+                          "description": "Graham/Klarman conservative intrinsic value + solvency gate."},
+    "net_net": {"label": "Net-Net / Asset Value", "category": "Value", "kind": "bespoke",
+                "description": "Graham deep value: price below net current asset value."},
+    "deep_value_solvency": {"label": "Deep Value with Solvency Filter", "category": "Value", "kind": "preset",
+                             "description": "Cheap stocks only if leverage/liquidity are controlled."},
+    "quality_value": {"label": "Quality Value Composite", "category": "Quality", "kind": "preset",
+                       "description": "Valuation + ROCE/ROE + cash-flow quality."},
+    "fcf_low_debt": {"label": "FCF Yield + Low Debt", "category": "Quality", "kind": "preset",
+                      "description": "Cash generation with balance-sheet safety."},
+    "owner_earnings": {"label": "Owner Earnings Compounders", "category": "Quality", "kind": "composite_score",
+                        "description": "Buffett-style owner-earnings yield + ROCE + reinvestment."},
+    "moat": {"label": "Moat Compounders", "category": "Quality", "kind": "composite_score",
+             "description": "Durable-advantage proxy: 5yr ROCE persistence + margin stability."},
+    "capital_allocation": {"label": "Capital Allocation Quality", "category": "Quality", "kind": "composite_score",
+                            "description": "Whether retained capital creates value over time."},
+    "cash_flow_backed_earnings": {"label": "Cash-Flow-Backed Earnings", "category": "Quality", "kind": "preset",
+                                   "description": "Anti-manipulation filter: earnings converting to cash."},
+    "sector_leader": {"label": "Sector-Leader Compounders", "category": "Quality", "kind": "composite_score",
+                       "description": "Industry leaders that defend margins and compound longer."},
+    "garp": {"label": "GARP / PEG", "category": "Growth", "kind": "preset",
+             "description": "Growth at a reasonable price (Lynch)."},
+    "qglp": {"label": "QGLP Composite", "category": "Growth", "kind": "composite_score",
+             "description": "Quality + Growth + Longevity + Price (Raamdeo Agrawal)."},
+    "longevity": {"label": "Longevity Compounders", "category": "Growth", "kind": "composite_score",
+                  "description": "Durability over raw growth speed."},
+    "story_numbers": {"label": "Story + Numbers Confirmation", "category": "Growth", "kind": "composite_score",
+                       "description": "Narrative confirmed by growth + cash conversion."},
+    "earnings_rerating": {"label": "Earnings Re-rating Candidates", "category": "Growth", "kind": "composite_score",
+                           "description": "Fundamentals inflecting before valuation catches up."},
+    "small_cap_compounders": {"label": "Small-Cap Compounders", "category": "Growth", "kind": "composite_score",
+                               "description": "Small size + quality/growth + risk control (Kedia, Khanna)."},
+    "smile": {"label": "SMILE Growth Framework", "category": "Growth", "kind": "composite_score",
+              "description": "Small size, experience, aspiration, market potential (Kedia)."},
+    "under_followed": {"label": "Under-followed Growth Improvers", "category": "Growth", "kind": "composite_score",
+                        "description": "Re-rating discovery in under-owned smaller companies (Khanna)."},
+    "capital_efficiency": {"label": "Capital-Efficiency Growth", "category": "Growth", "kind": "composite_score",
+                            "description": "Growth without balance-sheet stress."},
+    "governance_quality_growth": {"label": "Governance-Aware Quality Growth", "category": "Governance",
+                                   "kind": "composite_score",
+                                   "description": "Business quality paired with governance discipline (Singhania)."},
+    "promoter_aligned": {"label": "Promoter-Aligned Compounders", "category": "Governance", "kind": "composite_score",
+                          "description": "QGLP overlaid with promoter alignment — an overlay, not standalone."},
+    "contrarian_recovery": {"label": "Contrarian Recovery Value", "category": "Contrarian", "kind": "composite_score",
+                             "description": "Cheap stocks with improving fundamentals behind poor sentiment (Burry)."},
+    "normalization_value": {"label": "Normalization Value", "category": "Contrarian", "kind": "composite_score",
+                             "description": "Cyclicals where current earnings are temporarily depressed."},
+    "turnaround_recovery": {"label": "Turnaround with Financial Recovery", "category": "Contrarian", "kind": "preset",
+                             "description": "Buy distress only after measurable recovery starts."},
+}
+
+# [2026-07-25 model-review fix] product-owner's top finding: a trader
+# opening the strategies page sees 26 named strategies presented as
+# selectable/actionable screens with no indication that none have been
+# backtested — the "hardcoded, not tuned" caveat only lived in code
+# comments, not anywhere a user would see it. This set starts genuinely
+# empty (no strategy has actually been backtested yet — not a
+# placeholder, the real current state) and should be updated only as
+# each strategy actually clears a real walk-forward backtest.
+BACKTESTED_STRATEGIES: set = set()
+for _key, _meta in STRATEGY_CATALOG.items():
+    _meta["backtested"] = _key in BACKTESTED_STRATEGIES
+del _key, _meta
+
+# Callable registry for the "composite_score" kind above — used by the
+# /{ticker}/scores endpoint to compute any of these on demand for one ticker.
+SCORE_FUNCTIONS = {
+    "quality": quality_score,
+    "growth": growth_score,
+    "quality_value": quality_value_composite,
+    "fcf_low_debt": fcf_low_debt_score,
+    "garp": garp_score,
+    "magic_formula": magic_formula_score,
+    "owner_earnings": owner_earnings_score,
+    "moat": moat_score,
+    "capital_allocation": capital_allocation_score,
+    "sector_leader": sector_leader_score,
+    "qglp": qglp_score,
+    "longevity": longevity_score,
+    "story_numbers": story_numbers_score,
+    "earnings_rerating": earnings_rerating_score,
+    "small_cap_compounders": small_cap_compounder_score,
+    "smile": smile_score,
+    "under_followed": under_followed_growth_score,
+    "capital_efficiency": capital_efficiency_growth_score,
+    "governance_quality_growth": governance_quality_growth_score,
+    "promoter_aligned": promoter_aligned_score,
+    "contrarian_recovery": contrarian_recovery_score,
+    "normalization_value": normalization_value_score,
+}

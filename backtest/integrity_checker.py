@@ -71,6 +71,24 @@ _FUNDAMENTALS_DERIVED_PATTERNS = (
     "cfo", "accrual", "revenue", "m_score", "f_score", "o_score",
     "dechow", "piotroski", "beneish", "capex", "cash_flow", "receivable",
     "channel_stuffing", "tax_paid", "fcf_",
+    # [BUG FIX, 2026-07-25 fundamental-strategy-catalog model-review] These
+    # 24 features (features/fundamental.py's VALUE_QUALITY_FEATURES +
+    # MULTIYEAR_FEATURES + DELTA_1Y_FEATURES + SIZE_AGE_FEATURES +
+    # CAPITAL_ALLOCATION_FEATURES) were confirmed by backtest-reviewer to
+    # slip past every existing pattern above — check_02_pit would have
+    # silently PASSED them as PITRule.NONE (safe) despite being derived
+    # from filing data, in any feature_df lacking explicit PIT columns.
+    # Specific compound tokens used (not broad single words like "margin"
+    # or "roa" alone) to preserve this list's stated no-false-positives
+    # design goal. `company_age_years` deliberately excluded — it depends
+    # only on stock_master.listing_date, which is public/known immediately
+    # on listing, not a quarterly-filing-restatement-sensitive value like
+    # the rest of this list.
+    "ev_ebit_yield", "magic_formula", "book_to_market", "market_cap",
+    "avg_roce", "margin_stability", "earnings_volatility", "sales_cagr",
+    "delta_roce", "avg_ebitda_margin", "eps_acceleration", "margin_expansion",
+    "delta_roa", "delta_current_ratio", "delta_long_term_debt",
+    "inventory_days", "dilution_3y", "capital_allocation", "reinvestment_rate",
 )
 
 

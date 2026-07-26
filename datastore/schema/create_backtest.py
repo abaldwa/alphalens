@@ -10,18 +10,21 @@ refactored), Phase 3's backtest_runs API
 Store 6 (Backtest, DuckDB) — see config/settings.py's BACKTEST_DUCKDB_PATH
 docstring for why this is its own file rather than reusing signals.duckdb.
 
-Two tables, both written by every channel/mode (backtest, walk_forward,
-paper) via the shared core/engine.py orchestrator, never per-channel:
+Three tables:
 
 - backtest_runs: one row per BacktestRun (backtest/core/run_context.py),
   the run-record schema. Phase 3 will expose this via
   /api/v1/backtest/*; created here first so Phase 1's engine refactor has
-  somewhere to write to.
+  somewhere to write to. Written by every channel/mode (backtest,
+  walk_forward, paper) via the shared core/engine.py orchestrator.
 - backtest_feature_log: one row per (run_id, ticker, as_of_date) — the
   full feature vector considered for EVERY candidate signal, not just the
   ones ultimately picked (Standard Backtesting Algorithm step 3a), so the
   feature-reengineering/model-finetuning feedback loop can query "what
-  did the model/rule see for stocks it passed on."
+  did the model/rule see for stocks it passed on." Written by every
+  channel/mode via the shared core/engine.py orchestrator.
+- technical_screener_cache: one row per (template_name, as_of_date, ticker)
+  — Technical channel only, see its own docstring below.
 
 Same idempotent CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN IF NOT
 EXISTS pattern as create_signals.py / create_normalised.py.
@@ -114,13 +117,45 @@ _CREATE_BACKTEST_FEATURE_LOG = """
     )
 """
 
+_CREATE_TECHNICAL_SCREENER_CACHE = """
+    CREATE TABLE IF NOT EXISTS technical_screener_cache (
+        template_name VARCHAR NOT NULL,
+        as_of_date DATE NOT NULL,
+        ticker VARCHAR NOT NULL,
+        -- ScreenerResult fields (systems/technical_analysis/screener/engine.py)
+        -- verbatim — this table caches ScreenerEngine.screen()'s raw, full-
+        -- universe, exit-policy-agnostic output so every exit-variant job for
+        -- the same (template, date) reuses one computation instead of each
+        -- independently re-reading/re-scoring the daily feature Parquet
+        -- (backtest/adapters/technical_adapter.py::TechnicalAdapter,
+        -- 2026-07-25 fix — see FeatureBacklog.md). Only score==1.0 (full
+        -- matches) are ever cached, matching screen()'s own "Return only
+        -- full matches" behavior — never truncated to any one job's top_n,
+        -- so it's safe to share across jobs configured with different top_n.
+        matched_conditions INTEGER NOT NULL,
+        total_conditions INTEGER NOT NULL,
+        score DOUBLE NOT NULL,
+        -- Per-ticker technical indicator snapshot at match time (sma_200_ratio,
+        -- rsi_14, etc.) — TechnicalAdapter.feature_vector() reads this back
+        -- for backtest_feature_log; dropping it would silently degrade
+        -- downstream ML feature-vector consumers with no error.
+        key_values_json VARCHAR NOT NULL,
+        PRIMARY KEY (template_name, as_of_date, ticker)
+    )
+"""
+
 _BACKTEST_TABLES = {
     "backtest_runs": _CREATE_BACKTEST_RUNS,
     "backtest_feature_log": _CREATE_BACKTEST_FEATURE_LOG,
+    "technical_screener_cache": _CREATE_TECHNICAL_SCREENER_CACHE,
 }
 
 
-def create_backtest_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> None:
+def create_backtest_schema(
+    db_path: Optional[Path] = None, in_memory: bool = False,
+    retry_attempts: Optional[int] = None, retry_base_delay_s: Optional[float] = None,
+    retry_max_delay_s: Optional[float] = None,
+) -> None:
     """
     Create Store 6 (Backtest) DuckDB tables: backtest_runs, backtest_feature_log.
 
@@ -131,6 +166,11 @@ def create_backtest_schema(db_path: Optional[Path] = None, in_memory: bool = Fal
             config.settings.BACKTEST_DUCKDB_PATH.
         in_memory: If True, create the schema in an in-memory DuckDB
             (db_path is ignored). Used by tests/unit/test_schema_backtest.py.
+        retry_attempts, retry_base_delay_s: passed through to
+            get_duckdb_connection's lock-retry override (2026-07-26 fix —
+            a caller opening this on BACKTEST_DUCKDB_PATH alongside a
+            long-running backtest job should use the same wider budget as
+            the job's own write connection; see run_orchestrator_backtest.py).
     """
     if in_memory:
         db_path = None
@@ -140,7 +180,10 @@ def create_backtest_schema(db_path: Optional[Path] = None, in_memory: bool = Fal
         db_path = BACKTEST_DUCKDB_PATH
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_duckdb_connection(db_path) as conn:
+    with get_duckdb_connection(
+        db_path, retry_attempts=retry_attempts, retry_base_delay_s=retry_base_delay_s,
+        retry_max_delay_s=retry_max_delay_s,
+    ) as conn:
         for table_name, ddl in _BACKTEST_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")

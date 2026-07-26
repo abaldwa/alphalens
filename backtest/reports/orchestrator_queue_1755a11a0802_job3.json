@@ -12,16 +12,17 @@
     "sip_amount": null,
     "sip_cadence_days": null,
     "random_seed": 0,
-    "run_id": "orch_technical_20260725_005202_9e0c85c4",
+    "run_id": "orch_technical_20260725_073316_11092a1c",
     "parent_run_id": null,
-    "created_at": "2026-07-24 19:24:00.599004",
+    "created_at": "2026-07-25 02:05:18.062640",
     "config": {
       "template_name": "A1",
       "preset": null,
       "top_n": 10,
       "lookback_months": 6,
       "max_tickers": 800,
-      "min_history_days": 60
+      "min_history_days": 60,
+      "exit_variant": "trailing"
     }
   },
   "metrics": {
@@ -13278,37 +13279,12 @@
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "AURUM",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "EVEREADY",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
       "ticker": "BORORENEW",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
     {
-      "ticker": "GEEKAYWIRE",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "CGCL",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "BANCOINDIA",
-      "as_of_date": "2024-07-25",
-      "reason": "no_price_marking_open_position_at_last_known_price"
-    },
-    {
-      "ticker": "CAMS",
+      "ticker": "AURUM",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -13319,6 +13295,31 @@
     },
     {
       "ticker": "GOLDIAM",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "BANCOINDIA",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CGCL",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "CAMS",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "GEEKAYWIRE",
+      "as_of_date": "2024-07-25",
+      "reason": "no_price_marking_open_position_at_last_known_price"
+    },
+    {
+      "ticker": "EVEREADY",
       "as_of_date": "2024-07-25",
       "reason": "no_price_marking_open_position_at_last_known_price"
     },
@@ -14319,6 +14320,6 @@
   ],
   "exit_policy_variant": "trailing",
   "regime_label": "bull",
-  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_005202_9e0c85c4.csv",
-  "runtime_seconds": 256.1879998039999
+  "trade_log_path": "/home/amit/projects/AlphaLens/backtest/reports/trade_log_orch_technical_20260725_073316_11092a1c.csv",
+  "runtime_seconds": 276.81926185700286
 }
