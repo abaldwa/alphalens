@@ -92,6 +92,23 @@ FUNDAMENTAL_PRESET_DEFAULT_HORIZON = {
     "quality_compounder": HorizonBucket.Y1,
     "garp": HorizonBucket.D63,
     "turnaround": HorizonBucket.D63,
+    # 2026-07-26: extended to cover every preset/bespoke entry in
+    # features/fundamental_composites.py::STRATEGY_CATALOG that's actually
+    # runnable via the orchestrator (kind in {"preset", "bespoke"}) — until
+    # now only 3 of the 10 had a horizon default, so queuing any of the
+    # other 7 raised ValueError at job start. Same reasoning style as
+    # above: deep-value/bespoke theses (margin_of_safety, net_net) are the
+    # most patient (1y); quality_value is a buy-and-hold quality thesis
+    # (1y); the rest are quarter-ish re-rating/recovery plays (63d).
+    "piotroski_on_value": HorizonBucket.D63,
+    "magic_formula": HorizonBucket.D63,
+    "margin_of_safety": HorizonBucket.Y1,
+    "net_net": HorizonBucket.Y1,
+    "deep_value_solvency": HorizonBucket.D63,
+    "quality_value": HorizonBucket.Y1,
+    "fcf_low_debt": HorizonBucket.D63,
+    "cash_flow_backed_earnings": HorizonBucket.D63,
+    "turnaround_recovery": HorizonBucket.D63,
 }
 
 # Per-preset exit params (PerTemplateExitPolicy) — same reasoning that
@@ -108,6 +125,19 @@ FUNDAMENTAL_PRESET_EXIT_PARAMS: Dict[str, Dict[str, float]] = {
     "quality_compounder": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
     "garp": {"stop_pct": 0.06, "target_pct": 0.15, "max_hold_days": 40},
     "turnaround": {"stop_pct": 0.10, "target_pct": 0.25, "max_hold_days": 45},
+    # 2026-07-26: paired with the FUNDAMENTAL_PRESET_DEFAULT_HORIZON
+    # extension above — same 7 presets, same reasoning (deep-value/
+    # buy-and-hold theses get the widest stop/target and longest hold;
+    # quarter-ish re-rating/recovery plays sit in between).
+    "piotroski_on_value": {"stop_pct": 0.08, "target_pct": 0.18, "max_hold_days": 50},
+    "magic_formula": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "margin_of_safety": {"stop_pct": 0.09, "target_pct": 0.22, "max_hold_days": 60},
+    "net_net": {"stop_pct": 0.10, "target_pct": 0.25, "max_hold_days": 60},
+    "deep_value_solvency": {"stop_pct": 0.08, "target_pct": 0.18, "max_hold_days": 50},
+    "quality_value": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 55},
+    "fcf_low_debt": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "cash_flow_backed_earnings": {"stop_pct": 0.07, "target_pct": 0.15, "max_hold_days": 40},
+    "turnaround_recovery": {"stop_pct": 0.10, "target_pct": 0.25, "max_hold_days": 45},
 }
 
 

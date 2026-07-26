@@ -374,15 +374,32 @@ class BacktestIntegrityChecker:
             name, True, f"{suspect_cols} present but feature window is only {span_days} days (<= 1 year)",
         )
 
-    def run_all_checks(self) -> Dict[str, bool]:
+    def run_all_checks(self, applicable_checks: Optional[Set[str]] = None) -> Dict[str, bool]:
         """
         Run every check; raise if any CRITICAL check fails.
+
+        Parameters
+        ----------
+        applicable_checks : set of str, optional
+            2026-07-26 (REV4/REV6 wiring): restrict which of ALL_CHECK_NAMES
+            actually run. None (default) runs all of them, unchanged
+            behavior for every existing caller (backtest/engine.py).
+            Exists because check_10_random_feature has no meaningful
+            equivalent for a rule-based screener/composite strategy (no
+            trainable model to shuffle features on) — a caller for those
+            channels should EXCLUDE it here rather than let it report a
+            misleading "no random_feature_accuracy provided" FAIL, which
+            would read as a real overfitting signal instead of "not
+            applicable." Excluded checks are simply absent from the
+            returned dict (not silently marked True) — callers must
+            handle "not run" distinctly from "passed."
 
         Returns
         -------
         dict
-            {check_name: passed} for all 10 checks (only returned if no
-            critical check failed).
+            {check_name: passed} for every check in applicable_checks (or
+            all of them if None) — only returned if no critical check
+            among those actually run failed.
 
         Raises
         ------
@@ -390,7 +407,8 @@ class BacktestIntegrityChecker:
             If any check in CRITICAL_CHECKS failed — the backtest result
             is not trustworthy and must not be used.
         """
-        results = {name: getattr(self, name)() for name in ALL_CHECK_NAMES}
+        names = ALL_CHECK_NAMES if applicable_checks is None else [n for n in ALL_CHECK_NAMES if n in applicable_checks]
+        results = {name: getattr(self, name)() for name in names}
         self._results_cache = results
 
         critical_failures = [r for r in results.values() if r.critical and not r.passed]

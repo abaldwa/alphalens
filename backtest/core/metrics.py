@@ -42,6 +42,7 @@ class BacktestMetrics:
     max_drawdown: float
     win_rate: Optional[float]
     profit_factor: Optional[float]
+    sharpe: Optional[float]  # 2026-07-26 (REV6 wiring): annualized daily-return Sharpe, rf=0 — deflated_sharpe_ratio's required input; None with < 2 return observations or zero volatility
     sortino: Optional[float]
     sortino_none_reason: Optional[str]  # REV19: why sortino is None, when it is
     calmar: Optional[float]
@@ -91,6 +92,37 @@ def max_drawdown(equity_curve: pd.Series) -> float:
     return float(drawdown.min())
 
 
+_TRADING_DAYS_PER_YEAR = 252
+
+# A degenerate (no-trade / flat-equity) run's std/drawdown comes out as
+# float rounding noise (e.g. 1e-16), not exact zero — every `== 0`
+# division-by-zero guard below needs this tolerance instead, or the
+# guard silently doesn't fire and a mean-noise/std-noise ratio gets
+# reported as if it were a real metric (found 2026-07-26 auditing the
+# B4 technical template: 0 trades, non-null Sharpe of -0.32).
+_NEAR_ZERO_STD = 1e-9
+
+
+def sharpe_ratio(returns: pd.Series) -> Optional[float]:
+    """Annualized daily-return Sharpe (rf=0). None with < 2 return
+    observations or zero volatility (division-by-zero guard) — matches
+    sortino_ratio's None-on-insufficient-data convention. 2026-07-26
+    (REV6 wiring): the required scalar input to overfit_checks.
+    deflated_sharpe_ratio; BacktestMetrics had no Sharpe field before this.
+
+    Uses _NEAR_ZERO_STD (not `== 0`) since a degenerate (no-trade, flat
+    equity) run's std comes out as float noise like 1e-16, not exact
+    zero — an exact-equality guard let a meaningless mean-noise/std-noise
+    ratio (e.g. -0.32 on a 0-trade run) through as if it were a real
+    Sharpe (found 2026-07-26 auditing the B4 technical template)."""
+    if len(returns) < 2:
+        return None
+    std = returns.std()
+    if pd.isna(std) or std < _NEAR_ZERO_STD:
+        return None
+    return float(returns.mean() / std * (_TRADING_DAYS_PER_YEAR**0.5))
+
+
 def sortino_ratio(
     returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> Tuple[Optional[float], Optional[str]]:
@@ -109,7 +141,7 @@ def sortino_ratio(
     if len(downside) == 0:
         return None, "no_downside_periods"
     downside_std = downside.std()
-    if downside_std == 0 or np.isnan(downside_std):
+    if np.isnan(downside_std) or downside_std < _NEAR_ZERO_STD:
         return None, "zero_downside_std"
     mean_return = returns.mean()
     return float((mean_return * periods_per_year) / (downside_std * np.sqrt(periods_per_year))), None
@@ -119,7 +151,7 @@ def calmar_ratio(cagr_value: Optional[float], mdd: float) -> Tuple[Optional[floa
     """Returns (value, none_reason) — see sortino_ratio's docstring for why."""
     if cagr_value is None:
         return None, "no_cagr"
-    if mdd == 0:
+    if abs(mdd) < _NEAR_ZERO_STD:
         return None, "zero_or_undefined_drawdown"
     return cagr_value / abs(mdd), None
 
@@ -196,6 +228,7 @@ def compute_metrics(
     bench_cagr, excess_return, bench_status = benchmark_metrics(
         cagr_value, benchmark_equity_curve, start_date, end_date
     )
+    sharpe_value = sharpe_ratio(returns)
     sortino_value, sortino_reason = sortino_ratio(returns)
     calmar_value, calmar_reason = calmar_ratio(cagr_value, mdd)
 
@@ -208,6 +241,7 @@ def compute_metrics(
         max_drawdown=mdd,
         win_rate=win_rate,
         profit_factor=profit_factor,
+        sharpe=sharpe_value,
         sortino=sortino_value,
         sortino_none_reason=sortino_reason,
         calmar=calmar_value,
@@ -224,7 +258,7 @@ def compute_metrics(
 
 
 __all__ = [
-    "BacktestMetrics", "calendar_cagr", "trading_day_cagr", "max_drawdown", "sortino_ratio",
+    "BacktestMetrics", "calendar_cagr", "trading_day_cagr", "max_drawdown", "sharpe_ratio", "sortino_ratio",
     "calmar_ratio", "win_rate_and_profit_factor", "turnover_ratio", "benchmark_metrics",
     "compute_metrics", "churn_factor", "xirr",
 ]

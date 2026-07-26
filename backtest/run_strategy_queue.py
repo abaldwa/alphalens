@@ -50,7 +50,7 @@ import logging
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import date as date_type, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -109,6 +109,61 @@ def _run_job(job: Dict[str, Any], job_index: int, report_suffix: str) -> Dict[st
     elapsed_s = time.monotonic() - started
     logger.info(f"run_strategy_queue: job[{job_index}] exited {proc.returncode} in {elapsed_s:.0f}s")
     return {"job_index": job_index, "kind": job.get("kind"), "job": job, "returncode": proc.returncode, "elapsed_s": elapsed_s}
+
+
+def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_trials_so_far: int) -> None:
+    """2026-07-26 (REV6 wiring, model-review-corrected design): called
+    right after ONE job is marked 'completed' — computes deflated Sharpe
+    using n_trials=n_trials_so_far (the count of jobs completed in THIS
+    queue up to and including this one, matching backtest/iterative_
+    retrain.py::RetrainLoop's live n_trials_so_far convention) and writes
+    it back immediately. Deliberately NOT a batch pass run once after the
+    whole queue finishes — reviewers confirmed a full-queue batch pass
+    can't function as a gate (nothing can be rejected once every row is
+    already published) and risks becoming another "exists but nobody
+    calls it" utility if left as a manual/on-demand step. Only orchestrator
+    jobs (technical/fundamental/momentum) are handled here — iterative_
+    retrain jobs already compute/gate their own DSR internally.
+
+    Failures here are logged, never raised — a bug in this NEW wiring
+    must never abort an otherwise-successful queue."""
+    if job.get("kind") != "orchestrator":
+        return
+    try:
+        report_path = REPORTS_DIR / f"orchestrator_{suffix}_job{job_index}.json"
+        report = json.loads(report_path.read_text())
+        run_id = report["run"]["run_id"]
+        sharpe = report.get("metrics", {}).get("sharpe")
+        if sharpe is None:
+            logger.info(f"run_strategy_queue: job[{job_index}] has no sharpe (degenerate/empty run) — skipping DSR")
+            return
+        start_date = date_type.fromisoformat(str(report["run"]["start_date"])[:10])
+        end_date = date_type.fromisoformat(str(report["run"]["end_date"])[:10])
+        # Trading-day observation count approximated from the calendar span
+        # (~252/365.25 trading days per calendar day) — the report doesn't
+        # carry a literal daily-return count; deflated_sharpe_ratio's own
+        # docstring accepts an approximate n_obs (skew/kurtosis correction,
+        # which needs the real return series, is the precise part — that's
+        # only applied when `returns` is passed, which this approximation
+        # deliberately omits rather than fabricate a return series).
+        n_obs = max(int((end_date - start_date).days * (252 / 365.25)), 1)
+
+        from backtest.overfit_checks import deflated_sharpe_ratio
+        from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S
+        from backtest.core.run_store import update_dsr
+        from datastore.api.db import get_duckdb_connection
+
+        dsr = deflated_sharpe_ratio(sharpe=sharpe, n_trials=n_trials_so_far, n_obs=n_obs)
+        with get_duckdb_connection(
+            BACKTEST_DUCKDB_PATH, read_only=False, persist=False,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        ) as conn:
+            update_dsr(conn, run_id, dsr, n_trials_so_far, post_hoc=False)
+        logger.info(f"run_strategy_queue: job[{job_index}] dsr={dsr:.3f} (n_trials={n_trials_so_far}, n_obs={n_obs})")
+    except Exception:
+        logger.warning(f"run_strategy_queue: DSR computation failed for job[{job_index}] — leaving unset", exc_info=True)
 
 
 def _job_label(job: Dict[str, Any]) -> str:
@@ -214,6 +269,9 @@ def run_queue(
         result = _run_job(job, i, suffix)
         statuses[i] = "completed" if result["returncode"] == 0 else "failed"
         _write_progress(progress_path, jobs, statuses)
+        if statuses[i] == "completed":
+            n_trials_so_far = sum(1 for s in statuses if s == "completed")
+            _compute_and_write_dsr(job, i, suffix, n_trials_so_far)
         results.append(result)
         if result["returncode"] != 0:
             logger.error(f"run_strategy_queue: job[{i}] failed (exit {result['returncode']})")

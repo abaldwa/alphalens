@@ -791,6 +791,7 @@ class BacktestOrchestrator:
         )
 
         regime_breakdown: List[Dict[str, Any]] = []
+        segments: List[Dict[str, Any]] = []
         if self._regime_conn is not None:
             from dataclasses import asdict as _asdict
 
@@ -805,6 +806,29 @@ class BacktestOrchestrator:
                 _asdict(row)
                 for row in compute_regime_breakdown(equity_curve, portfolio.trades, start_date, end_date, segments)
             ]
+
+        # 2026-07-26 (REV1/REV4/REV6 wiring): post-run integrity checks fed
+        # REAL derived inputs (this run's own trades/data_gaps/regime
+        # segments) — see backtest/core/post_run_checks.py's module
+        # docstring for the model-review-corrected design (regime-segment
+        # sub-periods, not calendar slices; check_10 skipped for rule-based
+        # channels). None/{} (unchanged prior behavior) if this raises —
+        # a bug in this NEW wiring must never fail an otherwise-successful
+        # run's save.
+        integrity_passed: Optional[bool] = None
+        integrity_detail: Dict[str, Any] = {}
+        try:
+            from backtest.core.post_run_checks import run_post_run_integrity
+
+            integrity_passed, integrity_detail = run_post_run_integrity(
+                channel=run.channel, trades=portfolio.trades,
+                data_gaps=[{"reason": g.reason} for g in data_gaps],
+                equity_curve=equity_curve, run_start=start_date, run_end=end_date,
+                regime_segments=segments, regime_conn=self._regime_conn,
+                regime_index_name=self._regime_index_name,
+            )
+        except Exception:
+            logger.warning("post-run integrity checks failed to run for %s; leaving unset", run.run_id, exc_info=True)
 
         trade_log_path = self._write_trade_log(run.run_id, portfolio.trades)
 
@@ -824,6 +848,8 @@ class BacktestOrchestrator:
         return BacktestRunResult(
             run=run,
             metrics=asdict(metrics),
+            integrity_passed=integrity_passed,
+            integrity_detail=integrity_detail,
             data_gaps=[{"ticker": g.ticker, "as_of_date": g.as_of_date.isoformat(), "reason": g.reason} for g in data_gaps],
             refit_log=[{"as_of_date": r.as_of_date.isoformat(), "model_version": r.model_version} for r in (refit_log or [])],
             execution_timing=execution_timing,

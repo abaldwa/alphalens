@@ -61,17 +61,44 @@ features/matrix_builder.py calls this for `as_of` = today only.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-from config.settings import FNO_ELIGIBILITY_LOOKBACK_DAYS, INDIA_RISK_FREE_RATE, IV_SOLVER_MAX_VOL, IV_SOLVER_MIN_VOL
+from config.settings import DUCKDB_PATH, FNO_ELIGIBILITY_LOOKBACK_DAYS, INDIA_RISK_FREE_RATE, IV_SOLVER_MAX_VOL, IV_SOLVER_MIN_VOL
 from datastore.client import DataStoreClient
 
 logger = logging.getLogger(__name__)
+
+
+def load_ever_fno_eligible_tickers() -> Set[str]:
+    """
+    Every ticker with at least one real STO/STF row anywhere in fno_data's
+    history — no date filter, deliberately. Unlike config.universe's
+    is_fno_eligible (relative to CURRENT_DATE, so it drifts as tickers gain/
+    lose F&O activity), this is PIT-agnostic: safe to use as a pre-filter
+    for compute_fno_features_panel's fno_eligible_tickers on ANY historical
+    `as_of`, since a ticker absent from this set has never had F&O data at
+    any point and can never resolve to anything but the all-NaN row
+    get_fno_chain would return for it anyway — this only skips the
+    guaranteed-empty API call, never changes what a given date returns.
+    """
+    try:
+        from datastore.api.db import fno_db_path_for, get_duckdb_connection
+
+        fno_path = fno_db_path_for(str(DUCKDB_PATH))
+        if not fno_path.exists():
+            logger.warning("fno_data not found at %s — no F&O eligibility pre-filter applied", fno_path)
+            return set()
+        with get_duckdb_connection(fno_path, persist=False, read_only=True) as conn:
+            df = conn.execute("SELECT DISTINCT ticker FROM fno_data WHERE instrument IN ('STO', 'STF')").df()
+        return set(df["ticker"])
+    except Exception as exc:
+        logger.warning("Could not load ever-F&O-eligible tickers (%s) — no pre-filter applied", exc)
+        return set()
 
 FNO_FEATURES: List[str] = [
     "pcr_oi",
@@ -309,6 +336,7 @@ def compute_fno_features_panel(
     tickers: List[str],
     as_of: datetime,
     data_cache=None,
+    fno_eligible_tickers: Optional[Set[str]] = None,
 ) -> pd.DataFrame:
     """
     Compute the 16-feature F&O panel for many tickers.
@@ -318,6 +346,18 @@ def compute_fno_features_panel(
     client : DataStoreClient
     tickers : list of str
     as_of : datetime
+    fno_eligible_tickers : set of str, optional
+        [2026-07-26 perf fix] Only ~180-200 of ~2,300 universe tickers are
+        ever F&O-eligible (config.universe's is_fno_eligible), but this
+        function used to call client.get_fno_chain for every ticker
+        regardless — one live API round-trip per non-eligible ticker per
+        date, ~2,100 wasted calls/day, the dominant cost of a full-universe
+        backfill (confirmed: 2,317 of ~2,423 HTTP calls for one backtest
+        day were this call). When supplied, non-eligible tickers skip the
+        API call entirely and get the same all-NaN row SPEC-FEAT-004
+        already specifies for them — behavior-preserving, pure perf fix.
+        None (default) preserves the original call-everyone behavior for
+        callers that don't have this set on hand.
 
     Returns
     -------
@@ -332,6 +372,11 @@ def compute_fno_features_panel(
     """
     records = []
     for ticker in tickers:
+        if fno_eligible_tickers is not None and ticker not in fno_eligible_tickers:
+            feats = {f: np.nan for f in FNO_FEATURES}
+            feats["ticker"] = ticker
+            records.append(feats)
+            continue
         try:
             pre_rows = (
                 data_cache.get_fno(ticker, as_of - pd.Timedelta(days=FNO_ELIGIBILITY_LOOKBACK_DAYS), as_of)

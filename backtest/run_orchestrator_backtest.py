@@ -45,6 +45,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import date as date_type
@@ -413,7 +414,17 @@ def run_orchestrator_backtest(
                 regime_method=regime_method,
             ).run(run, adapter, config)
             feature_log_writer.flush()
-            save_run_result(conn, result)
+            # 2026-07-26 (REV6 wiring): report_suffix from run_strategy_queue.py
+            # is "{queue_suffix}_job{N}" (see _job_to_cmd's --report-suffix
+            # construction) — strip the trailing "_jobN" to recover the
+            # queue-level id every job in the same sweep shares, so DSR's
+            # n_trials can be counted per sweep. A standalone (non-queue)
+            # CLI invocation's report_suffix has no "_jobN" suffix and is
+            # used as its own queue_id unchanged (a queue_id of 1 doesn't
+            # break anything downstream — DSR with n_trials=1 is simply
+            # uncorrected, the mathematically correct answer for a lone run).
+            queue_id = re.sub(r"_job\d+$", "", report_suffix) if report_suffix else None
+            save_run_result(conn, result, queue_id=queue_id)
 
             # strategy_catalog upsert (2026-07-24 addition, additive only —
             # does not affect run/simulation logic): one row per distinct

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from backtest.core.metrics import calendar_cagr, max_drawdown, win_rate_and_profit_factor
+from backtest.core.metrics import calendar_cagr, max_drawdown, sharpe_ratio, win_rate_and_profit_factor
 
 
 @dataclass
@@ -33,6 +33,17 @@ class RegimeBreakdownRow:
     profit_factor: Optional[float]
     n_trades: int
     n_days: int
+    # 2026-07-26 (REV4 wiring, backtest/core/post_run_checks.py): this
+    # segment's own daily-return Sharpe — added so a run's regime segments
+    # can feed BacktestIntegrityChecker.check_08_fold_stability as
+    # market-regime-aligned sub-periods instead of arbitrary equal-length
+    # calendar slices (model-review 2026-07-26: contiguous calendar slices
+    # of one continuous equity curve are autocorrelated and mechanically
+    # bias std(fold_sharpes) toward passing; regime-segment boundaries are
+    # at least defined by an independent real market-state signal, not the
+    # calendar). None when the segment has too few days for a meaningful
+    # Sharpe (< 2 return observations).
+    sharpe: Optional[float] = None
 
 
 def compute_regime_breakdown(
@@ -65,6 +76,7 @@ def compute_regime_breakdown(
 
         seg_cagr = calendar_cagr(float(seg_curve.iloc[0]), float(seg_curve.iloc[-1]), seg_start, seg_end)
         seg_mdd = max_drawdown(seg_curve)
+        seg_sharpe = sharpe_ratio(seg_curve.pct_change().dropna())
 
         seg_trades = [t for t in trades if seg_start <= _as_date(t.exit_date) <= seg_end]
         wr, pf = win_rate_and_profit_factor([t.pnl_inr for t in seg_trades])
@@ -80,6 +92,7 @@ def compute_regime_breakdown(
                 profit_factor=pf,
                 n_trades=len(seg_trades),
                 n_days=int(mask.sum()),
+                sharpe=seg_sharpe,
             )
         )
     return rows

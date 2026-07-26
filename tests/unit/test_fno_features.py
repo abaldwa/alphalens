@@ -107,6 +107,36 @@ class TestNonFNOStockReturnsNaN:
         assert panel.set_index("ticker").loc["BSESME"].isna().all()
         assert not panel.set_index("ticker").loc["ELIGIBLE"].isna().all()
 
+    def test_fno_eligible_tickers_prefilter_skips_the_api_call(self):
+        """2026-07-26 perf fix: tickers outside fno_eligible_tickers must
+        never reach client.get_fno_chain at all, not just resolve to NaN."""
+        client = MagicMock()
+
+        def fake_chain(ticker, *_args, **_kwargs):
+            if ticker == "ELIGIBLE":
+                rows = [_row("STF", NEAR_EXPIRY, oi=10000, settle_price=1305.0, oi_change=500)]
+                rows += _option_chain_rows()
+                return rows
+            raise AssertionError(f"get_fno_chain should not be called for {ticker!r}")
+
+        client.get_fno_chain.side_effect = fake_chain
+        panel = compute_fno_features_panel(
+            client, ["ELIGIBLE", "NEVER_FNO"], AS_OF, fno_eligible_tickers={"ELIGIBLE"},
+        )
+
+        assert list(panel["ticker"]) == ["ELIGIBLE", "NEVER_FNO"]
+        assert panel.set_index("ticker").loc["NEVER_FNO"].isna().all()
+        assert not panel.set_index("ticker").loc["ELIGIBLE"].isna().all()
+        client.get_fno_chain.assert_called_once()
+
+    def test_fno_eligible_tickers_none_preserves_original_call_everyone_behavior(self):
+        client = MagicMock()
+        client.get_fno_chain.return_value = []
+
+        compute_fno_features_panel(client, ["A", "B"], AS_OF, fno_eligible_tickers=None)
+
+        assert client.get_fno_chain.call_count == 2
+
 
 class TestPcrOiRange:
     """pcr_oi must be in (0, 10] for any realistic chain."""

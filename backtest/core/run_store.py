@@ -28,10 +28,18 @@ from backtest.core.run_context import BacktestRunResult
 logger = logging.getLogger(__name__)
 
 
-def save_run_result(conn, result: BacktestRunResult) -> None:
+def save_run_result(conn, result: BacktestRunResult, queue_id: Optional[str] = None) -> None:
     """Upsert one BacktestRunResult into backtest_runs. Idempotent on
     run_id — a rerun of the same run_id (e.g. a resumed background job)
-    overwrites its own prior row rather than erroring or duplicating."""
+    overwrites its own prior row rather than erroring or duplicating.
+
+    queue_id: 2026-07-26 (REV6 wiring) — which backtest/run_strategy_queue.py
+    sweep (--report-suffix) this run belongs to, if any. None for a
+    standalone (non-queue) run. dsr/dsr_n_trials are NOT set here — they're
+    written separately, event-driven, by run_strategy_queue.py via
+    update_dsr() once this run's own job completes and the queue's
+    running trial count for this point is known (see that function).
+    """
     run = result.run
     conn.execute(
         """
@@ -40,8 +48,8 @@ def save_run_result(conn, result: BacktestRunResult) -> None:
              start_date, end_date, capital_mode, initial_capital, sip_amount, sip_cadence_days,
              random_seed, config_hash, config_json, created_at,
              metrics_json, data_gaps_json, integrity_passed, integrity_detail_json, regime_breakdown_json,
-             exit_policy_variant, regime_label, trade_log_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             exit_policy_variant, regime_label, trade_log_path, queue_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (run_id) DO UPDATE SET
             metrics_json = excluded.metrics_json,
             data_gaps_json = excluded.data_gaps_json,
@@ -50,7 +58,8 @@ def save_run_result(conn, result: BacktestRunResult) -> None:
             regime_breakdown_json = excluded.regime_breakdown_json,
             exit_policy_variant = excluded.exit_policy_variant,
             regime_label = excluded.regime_label,
-            trade_log_path = excluded.trade_log_path
+            trade_log_path = excluded.trade_log_path,
+            queue_id = excluded.queue_id
         """,
         [
             run.run_id, run.parent_run_id, run.channel, run.strategy_id, run.horizon_bucket.value,
@@ -60,10 +69,27 @@ def save_run_result(conn, result: BacktestRunResult) -> None:
             json.dumps(result.metrics, default=str), json.dumps(result.data_gaps, default=str),
             result.integrity_passed, json.dumps(result.integrity_detail, default=str),
             json.dumps(result.regime_breakdown, default=str),
-            result.exit_policy_variant, result.regime_label, result.trade_log_path,
+            result.exit_policy_variant, result.regime_label, result.trade_log_path, queue_id,
         ],
     )
     logger.info(f"Saved backtest run {run.run_id} ({run.channel}/{run.strategy_id}/{run.horizon_bucket.value})")
+
+
+def update_dsr(conn, run_id: str, dsr: Optional[float], n_trials: int, post_hoc: bool = False) -> None:
+    """Write a run's deflated Sharpe ratio back after computing it against
+    the trial count known at write time (see save_run_result's queue_id
+    docstring). post_hoc=True only for the one-off backfill of runs that
+    completed before this wiring existed — see backtest/backfill_dsr.py.
+    No-op (logs a warning) if run_id doesn't exist rather than raising —
+    this is always called after the row itself was already written."""
+    exists = conn.execute("SELECT 1 FROM backtest_runs WHERE run_id = ?", [run_id]).fetchone()
+    if exists is None:
+        logger.warning(f"update_dsr: run_id {run_id!r} not found in backtest_runs, nothing updated")
+        return
+    conn.execute(
+        "UPDATE backtest_runs SET dsr = ?, dsr_n_trials = ?, dsr_computed_post_hoc = ? WHERE run_id = ?",
+        [dsr, n_trials, post_hoc, run_id],
+    )
 
 
 _COLUMNS = (

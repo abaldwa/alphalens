@@ -191,6 +191,25 @@ def create_backtest_schema(
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS exit_policy_variant VARCHAR")
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS regime_label VARCHAR")
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS trade_log_path VARCHAR")
+        # 2026-07-26 (REV6 wiring, model-review-corrected design): queue_id
+        # identifies which sweep (backtest/run_strategy_queue.py's
+        # --report-suffix) a run belongs to — the multiple-comparisons
+        # "universe" deflated_sharpe_ratio's n_trials must count against.
+        # dsr/dsr_n_trials are written EVENT-DRIVEN, one row at a time, as
+        # each job in a queue completes (run_strategy_queue.py), using
+        # n_trials = count of jobs completed so far in that queue at THAT
+        # moment — matching backtest/iterative_retrain.py::RetrainLoop's
+        # sequential n_trials_so_far convention, not a single batch pass
+        # after the whole queue finishes (reviewers confirmed a full-queue
+        # batch pass cannot function as a gate, since nothing can be
+        # rejected once every row is already published). dsr_computed_post_hoc
+        # is TRUE only for the one-time backfill of runs that completed
+        # BEFORE this wiring existed (see backtest/backfill_dsr.py) — every
+        # row computed by the live wiring going forward has it FALSE.
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS queue_id VARCHAR")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS dsr DOUBLE")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS dsr_n_trials INTEGER")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS dsr_computed_post_hoc BOOLEAN")
 
     logger.info(f"Backtest schema ready at {db_path if db_path else ':memory:'}")
 

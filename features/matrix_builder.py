@@ -47,7 +47,7 @@ from config.universe import load_universe
 from datastore.client import DataStoreClient
 from features.calendar import CALENDAR_FEATURES, compute_calendar_features
 from features.corporate_action_features import CORPORATE_ACTION_FEATURES, compute_corporate_action_features_panel
-from features.fno_features import FNO_FEATURES, compute_fno_features_panel
+from features.fno_features import FNO_FEATURES, compute_fno_features_panel, load_ever_fno_eligible_tickers
 from features.fundamental import FUNDAMENTAL_FEATURES, compute_fundamental_features_panel
 from features.governance import GOVERNANCE_FEATURES, compute_governance_features_panel
 from features.intraday import INTRADAY_FEATURES, compute_intraday_features
@@ -504,7 +504,16 @@ def build_feature_matrix(
         client, tickers, target_date, listing_dates=listing_dates,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
     )
-    fno = compute_fno_features_panel(client, tickers, target_date, data_cache=data_cache)
+    # [2026-07-26 perf fix] ~2,100 of ~2,300 universe tickers have never had
+    # F&O activity at all — compute_fno_features_panel used to call the F&O
+    # API for every one of them anyway, the dominant cost of a full-universe
+    # backfill (measured: 2,317 of ~2,423 HTTP calls for one day were this
+    # call). fno_eligible_tickers pre-filters those out with zero behavior
+    # change (see load_ever_fno_eligible_tickers's docstring).
+    fno = compute_fno_features_panel(
+        client, tickers, target_date, data_cache=data_cache,
+        fno_eligible_tickers=load_ever_fno_eligible_tickers(),
+    )
 
     # mf_holdings/governance are already ticker-keyed single-snapshot panels
     # "as of" target_date — exactly the shape compute_multibagger_features'
