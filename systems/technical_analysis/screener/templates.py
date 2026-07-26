@@ -743,7 +743,7 @@ assert len(TEMPLATES) == 42, (
 # misclassified.
 # ---------------------------------------------------------------------------
 TEMPLATE_STYLE: Dict[str, str] = {
-    "A1": "Volatility",        # BB squeeze (volatility contraction) + breakout
+    "A1": "Trend Following",   # BB squeeze + hard sma_200_ratio>1.0 trend gate, not pure volatility
     "A2": "Momentum",          # MACD histogram turning positive
     "A3": "Mean Reversion",    # Williams %R oversold bounce
     "A4": "Mean Reversion",    # RSI oversold in uptrend

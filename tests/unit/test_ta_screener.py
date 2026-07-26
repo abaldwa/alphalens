@@ -652,3 +652,44 @@ class TestDailyAlertCheckerEvaluateAndRun:
         monkeypatch.setattr(checker_mod, "resolve_date", lambda run_date: None)
         checker = checker_mod.DailyAlertChecker()
         assert checker.run("2099-01-01") == {}
+
+
+# ---------------------------------------------------------------------------
+# Test 7: every template's feature references resolve to real feature columns
+# (regression guard — engine._apply_single_condition silently treats a
+# missing/typo'd feature as "condition unmet" with only a WARNING log, so a
+# future feature-column rename could zero out a template's results with no
+# test failure. This test statically cross-checks every "feature"/"feature2"
+# and key_display_features entry across all 42 templates against the real
+# feature registries. No Parquet/DB I/O — pure static data-structure check.
+# ---------------------------------------------------------------------------
+
+
+def test_all_template_feature_references_are_real_columns():
+    from features.technical import CORE_TECHNICAL_FEATURES
+    from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
+    from features.pattern_scores import PATTERN_FEATURES
+
+    valid_features = (
+        set(CORE_TECHNICAL_FEATURES)
+        | set(ADVANCED_TECHNICAL_FEATURES)
+        | set(PATTERN_FEATURES)
+        | {"ticker"}
+    )
+
+    referenced_features = set()
+    for template in TEMPLATES:
+        for condition in template.conditions:
+            referenced_features.add(condition["feature"])
+            if "feature2" in condition:
+                referenced_features.add(condition["feature2"])
+        for feature in template.key_display_features or []:
+            referenced_features.add(feature)
+
+    missing = referenced_features - valid_features
+    assert not missing, (
+        "Template(s) reference feature column(s) not present in "
+        "CORE_TECHNICAL_FEATURES, ADVANCED_TECHNICAL_FEATURES, or "
+        f"PATTERN_FEATURES: {sorted(missing)}. This would make the affected "
+        "template(s) silently return zero results (SPEC-TA-005)."
+    )
