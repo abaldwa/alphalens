@@ -88,8 +88,18 @@ def _build_default_exit_model():
 
 
 EXIT_POLICY_VARIANTS = (
-    "baseline", "condition", "combined", "trailing", "atr_adaptive", "regime_conditional",
+    "baseline", "condition", "combined", "trailing", "atr_adaptive", "regime_conditional", "unconstrained",
 )
+
+# Effectively-disabled stop/target bounds for the "unconstrained" variant
+# below — RuleBasedExitPolicy requires target_pct > 0 and stop_pct < 0
+# (no literal inf/0), so these are the widest bounds that still satisfy
+# that validation: +1000% target, -99% stop. Paired with
+# _NO_MAX_HOLD_DAYS_SENTINEL (already used by every other variant here),
+# a position under this policy is only ever closed by the strategy's own
+# signal-based exit — no engine-imposed stop/target/day-count barrier.
+_UNCONSTRAINED_TARGET_PCT = 10.0
+_UNCONSTRAINED_STOP_PCT = -0.99
 
 
 def build_exit_model_for_variant(variant: str, regime_conn=None, regime_index_name: str = "Nifty 500"):
@@ -137,6 +147,20 @@ def build_exit_model_for_variant(variant: str, regime_conn=None, regime_index_na
             for name, params in build_default_template_params().items()
         }
         return RegimeConditionalExitPolicy(template_params)
+
+    if variant == "unconstrained":
+        # 2026-07-27: control variant for the CAGR-regression investigation
+        # — no engine-imposed stop/target/day-count barrier (see
+        # _UNCONSTRAINED_TARGET_PCT/_UNCONSTRAINED_STOP_PCT above), to test
+        # whether the pre-per-template-exit-policy runs' higher CAGRs were
+        # simply a strategy riding out drawdowns to a natural signal-based
+        # exit rather than being stopped/target-capped early.
+        from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy as _RBEP
+
+        return _RBEP(
+            target_pct=_UNCONSTRAINED_TARGET_PCT, stop_pct=_UNCONSTRAINED_STOP_PCT,
+            max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL,
+        )
 
     raise ValueError(f"unknown exit_policy_variant {variant!r}; must be one of {EXIT_POLICY_VARIANTS}")
 
