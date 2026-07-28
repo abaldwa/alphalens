@@ -200,6 +200,21 @@ class TestSubperiodCheckInputs:
         assert benchmark_returns == []
         assert len(fold_returns) == len(benchmark_returns)
 
+    def test_fewer_than_3_segments_logs_warning_and_annotates_note(self, caplog):
+        idx = pd.date_range("2024-01-01", periods=10, freq="D")
+        equity_curve = pd.Series([100.0 + i for i in range(10)], index=idx)
+        regime_segments = [
+            {"regime": "bull", "start_date": date(2024, 1, 1), "end_date": date(2024, 1, 10)},
+        ]
+        with caplog.at_level("WARNING"):
+            _, _, _, note = subperiod_check_inputs(
+                equity_curve, [], date(2024, 1, 1), date(2024, 1, 10), regime_segments,
+                regime_method="20pct_threshold_v1",
+            )
+        assert "20pct_threshold_v1" in note
+        assert "need at least 3" in note
+        assert any("20pct_threshold_v1" in rec.message for rec in caplog.records)
+
 
 class TestRunPostRunIntegrity:
     def _make_equity_curve(self, n=30, flat=False):
@@ -265,6 +280,10 @@ class TestRunPostRunIntegrity:
         )
         assert detail["n_subperiods"] == 2
         assert "check_10_random_feature" not in detail["checks"]
+        # [BUG FIX, 6th fundamental-strategies review, item 2] 2 segments is
+        # still below MIN_MEANINGFUL_SUBPERIODS (3) - must be flagged loudly
+        # in the persisted detail, not silently reported as a clean pass.
+        assert detail["insufficient_subperiods_for_meaningful_check"] is True
 
     def test_check_12_floor_scales_with_run_duration_not_fixed_at_5(self):
         """[BUG FIX, 2026-07-28 third model-review, item 3] MIN_TRADES_FLOOR

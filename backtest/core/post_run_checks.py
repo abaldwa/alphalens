@@ -136,9 +136,21 @@ def _benchmark_segment_return(regime_conn, index_name: str, start_date, end_date
     return float(row[1]) / float(row[0]) - 1.0
 
 
+# [BUG FIX, 6th fundamental-strategies review, item 2] check_08_fold_stability
+# / check_09_benchmarks are only meaningful (std/comparison across multiple
+# independent periods) with at least this many subperiods — the same
+# informal threshold the reviewer's real-DB probe used (1 segment under the
+# CLI's default regime-method vs. 21 under a finer one). Below this, the
+# checks can still technically run/pass/fail, but a PASS is structurally
+# indistinguishable from "nothing was actually tested" — surfaced loudly
+# below rather than left silent.
+MIN_MEANINGFUL_SUBPERIODS = 3
+
+
 def subperiod_check_inputs(
     equity_curve: pd.Series, trades: List[Any], run_start, run_end,
     regime_segments: List[Dict[str, Any]], regime_conn=None, regime_index_name: str = "Nifty 500",
+    regime_method: Optional[str] = None,
 ) -> Tuple[List[float], List[float], List[float], str]:
     """(fold_sharpes, fold_returns, benchmark_returns, detail_note) built
     from real market-regime segment boundaries — see module docstring for
@@ -168,6 +180,16 @@ def subperiod_check_inputs(
         f"subperiod-based ({len(rows)} real market-regime segments — bull/bear/sideways, "
         "NOT independently-refit walk-forward folds; see backtest/core/post_run_checks.py)"
     )
+    if len(rows) < MIN_MEANINGFUL_SUBPERIODS:
+        method_desc = regime_method or "default"
+        insufficient_msg = (
+            f"only {len(rows)} regime segment(s) found for regime_method={method_desc!r} over "
+            f"[{run_start}, {run_end}] — check_08_fold_stability/check_09_benchmarks need at least "
+            f"{MIN_MEANINGFUL_SUBPERIODS} to be statistically meaningful; a PASS here reflects "
+            "'nothing to test', not 'strategy confirmed stable'"
+        )
+        logger.warning(insufficient_msg)
+        detail_note = f"{detail_note}; {insufficient_msg}"
     return fold_sharpes, fold_returns, benchmark_returns, detail_note
 
 
@@ -175,7 +197,7 @@ def run_post_run_integrity(
     channel: str, trades: List[Any], data_gaps: List[Dict[str, Any]],
     equity_curve: pd.Series, run_start, run_end,
     regime_segments: Optional[List[Dict[str, Any]]] = None, regime_conn=None,
-    regime_index_name: str = "Nifty 500",
+    regime_index_name: str = "Nifty 500", regime_method: Optional[str] = None,
 ) -> Tuple[Optional[bool], Dict[str, Any]]:
     """Run BacktestIntegrityChecker against this run's REAL derived inputs.
 
@@ -197,6 +219,7 @@ def run_post_run_integrity(
     )
     fold_sharpes, fold_returns, benchmark_returns, subperiod_note = subperiod_check_inputs(
         equity_curve, trades, run_start, run_end, regime_segments or [], regime_conn, regime_index_name,
+        regime_method,
     )
 
     # [2026-07-28 third model-review, item 3] Scale check_12's minimum-trades
@@ -262,5 +285,6 @@ def run_post_run_integrity(
         "applied_min_adt_inr_verified_against_real_data": applied_min_adt_inr_verified_against_real_data,
         "subperiod_note": subperiod_note,
         "n_subperiods": len(fold_sharpes),
+        "insufficient_subperiods_for_meaningful_check": len(fold_sharpes) < MIN_MEANINGFUL_SUBPERIODS,
     }
     return integrity_passed, detail

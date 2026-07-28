@@ -50,6 +50,7 @@ from backtest.core.horizon import HorizonBucket, HorizonSizingPolicy, sizing_for
 from backtest.core.tax import Transaction as TaxTransaction
 from backtest.costs import IndianTransactionCosts
 from backtest.portfolio import Position, Trade
+from config.settings import MIN_ADT_INR
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,21 @@ class StrategyPortfolio:
         self, ticker: str, sector: str, price: float, prices: Dict[str, float], adtv_cr: Optional[float] = None,
     ) -> bool:
         if ticker in self.positions:
+            return False
+        # [BUG FIX, 6th fundamental-strategies review, item 3] MIN_ADT_INR
+        # was previously only used as a post-hoc audit floor
+        # (integrity_checker.py::check_06_liquidity) and as a SIZE cap here
+        # (adtv_cap_fraction, position_size above) — a ticker below the
+        # floor could still be bought at a smaller size rather than being
+        # excluded outright, so garp/turnaround (and any other
+        # adapter/orchestrator-driven strategy sharing this StrategyPortfolio)
+        # structurally traded sub-floor-liquidity names. A real ADTV value
+        # (not None — missing data is the separate, already-tracked
+        # "no_adtv_data_position_sized_uncapped" case) below MIN_ADT_INR now
+        # hard-rejects the trade entirely, mirroring backtest/engine.py's
+        # existing `_apply_entries` hard-reject for the technical channel
+        # (`illiquid = adtv_at_entry.index[... adtv_at_entry*1e7 < MIN_ADT_INR]`).
+        if adtv_cr is not None and adtv_cr * 1e7 < MIN_ADT_INR:
             return False
         equity = self.total_equity(prices)
         qty = self.position_size(price, equity, adtv_cr)

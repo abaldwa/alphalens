@@ -7,6 +7,7 @@ import pytest
 
 from backtest.core.horizon import HorizonBucket, sizing_for
 from backtest.core.portfolio import SipConfig, StrategyPortfolio
+from config.settings import MIN_ADT_INR
 
 
 def _portfolio(**overrides):
@@ -62,6 +63,34 @@ class TestBuySell:
         p.buy("RELIANCE", "Energy", 100.0, date(2020, 1, 1), {"RELIANCE": 100.0})
         second = p.buy("RELIANCE", "Energy", 100.0, date(2020, 1, 2), {"RELIANCE": 100.0})
         assert second is None
+
+    def test_buy_hard_rejected_below_min_adt_floor_not_just_resized(self):
+        """[BUG FIX, 6th fundamental-strategies review, item 3] a ticker
+        whose real ADTV is below MIN_ADT_INR must be excluded from trading
+        entirely, not merely sized down by adtv_cap_fraction."""
+        p = _portfolio(horizon_bucket=HorizonBucket.D5, n_target_positions=1)
+        sub_floor_adtv_cr = (MIN_ADT_INR / 1e7) * 0.5  # half the floor, in crore
+        pos = p.buy(
+            "ILLIQUIDCO", "Energy", 100.0, date(2020, 1, 1), {"ILLIQUIDCO": 100.0}, adtv_cr=sub_floor_adtv_cr,
+        )
+        assert pos is None
+        assert p.can_buy("ILLIQUIDCO", "Energy", 100.0, {"ILLIQUIDCO": 100.0}, adtv_cr=sub_floor_adtv_cr) is False
+
+    def test_buy_allowed_at_or_above_min_adt_floor(self):
+        p = _portfolio(horizon_bucket=HorizonBucket.D5, n_target_positions=1)
+        above_floor_adtv_cr = (MIN_ADT_INR / 1e7) * 5.0
+        pos = p.buy(
+            "LIQUIDCO", "Energy", 100.0, date(2020, 1, 1), {"LIQUIDCO": 100.0}, adtv_cr=above_floor_adtv_cr,
+        )
+        assert pos is not None
+
+    def test_buy_with_no_adtv_data_is_not_rejected_by_the_liquidity_floor(self):
+        """None (no ADTV data) is the separate, already-tracked
+        'no_adtv_data_position_sized_uncapped' case — must remain allowed
+        (uncapped), not conflated with a known sub-floor rejection."""
+        p = _portfolio(horizon_bucket=HorizonBucket.D5, n_target_positions=1)
+        pos = p.buy("NODATACO", "Energy", 100.0, date(2020, 1, 1), {"NODATACO": 100.0}, adtv_cr=None)
+        assert pos is not None
 
     def test_sell_before_min_holding_days_is_a_no_op(self):
         p = _portfolio(horizon_bucket=HorizonBucket.D21, n_target_positions=1)  # min_holding_days=5

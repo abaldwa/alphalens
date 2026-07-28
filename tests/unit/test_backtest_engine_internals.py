@@ -402,6 +402,90 @@ class TestRunIntegrityCheck:
         assert result["passed"] is False
         assert len(result["detail"]["critical_failures"]) >= 1
 
+    def test_critical_failure_still_persists_per_check_breakdown(self):
+        """[BUG FIX, 6th fundamental-strategies review, item 1] the
+        `except RuntimeError` handler used to discard the fully-computed
+        per-check pass/fail map on any CRITICAL check failure, persisting
+        only critical_failures - hiding which OTHER checks passed. Recovered
+        from BacktestIntegrityChecker._results_cache, mirroring the fix
+        already applied to backtest/core/post_run_checks.py."""
+        train = pd.DataFrame({"date": pd.date_range("2020-01-01", periods=400)})
+        leaked_test = pd.DataFrame({"date": pd.date_range("2020-06-01", periods=30)})
+        eng = _bare_engine(
+            _combined=pd.DataFrame({"date": pd.date_range("2020-01-01", periods=5)}),
+            ohlcv=pd.DataFrame({"adj_factor": [1.0]}),
+            universe_tickers={"A"},
+            historical_tickers={"A"},
+        )
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        result = eng._run_integrity_check(train, leaked_test, portfolio)
+        assert result["passed"] is False
+        assert result["detail"]["checks"] != {}
+        assert any(passed is False for passed in result["detail"]["checks"].values())
+
+    def test_applied_min_adt_inr_derived_from_real_trade_adtv_not_echoed_constant(self):
+        """[BUG FIX, 6th fundamental-strategies review, item 1]
+        applied_min_adt_inr must reflect the real minimum Trade.adtv_cr
+        observed this fold, not an unconditional echo of MIN_ADT_INR."""
+        train = pd.DataFrame({"date": pd.date_range("2020-01-01", periods=365)})
+        test = pd.DataFrame({"date": pd.date_range("2021-01-01", periods=365)})
+        eng = _bare_engine(
+            _combined=pd.DataFrame({"date": pd.date_range("2020-01-01", periods=5)}),
+            ohlcv=pd.DataFrame({"adj_factor": [1.0, 1.0]}),
+            universe_tickers={"A"},
+            historical_tickers={"A", "DELISTED1"},
+        )
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        portfolio.buy("A", "SECTOR1", 100.0, pd.Timestamp("2020-01-01"), {"A": 100.0}, adtv_cr=2.0)
+        portfolio.sell("A", 110.0, pd.Timestamp("2020-01-05"))
+        assert portfolio.trades[0].adtv_cr == 2.0
+
+        applied = eng._applied_min_adt_inr(portfolio)
+        assert applied == 2.0 * 1e7
+        result = eng._run_integrity_check(train, test, portfolio)
+        assert result["detail"]["applied_min_adt_inr_verified_against_real_data"] is True
+
+    def test_applied_min_adt_inr_falls_back_to_constant_without_real_adtv(self):
+        from config.settings import MIN_ADT_INR
+
+        eng = _bare_engine()
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        portfolio.buy("A", "SECTOR1", 100.0, pd.Timestamp("2020-01-01"), {"A": 100.0})
+        portfolio.sell("A", 110.0, pd.Timestamp("2020-01-05"))
+        assert portfolio.trades[0].adtv_cr is None
+        assert eng._applied_min_adt_inr(portfolio) == float(MIN_ADT_INR)
+
+
+class TestPortfolioBuyThreadsAdtvCr:
+    """[BUG FIX, 6th fundamental-strategies review, item 1]
+    PortfolioSimulator.buy()/_close() previously had the Position.
+    entry_adtv_cr/Trade.adtv_cr fields but never actually populated them -
+    every Trade from this (legacy, paper-trading) engine had adtv_cr=None
+    forever."""
+
+    def test_buy_sets_position_entry_adtv_cr(self):
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        position = portfolio.buy("A", "SECTOR1", 100.0, pd.Timestamp("2020-01-01"), {"A": 100.0}, adtv_cr=5.5)
+        assert position.entry_adtv_cr == 5.5
+
+    def test_close_carries_entry_adtv_cr_onto_trade(self):
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        portfolio.buy("A", "SECTOR1", 100.0, pd.Timestamp("2020-01-01"), {"A": 100.0}, adtv_cr=5.5)
+        trade = portfolio.sell("A", 110.0, pd.Timestamp("2020-01-05"))
+        assert trade.adtv_cr == 5.5
+
+    def test_partial_close_via_reduce_position_also_carries_adtv_cr(self):
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        portfolio.buy("A", "SECTOR1", 100.0, pd.Timestamp("2020-01-01"), {"A": 100.0}, adtv_cr=3.3)
+        trade = portfolio.reduce_position("A", 105.0, pd.Timestamp("2020-01-03"))
+        assert trade.adtv_cr == 3.3
+
+    def test_no_adtv_cr_supplied_leaves_trade_adtv_cr_none(self):
+        portfolio = PortfolioSimulator(initial_capital=1_000_000.0)
+        portfolio.buy("A", "SECTOR1", 100.0, pd.Timestamp("2020-01-01"), {"A": 100.0})
+        trade = portfolio.sell("A", 110.0, pd.Timestamp("2020-01-05"))
+        assert trade.adtv_cr is None
+
 
 # ===== compute_fold_metrics: trades-present branch =====
 

@@ -283,6 +283,47 @@ class TestAdtvVisibility:
         result = BacktestOrchestrator().run(run, adapter, config)
         assert not any(g["reason"] == "no_adtv_data_position_sized_uncapped" for g in result.data_gaps)
 
+    def test_sub_floor_adtv_buy_signal_is_excluded_not_just_resized(self):
+        """[BUG FIX, 6th fundamental-strategies review, item 3]
+        garp/turnaround (and any other adapter/orchestrator-driven channel)
+        must EXCLUDE a real sub-MIN_ADT_INR ticker from trading entirely,
+        not merely size the position down. Confirmed via a real
+        MIN_ADT_INR-derived adtv_cr, not a fabricated threshold.
+
+        RELIANCE (sub-floor adtv_cr) and TCS (comfortably above-floor
+        adtv_cr) both get a buy signal on day 0, then both get a sell
+        signal on day 1. If RELIANCE's buy had actually executed (only
+        resized, not rejected), its day-1 sell would close a real trade
+        too — n_trades would be 2. Only TCS's buy/sell should have gone
+        through, so exactly 1 trade closes.
+        """
+        from config.settings import MIN_ADT_INR
+
+        trading_days = pd.date_range("2020-01-01", periods=30, freq="B")
+        first_rebalance = trading_days[0].date()
+        second_rebalance = trading_days[5].date()  # D5's 5-day min_holding_days floor
+        sub_floor_adtv_cr = (MIN_ADT_INR / 1e7) * 0.1  # comfortably below the real floor, in crore
+        above_floor_adtv_cr = (MIN_ADT_INR / 1e7) * 5.0
+        signals_by_date = {
+            first_rebalance: [
+                Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=1.0, adtv_cr=sub_floor_adtv_cr),
+                Signal(ticker="TCS", action="buy", sector="IT", conviction=1.0, adtv_cr=above_floor_adtv_cr),
+            ],
+            second_rebalance: [
+                Signal(ticker="RELIANCE", action="sell", sector="Energy", conviction=1.0),
+                Signal(ticker="TCS", action="sell", sector="IT", conviction=1.0),
+            ],
+        }
+        adapter = _FixedSignalAdapter(signals_by_date=signals_by_date)
+        run = _run(horizon_bucket=HorizonBucket.D5)
+        config = OrchestratorConfig(
+            trading_days=trading_days, universe_provider=lambda d: ["RELIANCE", "TCS"],
+            price_lookup=_flat_prices(trading_days, ["RELIANCE", "TCS"]),
+        )
+        result = BacktestOrchestrator().run(run, adapter, config)
+        assert result.metrics["n_trades"] == 1
+        assert any(g["reason"] == "skipped_illiquid_below_min_adt_floor" for g in result.data_gaps)
+
 
 class TestSipCapitalMode:
     def test_sip_run_shows_higher_total_contributed_than_initial_capital(self):

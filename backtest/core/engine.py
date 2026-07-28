@@ -44,6 +44,7 @@ from backtest.portfolio import Position, PortfolioSimulator
 from backtest.core.regime_breakdown import compute_regime_breakdown
 from backtest.core.run_context import BacktestRun, BacktestRunResult
 from backtest.core.tax import fy_tax_cash_flows
+from config.settings import MIN_ADT_INR
 
 # Same directory the run_*_backtest.py scripts use for their
 # ``orchestrator_{run_id}.json`` / ``phase*_{run_id}.json`` reports, so the
@@ -591,6 +592,16 @@ class BacktestOrchestrator:
                     # results instead of looking like the cap was checked
                     # and passed.
                     data_gaps.append(DataGap(signal.ticker, execution_date, "no_adtv_data_position_sized_uncapped"))
+                elif signal.adtv_cr * 1e7 < MIN_ADT_INR:
+                    # [BUG FIX, 6th fundamental-strategies review, item 3]
+                    # StrategyPortfolio.can_buy now hard-rejects this trade
+                    # (see core/portfolio.py) rather than only sizing it
+                    # down — record it as a visible gap for audit-trail
+                    # parity with the "uncapped" case above, so a reader can
+                    # tell "excluded for being below the liquidity floor"
+                    # apart from every other can_buy rejection reason.
+                    data_gaps.append(DataGap(signal.ticker, execution_date, "skipped_illiquid_below_min_adt_floor"))
+                    continue
                 portfolio.buy(
                     signal.ticker, config.sector_lookup(signal.ticker), fill_prices[signal.ticker], execution_date,
                     prices, adtv_cr=signal.adtv_cr, template=signal.template, pillar=adapter.channel,
@@ -814,12 +825,13 @@ class BacktestOrchestrator:
             holding_days=holding_days,
         )
 
+        from systems.regime.market_regime import METHOD_NAME
+
         regime_breakdown: List[Dict[str, Any]] = []
         segments: List[Dict[str, Any]] = []
         if self._regime_conn is not None:
             from dataclasses import asdict as _asdict
 
-            from systems.regime.market_regime import METHOD_NAME
             from systems.regime.regime_store import list_regime_segments
 
             segments = list_regime_segments(
@@ -850,6 +862,7 @@ class BacktestOrchestrator:
                 equity_curve=equity_curve, run_start=start_date, run_end=end_date,
                 regime_segments=segments, regime_conn=self._regime_conn,
                 regime_index_name=self._regime_index_name,
+                regime_method=self._regime_method or METHOD_NAME,
             )
         except Exception:
             logger.warning("post-run integrity checks failed to run for %s; leaving unset", run.run_id, exc_info=True)

@@ -659,9 +659,12 @@ class BacktestEngine:
                 if ticker in template_series.index:
                     val = template_series.loc[ticker]
                     template = str(val) if pd.notna(val) else None
+            ticker_adtv_cr = adtv_at_entry.get(ticker)
+            ticker_adtv_cr = float(ticker_adtv_cr) if pd.notna(ticker_adtv_cr) else None
             portfolio.buy(
                 ticker, self.sector_map.get(ticker, "UNKNOWN"), price, d, prices_today,
                 entry_atr_pct=entry_atr_pct, template=template, pillar="technical",
+                adtv_cr=ticker_adtv_cr,
             )
             self._log_feature(ticker, d, feat_block.loc[ticker].to_dict(), "bought")
 
@@ -688,6 +691,26 @@ class BacktestEngine:
             return IndianTransactionCosts().compute_roundtrip_cost_pct(price=1000.0, quantity=100)
         return float(applied_pct.mean())
 
+    def _applied_min_adt_inr(self, portfolio: PortfolioSimulator) -> float:
+        """
+        [BUG FIX, 6th fundamental-strategies review, item 1] previously this
+        unconditionally echoed back the MIN_ADT_INR config constant — the
+        exact "constant echo, not real derivation" bug already fixed in
+        backtest/core/post_run_checks.py::realized_cost_and_liquidity for
+        the newer engine. Mirrors that function's logic here: derive the
+        applied floor from the minimum REAL Trade.adtv_cr actually observed
+        across this fold's closed trades (now populated at buy time — see
+        _apply_entries above / PortfolioSimulator.buy's adtv_cr param),
+        falling back to the config constant only when no trade carries
+        real ADTV data.
+        """
+        real_adtv_cr_values = [
+            t.adtv_cr for t in portfolio.trades if getattr(t, "adtv_cr", None) is not None
+        ]
+        if real_adtv_cr_values:
+            return min(real_adtv_cr_values) * 1e7  # crore -> INR
+        return float(MIN_ADT_INR)
+
     def _run_integrity_check(
         self, train_fold: pd.DataFrame, test_fold: pd.DataFrame, portfolio: PortfolioSimulator,
     ) -> Dict[str, Any]:
@@ -700,12 +723,11 @@ class BacktestEngine:
             # [BUG FIX, 2026-07-21 full-codebase-review REV1] Real values,
             # not hardcoded literals: the cost % actually measured from
             # this fold's trades (see _real_applied_roundtrip_cost_pct),
-            # and MIN_ADT_INR itself now that _apply_entries (REV3, above)
-            # genuinely enforces it as the entry liquidity floor — so
-            # reporting MIN_ADT_INR here is an honest statement of what
-            # was actually enforced this fold, not an assumed constant.
+            # and (6th review, item 1) the real minimum per-trade ADTV
+            # actually enforced this fold, not an assumed constant echoed
+            # back as if it were derived.
             applied_roundtrip_cost_pct=self._real_applied_roundtrip_cost_pct(portfolio),
-            applied_min_adt_inr=float(MIN_ADT_INR),
+            applied_min_adt_inr=self._applied_min_adt_inr(portfolio),
             # SPEC-MODEL-003: Optuna HPO is scoped to the train/validation split
             # only (see signal_model.train_full's train_df/val_df args below) —
             # already true in the implementation, just reported here so
@@ -714,12 +736,32 @@ class BacktestEngine:
             hpo_dataset="validation",
         )
         try:
-            checker.run_all_checks()
+            passed_map = checker.run_all_checks()
             passed = True
-            detail = {"critical_failures": []}
+            detail = {
+                "critical_failures": [],
+                "checks": passed_map,
+                "applied_min_adt_inr_verified_against_real_data": any(
+                    getattr(t, "adtv_cr", None) is not None for t in portfolio.trades
+                ),
+            }
         except RuntimeError as exc:
+            # [BUG FIX, 6th fundamental-strategies review, item 1] this used
+            # to discard the fully-computed per-check pass/fail map on any
+            # CRITICAL check failure, persisting "checks": {} - the exact
+            # bug already fixed in post_run_checks.py this same round.
+            # run_all_checks() populates checker._results_cache with every
+            # applicable check's result BEFORE it raises; recover the
+            # breakdown from there instead of losing it.
             passed = False
-            detail = {"critical_failures": [str(exc)]}
+            cached = getattr(checker, "_results_cache", None) or {}
+            detail = {
+                "critical_failures": [str(exc)],
+                "checks": {name: result.passed for name, result in cached.items()},
+                "applied_min_adt_inr_verified_against_real_data": any(
+                    getattr(t, "adtv_cr", None) is not None for t in portfolio.trades
+                ),
+            }
         return {"passed": passed, "detail": detail}
 
     def run_full_backtest(

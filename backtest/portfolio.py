@@ -197,6 +197,7 @@ class PortfolioSimulator:
     def buy(
         self, ticker: str, sector: str, price: float, date, prices: Dict[str, float], atr: Optional[float] = None,
         entry_atr_pct: Optional[float] = None, template: Optional[str] = None, pillar: Optional[str] = None,
+        adtv_cr: Optional[float] = None,
     ) -> Optional[Position]:
         """
         Open a new position if SPEC-BT-002's gates (can_buy) pass.
@@ -214,6 +215,16 @@ class PortfolioSimulator:
             RuleBasedExitPolicy's ATR-scaled target/stop (see
             Position.entry_atr_pct). Independent of `atr` (INR, used only
             for atr-mode position sizing above).
+        adtv_cr : float, optional
+            [BUG FIX, 6th fundamental-strategies review, item 1] the real
+            ADTV (INR crore) at entry time (e.g. the caller's own
+            Signal.adtv_cr / this file's adtv-at-entry computation) —
+            stored on Position.entry_adtv_cr and carried over to
+            Trade.adtv_cr at close, so post_run_checks.py's
+            applied_min_adt_inr audit-trail figure can be derived from
+            genuine per-trade data for this (legacy) engine too, not just
+            backtest/core/portfolio.py's StrategyPortfolio. None (the prior,
+            silently-broken behavior) if the caller doesn't supply it.
 
         Returns
         -------
@@ -229,7 +240,7 @@ class PortfolioSimulator:
         self.cash -= turnover
         position = Position(
             ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty,
-            entry_atr_pct=entry_atr_pct, template=template, pillar=pillar,
+            entry_atr_pct=entry_atr_pct, template=template, pillar=pillar, entry_adtv_cr=adtv_cr,
         )
         self.positions[ticker] = position
         return position
@@ -282,6 +293,7 @@ class PortfolioSimulator:
             ticker=position.ticker, entry_date=position.entry_date, exit_date=date,
             entry_price=position.entry_price, exit_price=price, quantity=qty,
             pnl_inr=pnl_inr, pnl_pct=pnl_pct, cost_inr=cost, exit_reason=reason,
+            adtv_cr=position.entry_adtv_cr,
         )
         self.trades.append(trade)
         return trade
