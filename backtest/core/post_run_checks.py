@@ -166,6 +166,17 @@ def run_post_run_integrity(
         equity_curve, trades, run_start, run_end, regime_segments or [], regime_conn, regime_index_name,
     )
 
+    # [2026-07-28 third model-review, item 3] Scale check_12's minimum-trades
+    # floor with this run's actual duration instead of the fixed constant
+    # default — a 4-year run and a 3-month run shouldn't be held to the same
+    # absolute trade count. ~60 calendar days per required trade is a
+    # conservative approximation (comfortably below even a single monthly
+    # rebalance's expected trade cadence for a top-10 portfolio), floored at
+    # the checker's own MIN_TRADES_FLOOR (5) so short runs aren't penalized
+    # below the pre-existing baseline.
+    calendar_days = max((run_end - run_start).days, 0)
+    duration_scaled_floor = max(BacktestIntegrityChecker.MIN_TRADES_FLOOR, calendar_days // 60)
+
     checker = BacktestIntegrityChecker(
         applied_roundtrip_cost_pct=realized_cost_pct,
         applied_min_adt_inr=applied_min_adt_inr,
@@ -173,6 +184,7 @@ def run_post_run_integrity(
         fold_returns=fold_returns or None,
         benchmark_returns=benchmark_returns or None,
         n_trades=len(trades),
+        min_trades_floor_override=duration_scaled_floor,
     )
     applicable = None if channel == "ml" else _APPLICABLE_CHECKS_NON_ML
     # Only the checks that were actually GIVEN real inputs are meaningful

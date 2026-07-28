@@ -78,6 +78,21 @@ logger = logging.getLogger(__name__)
 # LIQUIDITY_FLOOR_MARKET_CAP_CR rather than defining a second constant.
 _PRESETS_NEEDING_LIQUIDITY_FLOOR = {"small_cap_compounders", "smile", "under_followed"}
 
+# [2026-07-28 third model-review, item 7] LIQUIDITY_FLOOR_MARKET_CAP_CR
+# (Rs 50cr, copied from net_net.py) is effectively decorative within the
+# Nifty 500 universe these 3 strategies actually draw from — the 10th-
+# percentile market cap in that universe is roughly Rs 10,000cr, two
+# orders of magnitude above this floor, so it can never bind against a
+# genuinely small/illiquid name inside this universe. The project already
+# has an ADTV-based liquidity floor elsewhere (config/training_universe.py's
+# RECOMMENDATION_ADTV_FLOOR_CR/TRAINING_ADTV_FLOOR_CR) that would give this
+# gate real bite against illiquid-but-large-market-cap names. Not wired in
+# this pass — plumbing a new liquidity data source through this adapter
+# (ADTV isn't currently passed to it) is a larger change than this review
+# round's scope; documented here so the market-cap floor's limited
+# effectiveness is a known, explicit trade-off rather than an
+# unrecognized gap. A real ADTV-based floor here is the correct follow-up.
+
 # [2026-07-25 fix] Previously a narrow, hand-maintained subset — already
 # caused one real gap this session (several SCORE_FUNCTIONS composites
 # need multi-year/delta/governance fields this tuple didn't list).
@@ -197,7 +212,14 @@ class FundamentalAdapter:
                         continue
                     if self.preset in _PRESETS_NEEDING_LIQUIDITY_FLOOR and self._market_cap_lookup:
                         mcap = self._market_cap_lookup.get(row["ticker"])
-                        if mcap is None or mcap <= LIQUIDITY_FLOOR_MARKET_CAP_CR:
+                        # market_cap_cr == 0 (or a missing lookup entry) means
+                        # "unknown, not yet sourced" per config/universe.py's
+                        # established convention (see its phase_1 filter) — not
+                        # "genuinely tiny." Only exclude on a genuine positive
+                        # market cap at/below the floor; never conflate unknown
+                        # with excluded, or liquid large-caps missing from the
+                        # lookup get silently dropped.
+                        if mcap is not None and mcap > 0 and mcap <= LIQUIDITY_FLOOR_MARKET_CAP_CR:
                             continue
                     ratios = {c: row.get(c) for c in RATIO_FEATURES if c in in_universe.columns}
                     score = score_fn(ratios)

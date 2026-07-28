@@ -9,7 +9,8 @@ import json
 
 import pytest
 
-from backtest.run_strategy_queue import _job_label, _job_to_cmd, _write_progress
+import backtest.run_strategy_queue as run_strategy_queue_mod
+from backtest.run_strategy_queue import _job_label, _job_to_cmd, _write_progress, run_queue
 
 
 class TestJobToCmd:
@@ -46,6 +47,80 @@ class TestJobToCmd:
     def test_unknown_field_for_kind_raises(self):
         with pytest.raises(ValueError):
             _job_to_cmd({"kind": "iterative_retrain", "template_name": "E2"}, job_index=0, report_suffix="q1")
+
+    def test_min_dsr_threshold_accepted_but_not_passed_to_subprocess(self):
+        """[BUG FIX, 2026-07-28 third model-review, item 2] min_dsr_threshold
+        is now an accepted orchestrator-job field (queue-only gating
+        bookkeeping) — but run_orchestrator_backtest.py has no matching CLI
+        flag, so it must be accepted here without raising AND stripped
+        before building the subprocess argv, not passed through as
+        --min-dsr-threshold."""
+        job = {
+            "kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder",
+            "min_dsr_threshold": 0.5,
+        }
+        cmd = _job_to_cmd(job, job_index=0, report_suffix="q1")
+        assert "--min-dsr-threshold" not in cmd
+        assert "0.5" not in cmd
+
+
+class TestDsrGate:
+    """[BUG FIX, 2026-07-28 third model-review, item 2] min_dsr_threshold is
+    opt-in per job — unset (None, the default) must reproduce today's
+    behavior exactly; set, it must fail the job (distinct 'dsr_gate_failed'
+    status) when the computed DSR falls below it."""
+
+    def _run(self, monkeypatch, tmp_path, job, dsr_value):
+        monkeypatch.setattr(run_strategy_queue_mod, "REPORTS_DIR", tmp_path)
+        monkeypatch.setattr(
+            run_strategy_queue_mod, "_run_job",
+            lambda job, i, suffix: {"job_index": i, "kind": job.get("kind"), "job": job, "returncode": 0, "elapsed_s": 1.0},
+        )
+        monkeypatch.setattr(
+            run_strategy_queue_mod, "_compute_and_write_dsr",
+            lambda job, i, suffix, n_trials: dsr_value,
+        )
+        monkeypatch.setattr(run_strategy_queue_mod, "wait_for_headroom", lambda *a, **k: None)
+        return run_queue([job], report_suffix="qtest", resume=False)
+
+    def test_no_threshold_set_is_unaffected_by_low_dsr(self, monkeypatch, tmp_path):
+        job = {"kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder"}
+        summary = self._run(monkeypatch, tmp_path, job, dsr_value=0.01)
+        assert summary["all_passed"] is True
+        progress = json.loads((tmp_path / "strategy_queue_progress_qtest.json").read_text())
+        assert progress["jobs"][0]["status"] == "completed"
+
+    def test_dsr_below_threshold_fails_the_job(self, monkeypatch, tmp_path):
+        job = {
+            "kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder",
+            "min_dsr_threshold": 0.5,
+        }
+        summary = self._run(monkeypatch, tmp_path, job, dsr_value=0.1)
+        assert summary["all_passed"] is False
+        progress = json.loads((tmp_path / "strategy_queue_progress_qtest.json").read_text())
+        assert progress["jobs"][0]["status"] == "dsr_gate_failed"
+
+    def test_dsr_at_or_above_threshold_passes(self, monkeypatch, tmp_path):
+        job = {
+            "kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder",
+            "min_dsr_threshold": 0.5,
+        }
+        summary = self._run(monkeypatch, tmp_path, job, dsr_value=0.5)
+        assert summary["all_passed"] is True
+        progress = json.loads((tmp_path / "strategy_queue_progress_qtest.json").read_text())
+        assert progress["jobs"][0]["status"] == "completed"
+
+    def test_unresolvable_dsr_with_threshold_set_fails_the_job(self, monkeypatch, tmp_path):
+        """dsr=None (couldn't be computed) with a threshold set must be
+        treated as a gate failure, not a silent pass."""
+        job = {
+            "kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder",
+            "min_dsr_threshold": 0.5,
+        }
+        summary = self._run(monkeypatch, tmp_path, job, dsr_value=None)
+        assert summary["all_passed"] is False
+        progress = json.loads((tmp_path / "strategy_queue_progress_qtest.json").read_text())
+        assert progress["jobs"][0]["status"] == "dsr_gate_failed"
 
 
 class TestJobLabel:

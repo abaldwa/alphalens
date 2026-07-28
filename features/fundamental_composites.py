@@ -263,6 +263,29 @@ SCREENER_PRESETS = {
 # as a bank's regulated-capital-driven ROE is. config/sector_index_map.py
 # has a single "Utilities" bucket (power/gas distribution & generation),
 # same one-bucket-per-sector granularity as "Financial Services".
+# [2026-07-28 third model-review, item 9] AMC/insurer carve-out: the
+# blanket "Financial Services" exclusion above also sweeps out asset
+# managers and insurers, whose ROE/ROCE aren't regulated-capital-driven
+# the same way a bank's or NBFC's is — arguably these sub-industries
+# shouldn't be excluded at all. This was considered and DELIBERATELY
+# left unresolved in this and the prior review rounds, not simply
+# forgotten: config/sector_index_map.py has only one flat "Financial
+# Services" bucket with no sub-industry taxonomy (bank/NBFC/AMC/insurer
+# aren't distinguished), and hand-labeling the ~500 Nifty 500 tickers
+# needed to build that taxonomy isn't proportionate to this pass's scope.
+# Accepted as a residual risk pending a real sub-industry classification
+# source.
+#
+# [2026-07-28 third model-review, item 10] Related-party-transaction /
+# holding-company-discount blind spot: none of the 26 fundamental
+# strategies below incorporate the RPT features that already exist
+# elsewhere in the codebase (features/deep_forensic.py's rpt_intensity,
+# systems/ml_signal_engine/models/forensic/forensic_ml.py). A promoter-
+# heavy or RPT-heavy stock can currently clear a quality/value screen
+# purely on ROE/ROCE optics with no forensic penalty. Known gap, flagged
+# for future consideration — wiring RPT features into these 26 strategies
+# is a larger design decision (which strategies, what weight, what
+# threshold) out of scope for this pass.
 PRESET_EXCLUDED_SECTORS: Dict[str, set] = {
     "magic_formula": {"Financial Services", "Utilities"},
     # [BUG FIX, 2026-07-28 second model-review, item 6] quality_value meets

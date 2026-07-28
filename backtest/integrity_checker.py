@@ -197,6 +197,22 @@ class BacktestIntegrityChecker:
     # an automatic critical failure.
     n_trades: Optional[int] = None
     MIN_TRADES_FLOOR: int = 5
+    # [2026-07-28 third model-review, item 3] MIN_TRADES_FLOOR alone is a
+    # fixed constant unrelated to the run's actual duration — a 4-year
+    # monthly-rebalance run and a 3-month weekly-rebalance run would
+    # otherwise be held to the identical floor. min_trades_floor_override
+    # lets a caller who KNOWS the run's trading-day span (e.g.
+    # backtest/core/post_run_checks.py, which has run_start/run_end) supply
+    # a duration-scaled floor instead; None (default) preserves today's
+    # behavior — MIN_TRADES_FLOOR is used as-is for every caller that
+    # doesn't opt in. Deliberately not attempting a fully general
+    # date-range/frequency-aware formula here (rebalance cadence isn't
+    # available to every caller) — just a conservative duration scaling.
+    min_trades_floor_override: Optional[int] = None
+
+    @property
+    def effective_min_trades_floor(self) -> int:
+        return self.min_trades_floor_override if self.min_trades_floor_override is not None else self.MIN_TRADES_FLOOR
 
     _results_cache: Dict[str, CheckResult] = field(default_factory=dict, repr=False, compare=False)
 
@@ -438,11 +454,12 @@ class BacktestIntegrityChecker:
         # fold_sharpes (no regime segments to compute over), which used to
         # hit the early-return's "not applicable" pass and never reach this
         # check at all, defeating the whole point of wiring n_trades in.
-        if self.n_trades is not None and self.n_trades < self.MIN_TRADES_FLOOR:
+        floor = self.effective_min_trades_floor
+        if self.n_trades is not None and self.n_trades < floor:
             return self._result(
                 name, False,
                 f"only {self.n_trades} trade(s) across the whole backtest (< minimum floor of "
-                f"{self.MIN_TRADES_FLOOR}) — a zero/near-zero-trade backtest is the flat-equity-curve "
+                f"{floor}) — a zero/near-zero-trade backtest is the flat-equity-curve "
                 "failure class regardless of whether fold data could even be derived",
             )
         if not self.fold_returns or not self.fold_sharpes:

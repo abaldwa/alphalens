@@ -263,6 +263,18 @@ async def get_fundamental_screener(
     # ticker lookups (get_fundamental_ratios above) are intentionally
     # unaffected, per product decision (fundamentals aren't liquidity-
     # dependent, users can still research any stock directly).
+    #
+    # [2026-07-28 third model-review, item 8] backtest/live parity gap:
+    # filter_recommendable() below is the ONLY liquidity gate this live
+    # endpoint applies. backtest/run_orchestrator_backtest.py additionally
+    # applies LIQUIDITY_FLOOR_MARKET_CAP_CR (see backtest/adapters/
+    # fundamental_adapter.py's _PRESETS_NEEDING_LIQUIDITY_FLOOR) for the
+    # small_cap_compounders/smile/under_followed presets — this endpoint
+    # does not, so a live screener call for one of those 3 presets can
+    # return tickers a same-day backtest would have excluded. Documented
+    # here rather than unified this pass — adding the market-cap floor
+    # here would need market_cap_cr plumbed into this endpoint's response
+    # schema/pipeline, out of scope for a documentation-only fix.
     from config.training_universe import filter_recommendable
 
     matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))

@@ -320,6 +320,18 @@ def run_orchestrator_backtest(
         elif channel == "fundamental":
             if not preset:
                 raise ValueError("channel=fundamental requires --preset")
+            # [2026-07-28 third model-review, item 8] backtest/live parity
+            # gap: this market_cap_lookup wiring applies the
+            # LIQUIDITY_FLOOR_MARKET_CAP_CR gate (small_cap_compounders/
+            # smile/under_followed only — see fundamental_adapter.py's
+            # _PRESETS_NEEDING_LIQUIDITY_FLOOR) to BACKTESTS only. The live
+            # GET /screener endpoint (datastore/api/routers/fundamentals.py)
+            # has no equivalent — it only applies the separate ADTV-based
+            # filter_recommendable() gate. A backtest result for these 3
+            # presets can therefore differ from what a live screener call
+            # would show for the same date, purely due to this extra floor.
+            # Documented, not unified, in this pass — see the matching note
+            # in datastore/api/routers/fundamentals.py.
             adapter = FundamentalAdapter(
                 preset=preset, top_n=top_n, sector_lookup=sector_map,
                 market_cap_lookup=_real_market_cap_map(),

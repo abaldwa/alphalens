@@ -12,6 +12,23 @@ All fixtures are designed to be side-effect-free and repeatable.
 SOLID: Single Responsibility — each fixture creates one resource.
 """
 
+# [2026-07-28 third model-review, item 4] `import duckdb` here too, as a
+# defensive second layer — the REAL fix for the
+# `ModuleNotFoundError: No module named 'duckdb.duckdb.functional'`
+# (sometimes a hang instead) seen when running `pytest --cov=...` against
+# any module that imports duckdb is in .venv's sitecustomize.py, which
+# pre-imports duckdb before the interpreter runs ANY other code — including
+# pytest-cov's own startup, which happens before this conftest.py is even
+# collected. See sitecustomize.py's docstring for the full race-condition
+# root cause (duckdb 1.2.0's package __init__ imports its own
+# `duckdb.functional` submodule before the compiled `duckdb.duckdb`
+# extension has necessarily finished registering itself in sys.modules —
+# coverage.py's per-call tracing changes import interleaving enough to
+# sporadically lose that race on a cold import). This line is redundant
+# once sitecustomize.py has already run, but costs nothing (cached import)
+# and keeps the dependency visible here too.
+import duckdb  # noqa: F401  (see comment above — import-for-side-effect)
+
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List

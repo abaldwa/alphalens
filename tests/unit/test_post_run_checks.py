@@ -207,6 +207,49 @@ class TestRunPostRunIntegrity:
         assert detail["n_subperiods"] == 2
         assert "check_10_random_feature" not in detail["checks"]
 
+    def test_check_12_floor_scales_with_run_duration_not_fixed_at_5(self):
+        """[BUG FIX, 2026-07-28 third model-review, item 3] MIN_TRADES_FLOOR
+        (5) alone is unrelated to the run's actual duration — a long,
+        multi-year run with only 8 trades should NOT be held to the same
+        floor as a 1-month run. run_post_run_integrity has run_start/
+        run_end and must scale the floor accordingly, so this ~4-year run
+        with 8 trades (comfortably above the fixed floor of 5) still fails
+        check_12 once duration-scaled."""
+        equity_curve = self._make_equity_curve(n=30)  # non-flat, so check_12 isn't hit for the wrong reason
+        trades = [
+            FakeTrade(entry_price=100.0, quantity=10, cost_inr=5.0, exit_date=date(2024, 1, 5), pnl_inr=50.0)
+            for _ in range(8)
+        ]
+        integrity_passed, detail = run_post_run_integrity(
+            channel="fundamental", trades=trades, data_gaps=[], equity_curve=equity_curve,
+            run_start=date(2020, 1, 1), run_end=date(2024, 1, 1),
+        )
+        # check_12 is a CRITICAL check — a critical failure raises inside
+        # BacktestIntegrityChecker.run_all_checks, which run_post_run_integrity
+        # catches and reports as an overall fail with an empty checks map
+        # (see its own RuntimeError-handling branch) rather than a per-check
+        # False entry; the real assertion is that this run failed at all,
+        # for exactly the reason named in the warning log above (24, the
+        # duration-scaled floor, not the fixed constant 5).
+        assert integrity_passed is False
+        assert detail["checks"] == {}
+
+    def test_check_12_floor_stays_at_baseline_for_a_short_run(self):
+        """Same 8-trade count as above, but a short (~1 month) run — the
+        duration-scaled floor must not exceed the checker's own
+        MIN_TRADES_FLOOR baseline (5) for a short window, so 8 trades still
+        passes check_12."""
+        equity_curve = self._make_equity_curve(n=30)
+        trades = [
+            FakeTrade(entry_price=100.0, quantity=10, cost_inr=5.0, exit_date=date(2024, 1, 5), pnl_inr=50.0)
+            for _ in range(8)
+        ]
+        integrity_passed, detail = run_post_run_integrity(
+            channel="fundamental", trades=trades, data_gaps=[], equity_curve=equity_curve,
+            run_start=date(2024, 1, 1), run_end=date(2024, 1, 30),
+        )
+        assert detail["checks"]["check_12_flat_equity_curve"] is True
+
     def test_ml_channel_includes_random_feature_check_name_in_applicable_set(self):
         # check_10_random_feature has no random_feature_accuracy supplied here,
         # so it will FAIL (not be silently absent) for the ml channel — unlike

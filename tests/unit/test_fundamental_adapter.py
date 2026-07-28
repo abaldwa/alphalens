@@ -219,6 +219,37 @@ class TestLiquidityFloorOnSmallnessRewardingStrategies:
         signals = adapter.generate_signals(["TINY", "HEALTHY_SIZE"], date(2020, 6, 1), HorizonBucket.Y1)
         assert {s.ticker for s in signals if s.action == "buy"} == {"HEALTHY_SIZE"}
 
+    def test_zero_market_cap_treated_as_unknown_not_excluded(self, monkeypatch):
+        """[BUG FIX, 2026-07-28 third model-review, item 1] market_cap_cr == 0
+        is the codebase-wide convention for "unknown, not yet sourced" (see
+        config/universe.py's phase_1 filter and config/build_universe.py) —
+        NOT "genuinely tiny." A ticker with a real, positive market cap
+        looked up as 0.0 (not yet sourced) must still be treated as a
+        candidate, not silently excluded as if it were below the floor.
+        This previously dropped real liquid large-caps (e.g. SBILIFE,
+        ICICIGI, SBICARD, IRFC) whose market cap simply hadn't been
+        sourced into the lookup dict yet."""
+        import backtest.adapters.fundamental_adapter as mod
+        panel = _panel([
+            {
+                "ticker": "UNKNOWN_MCAP", "market_cap": 3.0, "roce": 3.0, "eps_growth_yoy": 3.0,
+                "revenue_cagr_3yr": 3.0, "debt_to_equity": -3.0, "cfo_to_pat": 3.0,
+            },
+            {
+                "ticker": "TINY", "market_cap": 1.0, "roce": 1.0, "eps_growth_yoy": 1.0,
+                "revenue_cagr_3yr": 1.0, "debt_to_equity": -1.0, "cfo_to_pat": 1.0,
+            },
+        ])
+        monkeypatch.setattr(mod, "read_feature_day", lambda date_str: panel)
+        adapter = FundamentalAdapter(
+            preset="small_cap_compounders", top_n=5,
+            # UNKNOWN_MCAP: 0.0 == "not yet sourced" (must NOT be excluded).
+            # TINY: a genuine positive value below the floor (must still be excluded).
+            market_cap_lookup={"UNKNOWN_MCAP": 0.0, "TINY": 10.0},
+        )
+        signals = adapter.generate_signals(["UNKNOWN_MCAP", "TINY"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"UNKNOWN_MCAP"}
+
     def test_no_market_cap_lookup_supplied_is_a_safe_noop(self, monkeypatch):
         """A caller that hasn't wired market_cap_lookup yet must not have
         this new gate silently start excluding every candidate."""

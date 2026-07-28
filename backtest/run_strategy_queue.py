@@ -61,11 +61,19 @@ logger = logging.getLogger(__name__)
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 
+# "min_dsr_threshold" is queue-only bookkeeping — run_orchestrator_backtest.py
+# has no such CLI flag (only run_iterative_backtest.py computes/gates its own
+# DSR internally), so it's accepted here as an orchestrator-job field but
+# stripped before building the subprocess command (see _QUEUE_ONLY_ORCHESTRATOR_FIELDS
+# below) and instead consumed by run_queue() itself after _compute_and_write_dsr
+# runs, to gate the job's status. Default None (unset) = no gate, matching the
+# pre-existing behavior for every caller that doesn't pass it.
+_QUEUE_ONLY_ORCHESTRATOR_FIELDS = {"min_dsr_threshold"}
 _ORCHESTRATOR_FLAGS = {
     "channel", "strategy_id", "horizon_bucket", "start_date", "end_date", "capital_mode", "initial_capital",
     "sip_amount", "universe_spec", "max_tickers", "min_history_days", "template_name", "preset", "top_n",
     "lookback_months", "exit_variant", "regime_method",
-}
+} | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",
     "min_dsr_threshold", "max_random_feature_accuracy", "folds",
@@ -90,8 +98,9 @@ def _job_to_cmd(job: Dict[str, Any], job_index: int, report_suffix: str) -> List
         raise ValueError(f"job[{job_index}] (kind={kind}): unknown field(s) {sorted(unknown)} — allowed: {sorted(allowed)}")
 
     cmd = [sys.executable, "-m", _KIND_MODULE[kind]]
+    queue_only = _QUEUE_ONLY_ORCHESTRATOR_FIELDS if kind == "orchestrator" else set()
     for key, value in job.items():
-        if key == "kind" or value is None:
+        if key == "kind" or key in queue_only or value is None:
             continue
         cmd += [f"--{key.replace('_', '-')}", str(value)]
     cmd += ["--report-suffix", f"{report_suffix}_job{job_index}"]
@@ -111,7 +120,7 @@ def _run_job(job: Dict[str, Any], job_index: int, report_suffix: str) -> Dict[st
     return {"job_index": job_index, "kind": job.get("kind"), "job": job, "returncode": proc.returncode, "elapsed_s": elapsed_s}
 
 
-def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_trials_so_far: int) -> None:
+def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_trials_so_far: int) -> Optional[float]:
     """2026-07-26 (REV6 wiring, model-review-corrected design): called
     right after ONE job is marked 'completed' — computes deflated Sharpe
     using n_trials=n_trials_so_far (the count of jobs completed in THIS
@@ -126,9 +135,14 @@ def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_t
     retrain jobs already compute/gate their own DSR internally.
 
     Failures here are logged, never raised — a bug in this NEW wiring
-    must never abort an otherwise-successful queue."""
+    must never abort an otherwise-successful queue.
+
+    Returns the computed DSR (float) on success, or None if it couldn't be
+    computed (non-orchestrator job, missing report, degenerate/empty run, or
+    an unexpected error) — callers that want to gate on min_dsr_threshold
+    must treat None as "couldn't verify," not "passed."""
     if job.get("kind") != "orchestrator":
-        return
+        return None
     try:
         report_path = REPORTS_DIR / f"orchestrator_{suffix}_job{job_index}.json"
         report = json.loads(report_path.read_text())
@@ -136,7 +150,7 @@ def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_t
         sharpe = report.get("metrics", {}).get("sharpe")
         if sharpe is None:
             logger.info(f"run_strategy_queue: job[{job_index}] has no sharpe (degenerate/empty run) — skipping DSR")
-            return
+            return None
         start_date = date_type.fromisoformat(str(report["run"]["start_date"])[:10])
         end_date = date_type.fromisoformat(str(report["run"]["end_date"])[:10])
         # Trading-day observation count approximated from the calendar span
@@ -162,8 +176,10 @@ def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_t
         ) as conn:
             update_dsr(conn, run_id, dsr, n_trials_so_far, post_hoc=False)
         logger.info(f"run_strategy_queue: job[{job_index}] dsr={dsr:.3f} (n_trials={n_trials_so_far}, n_obs={n_obs})")
+        return dsr
     except Exception:
         logger.warning(f"run_strategy_queue: DSR computation failed for job[{job_index}] — leaving unset", exc_info=True)
+        return None
 
 
 def _job_label(job: Dict[str, Any]) -> str:
@@ -269,12 +285,28 @@ def run_queue(
         result = _run_job(job, i, suffix)
         statuses[i] = "completed" if result["returncode"] == 0 else "failed"
         _write_progress(progress_path, jobs, statuses)
+        job_dsr_gate_failed = False
         if statuses[i] == "completed":
             n_trials_so_far = sum(1 for s in statuses if s == "completed")
-            _compute_and_write_dsr(job, i, suffix, n_trials_so_far)
+            dsr = _compute_and_write_dsr(job, i, suffix, n_trials_so_far)
+            min_dsr_threshold = job.get("min_dsr_threshold")
+            # Opt-in gate: only enforced when the job explicitly sets
+            # min_dsr_threshold (default None = no gate, matching the
+            # pre-existing behavior for every caller that doesn't pass it).
+            if min_dsr_threshold is not None and (dsr is None or dsr < min_dsr_threshold):
+                job_dsr_gate_failed = True
+                statuses[i] = "dsr_gate_failed"
+                result["dsr"] = dsr
+                result["min_dsr_threshold"] = min_dsr_threshold
+                logger.error(
+                    f"run_strategy_queue: job[{i}] failed the DSR gate "
+                    f"(dsr={dsr!r} < min_dsr_threshold={min_dsr_threshold!r})"
+                )
+                _write_progress(progress_path, jobs, statuses)
         results.append(result)
-        if result["returncode"] != 0:
-            logger.error(f"run_strategy_queue: job[{i}] failed (exit {result['returncode']})")
+        if result["returncode"] != 0 or job_dsr_gate_failed:
+            if not job_dsr_gate_failed:
+                logger.error(f"run_strategy_queue: job[{i}] failed (exit {result['returncode']})")
             if stop_on_failure:
                 logger.error("run_strategy_queue: stopping the remainder of the queue")
                 for j in range(i + 1, len(jobs)):
@@ -290,7 +322,9 @@ def run_queue(
         "jobs_skipped_already_completed": n_skipped_prior,
         "results": results,
         "all_passed": (
-            all(r["returncode"] == 0 for r in results) and len(results) + n_skipped_prior == len(jobs)
+            all(r["returncode"] == 0 for r in results)
+            and not any(statuses[r["job_index"]] == "dsr_gate_failed" for r in results)
+            and len(results) + n_skipped_prior == len(jobs)
         ),
         "runtime_seconds": time.monotonic() - run_started,
     }

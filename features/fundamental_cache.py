@@ -50,7 +50,14 @@ up to ~20 quarters of history, not just the latest one. If a HISTORICAL
 quarter feeding those rolling windows gets restated (its announcement_date
 changes without the LATEST quarter's announcement_date also changing),
 this cache key is unaffected and the stale rolling-window value is served
-indefinitely, with no invalidation and no error. Extending the check to
+stale — but NOT indefinitely: the cache key is (ticker, fiscal_year,
+quarter) for the ticker's LATEST quarter, so the very next time that
+ticker's latest quarter itself advances (its next real quarterly filing),
+a brand-new cache key is created and the rolling-window features are
+recomputed fresh from the full historical quarter set, including the
+restated value. The real worst case is bounded to roughly one filing
+cycle (~1 quarter, ~3 months) of staleness for a historical restatement,
+not indefinite exposure. Extending the check to
 hash/compare announcement_date across the full set of historical quarters
 actually used by each rolling window would require this cache key
 structure (or the read path's cache-hit/-miss decision) to depend on that
