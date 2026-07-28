@@ -140,6 +140,13 @@ DUCKDB_PATH = NORMALISED_DIR / "alphalens.duckdb"
 FNO_DATA_DB_PATH = NORMALISED_DIR / "fno_data.duckdb"
 PIPELINE_LOG_DB_PATH = NORMALISED_DIR / "pipeline_log.db"
 SCHEDULER_DB_PATH = NORMALISED_DIR / "scheduler.db"
+# [2026-07-28] Event-driven fundamental-feature cache (features/fundamental_cache.py):
+# ~44 of FUNDAMENTAL_FEATURES' 51 ratios only change when a ticker's
+# announcement_date advances (quarterly), yet the daily feature build
+# recomputed all of them for every ticker every day. Keyed by
+# (ticker, fiscal_year, quarter) — persists across process restarts so a
+# multi-day backfill doesn't lose its warm cache on a crash/reboot.
+FUNDAMENTAL_RAW_CACHE_DB_PATH = NORMALISED_DIR / "fundamental_raw_cache.duckdb"
 # 2026-07-05: cross-process advisory lock (fcntl.flock) so run_steps_for_date
 # can never execute concurrently from two OS processes (the scheduler's own
 # daily_pipeline + morning_catchup jobs both call it for "today", and the

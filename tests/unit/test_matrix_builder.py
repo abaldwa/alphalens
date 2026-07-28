@@ -174,6 +174,68 @@ class TestBuildFeatureMatrix:
         assert roundtrip.shape[0] == 1
 
 
+class TestNotYetListedTickerFiltering:
+    """2026-07-28 perf fix: a ticker whose listing_date is confirmed AFTER
+    the backfill's as_of date must be excluded from every per-ticker panel
+    call entirely (not just get a NaN row via a failed fetch) — profiling
+    found ~37% of a real historical sample were exactly this case (today's
+    universe includes tickers that hadn't IPO'd yet on older backtest
+    dates), each wastefully triggering a live per-ticker fallback API call
+    just to confirm 'no data, as expected'."""
+
+    def test_not_yet_listed_ticker_gets_nan_row_without_being_fetched(self, fake_client):
+        fake_client.get_listing_dates = lambda: {"AAA": pd.Timestamp("2030-01-01")}
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+
+        calls = {"n": 0}
+        orig_get_ohlcv = fake_client.get_ohlcv
+
+        def counting_get_ohlcv(ticker, *a, **kw):
+            if ticker == "AAA":
+                calls["n"] += 1
+            return orig_get_ohlcv(ticker, *a, **kw)
+
+        fake_client.get_ohlcv = counting_get_ohlcv
+
+        mat = build_feature_matrix(
+            target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False
+        )
+        assert set(mat["ticker"]) == {"AAA", "BBB"}
+        aaa_row = mat[mat["ticker"] == "AAA"]
+        assert aaa_row[CORE_TECHNICAL_FEATURES].isna().all(axis=None)
+        assert calls["n"] == 0  # never fetched — filtered out before any per-ticker call
+
+    def test_unknown_listing_date_is_not_treated_as_unlisted(self, fake_client):
+        """Missing from listing_dates entirely (e.g. pre-2012 IPO, per
+        stock_master's real coverage gap) must NOT be excluded — same
+        conservative missing-data convention as everywhere else here."""
+        fake_client.get_listing_dates = lambda: {}
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        mat = build_feature_matrix(
+            target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False
+        )
+        assert mat[mat["ticker"] == "AAA"][CORE_TECHNICAL_FEATURES].notna().any(axis=None)
+
+    def test_listing_date_before_as_of_is_kept(self, fake_client):
+        fake_client.get_listing_dates = lambda: {"AAA": pd.Timestamp("2020-01-01")}
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        mat = build_feature_matrix(
+            target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False
+        )
+        assert mat[mat["ticker"] == "AAA"][CORE_TECHNICAL_FEATURES].notna().any(axis=None)
+
+    def test_get_listing_dates_failure_falls_back_to_no_filtering(self, fake_client):
+        def raising_get_listing_dates():
+            raise ConnectionError("API down")
+
+        fake_client.get_listing_dates = raising_get_listing_dates
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        mat = build_feature_matrix(
+            target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False
+        )
+        assert set(mat["ticker"]) == {"AAA", "BBB"}
+
+
 class TestChunkedComputationMatchesUnchunked:
     """A47 (2026-07-10): the critical regression test — chunking
     technical/intraday/hmm/pnd/adv_tech/patterns must produce numerically

@@ -15262,3 +15262,183 @@ changes.
 `tests/unit/test_fundamental_adapter.py`,
 `tests/unit/test_fundamental_features.py`,
 `tests/unit/test_governance_features.py`.
+
+## Fundamental Backfill Diagnosis, F&O Perf Fix, and Event-Driven Fundamental Cache (2026-07-26/28)
+
+### Context
+Running the first real backtest of the 26-strategy fundamental catalog
+(previous entry) surfaced `magic_formula`/`piotroski_on_value` returning
+0 trades across all 26 jobs run. Root-caused rather than assumed away.
+
+### Root cause: stale daily feature Parquet store
+All 25 fundamental features added in the prior session
+(`magic_formula_roc`, `ev_ebit_yield`, `book_to_market`, `avg_roce_5y`,
+etc.) were absent from every date in `datastore/features/daily/` — those
+files hadn't been rebuilt since 2026-07-06, before the features existed.
+`magic_formula`/`piotroski_on_value` conservatively exclude a ticker when
+a required input is missing, so with the inputs permanently NaN, every
+run produced 0 trades regardless of the strategy's actual logic.
+`margin_of_safety`/`net_net` were unaffected — they read raw PIT
+financials directly from DuckDB, not the feature panel.
+
+Fix required a full historical feature-store rebuild
+(`scripts/feature_backfill.py --from-date 2020-01-01 --to-date
+2026-07-25 --force --no-hmm`) — a multi-day, several-restart saga (DuckDB
+write-lock collisions with concurrently-running backtest queues; a
+laptop reboot mid-run losing an in-memory-only day's progress, though no
+Parquet data was lost since writes are atomic per date).
+
+### F&O performance fix (features/fno_features.py, features/matrix_builder.py)
+Profiling one backfill day found 2,317 of ~2,423 total HTTP calls were
+`compute_fno_features_panel` calling the F&O API for **every** universe
+ticker, including the ~2,100 that have never had F&O activity at all.
+Added `load_ever_fno_eligible_tickers()` (queries the real `fno_data`
+table once, no date filter — a ticker absent from this set can never
+resolve to anything but the all-NaN row it already gets) and a
+`fno_eligible_tickers` pre-filter param on `compute_fno_features_panel`
+that skips the API call entirely for non-eligible tickers. Deliberately
+did NOT use `config.universe`'s `is_fno_eligible` column — it's
+relative to `CURRENT_DATE`, currently 0 for every ticker (stale), and
+even when populated would silently drop real F&O history for tickers
+eligible in the past but not today, a real backtest-accuracy regression
+for a multi-year backfill, not just a perf issue. Cut per-day pace from
+~20 min to ~7.2 min (~2.7x). 2 new tests
+(`tests/unit/test_fno_features.py`) proving the skip actually happens and
+that omitting the param preserves the original call-everyone behavior.
+
+### Feature census + real profiling (analysis, no code)
+Audited all 322 `ALL_FEATURE_COLUMNS` for true update cadence and
+profiled every panel builder directly (150-ticker sample, scaled to the
+full ~2,317-ticker universe) rather than estimating:
+- `CORE_TECHNICAL`/`ADVANCED_TECHNICAL`/`PATTERN`/`PND`/`MULTIBAGGER`/
+  `INTRADAY` (152 features): genuinely daily, pure OHLCV — no caching
+  opportunity, price moves every session.
+- `FUNDAMENTAL`/`GOVERNANCE`/`MF_HOLDINGS`/`CORPORATE_ACTION`/
+  `DEEP_FORENSIC` (117 features): ~92% of these only change at a
+  ticker's `announcement_date`/`filing_date` (quarterly), yet were
+  recomputed identically every trading day — measured at ~134s of the
+  ~433s/day total (~31%).
+- `FNO` (16 features): confirmed **zero of the 42 rule-based technical
+  screener templates** reference any F&O feature; the only other
+  reference (`iv_compression_flag` in `features/multibagger.py`) is
+  permanently NaN in this pipeline (needs a rolling IV panel the daily
+  builder never constructs). Real usage is confined to the ML signal
+  engine's generic training feature bag — flagged as a separate, still-
+  open scoping question (not actioned this session).
+
+### Event-driven fundamental raw-value cache (scoped to `features/fundamental.py` only this session)
+Of `FUNDAMENTAL_FEATURES`' 51 ratios, only 7 (`PRICE_DEPENDENT_FEATURES`:
+pe_ratio, pb_ratio, ev_to_ebitda, ev_ebit_yield, fcf_ev_yield,
+book_to_market, market_cap) divide a raw quarterly number by today's
+price — the other 44 (`CACHEABLE_RATIO_FEATURES`) are pure functions of
+`(ticker, latest_quarter_end_date)` and are byte-identical every day
+until that ticker's next results announcement.
+- **`features/fundamental_cache.py`** (new): DuckDB-backed persistent
+  cache (`FUNDAMENTAL_RAW_CACHE_DB_PATH`, new in `config/settings.py`)
+  keyed by `(ticker, fiscal_year, quarter)` — deliberately disk-
+  persistent, not in-memory-only, given the mid-backfill reboot incident
+  above. `load_fundamental_raw_cache()` bulk-reads once per process;
+  `save_fundamental_raw_cache_entries()` upserts only a call's new
+  entries, not the whole cache, every date.
+- **`features/fundamental.py`**: `compute_fundamental_features`
+  refactored to route its price-dependent block through two new shared
+  helpers — `_priced_inputs_from_row()` (raw per-quarter inputs the 7
+  priced features need) and `_compute_priced_features()` (the 7 features
+  from cached inputs + today's close) — used by BOTH the cold-compute
+  path and `compute_fundamental_features_panel`'s new cache-hit path, so
+  the two can never diverge. `compute_fundamental_features_panel` gained
+  optional `raw_cache`/`cache_misses_out` params: `None` (default)
+  preserves the original always-recompute behavior exactly (the other
+  real caller, `retrain_phase2.py`, doesn't pass these and is
+  unaffected); when provided, a cheap peek (`_resolve_latest_quarter_row`
+  — a sort, not the full multi-year rolling-window walk) resolves the
+  cache key per ticker, a hit skips `compute_fundamental_features`
+  entirely, a miss populates `raw_cache` in place.
+- **`features/matrix_builder.py`**: module-level lazy singleton loads the
+  persistent cache once per process and stays warm across every
+  subsequent date in the same backfill run (and across process restarts,
+  since the cache itself is disk-persistent) — wired into the one real
+  daily-build call site.
+- 12 new tests (`tests/unit/test_fundamental_raw_cache.py`): cache-hit
+  output matches uncached computation exactly, price-dependent features
+  still move with price on a cache hit, a new quarter is correctly a
+  cache miss that adds a new key without evicting the old one,
+  `cache_misses_out` contains only genuinely-new entries, persistent
+  round-trip (save then load) via a temp DuckDB file, upsert-overwrite,
+  missing-file/empty-entries edge cases. All 273 existing
+  fundamental/matrix_builder tests still pass unchanged (raw_cache
+  defaults to `None`), confirming the refactor didn't alter
+  non-cached output.
+
+### Explicitly not done this session
+Governance/mf_holdings/corporate_action/deep_forensic caching (same
+pattern, different cache keys — filing_date/ex_date) scoped in the
+analysis but deferred per explicit user choice ("start with fundamental
+only, validate before expanding"). The F&O/ML-training-window scoping
+question is also still open.
+
+### Files changed
+`config/settings.py`, `features/fundamental.py` (module-level `CRORE`,
+`PRICE_DEPENDENT_FEATURES`/`CACHEABLE_RATIO_FEATURES`, `_safe_col`,
+`_priced_inputs_from_row`, `_compute_priced_features`,
+`_resolve_latest_quarter_row`, `compute_fundamental_features_panel`
+caching params), `features/matrix_builder.py`, `features/fno_features.py`.
+New: `features/fundamental_cache.py`,
+`tests/unit/test_fundamental_raw_cache.py`. Extended:
+`tests/unit/test_fno_features.py`.
+
+### Correction, same session: the fundamental cache measured near-zero real speedup — found the actual bottleneck instead
+Real profiling (cold vs. warm cache, same 150-ticker sample) showed
+**~1.0x speedup** — not the ~31%/day improvement the earlier feature-
+census estimate implied. Rather than report a false win, dug into why:
+isolated timing showed `compute_fundamental_features` itself is ~30ms/
+ticker, and that cost survives on a cache hit too, because it's not the
+ratio arithmetic (measured at ~0.2s for 150 tickers, genuinely cheap) —
+it's the per-ticker close-price lookup, unavoidable since price is
+genuinely daily. Chased *that*: **37% of a 150-ticker real historical
+sample (2022-06-16) were missing from the bulk OHLCV panel**, each
+triggering a live per-ticker fallback API call (~0.29s/call) just to
+confirm "no data." Verified this is not a bug in `get_ohlcv_bulk` —
+tickers like `ADANIENSOL` (listed 2023) and `AKUMS` (listed 2024)
+genuinely have zero OHLCV for 2022 in both the bulk and single-ticker
+endpoints. The real cause: `build_feature_matrix` looped over *today's*
+full ~2,317-ticker universe for every historical date, including
+hundreds of tickers that hadn't listed yet on that date — every one of
+them paying a live-API "confirm no data" tax, every single day, in every
+panel with a per-ticker fallback (fundamental/governance/corporate-
+action/deep-forensic), not just OHLCV.
+
+**Fix (`features/matrix_builder.py`)**: moved the existing
+`client.get_listing_dates()` fetch to the top of `build_feature_matrix`
+(previously fetched later, only for the corp-action/fundamental panels)
+and added `active_tickers` — the input `tickers` list minus any ticker
+whose `listing_date` is *known* and confirms it hadn't listed by
+`target_date`. Conservative by construction: a ticker with no listing_date
+on record (e.g. a pre-2012 IPO, per `stock_master`'s real coverage gap)
+is never excluded — same missing-data convention as everywhere else in
+this module. `active_tickers` is threaded through every per-ticker panel
+call (`_compute_chunked_ticker_independent_panels`, fundamental,
+governance, mf_holdings, corporate_action, fno, real_economy_macro,
+deep_forensic); the final `matrix = pd.DataFrame({"ticker": tickers})`
+assembly step deliberately keeps the FULL original ticker list, so
+excluded tickers still get a row — the existing left-merges naturally
+NaN-fill them, no special-case code needed. 4 new tests
+(`tests/unit/test_matrix_builder.py::TestNotYetListedTickerFiltering`):
+a confirmed-not-yet-listed ticker gets an all-NaN row with its
+`get_ohlcv` never called at all (not just returning empty), an unknown
+listing_date is never treated as unlisted, a ticker listed before
+`as_of` is unaffected, and a `get_listing_dates()` failure falls back to
+no filtering (fail-open, not fail-closed) rather than wrongly excluding
+the whole universe. Full fundamental/matrix_builder/governance/
+corporate_action/deep_forensic/mf_holdings/multibagger/fno regression
+suite (427 tests) green.
+
+This is the actual dominant backfill-speed lever found this session —
+bigger than both the F&O eligibility fix and the fundamental cache,
+since it affects every per-ticker panel with a fallback path, not just
+one feature category, and the effect compounds for early-history dates
+where a large fraction of today's universe hadn't listed yet.
+
+### Files changed (this correction)
+`features/matrix_builder.py` (active_tickers filtering). Extended:
+`tests/unit/test_matrix_builder.py`.

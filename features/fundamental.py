@@ -48,7 +48,7 @@ is a documented approximation, not exact GAAP ROIC.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 import numpy as np
@@ -118,6 +118,105 @@ RATIO_FEATURES = (
     + MULTIYEAR_FEATURES + DELTA_1Y_FEATURES + SIZE_AGE_FEATURES + CAPITAL_ALLOCATION_FEATURES
 )
 FUNDAMENTAL_FEATURES: List[str] = RATIO_FEATURES + STALENESS_FEATURES  # 54 total
+
+# [2026-07-28] features/fundamental_cache.py's event-driven cache split.
+# These 7 divide a raw quarterly number by today's price/enterprise value
+# (via close/market_cap) — the only RATIO_FEATURES that genuinely need
+# recomputing every trading day. Everything else in RATIO_FEATURES is a
+# pure function of the latest PIT-eligible quarter's raw financials and is
+# byte-identical every day until that ticker's announcement_date advances
+# (see compute_fundamental_features_panel's raw_cache parameter).
+PRICE_DEPENDENT_FEATURES = [
+    "pe_ratio", "pb_ratio", "ev_to_ebitda", "ev_ebit_yield", "fcf_ev_yield", "book_to_market", "market_cap",
+]
+CACHEABLE_RATIO_FEATURES = [f for f in RATIO_FEATURES if f not in PRICE_DEPENDENT_FEATURES]
+
+# Unit convention (ingestion/scrapers/screener.py's module docstring): every
+# monetary `fundamentals` column is in RUPEE CRORE; book_value_per_share/
+# close are raw rupees-per-share and shares_outstanding is a raw share
+# count, so price x shares must be divided by CRORE before mixing with any
+# fundamentals-table column. Module-level (was a local inside
+# compute_fundamental_features) so _priced_inputs_from_row/
+# _compute_priced_features below share the exact same constant.
+CRORE = 1e7
+
+
+def _safe_col(row: Optional["pd.Series"], col: str) -> float:
+    """
+    Safe column lookup: NaN if `row` is None, the column is absent
+    entirely, or present-but-null. `pd.Series.get(col, default)` only
+    substitutes `default` when `col` is missing from the index — a
+    present-but-None value (the normal case for any optional fundamentals
+    field, e.g. screener.py never populates cash_and_equivalents) is
+    returned as-is, not the default. A real bug here
+    (`latest.get("total_debt", 0.0)` silently returning None instead of
+    0.0) crashed ev_to_ebitda's arithmetic the first time this function
+    was exercised against data with any None field — see BuildLog.md "P2.1".
+    """
+    if row is None or col not in row.index:
+        return np.nan
+    val = row[col]
+    return np.nan if val is None or pd.isna(val) else val
+
+
+def _priced_inputs_from_row(latest_row: "pd.Series") -> Dict[str, float]:
+    """
+    The raw per-quarter inputs PRICE_DEPENDENT_FEATURES need, extracted
+    from one fundamentals row — cacheable alongside CACHEABLE_RATIO_FEATURES
+    since none of these change until the next quarter either. Shared by
+    both the cold-compute path (compute_fundamental_features) and the
+    cache-hit fast path (compute_fundamental_features_panel) so the two
+    can never diverge.
+    """
+    bvps = _safe_col(latest_row, "book_value_per_share")
+    shares = _safe_col(latest_row, "shares_outstanding")
+    equity = (bvps * shares) / CRORE if pd.notna(bvps) and pd.notna(shares) else np.nan
+    return {
+        "shares": shares,
+        "total_debt": _safe_col(latest_row, "total_debt"),
+        "cash": _safe_col(latest_row, "cash_and_equivalents"),
+        "eps": _safe_col(latest_row, "eps"),
+        "book_value_per_share": bvps,
+        "ebitda": _safe_col(latest_row, "ebitda"),
+        "ebit": _safe_col(latest_row, "ebit"),
+        "fcf": _safe_col(latest_row, "fcf"),
+        "equity": equity,
+    }
+
+
+def _compute_priced_features(priced_inputs: Dict[str, float], close: Optional[float]) -> Dict[str, float]:
+    """The 7 PRICE_DEPENDENT_FEATURES, from cached per-quarter inputs + today's close."""
+    shares = priced_inputs["shares"]
+    market_cap = (close * shares) / CRORE if close is not None and pd.notna(shares) else np.nan
+    total_debt_v, cash_v = priced_inputs["total_debt"], priced_inputs["cash"]
+    enterprise_value = (
+        market_cap + (total_debt_v if pd.notna(total_debt_v) else 0.0)
+        - (cash_v if pd.notna(cash_v) else 0.0)
+    ) if pd.notna(market_cap) else np.nan
+    return {
+        "pe_ratio": _safe_div(close, priced_inputs["eps"]) if close is not None else np.nan,
+        "pb_ratio": _safe_div(close, priced_inputs["book_value_per_share"]) if close is not None else np.nan,
+        "ev_to_ebitda": _safe_div(enterprise_value, priced_inputs["ebitda"]),
+        "ev_ebit_yield": _safe_div(priced_inputs["ebit"], enterprise_value),
+        "fcf_ev_yield": _safe_div(priced_inputs["fcf"], enterprise_value),
+        "book_to_market": _safe_div(priced_inputs["equity"], market_cap),
+        "market_cap": market_cap,
+    }
+
+
+def _resolve_latest_quarter_row(rows: "Optional[List]") -> "Optional[pd.Series]":
+    """
+    Cheap peek at which quarter is PIT-eligible-latest — a sort + iloc[-1],
+    none of the multi-year rolling-window walks compute_fundamental_features
+    does afterward. Used to build the fundamental_cache key (and, on a
+    cache miss, to extract priced inputs) without paying for the expensive
+    part twice.
+    """
+    if not rows:
+        return None
+    history = pd.DataFrame(rows)
+    history["quarter_end_date"] = pd.to_datetime(history["quarter_end_date"])
+    return history.sort_values("quarter_end_date").iloc[-1]
 
 
 def compute_staleness(announcement_date: datetime, current_date: datetime) -> Dict[str, float]:
@@ -281,23 +380,7 @@ def compute_fundamental_features(
     yoy_prior = _find_quarter(history, yoy_fy, yoy_q)
     cagr_base = _find_quarter(history, cagr_fy, cagr_q)
 
-    def v(row: Optional[pd.Series], col: str) -> float:
-        """
-        Safe column lookup: NaN if `row` is None, the column is absent
-        entirely, or present-but-null. `pd.Series.get(col, default)` only
-        substitutes `default` when `col` is missing from the index — a
-        present-but-None value (the normal case for any optional
-        fundamentals field, e.g. screener.py never populates
-        cash_and_equivalents) is returned as-is, not the default. A real
-        bug here (`latest.get("total_debt", 0.0)` silently returning None
-        instead of 0.0) crashed ev_to_ebitda's arithmetic the first time
-        this function was exercised against data with any None field —
-        see BuildLog.md "P2.1".
-        """
-        if row is None or col not in row.index:
-            return np.nan
-        val = row[col]
-        return np.nan if val is None or pd.isna(val) else val
+    v = _safe_col  # module-level (features/fundamental_cache.py's cache-hit path reuses it too)
 
     revenue_cagr_3yr = np.nan
     if cagr_base is not None and pd.notna(v(cagr_base, "revenue")) and v(cagr_base, "revenue") > 0 \
@@ -312,30 +395,27 @@ def compute_fundamental_features(
     # same unit before mixing with any fundamentals-table column — a real
     # bug caught here (and independently in screener.py's debt_to_equity)
     # before either was ever exercised against real data; see BuildLog.md "P2.1".
-    CRORE = 1e7
-    bvps, shares = v(latest, "book_value_per_share"), v(latest, "shares_outstanding")
-    equity = (bvps * shares) / CRORE if pd.notna(bvps) and pd.notna(shares) else np.nan
+    # priced_inputs/priced (7 PRICE_DEPENDENT_FEATURES) split out to
+    # module-level helpers — features/fundamental_cache.py's cache-hit path
+    # in compute_fundamental_features_panel reuses these exact same
+    # functions so a cached day and a freshly-computed day can never diverge.
+    priced_inputs = _priced_inputs_from_row(latest)
+    equity = priced_inputs["equity"]
     invested_capital = np.nan
     if pd.notna(equity):
-        total_debt = v(latest, "total_debt") if pd.notna(v(latest, "total_debt")) else 0.0
-        cash = v(latest, "cash_and_equivalents") if pd.notna(v(latest, "cash_and_equivalents")) else 0.0
+        total_debt = priced_inputs["total_debt"] if pd.notna(priced_inputs["total_debt"]) else 0.0
+        cash = priced_inputs["cash"] if pd.notna(priced_inputs["cash"]) else 0.0
         invested_capital = equity + total_debt - cash
     op_margin, revenue = v(latest, "operating_margin"), v(latest, "revenue")
     ebit_proxy = op_margin * revenue if pd.notna(op_margin) and pd.notna(revenue) else np.nan
     nopat = ebit_proxy * (1.0 - ASSUMED_TAX_RATE) if pd.notna(ebit_proxy) else np.nan
 
     close = _latest_close_on_or_before(client, ticker, as_of, ticker_ohlcv=ticker_ohlcv)
-    market_cap = (close * shares) / CRORE if close is not None and pd.notna(shares) else np.nan
+    priced = _compute_priced_features(priced_inputs, close)
+    market_cap = priced["market_cap"]
 
-    total_debt_v, cash_v = v(latest, "total_debt"), v(latest, "cash_and_equivalents")
+    total_debt_v, cash_v = priced_inputs["total_debt"], priced_inputs["cash"]
     inv_days, rec_days, pay_days = v(latest, "inventory_days"), v(latest, "receivable_days"), v(latest, "payable_days")
-
-    # Enterprise value, reused by both ev_to_ebitda (existing) and the new
-    # ev_ebit_yield/fcf_ev_yield features — same formula, computed once.
-    enterprise_value = (
-        market_cap + (total_debt_v if pd.notna(total_debt_v) else 0.0)
-        - (cash_v if pd.notna(cash_v) else 0.0)
-    ) if pd.notna(market_cap) else np.nan
 
     ca, cl = v(latest, "current_assets"), v(latest, "current_liabilities")
     net_working_capital = (ca - cl) if pd.notna(ca) and pd.notna(cl) else np.nan
@@ -356,7 +436,6 @@ def compute_fundamental_features(
         v(latest, "fcf") + v(latest, "capex")
         if pd.notna(v(latest, "fcf")) and pd.notna(v(latest, "capex")) else np.nan
     )
-    book_value_equity = equity  # already CRORE-adjusted bvps*shares computed above
 
     # ---- Multi-year rolling stats (5-year window = 20 quarters back) ----
     five_yr_fy, five_yr_q = _quarters_back(fy, q, 20)
@@ -486,20 +565,22 @@ def compute_fundamental_features(
             inv_days + rec_days - pay_days
             if pd.notna(inv_days) and pd.notna(rec_days) and pd.notna(pay_days) else np.nan
         ),
-        # Valuation (3)
-        "pe_ratio": _safe_div(close, v(latest, "eps")) if close is not None else np.nan,
-        "pb_ratio": _safe_div(close, v(latest, "book_value_per_share")) if close is not None else np.nan,
-        "ev_to_ebitda": _safe_div(enterprise_value, v(latest, "ebitda")),
-        # Value/quality features (Piotroski-on-Value, Magic Formula,
-        # Quality-Value Composite, FCF Yield + Low Debt, GARP).
-        "ev_ebit_yield": _safe_div(v(latest, "ebit"), enterprise_value),
-        "fcf_ev_yield": _safe_div(v(latest, "fcf"), enterprise_value),
+        # Valuation (3) + value/quality (Piotroski-on-Value, Magic Formula,
+        # Quality-Value Composite, FCF Yield + Low Debt, GARP) — the 7
+        # PRICE_DEPENDENT_FEATURES, from the shared _compute_priced_features
+        # helper (same one the cache-hit path in
+        # compute_fundamental_features_panel calls).
+        "pe_ratio": priced["pe_ratio"],
+        "pb_ratio": priced["pb_ratio"],
+        "ev_to_ebitda": priced["ev_to_ebitda"],
+        "ev_ebit_yield": priced["ev_ebit_yield"],
+        "fcf_ev_yield": priced["fcf_ev_yield"],
         "magic_formula_roc": _safe_div(
             v(latest, "ebit"),
             (net_working_capital + net_fixed_assets)
             if pd.notna(net_working_capital) and pd.notna(net_fixed_assets) else np.nan,
         ),
-        "book_to_market": _safe_div(book_value_equity, market_cap),
+        "book_to_market": priced["book_to_market"],
         "cfo_to_pat": _safe_div(cfo_proxy, v(latest, "pat")),
         # Multi-year rolling stats (QGLP, Moat, Longevity, Sector-Leader,
         # Capital Allocation Quality).
@@ -564,6 +645,8 @@ def compute_fundamental_features_panel(
     data_cache=None,
     ohlcv_panel: "Optional[pd.DataFrame]" = None,
     listing_date_map: "Optional[Dict[str, datetime]]" = None,
+    raw_cache: "Optional[Dict[Tuple[str, int, int], Dict[str, Any]]]" = None,
+    cache_misses_out: "Optional[Dict[Tuple[str, int, int], Dict[str, Any]]]" = None,
 ) -> pd.DataFrame:
     """
     Compute the full 54-feature fundamental panel for many tickers, with
@@ -578,6 +661,30 @@ def compute_fundamental_features_panel(
     sector_map : dict
         ticker -> sector (e.g. from config.universe.load_universe()).
         Tickers with no sector mapping fall into a single "UNKNOWN" group.
+    raw_cache : dict, optional
+        [2026-07-28] features/fundamental_cache.py's event-driven cache —
+        {(ticker, fiscal_year, quarter): {"ratios": ..., "priced_inputs":
+        ..., "announcement_date": iso_str}}, typically
+        load_fundamental_raw_cache()'s full return value, loaded ONCE per
+        process and passed to every date's panel build. None (default)
+        preserves the original always-recompute behavior exactly — this
+        is purely opt-in, so retrain_phase2.py (the other caller, which
+        doesn't pass this) is completely unaffected.
+
+        When provided: for each ticker, cheaply peeks at which quarter is
+        PIT-eligible-latest (a sort, not the full multi-year rolling-window
+        walk) to build a cache key. A hit skips compute_fundamental_features
+        entirely — CACHEABLE_RATIO_FEATURES come straight from the cache,
+        PRICE_DEPENDENT_FEATURES are recomputed fresh from cached
+        priced_inputs + today's close (still genuinely daily). A miss runs
+        the full computation as before and adds the new entry to `raw_cache`
+        in place (so later tickers in the same call, and later dates in the
+        same process, see it immediately).
+    cache_misses_out : dict, optional
+        If provided, populated with only this call's NEW cache entries (a
+        small subset of `raw_cache`) — the caller's cue for what actually
+        needs persisting (e.g. via save_fundamental_raw_cache_entries),
+        instead of rewriting the entire cache to disk every date.
 
     Returns
     -------
@@ -599,10 +706,51 @@ def compute_fundamental_features_panel(
             t_ohlcv = (
                 ohlcv_panel[ohlcv_panel["ticker"] == ticker] if ohlcv_panel is not None else None
             )
-            feats = compute_fundamental_features(
-                client, ticker, as_of, pre_loaded_rows=pre_rows, ticker_ohlcv=t_ohlcv,
-                listing_date=(listing_date_map or {}).get(ticker),
-            )
+            listing_date = (listing_date_map or {}).get(ticker)
+
+            if raw_cache is None:
+                feats = compute_fundamental_features(
+                    client, ticker, as_of, pre_loaded_rows=pre_rows, ticker_ohlcv=t_ohlcv,
+                    listing_date=listing_date,
+                )
+            else:
+                # rows_for_peek always fetched exactly once (cache-preloaded
+                # or fresh) and threaded through as pre_loaded_rows below —
+                # never a second, duplicate client.get_fundamentals_history
+                # call regardless of hit/miss.
+                rows_for_peek = (
+                    pre_rows if pre_rows is not None
+                    else client.get_fundamentals_history(ticker, as_of, lookback_years=6)
+                )
+                latest_row = _resolve_latest_quarter_row(rows_for_peek)
+                if latest_row is None:
+                    feats = compute_fundamental_features(
+                        client, ticker, as_of, pre_loaded_rows=rows_for_peek, ticker_ohlcv=t_ohlcv,
+                        listing_date=listing_date,
+                    )
+                else:
+                    cache_key = (ticker, int(latest_row["fiscal_year"]), int(latest_row["quarter"]))
+                    cached = raw_cache.get(cache_key)
+                    if cached is not None:
+                        close = _latest_close_on_or_before(client, ticker, as_of, ticker_ohlcv=t_ohlcv)
+                        feats = dict(cached["ratios"])
+                        feats.update(_compute_priced_features(cached["priced_inputs"], close))
+                        feats.update(
+                            compute_staleness(datetime.fromisoformat(cached["announcement_date"]), as_of)
+                        )
+                    else:
+                        feats = compute_fundamental_features(
+                            client, ticker, as_of, pre_loaded_rows=rows_for_peek, ticker_ohlcv=t_ohlcv,
+                            listing_date=listing_date,
+                        )
+                        new_entry = {
+                            "ratios": {k: feats[k] for k in CACHEABLE_RATIO_FEATURES},
+                            "priced_inputs": _priced_inputs_from_row(latest_row),
+                            "announcement_date": pd.Timestamp(latest_row["announcement_date"]).isoformat(),
+                        }
+                        raw_cache[cache_key] = new_entry
+                        if cache_misses_out is not None:
+                            cache_misses_out[cache_key] = new_entry
         except httpx.RequestError as exc:
             logger.error(
                 f"Fundamentals fetch failed for {ticker} with a connection error ({exc}) — "

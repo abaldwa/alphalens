@@ -49,6 +49,7 @@ from features.calendar import CALENDAR_FEATURES, compute_calendar_features
 from features.corporate_action_features import CORPORATE_ACTION_FEATURES, compute_corporate_action_features_panel
 from features.fno_features import FNO_FEATURES, compute_fno_features_panel, load_ever_fno_eligible_tickers
 from features.fundamental import FUNDAMENTAL_FEATURES, compute_fundamental_features_panel
+from features.fundamental_cache import load_fundamental_raw_cache, save_fundamental_raw_cache_entries
 from features.governance import GOVERNANCE_FEATURES, compute_governance_features_panel
 from features.intraday import INTRADAY_FEATURES, compute_intraday_features
 from features.macro_features import MACRO_FEATURES, compute_macro_features, load_macro_indicators
@@ -93,6 +94,23 @@ ALL_FEATURE_COLUMNS: List[str] = (
 LOOKBACK_CALENDAR_DAYS = 760
 
 _EMPTY_OHLCV_COLUMNS = ["date", "ticker", "open", "high", "low", "close", "volume", "delivery_pct"]
+
+# [2026-07-28] Module-level, lazily-loaded singleton for features/
+# fundamental_cache.py's event-driven raw-fundamental cache. Loaded once
+# per process (a full scan of the persistent DuckDB cache table, not
+# something to repeat per date) and kept warm across every subsequent
+# build_feature_matrix call in that process — the whole point for a
+# multi-day backfill loop, and equally correct for the live daily
+# pipeline's one-call-per-cron-run pattern since the DuckDB file persists
+# across process restarts too.
+_fundamental_raw_cache: Optional[dict] = None
+
+
+def _get_fundamental_raw_cache() -> dict:
+    global _fundamental_raw_cache
+    if _fundamental_raw_cache is None:
+        _fundamental_raw_cache = load_fundamental_raw_cache()
+    return _fundamental_raw_cache
 
 
 def _fetch_ohlcv_panel(
@@ -410,6 +428,36 @@ def build_feature_matrix(
 
     client = client or DataStoreClient()
 
+    # [2026-07-28 perf fix] Fetched here (moved earlier than the corp-action/
+    # fundamental use sites below) so active_tickers can be resolved before
+    # ANY per-ticker panel work starts. Profiling a 2022 backfill date found
+    # 37% of a 150-ticker sample missing from the bulk OHLCV panel — not a
+    # bug, confirmed directly (e.g. ADANIENSOL listed 2023, AKUMS listed
+    # 2024): these are real tickers from TODAY's universe that simply
+    # hadn't listed yet on the historical `as_of` date. Every panel that do
+    # a per-ticker fallback when its bulk/cached slice comes up empty
+    # (features/fundamental.py's _latest_close_on_or_before,
+    # governance.py/corporate_action_features.py/deep_forensic.py's
+    # equivalents) was paying a live API round-trip just to confirm "no
+    # data, as expected" for these tickers, every single day — the
+    # dominant cost for early-history backfill dates where a large
+    # fraction of today's ~2,317-ticker universe didn't exist yet.
+    try:
+        listing_dates = client.get_listing_dates()
+    except Exception as exc:
+        logger.warning(f"Could not fetch listing_dates for active-ticker filtering: {exc}")
+        listing_dates = {}
+
+    # Conservative: only exclude a ticker when its listing_date is KNOWN
+    # and confirms it hadn't listed yet — an unknown listing_date (missing
+    # from stock_master, e.g. pre-2012 IPOs per that scraper's coverage
+    # gap) is never treated as "not yet listed," same missing-data
+    # convention as everywhere else in this module.
+    active_tickers = [
+        t for t in tickers
+        if not (listing_dates.get(t) is not None and pd.Timestamp(listing_dates[t]) > target_date)
+    ]
+
     # One bulk HTTP call for all tickers (universe + benchmarks) when the
     # client supports it; otherwise fall back to the existing per-ticker path.
     bulk_panel = None
@@ -420,7 +468,7 @@ def build_feature_matrix(
         except Exception as exc:
             logger.warning("Bulk OHLCV fetch failed, falling back to per-ticker fetch: %s", exc)
 
-    universe_panel = _fetch_ohlcv_panel(client, tickers, from_date, to_date, _bulk_panel=bulk_panel)
+    universe_panel = _fetch_ohlcv_panel(client, active_tickers, from_date, to_date, _bulk_panel=bulk_panel)
     benchmark_panel = _fetch_ohlcv_panel(
         client, list(BENCHMARK_TICKERS.values()), from_date, to_date, _bulk_panel=bulk_panel
     )
@@ -446,7 +494,7 @@ def build_feature_matrix(
     else:
         today_technical, today_intraday, today_hmm, today_pnd, today_adv_tech, today_patterns = (
             _compute_chunked_ticker_independent_panels(
-                universe_panel, benchmark_wide, tickers, target_date, compute_hmm, hmm_workers,
+                universe_panel, benchmark_wide, active_tickers, target_date, compute_hmm, hmm_workers,
             )
         )
 
@@ -468,40 +516,34 @@ def build_feature_matrix(
     sector_map = dict(zip(universe_meta["ticker"], universe_meta["sector"]))
     tier_map = dict(zip(universe_meta["ticker"], universe_meta["tier"]))
 
-    # 2026-07-07 (follow-up): listing_dates was never passed to the
-    # corp-action panel, so ipo_lockin_expiry_proximity/ipo_listing_age_months
-    # were always NaN regardless of stock_master coverage — see
-    # scripts/backfill_listing_dates_nse.py for the real NSE-sourced backfill
-    # that populated stock_master.listing_date for the first time (402/1626
-    # tickers, NSE's history only covers IPOs from ~2012 on).
-    #
-    # [2026-07-25 fix] Fetched here (moved earlier) so it can ALSO be passed
-    # to compute_fundamental_features_panel below — that panel's
-    # company_age_years feature needs the same listing_date_map and was
-    # silently NaN for the entire universe until this fix, despite being
-    # "wired" via the corp-action panel a few lines down.
-    try:
-        listing_dates = client.get_listing_dates()
-    except Exception as exc:
-        logger.warning(f"Could not fetch listing_dates for corp-action panel: {exc}")
-        listing_dates = {}
+    # listing_dates (needed for ipo_lockin_expiry_proximity/
+    # ipo_listing_age_months/company_age_years, and for active_tickers
+    # above) was already fetched at the top of this function — see the
+    # 2026-07-28 perf-fix comment there for why it moved earlier.
 
     # Pass universe_panel so per-ticker OHLCV price lookups (valuation close,
     # pledge spiral check, corp-action windows, post-earnings drift) all hit
     # memory instead of making per-ticker API calls — the data is already in
     # the bulk panel fetched above.
+    raw_cache = _get_fundamental_raw_cache()
+    cache_misses: dict = {}
     fundamental = compute_fundamental_features_panel(
-        client, tickers, target_date, sector_map,
+        client, active_tickers, target_date, sector_map,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
         listing_date_map=listing_dates,
+        raw_cache=raw_cache, cache_misses_out=cache_misses,
     )
+    # Persist only this date's new entries (typically a small fraction of
+    # the universe once warm), not the whole cache — see
+    # features/fundamental_cache.py's docstring for why.
+    save_fundamental_raw_cache_entries(cache_misses)
     governance = compute_governance_features_panel(
-        client, tickers, target_date,
+        client, active_tickers, target_date,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
     )
-    mf_holdings = compute_mf_holdings_features_panel(tickers, target_date, tier_map=tier_map)
+    mf_holdings = compute_mf_holdings_features_panel(active_tickers, target_date, tier_map=tier_map)
     corp_action = compute_corporate_action_features_panel(
-        client, tickers, target_date, listing_dates=listing_dates,
+        client, active_tickers, target_date, listing_dates=listing_dates,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
     )
     # [2026-07-26 perf fix] ~2,100 of ~2,300 universe tickers have never had
@@ -511,7 +553,7 @@ def build_feature_matrix(
     # call). fno_eligible_tickers pre-filters those out with zero behavior
     # change (see load_ever_fno_eligible_tickers's docstring).
     fno = compute_fno_features_panel(
-        client, tickers, target_date, data_cache=data_cache,
+        client, active_tickers, target_date, data_cache=data_cache,
         fno_eligible_tickers=load_ever_fno_eligible_tickers(),
     )
 
@@ -533,9 +575,9 @@ def build_feature_matrix(
     # (today_adv_tech/today_patterns already computed above, chunked
     # alongside technical/intraday/hmm/pnd — A47.)
 
-    real_economy = compute_real_economy_macro_panel(target_date, tickers)
+    real_economy = compute_real_economy_macro_panel(target_date, active_tickers)
     deep_forensic = compute_deep_forensic_features_panel(
-        client, tickers, to_date, data_cache=data_cache,
+        client, active_tickers, to_date, data_cache=data_cache,
         ohlcv_panel=universe_panel if not universe_panel.empty else None,
         sector_map=sector_map,
     )
