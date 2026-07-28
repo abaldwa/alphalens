@@ -462,6 +462,36 @@ class DataStoreClient:
         response = self._get(f"/api/v1/fundamentals/{ticker}", params=params)
         return response.get("data", [])
 
+    def get_fundamentals_history_bulk(
+        self,
+        tickers: List[str],
+        as_of: datetime,
+        lookback_years: int = 4,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Same as get_fundamentals_history, for many tickers in one request —
+        one DuckDB round trip instead of one per ticker (see
+        features/backfill_cache.py's BackfillDataCache, which uses this to
+        preload the whole universe instead of threading thousands of
+        individual get_fundamentals_history calls).
+
+        Returns
+        -------
+        dict
+            ticker -> list of rows (same shape as get_fundamentals_history's
+            return value), one entry per requested ticker (empty list if
+            that ticker had no eligible rows).
+        """
+        start_date = as_of - timedelta(days=365 * lookback_years)
+        params = {
+            "tickers": tickers,
+            "start_date": start_date.date().isoformat(),
+            "end_date": as_of.date().isoformat(),
+            "as_of": as_of.date().isoformat(),
+        }
+        response = self._get("/api/v1/fundamentals/bulk", params=params)
+        return response.get("data", {})
+
     def write_fundamentals(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """
         Upsert one quarterly fundamentals row via POST /api/v1/fundamentals/write.
@@ -585,6 +615,32 @@ class DataStoreClient:
         response = self._get(f"/api/v1/shareholding/{ticker}", params=params)
         return response.get("data", [])
 
+    def get_shareholding_history_bulk(
+        self,
+        tickers: List[str],
+        as_of: datetime,
+        lookback_years: int = 2,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Same as get_shareholding_history, for many tickers in one request —
+        see get_fundamentals_history_bulk's docstring for the rationale.
+
+        Returns
+        -------
+        dict
+            ticker -> list of rows, one entry per requested ticker (empty
+            list if that ticker had no eligible rows).
+        """
+        start_date = as_of - timedelta(days=365 * lookback_years)
+        params = {
+            "tickers": tickers,
+            "start_date": start_date.date().isoformat(),
+            "end_date": as_of.date().isoformat(),
+            "as_of": as_of.date().isoformat(),
+        }
+        response = self._get("/api/v1/shareholding/bulk", params=params)
+        return response.get("data", {})
+
     def write_shareholding(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """
         Upsert one quarterly shareholding row via POST /api/v1/shareholding/write.
@@ -663,6 +719,30 @@ class DataStoreClient:
             params["to"] = to_date.date().isoformat()
         response = self._get(f"/api/v1/corporate_actions/{ticker}", params=params)
         return response.get("data", [])
+
+    def get_corporate_actions_bulk(
+        self,
+        tickers: List[str],
+        from_date: Optional[datetime] = None,
+        to_date: Optional[datetime] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Same as get_corporate_actions, for many tickers in one request —
+        see get_fundamentals_history_bulk's docstring for the rationale.
+
+        Returns
+        -------
+        dict
+            ticker -> list of rows, one entry per requested ticker (empty
+            list if that ticker had no rows).
+        """
+        params: Dict[str, Any] = {"tickers": tickers}
+        if from_date:
+            params["from"] = from_date.date().isoformat()
+        if to_date:
+            params["to"] = to_date.date().isoformat()
+        response = self._get("/api/v1/corporate_actions/bulk", params=params)
+        return response.get("data", {})
 
     def get_fno_chain(
         self,

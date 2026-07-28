@@ -22,7 +22,7 @@ ohlcv.py's module docstring for the full incident this avoids.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -30,7 +30,13 @@ from fastapi import APIRouter, HTTPException, Query
 from config.settings import DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from datastore.api.pit import enforce_pit_shareholding
-from datastore.api.schemas import ShareholdingResponse, ShareholdingRow, ShareholdingWrite, ShareholdingWriteResult
+from datastore.api.schemas import (
+    ShareholdingBulkResponse,
+    ShareholdingResponse,
+    ShareholdingRow,
+    ShareholdingWrite,
+    ShareholdingWriteResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,65 @@ _COLUMNS = [
     "superstar_flag", "superstar_change",
 ]
 _SELECT_COLS = ", ".join(_COLUMNS)
+
+
+@router.get("/bulk", response_model=ShareholdingBulkResponse)
+async def get_shareholding_bulk(
+    tickers: List[str] = Query(..., description="Repeated ?tickers=A&tickers=B..."),
+    start_date: datetime = Query(..., description="quarter_end_date range start (inclusive)"),
+    end_date: datetime = Query(..., description="quarter_end_date range end (inclusive)"),
+    as_of: Optional[datetime] = Query(
+        None, description="PIT reference (default: end_date); only rows with filing_date <= as_of are returned"
+    ),
+) -> ShareholdingBulkResponse:
+    """
+    Same query/PIT-filtering as GET /{ticker}, for many tickers in one
+    request — see fundamentals.py's GET /bulk for the full rationale
+    (features/backfill_cache.py's BackfillDataCache preload).
+
+    [AS BUILT] Registered before GET /{ticker} so "/bulk" is never captured
+    as ticker="bulk".
+    """
+    if not tickers:
+        raise HTTPException(status_code=400, detail="tickers cannot be empty")
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must be <= end_date")
+    pit_reference = as_of or end_date
+
+    placeholders = ", ".join("?" for _ in tickers)
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {_SELECT_COLS} FROM shareholding
+            WHERE ticker IN ({placeholders}) AND quarter_end_date >= ? AND quarter_end_date <= ?
+            """,
+            [*tickers, start_date.date(), end_date.date()],
+        ).fetchall()
+
+    df = pd.DataFrame(rows, columns=_COLUMNS)
+    data: Dict[str, List[ShareholdingRow]] = {t: [] for t in tickers}
+    if not df.empty:
+        df["filing_date"] = pd.to_datetime(df["filing_date"], format="mixed")
+        df = enforce_pit_shareholding(df, as_of=pit_reference, filing_date_col="filing_date")
+        df = df.astype(object).where(df.notna(), None)
+        for ticker, group in df.groupby("ticker", sort=False):
+            rows_for_ticker = []
+            for row in group.to_dict(orient="records"):
+                try:
+                    rows_for_ticker.append(ShareholdingRow(**row))
+                except Exception as exc:
+                    # One bad pre-existing row (e.g. a sign-error
+                    # promoter_pledge < 0 from a scraping bug) must never
+                    # fail the WHOLE bulk request — the single-ticker
+                    # endpoint only ever fails that one ticker; this
+                    # preserves the same blast radius instead of silently
+                    # losing every other ticker's data (see
+                    # BackfillDataCache's all-or-nothing exception fallback).
+                    logger.warning(f"shareholding.bulk: skipping invalid row for {ticker}: {exc}")
+            data[ticker] = rows_for_ticker
+
+    record_count = sum(len(v) for v in data.values())
+    return ShareholdingBulkResponse(as_of=pit_reference, data=data, record_count=record_count)
 
 
 @router.get("/{ticker}", response_model=ShareholdingResponse)

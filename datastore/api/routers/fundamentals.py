@@ -27,7 +27,7 @@ process; see ohlcv.py's module docstring for the full incident this avoids.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -45,6 +45,7 @@ from datastore.api.schemas import (
     FASectorResponse,
     FAStrategyCatalogEntry,
     FAStrategyCatalogResponse,
+    FundamentalsBulkResponse,
     FundamentalsResponse,
     FundamentalsRow,
     FundamentalsWrite,
@@ -546,6 +547,71 @@ async def get_fundamental_thesis_pdf(ticker: str):
         subtitle=subtitle,
         sections=[("Strengths", strengths), ("Risks", risks)],
     )
+
+
+@router.get("/bulk", response_model=FundamentalsBulkResponse)
+async def get_fundamentals_bulk(
+    tickers: List[str] = Query(..., description="Repeated ?tickers=A&tickers=B..."),
+    start_date: datetime = Query(..., description="quarter_end_date range start (inclusive)"),
+    end_date: datetime = Query(..., description="quarter_end_date range end (inclusive)"),
+    as_of: Optional[datetime] = Query(
+        None, description="PIT reference (default: end_date); only rows with announcement_date <= as_of are returned"
+    ),
+) -> FundamentalsBulkResponse:
+    """
+    Same query/PIT-filtering as GET /{ticker}, for many tickers in one
+    request — one DuckDB round trip instead of N. Added for
+    features/backfill_cache.py's BackfillDataCache preload, which
+    previously issued one GET /{ticker} per ticker (2,300+ tickers x 3
+    endpoints = thousands of individual requests, each opening its own
+    DuckDB connection).
+
+    [AS BUILT] Registered before GET /{ticker} so "/bulk" is never captured
+    as ticker="bulk" (same ordering requirement as /ml/top_buys/{date}
+    vs /ml/{ticker}/{date} elsewhere in this codebase).
+    """
+    if not tickers:
+        raise HTTPException(status_code=400, detail="tickers cannot be empty")
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must be <= end_date")
+    pit_reference = as_of or end_date
+
+    placeholders = ", ".join("?" for _ in tickers)
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {_SELECT_COLS} FROM fundamentals
+            WHERE ticker IN ({placeholders}) AND CAST(quarter_end_date AS DATE) >= ? AND CAST(quarter_end_date AS DATE) <= ?
+            """,
+            [*tickers, start_date.date(), end_date.date()],
+        ).fetchall()
+
+    df = pd.DataFrame(rows, columns=_COLUMNS)
+    data: Dict[str, List[FundamentalsRow]] = {t: [] for t in tickers}
+    if not df.empty:
+        df["announcement_date"] = pd.to_datetime(df["announcement_date"], format="mixed")
+        df = enforce_pit_fundamentals(df, as_of=pit_reference, announcement_date_col="announcement_date")
+        # Same full-tie-break as the single-ticker endpoint (see its own
+        # comment for the Screener/NSE-XBRL fiscal_year mislabeling this
+        # guards against) — sorting is row-level, not ticker-scoped, so it
+        # applies identically whether df holds one ticker or many.
+        df["_nonnull_count"] = df.notna().sum(axis=1)
+        df = df.sort_values(["announcement_date", "quarter_end_date", "_nonnull_count"]).drop(columns="_nonnull_count")
+        df = df.astype(object).where(df.notna(), None)
+        for ticker, group in df.groupby("ticker", sort=False):
+            rows_for_ticker = []
+            for row in group.to_dict(orient="records"):
+                try:
+                    rows_for_ticker.append(FundamentalsRow(**row))
+                except Exception as exc:
+                    # One bad pre-existing row must never fail the WHOLE
+                    # bulk request — see shareholding.py's bulk endpoint for
+                    # the full rationale (same blast-radius argument).
+                    logger.warning(f"fundamentals.bulk: skipping invalid row for {ticker}: {exc}")
+            data[ticker] = rows_for_ticker
+
+    record_count = sum(len(v) for v in data.values())
+    return FundamentalsBulkResponse(as_of=pit_reference, data=data, record_count=record_count)
 
 
 @router.get("/{ticker}", response_model=FundamentalsResponse)
