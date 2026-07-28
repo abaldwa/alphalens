@@ -121,6 +121,41 @@ def get_run(conn, run_id: str) -> Optional[Dict[str, Any]]:
     return _row_to_dict(row) if row else None
 
 
+# Base columns for the list view, plus data_gaps_json/integrity_detail_json
+# explicitly excluded — data_gaps_json alone averages ~358KB/row (max seen:
+# 4MB) and neither is rendered anywhere except RunDetail's single-run
+# fetch (get_run()), never the Runs list/leaderboard table.
+_COLUMNS_LIGHT = tuple(c for c in _COLUMNS if c not in ("data_gaps_json", "integrity_detail_json"))
+
+
+def _row_to_summary_dict(row: tuple) -> Dict[str, Any]:
+    """Lightweight counterpart to _row_to_dict() for list_runs(): still
+    json.loads-es metrics_json (cheaper in practice than N separate SQL
+    json_extract calls per row — measured ~1.7s vs ~5.5s for 717 rows), but
+    immediately drops cash_position_series (a per-trading-day {"date","cash"}
+    array, ~2,500 entries — the dominant contributor to metrics_json
+    averaging ~118KB/row, see backtest/core/metrics.py's BacktestMetrics)
+    since nothing in the Runs list/leaderboard renders it. Never fetches
+    data_gaps_json/integrity_detail_json at all (both empty here — a
+    caller needing the real data_gaps for one run should fetch it via
+    get_run(), the single-row detail path, not this list path)."""
+    d = dict(zip(_COLUMNS_LIGHT, row))
+    d["config"] = json.loads(d.pop("config_json"))
+    metrics = json.loads(d.pop("metrics_json")) if d["metrics_json"] else None
+    if metrics is not None:
+        metrics.pop("cash_position_series", None)
+    d["metrics"] = metrics
+    d["data_gaps"] = []
+    d["integrity_detail"] = {}
+    d["regime_breakdown"] = json.loads(d.pop("regime_breakdown_json")) if d["regime_breakdown_json"] else []
+    for date_field in ("start_date", "end_date", "created_at"):
+        if isinstance(d[date_field], (datetime,)):
+            d[date_field] = d[date_field].isoformat()
+        elif d[date_field] is not None:
+            d[date_field] = str(d[date_field])
+    return d
+
+
 _SORT_COLUMNS = {
     "created_at": "created_at",
     # cagr lives inside metrics_json (a JSON string column, not a native
@@ -157,11 +192,11 @@ def list_runs(
     order_col = _SORT_COLUMNS[sort_by]
     params.append(limit)
     rows = conn.execute(
-        f"SELECT {', '.join(_COLUMNS)} FROM backtest_runs {where_clause} "
+        f"SELECT {', '.join(_COLUMNS_LIGHT)} FROM backtest_runs {where_clause} "
         f"ORDER BY {order_col} DESC NULLS LAST LIMIT ?",
         params,
     ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [_row_to_summary_dict(r) for r in rows]
 
 
 def count_runs(

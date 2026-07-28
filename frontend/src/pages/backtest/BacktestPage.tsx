@@ -25,6 +25,7 @@ import {
 } from '@/lib/ui'
 import {
   listBacktestRuns,
+  getBacktestRun,
   getBacktestRunLineage,
   getBacktestRunFeatureLog,
   listActiveQueues,
@@ -318,7 +319,19 @@ function fmtNum(v: number | null | undefined, digits = 2) {
   return typeof v === 'number' ? v.toFixed(digits) : '—'
 }
 
-function RunDetail({ run }: { run: BacktestRunSummary }) {
+function RunDetail({ run: listRun }: { run: BacktestRunSummary }) {
+  // The Runs list (GET /runs) omits data_gaps (and only computed
+  // metrics is scalars, not any large per-run blobs) to keep the
+  // leaderboard/list fast — see backtest/core/run_store.py's
+  // _row_to_summary_dict. Detail view needs the real data_gaps, so it
+  // fetches the single-run endpoint separately rather than reusing the
+  // stripped-down list row; falls back to the list row's fields (still
+  // fully populated metrics) while that fetch is in flight.
+  const detail = useQuery({
+    queryKey: ['backtest-run-detail', listRun.run_id],
+    queryFn: () => getBacktestRun(listRun.run_id),
+  })
+  const run = detail.data ?? listRun
   const lineage = useQuery({
     queryKey: ['backtest-run-lineage', run.run_id],
     queryFn: () => getBacktestRunLineage(run.run_id),
