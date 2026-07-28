@@ -235,6 +235,59 @@ class TestLiquidityFloorOnSmallnessRewardingStrategies:
         assert {s.ticker for s in signals if s.action == "buy"} == {"TINY"}
 
 
+class TestBespokePresets:
+    """generate_signals' BESPOKE_PRESETS branch (piotroski_on_value/
+    margin_of_safety/net_net) — reads raw PIT financials via db_conn
+    rather than the z-scored feature panel, so it's dispatched to a
+    dedicated systems.fundamental_analysis.quality.* module per preset.
+    Never exercised before this test (0% coverage on that branch)."""
+
+    def test_piotroski_on_value_matches_passing_tickers(self, monkeypatch):
+        import systems.fundamental_analysis.quality.piotroski_on_value as pov_mod
+
+        def fake_compute(conn, ticker, as_of_dt, feature_date_str=None):
+            return {"f_score": 8, "is_cheap": True, "passes": ticker == "GOOD"}
+
+        monkeypatch.setattr(pov_mod, "compute_piotroski_on_value", fake_compute)
+        adapter = FundamentalAdapter(preset="piotroski_on_value", top_n=5, db_conn=object())
+        signals = adapter.generate_signals(["GOOD", "BAD"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"GOOD"}
+        assert adapter._last_ratios["GOOD"] == {"f_score": 8}
+
+    def test_margin_of_safety_matches_passing_tickers(self, monkeypatch):
+        import systems.fundamental_analysis.quality.margin_of_safety as mos_mod
+
+        def fake_compute(conn, ticker, as_of_dt):
+            return {"margin_of_safety": 0.40, "passes": ticker == "CHEAP"}
+
+        monkeypatch.setattr(mos_mod, "compute_margin_of_safety", fake_compute)
+        adapter = FundamentalAdapter(preset="margin_of_safety", top_n=5, db_conn=object())
+        signals = adapter.generate_signals(["CHEAP", "EXPENSIVE"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"CHEAP"}
+        assert adapter._last_ratios["CHEAP"] == {"margin_of_safety": 0.40}
+
+    def test_net_net_matches_passing_tickers(self, monkeypatch):
+        import systems.fundamental_analysis.quality.net_net as nn_mod
+
+        def fake_compute(conn, ticker, as_of_dt):
+            return {"ncav_per_share": 55.0, "passes": ticker == "DEEPVALUE"}
+
+        monkeypatch.setattr(nn_mod, "compute_net_net", fake_compute)
+        adapter = FundamentalAdapter(preset="net_net", top_n=5, db_conn=object())
+        signals = adapter.generate_signals(["DEEPVALUE", "FAIR"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"DEEPVALUE"}
+        assert adapter._last_ratios["DEEPVALUE"] == {"ncav_per_share": 55.0}
+
+    def test_bespoke_preset_no_matches_sells_existing_holdings(self, monkeypatch):
+        import systems.fundamental_analysis.quality.net_net as nn_mod
+
+        monkeypatch.setattr(nn_mod, "compute_net_net", lambda conn, ticker, as_of_dt: {"passes": False})
+        adapter = FundamentalAdapter(preset="net_net", top_n=5, db_conn=object())
+        adapter._currently_held = {"OLD_HOLDING"}
+        signals = adapter.generate_signals(["OLD_HOLDING"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "sell"} == {"OLD_HOLDING"}
+
+
 class TestRealFeatureStoreIntegration:
     """No-Mock-Data Policy: exercises the adapter against the real feature
     Parquet store (config.settings.FEATURES_DAILY_DIR) for a real recent
