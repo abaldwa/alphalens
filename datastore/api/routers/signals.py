@@ -39,8 +39,10 @@ from fastapi import APIRouter, HTTPException, Path, Query
 from config.settings import SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from datastore.api.schemas import (
+    MLSignalBulkWriteResult,
     MLSignalRow,
     MLSignalWrite,
+    MLSignalWriteBulk,
     MLSignalWriteResult,
     SignalDowngradeResponse,
     SignalDowngradeRow,
@@ -408,3 +410,36 @@ async def write_ml_signal(signal: MLSignalWrite) -> MLSignalWriteResult:
     return MLSignalWriteResult(
         date=signal.date, ticker=signal.ticker, model_name=signal.model_name, written=True
     )
+
+
+@router.post("/ml/write-bulk", response_model=MLSignalBulkWriteResult)
+async def write_ml_signals_bulk(batch: MLSignalWriteBulk) -> MLSignalBulkWriteResult:
+    """
+    Upsert many (date, ticker, model_name) rows in one DuckDB executemany
+    call — same upsert semantics as /ml/write (SPEC-DS-004), used by
+    daily_inference.py to collapse a whole inference chunk's writes into
+    one request instead of one HTTP round-trip + write per (ticker, model)
+    row.
+    """
+    if not batch.signals:
+        return MLSignalBulkWriteResult(written=0)
+
+    placeholders = ", ".join("?" for _ in _ML_SIGNAL_COLUMNS)
+    update_cols = [c for c in _ML_SIGNAL_COLUMNS if c not in ("date", "ticker", "model_name")]
+    update_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
+    rows = [
+        [getattr(signal, col) if col not in ("date",) else signal.date.date() for col in _ML_SIGNAL_COLUMNS]
+        for signal in batch.signals
+    ]
+
+    with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=False) as conn:
+        conn.executemany(
+            f"""
+            INSERT INTO ml_signals ({_SELECT_COLS}) VALUES ({placeholders})
+            ON CONFLICT (date, ticker, model_name) DO UPDATE SET {update_clause}
+            """,
+            rows,
+        )
+
+    logger.info(f"signals.write_bulk: {len(rows)} rows")
+    return MLSignalBulkWriteResult(written=len(rows))

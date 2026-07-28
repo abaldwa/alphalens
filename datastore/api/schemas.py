@@ -529,6 +529,22 @@ class MLSignalWriteResult(BaseModel):
     written: bool
 
 
+class MLSignalWriteBulk(BaseModel):
+    """Batch of MLSignalWrite rows for POST /api/v1/signals/ml/write-bulk —
+    one executemany upsert instead of one HTTP round-trip + DuckDB write
+    per row (daily_inference.py was making ~2 requests per ticker per
+    model across ~2,300 tickers; this collapses each inference chunk down
+    to a single request)."""
+
+    signals: List[MLSignalWrite]
+
+
+class MLSignalBulkWriteResult(BaseModel):
+    """Confirmation response for a bulk MLSignalWrite upsert."""
+
+    written: int
+
+
 # ===== Multibagger (SPEC-DS-004, SPEC-UI-003, P2.6) =====
 class MultibaggerWrite(BaseModel):
     """One M-08 MultibaggerModel.predict_full() row for one (date, ticker) —

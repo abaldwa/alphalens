@@ -27,22 +27,6 @@ TICKERS = [f"TKR{i:03d}" for i in range(12)]
 RUN_DATE = date(2026, 7, 19)
 
 
-class _FakeResponse:
-    status_code = 200
-
-    def raise_for_status(self):
-        pass
-
-
-class _RecordingClient:
-    def __init__(self):
-        self.calls = []
-
-    def post(self, url, json, timeout=None):  # noqa: A002
-        self.calls.append(dict(json))
-        return _FakeResponse()
-
-
 def _train_small_signal_model(cls, seed, n=80, **kwargs):
     """Uses train() (no HPO / SMOTETomek / quantile heads), not train_full() —
     this test only exercises ensemble-combination wiring downstream of
@@ -118,18 +102,18 @@ class TestEnsembleWiredWhenArtifactPresent:
         ensemble.fit_meta(oof, y_oof)
         monkeypatch.setattr(di, "_load_stacking_ensemble", lambda models_dir: ensemble)
 
-        client = _RecordingClient()
-        di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, client, "http://fake", tmp_path)
+        buffer = []
+        di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, buffer, tmp_path)
 
-        ensemble_rows = [c for c in client.calls if c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME]
+        ensemble_rows = [c for c in buffer if c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME]
         assert {r["ticker"] for r in ensemble_rows} == set(TICKERS)
         for r in ensemble_rows:
             assert r["buy_prob"] + r["hold_prob"] + r["sell_prob"] == pytest.approx(1.0, abs=1e-5)
             assert r["signal_direction"] in ("buy", "hold", "sell")
 
         # signal_5d/meta_labeler must still be written regardless.
-        assert any(c["model_name"] == di.SIGNAL_MODEL_NAME for c in client.calls)
-        assert any(c["model_name"] == di.META_MODEL_NAME for c in client.calls)
+        assert any(c["model_name"] == di.SIGNAL_MODEL_NAME for c in buffer)
+        assert any(c["model_name"] == di.META_MODEL_NAME for c in buffer)
 
 
 class TestEnsembleSkippedWhenArtifactAbsent:
@@ -140,12 +124,12 @@ class TestEnsembleSkippedWhenArtifactAbsent:
         _patch_common(monkeypatch, signal_5d, signal_21d, signal_63d, meta_model)
         monkeypatch.setattr(di, "_load_stacking_ensemble", lambda models_dir: None)
 
-        client = _RecordingClient()
-        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, client, "http://fake", tmp_path)
+        buffer = []
+        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, buffer, tmp_path)
 
         assert len(result) == len(TICKERS)
-        assert not any(c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME for c in client.calls)
-        assert any(c["model_name"] == di.SIGNAL_MODEL_NAME for c in client.calls)
+        assert not any(c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME for c in buffer)
+        assert any(c["model_name"] == di.SIGNAL_MODEL_NAME for c in buffer)
 
     def test_ensemble_load_exception_no_crash(
         self, trained_models, feature_matrix, tmp_path, monkeypatch
@@ -158,11 +142,11 @@ class TestEnsembleSkippedWhenArtifactAbsent:
 
         monkeypatch.setattr(di, "_load_stacking_ensemble", _raise)
 
-        client = _RecordingClient()
-        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, client, "http://fake", tmp_path)
+        buffer = []
+        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, buffer, tmp_path)
 
         assert len(result) == len(TICKERS)
-        assert not any(c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME for c in client.calls)
+        assert not any(c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME for c in buffer)
 
     def test_mismatched_artifact_base_models_skips_gracefully(
         self, trained_models, feature_matrix, tmp_path, monkeypatch
@@ -183,9 +167,9 @@ class TestEnsembleSkippedWhenArtifactAbsent:
         mismatched_ensemble.fit_meta(oof, y_oof)
         monkeypatch.setattr(di, "_load_stacking_ensemble", lambda models_dir: mismatched_ensemble)
 
-        client = _RecordingClient()
-        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, client, "http://fake", tmp_path)
+        buffer = []
+        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, buffer, tmp_path)
 
         assert len(result) == len(TICKERS)
-        assert not any(c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME for c in client.calls)
-        assert any(c["model_name"] == di.SIGNAL_MODEL_NAME for c in client.calls)
+        assert not any(c["model_name"] == di.STACKING_ENSEMBLE_MODEL_NAME for c in buffer)
+        assert any(c["model_name"] == di.SIGNAL_MODEL_NAME for c in buffer)

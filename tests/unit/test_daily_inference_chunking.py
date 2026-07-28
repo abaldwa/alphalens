@@ -48,24 +48,6 @@ TICKERS = [f"TKR{i:03d}" for i in range(23)]  # tens, not thousands — fast, st
 RUN_DATE = date(2026, 7, 11)
 
 
-class _FakeResponse:
-    status_code = 200
-
-    def raise_for_status(self):
-        pass
-
-
-class _RecordingClient:
-    """Records every _write_signal() POST body instead of hitting a real API."""
-
-    def __init__(self):
-        self.calls = []
-
-    def post(self, url, json, timeout=None):  # noqa: A002 - matches httpx.Client.post's kwarg name
-        self.calls.append(dict(json))
-        return _FakeResponse()
-
-
 @pytest.fixture(scope="module")
 def signal_meta_models(tmp_path_factory):
     """Real (small, fast) trained Signal5DModel + MetaLabeler — same style as
@@ -181,11 +163,11 @@ class TestStepSignalsAndMetaChunkingMatchesUnchunked:
         monkeypatch.setattr(di, "_load_conformal", lambda models_dir: (_ for _ in ()).throw(FileNotFoundError()))
         monkeypatch.setattr("config.settings.SCREENER_BATCH_EXPORT_CHUNK_SIZE", configured_chunk_size)
 
-        client = _RecordingClient()
-        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, client, "http://fake", tmp_path)
+        buffer = []
+        result = di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, buffer, tmp_path)
 
         assert len(result) == len(TICKERS)
-        assert client.calls  # sanity: something was written
+        assert buffer  # sanity: something was written
 
     def test_full_batch_5_and_1_chunk_runs_produce_identical_written_rows(
         self, signal_meta_models, feature_matrix, tmp_path, monkeypatch
@@ -198,9 +180,9 @@ class TestStepSignalsAndMetaChunkingMatchesUnchunked:
             }[name])
             monkeypatch.setattr(di, "_load_conformal", lambda models_dir: (_ for _ in ()).throw(FileNotFoundError()))
             monkeypatch.setattr("config.settings.SCREENER_BATCH_EXPORT_CHUNK_SIZE", configured_chunk_size)
-            client = _RecordingClient()
-            di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, client, "http://fake", tmp_path)
-            return _normalize_calls(client.calls)
+            buffer = []
+            di._step_signals_and_meta(feature_matrix, set(), RUN_DATE, buffer, tmp_path)
+            return _normalize_calls(buffer)
 
         full_batch = run(1000)  # >= len(TICKERS): single chunk, equivalent to the old unchunked path
         chunk_5 = run(5)
@@ -221,11 +203,11 @@ class TestStepPndFilterChunkingMatchesUnchunked:
         monkeypatch.setattr(di, "_load_model", lambda cls, name, models_dir: pnd_model)
         monkeypatch.setattr("config.settings.SCREENER_BATCH_EXPORT_CHUNK_SIZE", configured_chunk_size)
 
-        client = _RecordingClient()
-        blocked = di._step_pnd_filter(pnd_feature_matrix, RUN_DATE, client, "http://fake", tmp_path)
+        buffer = []
+        blocked = di._step_pnd_filter(pnd_feature_matrix, RUN_DATE, buffer, tmp_path)
 
         assert isinstance(blocked, set)
-        assert len(client.calls) == len(TICKERS)
+        assert len(buffer) == len(TICKERS)
 
     def test_full_batch_5_and_1_chunk_runs_produce_identical_blocked_set_and_rows(
         self, pnd_model, pnd_feature_matrix, tmp_path, monkeypatch
@@ -233,9 +215,9 @@ class TestStepPndFilterChunkingMatchesUnchunked:
         def run(configured_chunk_size):
             monkeypatch.setattr(di, "_load_model", lambda cls, name, models_dir: pnd_model)
             monkeypatch.setattr("config.settings.SCREENER_BATCH_EXPORT_CHUNK_SIZE", configured_chunk_size)
-            client = _RecordingClient()
-            blocked = di._step_pnd_filter(pnd_feature_matrix, RUN_DATE, client, "http://fake", tmp_path)
-            return blocked, _normalize_calls(client.calls)
+            buffer = []
+            blocked = di._step_pnd_filter(pnd_feature_matrix, RUN_DATE, buffer, tmp_path)
+            return blocked, _normalize_calls(buffer)
 
         blocked_full, rows_full = run(1000)
         blocked_5, rows_5 = run(5)

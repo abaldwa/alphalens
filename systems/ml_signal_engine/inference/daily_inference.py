@@ -254,13 +254,29 @@ def _compute_shap_top5(signal_model: "BaseSignalModel", X: pd.DataFrame, directi
     return out
 
 
-def _write_signal(client: httpx.Client, api_base_url: str, payload: Dict[str, Any]) -> None:
-    response = client.post(f"{api_base_url}/api/v1/signals/ml/write", json=payload, timeout=10.0)
+def _write_signal(buffer: List[Dict[str, Any]], payload: Dict[str, Any]) -> None:
+    """Append one row to buffer instead of writing it immediately — the whole
+    run's rows are flushed in a handful of bulk POSTs by _flush_signal_writes
+    rather than one HTTP round-trip + DuckDB write per (ticker, model) row."""
+    buffer.append(payload)
+
+
+def _flush_signal_writes(client: httpx.Client, api_base_url: str, buffer: List[Dict[str, Any]]) -> int:
+    """POST buffer's rows in one bulk upsert (POST /api/v1/signals/ml/write-bulk),
+    then clear it. No-op if buffer is empty. Returns the number of rows written."""
+    if not buffer:
+        return 0
+    response = client.post(
+        f"{api_base_url}/api/v1/signals/ml/write-bulk", json={"signals": buffer}, timeout=120.0
+    )
     response.raise_for_status()
+    written = len(buffer)
+    buffer.clear()
+    return written
 
 
 def _step_hmm(
-    market_ohlcv: pd.DataFrame, run_date: date_type, client: httpx.Client, api_base_url: str, models_dir: Path
+    market_ohlcv: pd.DataFrame, run_date: date_type, buffer: List[Dict[str, Any]], models_dir: Path
 ) -> Optional[str]:
     """Decode today's market-wide regime, write it (ticker='MARKET') to DataStore. Returns the regime name, or None."""
     hmm_model = _load_hmm(models_dir)
@@ -276,7 +292,7 @@ def _step_hmm(
     regime_name = REGIME_RANK_NAMES.get(rank, str(rank))
 
     _write_signal(
-        client, api_base_url,
+        buffer,
         {
             "date": run_date.isoformat(), "ticker": HMM_MARKET_TICKER, "model_name": HMM_MODEL_NAME,
             "model_version": "1.0", "hmm_regime": regime_name, "hmm_regime_prob": regime_prob,
@@ -326,7 +342,7 @@ def _step_psi_check(feature_matrix: pd.DataFrame, psi_baseline: Optional[dict]) 
 
 
 def _step_pnd_filter(
-    pnd_feature_matrix: pd.DataFrame, run_date: date_type, client: httpx.Client, api_base_url: str, models_dir: Path
+    pnd_feature_matrix: pd.DataFrame, run_date: date_type, buffer: List[Dict[str, Any]], models_dir: Path
 ) -> set:
     """SPEC-MODEL-006: score every ticker, write each row, return the set of blocked tickers.
 
@@ -360,7 +376,7 @@ def _step_pnd_filter(
             if bool(row["pnd_block"]):
                 blocked.add(ticker)
             _write_signal(
-                client, api_base_url,
+                buffer,
                 {
                     "date": run_date.isoformat(), "ticker": ticker, "model_name": PND_MODEL_NAME,
                     "model_version": "1.0",
@@ -373,8 +389,8 @@ def _step_pnd_filter(
 
 
 def _step_signals_and_meta(
-    feature_matrix: pd.DataFrame, blocked_tickers: set, run_date: date_type, client: httpx.Client,
-    api_base_url: str, models_dir: Path,
+    feature_matrix: pd.DataFrame, blocked_tickers: set, run_date: date_type, buffer: List[Dict[str, Any]],
+    models_dir: Path,
 ) -> pd.DataFrame:
     """
     SPEC-MODEL-006: blocked tickers are excluded before scoring, not
@@ -547,9 +563,9 @@ def _step_signals_and_meta(
                 payload["conformal_upper"] = float(conformal_intervals.loc[ticker, "conformal_upper"])
             if ticker in shap_top5:
                 payload["shap_top5_json"] = shap_top5[ticker]
-            _write_signal(client, api_base_url, payload)
+            _write_signal(buffer, payload)
             _write_signal(
-                client, api_base_url,
+                buffer,
                 {
                     "date": run_date.isoformat(), "ticker": ticker, "model_name": META_MODEL_NAME,
                     "model_version": "1.0",
@@ -606,7 +622,7 @@ def _step_signals_and_meta(
                 if ticker in lh_shap_top5:
                     lh_payload["shap_top5_json"] = lh_shap_top5[ticker]
                 _write_signal(
-                    client, api_base_url,
+                    buffer,
                     lh_payload,
                 )
 
@@ -649,7 +665,7 @@ def _step_signals_and_meta(
                     # by accident) — CLASS_ORDER maps position -> label.
                     class_label = CLASS_ORDER[int(ensemble_classes[ensemble_idx])]
                     _write_signal(
-                        client, api_base_url,
+                        buffer,
                         {
                             "date": run_date.isoformat(), "ticker": ticker,
                             "model_name": STACKING_ENSEMBLE_MODEL_NAME, "model_version": "1.0",
@@ -677,7 +693,7 @@ def _step_signals_and_meta(
 
 
 def _step_exit(
-    position_context: pd.DataFrame, run_date: date_type, client: httpx.Client, api_base_url: str, models_dir: Path
+    position_context: pd.DataFrame, run_date: date_type, buffer: List[Dict[str, Any]], models_dir: Path
 ) -> List[str]:
     """Score held positions for exit urgency/type/survival. Returns tickers flagged urgent (SPEC-MODEL-002, M-07)."""
     if position_context.empty:
@@ -692,7 +708,7 @@ def _step_exit(
         if float(row["exit_urgency"]) > EXIT_URGENT_THRESHOLD:
             urgent.append(ticker)
         _write_signal(
-            client, api_base_url,
+            buffer,
             {
                 "date": run_date.isoformat(), "ticker": ticker, "model_name": EXIT_MODEL_NAME, "model_version": "1.0",
                 "exit_urgency": float(row["exit_urgency"]), "exit_type": row["exit_type"],
@@ -778,10 +794,16 @@ def run_daily_inference(
 
     owns_client = client is None
     http_client = client or httpx.Client()
+    # Rows accumulate here across a whole step (or inference chunk within a
+    # step) and get flushed via _flush_signal_writes in one bulk POST,
+    # instead of each _write_signal call being its own HTTP round-trip +
+    # DuckDB write — see _write_signal/_flush_signal_writes docstrings.
+    buffer: List[Dict[str, Any]] = []
     try:
         t0 = time.monotonic()
         try:
-            result["regime"] = _step_hmm(market_ohlcv, run_date, http_client, api_base_url, models_dir)
+            result["regime"] = _step_hmm(market_ohlcv, run_date, buffer, models_dir)
+            _flush_signal_writes(http_client, api_base_url, buffer)
             log_pipeline_step("hmm", "success", stocks=1, duration_s=time.monotonic() - t0)
         except Exception as exc:
             log_pipeline_step("hmm", "failed", stocks=0, duration_s=time.monotonic() - t0, error=str(exc))
@@ -810,7 +832,8 @@ def run_daily_inference(
 
         t0 = time.monotonic()
         try:
-            blocked = _step_pnd_filter(pnd_feature_matrix, run_date, http_client, api_base_url, models_dir)
+            blocked = _step_pnd_filter(pnd_feature_matrix, run_date, buffer, models_dir)
+            _flush_signal_writes(http_client, api_base_url, buffer)
         except Exception as exc:
             log_pipeline_step("pnd_filter", "failed", stocks=0, duration_s=time.monotonic() - t0, error=str(exc))
             raise
@@ -820,7 +843,8 @@ def run_daily_inference(
 
         t0 = time.monotonic()
         try:
-            scored = _step_signals_and_meta(feature_matrix, blocked, run_date, http_client, api_base_url, models_dir)
+            scored = _step_signals_and_meta(feature_matrix, blocked, run_date, buffer, models_dir)
+            _flush_signal_writes(http_client, api_base_url, buffer)
         except Exception as exc:
             log_pipeline_step("signals_meta", "failed", stocks=0, duration_s=time.monotonic() - t0, error=str(exc))
             raise
@@ -830,7 +854,8 @@ def run_daily_inference(
 
         t0 = time.monotonic()
         try:
-            result["urgent_exits"] = _step_exit(position_context, run_date, http_client, api_base_url, models_dir)
+            result["urgent_exits"] = _step_exit(position_context, run_date, buffer, models_dir)
+            _flush_signal_writes(http_client, api_base_url, buffer)
         except Exception as exc:
             log_pipeline_step("exit", "failed", stocks=0, duration_s=time.monotonic() - t0, error=str(exc))
             raise

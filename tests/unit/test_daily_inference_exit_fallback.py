@@ -77,19 +77,9 @@ class TestStepExitUsesFallback:
             "hmm_regime": [0, 1],
         })
 
-        class FakeClient:
-            def post(self, *args, **kwargs):
-                class R:
-                    status_code = 200
-
-                    def raise_for_status(self):
-                        pass
-
-                return R()
-
-        urgent = _step_exit(position_context, __import__("datetime").date(2026, 7, 9), FakeClient(), "http://fake", tmp_path)
+        urgent = _step_exit(position_context, __import__("datetime").date(2026, 7, 9), [], tmp_path)
         assert isinstance(urgent, list)
 
     def test_step_exit_returns_empty_list_for_empty_position_context(self, tmp_path):
-        urgent = _step_exit(pd.DataFrame(), __import__("datetime").date(2026, 7, 9), None, "http://fake", tmp_path)
+        urgent = _step_exit(pd.DataFrame(), __import__("datetime").date(2026, 7, 9), [], tmp_path)
         assert urgent == []
