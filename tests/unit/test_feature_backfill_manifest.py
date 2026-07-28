@@ -27,8 +27,11 @@ def patched_backfill_env(monkeypatch, tmp_path):
 
     features_dir = tmp_path / "features_daily"
     features_dir.mkdir()
+    logs_dir = tmp_path / "logs"
 
-    fake_settings = SimpleNamespace(DUCKDB_PATH=tmp_path / "fake.duckdb", FEATURES_DAILY_DIR=features_dir)
+    fake_settings = SimpleNamespace(
+        DUCKDB_PATH=tmp_path / "fake.duckdb", FEATURES_DAILY_DIR=features_dir, LOGS_DIR=logs_dir,
+    )
     monkeypatch.setitem(sys.modules, "config.settings", fake_settings)
 
     fake_universe = SimpleNamespace(get_tickers=lambda: ["AAA", "BBB"])
@@ -72,37 +75,22 @@ def patched_backfill_env(monkeypatch, tmp_path):
     return fb, tmp_path
 
 
-def _real_logs_dir():
-    # main() derives the manifest path from its own file location
-    # (scripts/feature_backfill.py -> repo_root/logs), not the cwd, so the
-    # test must look there (and clean up after itself) rather than tmp_path.
-    from pathlib import Path
-
-    import scripts.feature_backfill as fb
-
-    return Path(fb.__file__).resolve().parent.parent / "logs"
-
-
-def test_failed_date_is_written_to_the_manifest(patched_backfill_env, monkeypatch, tmp_path):
-    fb, _ = patched_backfill_env
+def test_failed_date_is_written_to_the_manifest(patched_backfill_env, monkeypatch):
+    fb, tmp_path = patched_backfill_env
     monkeypatch.setattr(
         sys, "argv",
         ["feature_backfill.py", "--from-date", "2024-01-02", "--to-date", "2024-01-04",
          "--run-id", "unittest123", "--no-hmm"],
     )
-    manifest_path = _real_logs_dir() / "feature_backfill_failed_unittest123.txt"
-    try:
-        fb.main()
-        assert manifest_path.exists()
-        failed_dates = manifest_path.read_text().splitlines()
-        assert failed_dates == ["2024-01-03"]
-    finally:
-        manifest_path.unlink(missing_ok=True)
+    manifest_path = tmp_path / "logs" / "feature_backfill_failed_unittest123.txt"
+    fb.main()
+    assert manifest_path.exists()
+    failed_dates = manifest_path.read_text().splitlines()
+    assert failed_dates == ["2024-01-03"]
 
 
-def test_no_failures_leaves_no_manifest_entries(patched_backfill_env, monkeypatch, tmp_path):
-    fb, _ = patched_backfill_env
-    import scripts.feature_backfill as fb_mod
+def test_no_failures_leaves_no_manifest_entries(patched_backfill_env, monkeypatch):
+    fb, tmp_path = patched_backfill_env
 
     # Redefine the fake pipeline so nothing fails this time.
     fake_pipeline = SimpleNamespace(step_compute_features=lambda d, compute_hmm=True, data_cache=None: None)
@@ -113,11 +101,8 @@ def test_no_failures_leaves_no_manifest_entries(patched_backfill_env, monkeypatc
         ["feature_backfill.py", "--from-date", "2024-01-02", "--to-date", "2024-01-04",
          "--run-id", "unittest456", "--no-hmm"],
     )
-    manifest_path = _real_logs_dir() / "feature_backfill_failed_unittest456.txt"
-    try:
-        fb_mod.main()
-        # A manifest that's never appended to is fine to not exist at all.
-        if manifest_path.exists():
-            assert manifest_path.read_text() == ""
-    finally:
-        manifest_path.unlink(missing_ok=True)
+    manifest_path = tmp_path / "logs" / "feature_backfill_failed_unittest456.txt"
+    fb.main()
+    # A manifest that's never appended to is fine to not exist at all.
+    if manifest_path.exists():
+        assert manifest_path.read_text() == ""

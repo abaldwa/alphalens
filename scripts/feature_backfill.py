@@ -56,6 +56,7 @@ Timing
 
 import argparse
 import logging
+import os
 import sys
 import time
 from datetime import date as date_type, datetime
@@ -86,17 +87,18 @@ def _parse_args() -> argparse.Namespace:
                         "Deep-learning models handle NaN via masking.")
     p.add_argument("--run-id", default=None,
                    help="Identifier for this run's failed-dates manifest file "
-                        "(default: a timestamp, e.g. 20260728_101500). The manifest is written "
-                        "incrementally to logs/feature_backfill_failed_<run-id>.txt, one failed "
-                        "date per line, so a human can grep/retry exact failures without "
-                        "re-scanning a potentially huge log.")
+                        "(default: a timestamp+PID, e.g. 20260728_101500_12345). The manifest is "
+                        "written incrementally to config.settings.LOGS_DIR/"
+                        "feature_backfill_failed_<run-id>.txt, one failed date per line, so a "
+                        "human can grep/retry exact failures without re-scanning a potentially "
+                        "huge log.")
     return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
 
-    from config.settings import DUCKDB_PATH, FEATURES_DAILY_DIR
+    from config.settings import DUCKDB_PATH, FEATURES_DAILY_DIR, LOGS_DIR
     from config.universe import get_tickers
     from datastore.api.db import get_duckdb_connection
     from ingestion.scheduler.daily_pipeline import step_compute_features
@@ -152,10 +154,12 @@ def main() -> None:
     # discovered after the fact). Write each failed date incrementally to a
     # small manifest file, so a human/script can grep/retry the exact
     # failures without re-scanning a huge log.
-    run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-    logs_dir = Path(__file__).resolve().parent.parent / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = logs_dir / f"feature_backfill_failed_{run_id}.txt"
+    # run-id defaults to a second-resolution timestamp + PID so two backfill
+    # launches started in the same second (e.g. a quick manual retry, or two
+    # concurrent agents) don't share one manifest file.
+    run_id = args.run_id or f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    manifest_path = LOGS_DIR / f"feature_backfill_failed_{run_id}.txt"
     logger.info("Failed-dates manifest (if any): %s", manifest_path)
 
     ok = err = 0
