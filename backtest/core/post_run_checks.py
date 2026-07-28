@@ -172,6 +172,7 @@ def run_post_run_integrity(
         fold_sharpes=fold_sharpes or None,
         fold_returns=fold_returns or None,
         benchmark_returns=benchmark_returns or None,
+        n_trades=len(trades),
     )
     applicable = None if channel == "ml" else _APPLICABLE_CHECKS_NON_ML
     # Only the checks that were actually GIVEN real inputs are meaningful
@@ -180,7 +181,10 @@ def run_post_run_integrity(
     # generation-time PIT/walk-forward guarantees, already enforced
     # upstream by the orchestrator itself, not re-derivable post-hoc from
     # a finished run). Restrict to the checks this module can honestly feed.
-    reachable = {"check_05_costs", "check_06_liquidity", "check_08_fold_stability", "check_09_benchmarks"}
+    reachable = {
+        "check_05_costs", "check_06_liquidity", "check_08_fold_stability",
+        "check_09_benchmarks", "check_12_flat_equity_curve",
+    }
     if applicable is not None:
         applicable = applicable & reachable
     else:

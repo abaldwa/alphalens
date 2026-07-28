@@ -245,6 +245,37 @@ class TestIntegrityChecker:
         result = checker.check_12_flat_equity_curve()
         assert result.passed is True
 
+    def test_one_nonzero_fold_among_otherwise_zero_folds_fails_on_degenerate_trade_count(self):
+        """[BUG FIX, 2026-07-28 second model-review] A strategy that fires
+        exactly once across a multi-year backtest produces one nonzero fold
+        among otherwise-zero folds — all_flat is False, so the original
+        check_12 logic passed cleanly. That's the same failure class as a
+        totally flat curve, one notch less extreme, and must fail too when
+        the caller supplies a real (degenerate) n_trades count."""
+        checker = BacktestIntegrityChecker(
+            fold_sharpes=[0.0, 0.0, 1.4], fold_returns=[0.0, 0.0, 0.05], n_trades=1,
+        )
+        result = checker.check_12_flat_equity_curve()
+        assert result.passed is False
+        assert result.critical is True
+
+    def test_one_nonzero_fold_passes_when_trade_count_is_healthy(self):
+        """Same one-nonzero-fold shape, but a real trade count above the
+        floor — this is a legitimately quiet-but-real strategy, not a
+        near-zero-trade backtest, so check_12 must not fail it."""
+        checker = BacktestIntegrityChecker(
+            fold_sharpes=[0.0, 0.0, 1.4], fold_returns=[0.0, 0.0, 0.05], n_trades=200,
+        )
+        result = checker.check_12_flat_equity_curve()
+        assert result.passed is True
+
+    def test_one_nonzero_fold_passes_when_n_trades_not_supplied(self):
+        """n_trades is caller-optional — a caller that hasn't wired it yet
+        must not have this new sub-check silently start failing runs."""
+        checker = BacktestIntegrityChecker(fold_sharpes=[0.0, 0.0, 1.4], fold_returns=[0.0, 0.0, 0.05])
+        result = checker.check_12_flat_equity_curve()
+        assert result.passed is True
+
     def test_survivorship_check_flags_pure_current_universe(self):
         """If every historical ticker is still in the current universe, that's a survivorship-bias red flag."""
         checker = BacktestIntegrityChecker(universe_tickers={"A", "B"}, historical_tickers={"A", "B"})

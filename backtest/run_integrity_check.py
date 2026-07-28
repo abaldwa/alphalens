@@ -106,6 +106,7 @@ def run_strategy_integrity_check(
     hpo_dataset: Optional[str] = None,
     n_folds: int = 3,
     embargo_days: int = 0,
+    n_trades: Optional[int] = None,
 ) -> Dict[str, bool]:
     """
     Run every SPEC-BT-001 integrity check (backtest/integrity_checker.py)
@@ -144,6 +145,12 @@ def run_strategy_integrity_check(
         "validation" if a real HPO step actually ran.
     n_folds, embargo_days
         Passed through to build_fold_metrics for both curves.
+    n_trades : int, optional
+        Total closed-trade count for the whole run (not per-fold) — feeds
+        check_12_flat_equity_curve's minimum-trade-count floor (2026-07-28
+        second model-review). None (default) never fails that check on its
+        own; only pass this if the caller actually has a real trade list to
+        count (never a fabricated/estimated value).
 
     Returns
     -------
@@ -185,5 +192,6 @@ def run_strategy_integrity_check(
         "fold_sharpes": fold_sharpes,
         "fold_returns": fold_returns,
         "benchmark_returns": benchmark_fold_returns,
+        "n_trades": n_trades,
     }
     return WalkForwardValidator(n_folds=n_folds).run_integrity_checks(results)

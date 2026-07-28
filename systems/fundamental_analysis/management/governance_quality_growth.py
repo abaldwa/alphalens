@@ -12,6 +12,14 @@ from typing import Dict, Optional
 
 from systems.fundamental_analysis.scoring_utils import combine_subscores, weighted_zscore_composite
 
+# NOTE [2026-07-28 second model-review, item 12]: roce (0.4 of the 70%-
+# weighted business_quality leg = 28% of the overall score) is the same
+# dominant feature already flagged as multicollinear across Moat/Sector-
+# Leader/Longevity, QGLP, Owner Earnings, and Capital Efficiency — a
+# ticker's ROCE profile is a shared driver across this whole family. By-
+# inspection finding, not a measured correlation-matrix backtest (tracked
+# outside this fix, same as Moat's own note in systems/fundamental_
+# analysis/quality/moat.py).
 BUSINESS_QUALITY_WEIGHTS = {"roce": 0.4, "fcf_ev_yield": 0.3, "revenue_cagr_3yr": 0.3}
 GOV_LEG_WEIGHTS = {"business_quality": 0.70, "governance": 0.30}
 

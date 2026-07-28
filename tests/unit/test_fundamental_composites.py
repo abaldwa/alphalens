@@ -93,6 +93,69 @@ class TestFcfLowDebtScore:
         assert fcf_low_debt_score({}) is None
 
 
+class TestFcfLowDebtRealColumnPipeline:
+    """[BUG FIX, 2026-07-28 second model-review, item 8] The prior fix
+    round claimed fcf_low_debt "verified 3 real matches" against
+    GESHIP/INDIAMART/INDUSTOWER after renaming its leverage column from
+    debt_to_ebitda (never a real column) to net_debt_to_ebitda — but
+    nothing was committed backing that claim, so it wasn't independently
+    reproducible. This exercises the SAME end-to-end pipeline the real
+    screener uses (raw ratios -> features.fundamental._sector_relative_
+    zscore -> matches_screener_preset), with synthetic-but-controlled
+    values, rather than pre-supplying already-z-scored inputs like
+    TestScreenerPresets above does — so a future regression that
+    reintroduces the wrong column name would fail this test, not just a
+    one-off manual check against today's live universe."""
+
+    def test_low_leverage_high_fcf_yield_ticker_matches_after_real_zscoring(self):
+        from features.fundamental import _sector_relative_zscore
+
+        # Three same-sector peers: GOODCO has clearly above-peer FCF yield,
+        # clearly below-peer leverage, and above-peer interest coverage —
+        # exactly the shape a real "cheap, low-debt cash generator" should
+        # have. BADCO is the mirror-image (expensive, levered, weak
+        # coverage). AVGCO anchors the sector mean/std with a middling profile.
+        raw = pd.DataFrame([
+            {"ticker": "GOODCO", "sector": "IT", "fcf_ev_yield": 0.15, "net_debt_to_ebitda": 0.2, "interest_coverage": 12.0},
+            {"ticker": "BADCO", "sector": "IT", "fcf_ev_yield": 0.01, "net_debt_to_ebitda": 4.5, "interest_coverage": 1.5},
+            {"ticker": "AVGCO", "sector": "IT", "fcf_ev_yield": 0.06, "net_debt_to_ebitda": 2.0, "interest_coverage": 5.0},
+        ])
+        zscored = _sector_relative_zscore(raw, ["fcf_ev_yield", "net_debt_to_ebitda", "interest_coverage"])
+
+        good_row = zscored[zscored["ticker"] == "GOODCO"].iloc[0]
+        bad_row = zscored[zscored["ticker"] == "BADCO"].iloc[0]
+
+        good_ratios = {
+            "fcf_ev_yield": good_row["fcf_ev_yield"],
+            "net_debt_to_ebitda": good_row["net_debt_to_ebitda"],
+            "interest_coverage": good_row["interest_coverage"],
+        }
+        bad_ratios = {
+            "fcf_ev_yield": bad_row["fcf_ev_yield"],
+            "net_debt_to_ebitda": bad_row["net_debt_to_ebitda"],
+            "interest_coverage": bad_row["interest_coverage"],
+        }
+
+        assert matches_screener_preset(good_ratios, "fcf_low_debt") is True
+        assert matches_screener_preset(bad_ratios, "fcf_low_debt") is False
+
+        # The composite score function (SCORE_FUNCTIONS' "fcf_low_debt" kind)
+        # must also read the real post-rename column name correctly.
+        assert fcf_low_debt_score(good_ratios) > 50
+        assert fcf_low_debt_score(bad_ratios) < 50
+
+        # Regression guard for the exact bug this fix addressed: the old,
+        # never-real "debt_to_ebitda" name must not silently satisfy
+        # anything — a ratios dict using it instead of net_debt_to_ebitda
+        # is missing input, not a passing/failing leverage screen.
+        stale_key_ratios = {
+            "fcf_ev_yield": good_row["fcf_ev_yield"],
+            "debt_to_ebitda": good_row["net_debt_to_ebitda"],
+            "interest_coverage": good_row["interest_coverage"],
+        }
+        assert matches_screener_preset(stale_key_ratios, "fcf_low_debt") is False
+
+
 class TestGarpScore:
     def test_growth_and_cheap_valuation_gives_above_50(self):
         score = garp_score({"revenue_growth_yoy": 1.0, "eps_growth_yoy": 1.0, "pe_ratio": -1.0})

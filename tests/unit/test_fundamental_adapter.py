@@ -190,6 +190,51 @@ class TestCompositeScoreStrategies:
         assert {s.ticker for s in signals if s.action == "buy"} == {"NONBANK"}
 
 
+class TestLiquidityFloorOnSmallnessRewardingStrategies:
+    """[BUG FIX, 2026-07-28 second model-review, item 9] small_cap_
+    compounders/smile/under_followed actively reward smallness/low
+    ownership with no minimum market-cap gate of their own (unlike
+    net_net.py's LIQUIDITY_FLOOR_MARKET_CAP_CR) — prone to selecting
+    circuit-filter-prone, unfillable Indian small-caps."""
+
+    def test_below_floor_market_cap_ticker_excluded_from_small_cap_compounders(self, monkeypatch):
+        import backtest.adapters.fundamental_adapter as mod
+        # small_cap_compounders weights: size(market_cap:-1.0), quality_growth
+        # (roce/eps_growth_yoy/revenue_cagr_3yr), risk_control (debt_to_equity/cfo_to_pat).
+        panel = _panel([
+            {
+                "ticker": "TINY", "market_cap": 3.0, "roce": 3.0, "eps_growth_yoy": 3.0,
+                "revenue_cagr_3yr": 3.0, "debt_to_equity": -3.0, "cfo_to_pat": 3.0,
+            },
+            {
+                "ticker": "HEALTHY_SIZE", "market_cap": 1.0, "roce": 1.0, "eps_growth_yoy": 1.0,
+                "revenue_cagr_3yr": 1.0, "debt_to_equity": -1.0, "cfo_to_pat": 1.0,
+            },
+        ])
+        monkeypatch.setattr(mod, "read_feature_day", lambda date_str: panel)
+        adapter = FundamentalAdapter(
+            preset="small_cap_compounders", top_n=5,
+            market_cap_lookup={"TINY": 10.0, "HEALTHY_SIZE": 500.0},  # TINY below the 50cr floor
+        )
+        signals = adapter.generate_signals(["TINY", "HEALTHY_SIZE"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"HEALTHY_SIZE"}
+
+    def test_no_market_cap_lookup_supplied_is_a_safe_noop(self, monkeypatch):
+        """A caller that hasn't wired market_cap_lookup yet must not have
+        this new gate silently start excluding every candidate."""
+        import backtest.adapters.fundamental_adapter as mod
+        panel = _panel([
+            {
+                "ticker": "TINY", "market_cap": 3.0, "roce": 3.0, "eps_growth_yoy": 3.0,
+                "revenue_cagr_3yr": 3.0, "debt_to_equity": -3.0, "cfo_to_pat": 3.0,
+            },
+        ])
+        monkeypatch.setattr(mod, "read_feature_day", lambda date_str: panel)
+        adapter = FundamentalAdapter(preset="small_cap_compounders", top_n=5)
+        signals = adapter.generate_signals(["TINY"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"TINY"}
+
+
 class TestRealFeatureStoreIntegration:
     """No-Mock-Data Policy: exercises the adapter against the real feature
     Parquet store (config.settings.FEATURES_DAILY_DIR) for a real recent

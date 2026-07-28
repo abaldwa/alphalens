@@ -63,6 +63,18 @@ def compute_margin_of_safety(conn: Any, ticker: str, as_of: datetime) -> Dict[st
     if close is None or pd.isna(eps) or pd.isna(bvps) or eps <= 0 or bvps <= 0:
         return {"intrinsic_value": None, "margin_of_safety": np.nan, "passes": False}
 
+    # [KNOWN DATA ARTIFACT, 2026-07-28 second model-review, currently
+    # unaddressed, item 11] 22.5 (= 15 x 1.5, Graham's assumed max
+    # reasonable P/E x max reasonable P/B) is an unadjusted 1962 US-market
+    # constant from Graham's "The Intelligent Investor" — it was never
+    # recalibrated for India's structurally higher cost of capital
+    # (higher risk-free rate, higher equity risk premium than the US
+    # market Graham derived it from), so the resulting graham_number is
+    # systematically too permissive/too strict relative to what an
+    # India-calibrated multiple would produce. A real recalibration would
+    # need dedicated research (historical India-market P/E and cost-of-
+    # capital distributions) this task doesn't have time for; not
+    # attempted here.
     graham_number = float(np.sqrt(22.5 * eps * bvps))
     # No separate "expected_growth_percent" field exists — eps_growth_yoy's
     # underlying raw eps values are already in `latest`/history, but this
@@ -70,6 +82,11 @@ def compute_margin_of_safety(conn: Any, ticker: str, as_of: datetime) -> Dict[st
     # same shape as piotroski_on_value.py's raw-financials pattern; use a
     # conservative 0% growth assumption for Graham Value when no explicit
     # growth estimate is supplied, which only makes this leg more conservative.
+    # [KNOWN DATA ARTIFACT, 2026-07-28 second model-review, currently
+    # unaddressed, item 11] 8.5 (Graham's "no-growth" base P/E) is the
+    # same 1962 US-market constant, same unadjusted-for-India caveat as
+    # graham_number's 22.5 above — not recalibrated for India's cost of
+    # capital, not attempted here for the same reason.
     graham_value = float(eps * 8.5)
     intrinsic_value = min(graham_number, graham_value)
 

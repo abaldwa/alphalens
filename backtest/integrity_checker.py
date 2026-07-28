@@ -185,6 +185,19 @@ class BacktestIntegrityChecker:
     # market genuinely had that few exits.
     min_delisted_ratio: float = 0.01
 
+    # [BUG FIX, 2026-07-28 second model-review] check_12_flat_equity_curve's
+    # original all-zero-folds test has a blind spot: a strategy that fires
+    # exactly once across a multi-year backtest produces one nonzero fold
+    # among otherwise-zero folds and passes cleanly — same failure class
+    # ("the strategy barely traded"), one notch less extreme than all-zero.
+    # n_trades (the caller-supplied total closed-trade count for the whole
+    # run, independent of the fold split) lets check_12 catch that case too.
+    # None (not supplied) never fails this on its own — see check_12's own
+    # docstring for why "caller didn't wire n_trades yet" must not become
+    # an automatic critical failure.
+    n_trades: Optional[int] = None
+    MIN_TRADES_FLOOR: int = 5
+
     _results_cache: Dict[str, CheckResult] = field(default_factory=dict, repr=False, compare=False)
 
     def _result(self, name: str, passed: bool, detail: str) -> CheckResult:
@@ -432,6 +445,23 @@ class BacktestIntegrityChecker:
                 "(fold_returns and fold_sharpes are all exactly 0.0) — this is the signature "
                 "of a zero-trade backtest (e.g. a screener that never matches any ticker), "
                 "not a genuinely bad-but-real strategy result",
+            )
+        # [BUG FIX, 2026-07-28 second model-review] Exact-zero blind spot: a
+        # strategy that fires exactly once across a multi-year backtest
+        # produces one nonzero fold among otherwise-zero folds, which the
+        # all_flat test above cleanly passes — same failure class ("this
+        # backtest barely traded"), one notch less extreme than all-zero.
+        # Only enforced when the caller actually supplies n_trades (None
+        # never fails this on its own — same "caller hasn't wired it yet
+        # must not become an automatic critical failure" reasoning as the
+        # fold_returns/fold_sharpes check above).
+        if self.n_trades is not None and self.n_trades < self.MIN_TRADES_FLOOR:
+            return self._result(
+                name, False,
+                f"only {self.n_trades} trade(s) across the whole backtest (< minimum floor of "
+                f"{self.MIN_TRADES_FLOOR}) despite a non-flat fold_returns/fold_sharpes signature — "
+                "a near-zero-trade backtest is the same failure class as a flat equity curve, just "
+                "less extreme (e.g. one lucky/unlucky trade skews a single fold nonzero)",
             )
         return self._result(
             name, True,

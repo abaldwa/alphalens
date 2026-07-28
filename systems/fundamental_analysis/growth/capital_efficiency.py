@@ -9,6 +9,13 @@ from typing import Dict, Optional
 
 from systems.fundamental_analysis.scoring_utils import weighted_zscore_composite
 
+# NOTE [2026-07-28 second model-review, item 12]: roce (0.30) is the same
+# dominant feature already flagged as multicollinear across Moat/Sector-
+# Leader/Longevity, QGLP, and Owner Earnings — a ticker's ROCE profile is
+# a shared driver across this whole family, not unique signal here. By-
+# inspection finding, not a measured correlation-matrix backtest (tracked
+# outside this fix, same as Moat's own note in systems/fundamental_
+# analysis/quality/moat.py).
 CAPITAL_EFFICIENCY_GROWTH_WEIGHTS = {
     "revenue_cagr_3yr": 0.35,
     "roce": 0.30,

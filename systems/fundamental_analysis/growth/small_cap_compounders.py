@@ -11,6 +11,16 @@ from typing import Dict, Optional
 
 from systems.fundamental_analysis.scoring_utils import combine_subscores, weighted_zscore_composite
 
+# NOTE [2026-07-28 second model-review, item 12]: roce (0.35 of the 50%-
+# weighted quality_growth leg) and debt_to_equity (-0.5 of the 30%-weighted
+# risk_control leg) are the same dominant ROE/ROCE/leverage features
+# already flagged as multicollinear across Moat/Sector-Leader/Longevity,
+# QGLP, Owner Earnings, Capital Efficiency, and Governance-Aware Quality
+# Growth — a ticker's ROCE/leverage profile is a shared driver across this
+# whole family, on top of (not instead of) the size leg that's actually
+# distinctive to this strategy. By-inspection finding, not a measured
+# correlation-matrix backtest (tracked outside this fix, same as Moat's
+# own note in systems/fundamental_analysis/quality/moat.py).
 QUALITY_GROWTH_WEIGHTS = {"roce": 0.35, "eps_growth_yoy": 0.35, "revenue_cagr_3yr": 0.30}
 RISK_CONTROL_WEIGHTS = {"debt_to_equity": -0.5, "cfo_to_pat": 0.5}
 SIZE_WEIGHT = {"market_cap": -1.0}

@@ -68,6 +68,19 @@ def _real_sector_map() -> Dict[str, str]:
     return dict(zip(universe["ticker"], universe["sector"]))
 
 
+def _real_market_cap_map() -> Dict[str, float]:
+    """[BUG FIX, 2026-07-28 second model-review, item 9] Real ticker ->
+    market_cap_cr mapping (same source/pattern as _real_sector_map above),
+    fed to FundamentalAdapter so its small_cap_compounders/smile/
+    under_followed presets can enforce a liquidity floor — those three
+    formulas actively reward smallness/low ownership with no minimum
+    market-cap gate of their own (unlike net_net.py's LIQUIDITY_FLOOR_
+    MARKET_CAP_CR), making them prone to selecting circuit-filter-prone,
+    unfillable Indian small-caps without this."""
+    universe = load_universe()
+    return dict(zip(universe["ticker"], universe["market_cap_cr"]))
+
+
 def _fetch_real_universe(
     max_tickers: Optional[int], min_history_days: int, api_base_url: Optional[str] = None
 ) -> pd.DataFrame:

@@ -760,14 +760,29 @@ def compute_fundamental_features_panel(
                     # cached; a mismatch means the filing was corrected/restated
                     # since caching and must be treated as a miss (falls through
                     # to a full recompute + cache overwrite below), not served stale.
-                    fresh_announcement_date = pd.Timestamp(latest_row["announcement_date"]).isoformat()
-                    if cached is not None and cached.get("announcement_date") != fresh_announcement_date:
-                        logger.info(
-                            f"fundamental_raw_cache: {ticker} FY{latest_row['fiscal_year']}Q{latest_row['quarter']} "
-                            f"announcement_date changed ({cached.get('announcement_date')} -> "
-                            f"{fresh_announcement_date}) — treating as a restatement and invalidating the cached entry"
-                        )
+                    # [BUG FIX, 2026-07-28 second model-review] A missing
+                    # (NaN/NaT) announcement_date must NEVER participate in
+                    # the cache — pd.Timestamp(NaT).isoformat() returns the
+                    # literal string "NaT", which would (a) compare equal to
+                    # a previously-cached "NaT" and be wrongly treated as "no
+                    # restatement", and (b) blow up datetime.fromisoformat()
+                    # on the cache-hit path below, which the broad except
+                    # Exception further up would then silently downgrade to
+                    # all-NaN fundamentals for this ticker forever. Force an
+                    # explicit miss (never read OR write a cache entry keyed
+                    # by a missing announcement_date) instead.
+                    if pd.isna(latest_row["announcement_date"]):
                         cached = None
+                        fresh_announcement_date = None
+                    else:
+                        fresh_announcement_date = pd.Timestamp(latest_row["announcement_date"]).isoformat()
+                        if cached is not None and cached.get("announcement_date") != fresh_announcement_date:
+                            logger.info(
+                                f"fundamental_raw_cache: {ticker} FY{latest_row['fiscal_year']}Q{latest_row['quarter']} "
+                                f"announcement_date changed ({cached.get('announcement_date')} -> "
+                                f"{fresh_announcement_date}) — treating as a restatement and invalidating the cached entry"
+                            )
+                            cached = None
                     if cached is not None:
                         close = _latest_close_on_or_before(client, ticker, as_of, ticker_ohlcv=t_ohlcv)
                         feats = dict(cached["ratios"])
@@ -780,14 +795,19 @@ def compute_fundamental_features_panel(
                             client, ticker, as_of, pre_loaded_rows=rows_for_peek, ticker_ohlcv=t_ohlcv,
                             listing_date=listing_date,
                         )
-                        new_entry = {
-                            "ratios": {k: feats[k] for k in CACHEABLE_RATIO_FEATURES},
-                            "priced_inputs": _priced_inputs_from_row(latest_row),
-                            "announcement_date": fresh_announcement_date,
-                        }
-                        raw_cache[cache_key] = new_entry
-                        if cache_misses_out is not None:
-                            cache_misses_out[cache_key] = new_entry
+                        # Never write a cache entry keyed by a missing
+                        # announcement_date — there's nothing to compare a
+                        # future restatement against, so it would sit there
+                        # unable to ever be correctly invalidated.
+                        if fresh_announcement_date is not None:
+                            new_entry = {
+                                "ratios": {k: feats[k] for k in CACHEABLE_RATIO_FEATURES},
+                                "priced_inputs": _priced_inputs_from_row(latest_row),
+                                "announcement_date": fresh_announcement_date,
+                            }
+                            raw_cache[cache_key] = new_entry
+                            if cache_misses_out is not None:
+                                cache_misses_out[cache_key] = new_entry
         except httpx.RequestError as exc:
             logger.error(
                 f"Fundamentals fetch failed for {ticker} with a connection error ({exc}) — "

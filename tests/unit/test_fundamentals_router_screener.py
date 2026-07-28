@@ -116,3 +116,39 @@ class TestScoresEndpoint:
         resp = client.get("/api/v1/fundamentals/NOSUCHTICKER/scores")
         assert resp.status_code == 200
         assert resp.json()["quality_score"] is None
+
+    def test_excluded_sector_strategy_scores_are_none_not_a_fabricated_number(
+        self, client, tmp_path, monkeypatch,
+    ):
+        """[BUG FIX, 2026-07-28 second model-review, item 5] GET
+        /{ticker}/scores used to compute every SCORE_FUNCTIONS composite
+        with no sector filter at all — the only one of the three
+        sector-exclusion call sites that skipped PRESET_EXCLUDED_SECTORS.
+        A bank/NBFC ticker must get None for magic_formula/moat/qglp/etc
+        (ROE/ROCE/leverage-dominated strategies structurally meaningless
+        for a lender), not a real-looking but methodologically-invalid
+        number, while a genuinely applicable strategy (e.g. "growth",
+        which has no sector exclusion) still returns a real score."""
+        monkeypatch.setattr(feature_store, "FEATURES_DAILY_DIR", tmp_path)
+        row = {"ticker": "BANKCO", "sector": "Financial Services"}
+        row.update({c: 1.5 for c in RATIO_FEATURES})
+        row.update({c: 0 for c in STALENESS_FEATURES})
+        row.update({c: 10.0 for c in GOVERNANCE_FEATURES})
+        pd.DataFrame([row]).to_parquet(tmp_path / "2024-06-14.parquet", index=False)
+
+        def _bank_universe():
+            return pd.DataFrame({
+                "ticker": ["BANKCO"], "sector": ["Financial Services"],
+                "market_cap_cr": [50000.0], "adtv_cr": [50.0],
+            })
+
+        monkeypatch.setattr("datastore.api.routers.fundamentals.load_universe_raw", _bank_universe)
+
+        resp = client.get("/api/v1/fundamentals/BANKCO/scores")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["strategy_scores"]["magic_formula"] is None
+        assert body["strategy_scores"]["moat"] is None
+        assert body["strategy_scores"]["quality_value"] is None
+        # A strategy with no sector exclusion still computes a real score.
+        assert body["strategy_scores"]["growth"] is not None

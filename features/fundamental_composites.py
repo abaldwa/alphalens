@@ -253,22 +253,58 @@ SCREENER_PRESETS = {
 # matches_screener_preset below) and SCORE_FUNCTIONS ("composite_score"
 # kind, enforced by backtest/adapters/fundamental_adapter.py's
 # generate_signals — see that module's SCORE_FUNCTIONS branch).
+# [BUG FIX, 2026-07-28 second model-review, item 14] Utilities added
+# alongside every existing Financial Services exclusion below: Greenblatt's
+# own Magic Formula excludes Utilities for the same regulated-ROE reason
+# it excludes Financials — utility ROE/ROCE is set/capped by a tariff
+# regulator (state electricity regulatory commissions in India), not
+# determined by competitive capital allocation, so it's just as
+# structurally noisy an input to an ROE/ROCE/leverage-dominated formula
+# as a bank's regulated-capital-driven ROE is. config/sector_index_map.py
+# has a single "Utilities" bucket (power/gas distribution & generation),
+# same one-bucket-per-sector granularity as "Financial Services".
 PRESET_EXCLUDED_SECTORS: Dict[str, set] = {
-    "magic_formula": {"Financial Services"},
+    "magic_formula": {"Financial Services", "Utilities"},
+    # [BUG FIX, 2026-07-28 second model-review, item 6] quality_value meets
+    # this dict's own stated "roughly half or more" bar (roce(.3)+roe(.3) =
+    # 60% of its 1.2 raw weight total = 50% normalized) but was missing —
+    # same key covers both the SCREENER_PRESETS "quality_value" preset
+    # (ev_ebit_yield/book_to_market/roce/roe, all 0.3 each) and the
+    # SCORE_FUNCTIONS "quality_value" composite
+    # (systems/fundamental_analysis/quality/quality_value.py's
+    # QUALITY_VALUE_WEIGHTS: ev_ebit_yield .30 + book_to_market .20 +
+    # roce .30 + roe .20). Re-checked every other strategy against the same
+    # bar while here (2026-07-28): fcf_low_debt's net_debt_to_ebitda leg is
+    # only 30% (score)/38% (preset, normalized) on its own — below bar,
+    # like contrarian_recovery's already-noted 19% leg — interest_coverage
+    # isn't one of the named leverage/solvency ratios above so it's not
+    # added to that total. earnings_rerating (20% delta_roce_3y),
+    # story_numbers (no roce/roe/leverage leg at all), garp (its
+    # "stability" leg is margin_stability_5y/cfo_to_pat, not roce/roe),
+    # smile, under_followed (22.5% effective delta_roce_3y after leg
+    # weighting), normalization_value, and contrarian_recovery similarly
+    # stay below the bar and are left out. promoter_aligned is 75%-weighted
+    # on qglp_score (already excluded below) but that 75% multiplier still
+    # leaves the ROE/ROCE-heavy content as the strategy's dominant driver —
+    # left undecided/out of scope for this pass since it's a composed
+    # (not directly-weighted) case the existing "checked against each
+    # strategy's own WEIGHTS dict" methodology doesn't cleanly cover;
+    # flagged here for a human to confirm rather than silently included.
+    "quality_value": {"Financial Services", "Utilities"},
     # SCREENER_PRESETS ("preset" kind)
-    "quality_compounder": {"Financial Services"},  # roe(1.0)+roce(1.0)+debt_to_equity(-0.5): 100% leverage/ROE/ROCE
-    "deep_value_solvency": {"Financial Services"},  # debt_to_equity+interest_coverage+current_ratio: 57% of weight
-    "turnaround_recovery": {"Financial Services"},  # delta_roa+delta_current_ratio+delta_ltd/assets: 50% of weight
+    "quality_compounder": {"Financial Services", "Utilities"},  # roe(1.0)+roce(1.0)+debt_to_equity(-0.5): 100% leverage/ROE/ROCE
+    "deep_value_solvency": {"Financial Services", "Utilities"},  # debt_to_equity+interest_coverage+current_ratio: 57% of weight
+    "turnaround_recovery": {"Financial Services", "Utilities"},  # delta_roa+delta_current_ratio+delta_ltd/assets: 50% of weight
     # SCORE_FUNCTIONS ("composite_score" kind)
-    "moat": {"Financial Services"},  # avg_roce_5y(.45)+debt_to_equity(-.25): 70% of weight
-    "sector_leader": {"Financial Services"},  # avg_roce_5y(.35): explicitly named in the 2026-07-28 review
-    "longevity": {"Financial Services"},  # avg_roce_5y(.35)+debt_to_equity(-.20): 55% of weight
-    "owner_earnings": {"Financial Services"},  # roce(.30) of fcf_ev_yield/roce/reinvestment_rate
-    "capital_allocation": {"Financial Services"},  # debt_to_equity(-.15)+interest_coverage(.15): 30% of weight
-    "qglp": {"Financial Services"},  # roce/roe/avg_roce_5y/delta_roce_3y spread across 3 of its 4 legs
-    "capital_efficiency": {"Financial Services"},  # roce(.30) of revenue_cagr/roce/asset_turnover/receivable_days
-    "governance_quality_growth": {"Financial Services"},  # roce(.4) of the 70%-weighted business_quality leg (28%)
-    "small_cap_compounders": {"Financial Services"},  # roce(.35) + debt_to_equity(-.5) across its two legs
+    "moat": {"Financial Services", "Utilities"},  # avg_roce_5y(.45)+debt_to_equity(-.25): 70% of weight
+    "sector_leader": {"Financial Services", "Utilities"},  # avg_roce_5y(.35): explicitly named in the 2026-07-28 review
+    "longevity": {"Financial Services", "Utilities"},  # avg_roce_5y(.35)+debt_to_equity(-.20): 55% of weight
+    "owner_earnings": {"Financial Services", "Utilities"},  # roce(.30) of fcf_ev_yield/roce/reinvestment_rate
+    "capital_allocation": {"Financial Services", "Utilities"},  # debt_to_equity(-.15)+interest_coverage(.15): 30% of weight
+    "qglp": {"Financial Services", "Utilities"},  # roce/roe/avg_roce_5y/delta_roce_3y spread across 3 of its 4 legs
+    "capital_efficiency": {"Financial Services", "Utilities"},  # roce(.30) of revenue_cagr/roce/asset_turnover/receivable_days
+    "governance_quality_growth": {"Financial Services", "Utilities"},  # roce(.4) of the 70%-weighted business_quality leg (28%)
+    "small_cap_compounders": {"Financial Services", "Utilities"},  # roce(.35) + debt_to_equity(-.5) across its two legs
 }
 
 

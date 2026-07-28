@@ -40,6 +40,34 @@ row's announcement_date against the cached one on every lookup and
 invalidates the entry on a mismatch — restatement invalidation is
 handled there, not in this module, since this module only knows about
 opaque JSON blobs, not the PIT semantics of what's inside them.
+
+KNOWN LIMITATION [2026-07-28 second model-review, item 4]: the
+restatement check above only compares announcement_date on the single
+LATEST (ticker, fiscal_year, quarter) row. The 5-year rolling features
+(avg_roce_5y, margin_stability_5y, earnings_volatility_5y, sales_cagr_5y,
+delta_roce_3y — features/fundamental.py ~line 375-495) are computed from
+up to ~20 quarters of history, not just the latest one. If a HISTORICAL
+quarter feeding those rolling windows gets restated (its announcement_date
+changes without the LATEST quarter's announcement_date also changing),
+this cache key is unaffected and the stale rolling-window value is served
+indefinitely, with no invalidation and no error. Extending the check to
+hash/compare announcement_date across the full set of historical quarters
+actually used by each rolling window would require this cache key
+structure (or the read path's cache-hit/-miss decision) to depend on that
+full quarter set, which is more invasive than this session's scope — not
+implemented, and this cache continues to only guard against latest-quarter
+restatements pending a follow-up.
+
+KNOWN LIMITATION [2026-07-28 second model-review, item 13]: this table has
+no TTL/pruning for orphaned rows. If a ticker's "latest quarter"
+resolution changes fiscal_year/quarter attribution (e.g. a reclassification
+or backdated filing correction), old (ticker, fiscal_year, quarter) keys
+that no longer correspond to any quarter this ticker will ever resolve to
+again are never cleaned up — they just sit in the table indefinitely,
+unused but harmless (never read, since the read path always keys off the
+CURRENT latest-quarter resolution). Not addressed here; a periodic
+pruning job (delete rows whose key hasn't been touched in N runs) is a
+reasonable follow-up, not implemented in this session.
 """
 
 import json

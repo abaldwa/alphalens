@@ -65,8 +65,18 @@ from features.fundamental_composites import (
     matches_screener_preset,
 )
 from features.governance import GOVERNANCE_FEATURES
+from systems.fundamental_analysis.quality.net_net import LIQUIDITY_FLOOR_MARKET_CAP_CR
 
 logger = logging.getLogger(__name__)
+
+# [BUG FIX, 2026-07-28 second model-review, item 9] Unlike net_net.py,
+# these three SCORE_FUNCTIONS composites actively reward smallness/low
+# ownership (small_cap_compounders' -1.0 size weight, smile's small-size
+# leg, under_followed's low-institutional-ownership proxy) with zero
+# minimum market-cap or liquidity gate of their own — prone to selecting
+# circuit-filter-prone, unfillable Indian small-caps. Reuses net_net.py's
+# LIQUIDITY_FLOOR_MARKET_CAP_CR rather than defining a second constant.
+_PRESETS_NEEDING_LIQUIDITY_FLOOR = {"small_cap_compounders", "smile", "under_followed"}
 
 # [2026-07-25 fix] Previously a narrow, hand-maintained subset — already
 # caused one real gap this session (several SCORE_FUNCTIONS composites
@@ -93,7 +103,7 @@ class FundamentalAdapter:
 
     def __init__(
         self, preset: str, top_n: int = 10, sector_lookup: Optional[Dict[str, str]] = None,
-        db_conn: Optional[Any] = None,
+        db_conn: Optional[Any] = None, market_cap_lookup: Optional[Dict[str, float]] = None,
     ) -> None:
         if preset not in BESPOKE_PRESETS and preset not in SCREENER_PRESETS and preset not in SCORE_FUNCTIONS:
             raise ValueError(
@@ -105,6 +115,13 @@ class FundamentalAdapter:
         self.preset = preset
         self.top_n = top_n
         self._sector_lookup = sector_lookup or {}
+        # [BUG FIX, 2026-07-28 second model-review, item 9] real ticker ->
+        # market_cap_cr, same optional/deferred-wiring convention as
+        # sector_lookup — feeds the LIQUIDITY_FLOOR_MARKET_CAP_CR gate below
+        # for the three presets that have no minimum-size gate of their own
+        # (small_cap_compounders, smile, under_followed). None/empty is a
+        # safe no-op (gate simply doesn't apply), never a fabricated cap.
+        self._market_cap_lookup = market_cap_lookup or {}
         # db_conn is intentionally NOT required at construction time (unlike
         # the initial version of this class) — callers that only have the
         # DUCKDB_PATH connection available inside a `with get_duckdb_
@@ -178,6 +195,10 @@ class FundamentalAdapter:
                     # same Financial-Services exclusion must apply here too.
                     if excluded_sectors and self._sector_lookup.get(row["ticker"]) in excluded_sectors:
                         continue
+                    if self.preset in _PRESETS_NEEDING_LIQUIDITY_FLOOR and self._market_cap_lookup:
+                        mcap = self._market_cap_lookup.get(row["ticker"])
+                        if mcap is None or mcap <= LIQUIDITY_FLOOR_MARKET_CAP_CR:
+                            continue
                     ratios = {c: row.get(c) for c in RATIO_FEATURES if c in in_universe.columns}
                     score = score_fn(ratios)
                     if score is None or (isinstance(score, float) and pd.isna(score)):

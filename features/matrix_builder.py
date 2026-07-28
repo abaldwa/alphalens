@@ -113,6 +113,22 @@ def _get_fundamental_raw_cache() -> dict:
     return _fundamental_raw_cache
 
 
+# [BUG FIX, 2026-07-28 second model-review, item 7] load_ever_fno_eligible_
+# tickers() is PIT-agnostic (identical result for any as_of date — see its
+# own docstring) but was still re-querying DuckDB on every
+# build_feature_matrix call (once per date in a backfill), the same
+# already-fixed-elsewhere pattern as _get_fundamental_raw_cache above.
+# Module-level singleton, populated once per process.
+_ever_fno_eligible_tickers: Optional[set] = None
+
+
+def _get_ever_fno_eligible_tickers() -> set:
+    global _ever_fno_eligible_tickers
+    if _ever_fno_eligible_tickers is None:
+        _ever_fno_eligible_tickers = load_ever_fno_eligible_tickers()
+    return _ever_fno_eligible_tickers
+
+
 def _fetch_ohlcv_panel(
     client: DataStoreClient, tickers: List[str], from_date: datetime, to_date: datetime,
     _bulk_panel: Optional[pd.DataFrame] = None,
@@ -567,7 +583,7 @@ def build_feature_matrix(
     # change (see load_ever_fno_eligible_tickers's docstring).
     fno = compute_fno_features_panel(
         client, active_tickers, target_date, data_cache=data_cache,
-        fno_eligible_tickers=load_ever_fno_eligible_tickers(),
+        fno_eligible_tickers=_get_ever_fno_eligible_tickers(),
     )
 
     # mf_holdings/governance are already ticker-keyed single-snapshot panels

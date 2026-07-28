@@ -421,7 +421,30 @@ async def get_fundamental_scores(ticker: str) -> FAScoresResponse:
     # with raw governance fields in one dict — same merged shape those
     # composite functions expect.
     combined = {**ratios, **governance}
-    strategy_scores = {key: fn(combined) for key, fn in SCORE_FUNCTIONS.items()}
+    # [BUG FIX, 2026-07-28 second model-review, item 5] This endpoint used
+    # to compute every SCORE_FUNCTIONS composite with no sector filter at
+    # all — the only one of the three sector-exclusion call sites
+    # (backtest/adapters/fundamental_adapter.py, the screener endpoint
+    # above) that skipped PRESET_EXCLUDED_SECTORS entirely, despite being
+    # live behind frontend/src/pages/fundamental/strategies.tsx,
+    # deep_dive.tsx, FundamentalPage.tsx, and thesis.tsx. A strategy whose
+    # sector-exclusion set contains this ticker's sector now returns None
+    # for that one strategy_scores entry instead of a real-looking but
+    # methodologically-invalid number (e.g. Magic Formula's ROE/ROCE score
+    # for a bank, where reported ROE is structurally different for a
+    # regulated lender) — matches FAScoresResponse.strategy_scores'
+    # existing Optional[float] value type, no schema change needed.
+    universe_raw = load_universe_raw()
+    sector_map = dict(zip(universe_raw["ticker"], universe_raw["sector"]))
+    ticker_sector = sector_map.get(ticker)
+    strategy_scores = {
+        key: (
+            None
+            if ticker_sector is not None and ticker_sector in PRESET_EXCLUDED_SECTORS.get(key, set())
+            else fn(combined)
+        )
+        for key, fn in SCORE_FUNCTIONS.items()
+    }
 
     return FAScoresResponse(
         ticker=ticker,

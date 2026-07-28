@@ -211,6 +211,47 @@ class TestPanelCacheCorrectness:
         assert raw_cache[("TEST", 2025, 1)]["announcement_date"] == "2025-05-15T00:00:00"
         assert raw_cache[("TEST", 2025, 1)]["ratios"]["roe"] != pytest.approx(original_eps)
 
+    def test_missing_announcement_date_never_crashes_or_cache_poisons(self):
+        """[BUG FIX, 2026-07-28 second model-review] A NaN/NaT
+        announcement_date must never enter the restatement-invalidation
+        cache logic: pd.Timestamp(NaT).isoformat() returns the literal
+        string "NaT", which used to compare equal across two consecutive
+        lookups (wrongly treated as "no restatement") and then blow up
+        datetime.fromisoformat("NaT") on the cache-hit path, silently
+        degrading the ticker to all-NaN fundamentals forever via the broad
+        except Exception. This must instead be a clean, repeatable miss —
+        no crash, and never written to the cache."""
+        client = MagicMock()
+        client.get_ohlcv.return_value = [{"date": "2025-06-01", "close": 100.0}]
+        raw_cache = {}
+
+        rows_missing_date = [
+            _quarter(
+                2025, 1, "2025-03-31", None,  # missing announcement_date
+                revenue=100.0, ebit=20.0, ebitda=25.0, eps=5.0, pat=15.0,
+                book_value_per_share=50.0, shares_outstanding=1_000_000.0,
+                total_debt=10.0, cash_and_equivalents=5.0, fcf=8.0,
+            ),
+        ]
+
+        # First call: must not crash, and must not cache the entry.
+        panel1 = compute_fundamental_features_panel(
+            client, ["TEST"], datetime(2025, 6, 1), {"TEST": "IT"},
+            data_cache=_FakeDataCache(rows_missing_date), raw_cache=raw_cache,
+        )
+        assert ("TEST", 2025, 1) not in raw_cache
+        assert panel1.iloc[0]["ticker"] == "TEST"  # completed without raising / degrading to a lost row
+
+        # Second call with the same missing-date data: still a clean miss,
+        # not a false cache "hit" on two "NaT" strings comparing equal, and
+        # still no crash from datetime.fromisoformat("NaT").
+        panel2 = compute_fundamental_features_panel(
+            client, ["TEST"], datetime(2025, 6, 2), {"TEST": "IT"},
+            data_cache=_FakeDataCache(rows_missing_date), raw_cache=raw_cache,
+        )
+        assert ("TEST", 2025, 1) not in raw_cache
+        assert panel2.iloc[0]["ticker"] == "TEST"
+
     def test_no_history_ticker_is_not_a_crash_and_not_cached(self):
         client = MagicMock()
         client.get_ohlcv.return_value = []

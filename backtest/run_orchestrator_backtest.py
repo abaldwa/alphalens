@@ -64,7 +64,7 @@ from backtest.core.feature_log import FeatureLogWriter
 from backtest.core.horizon import HorizonBucket
 from backtest.core.run_context import BacktestRun
 from backtest.core.run_store import save_run_result
-from backtest.run_phase1_backtest import _real_sector_map
+from backtest.run_phase1_backtest import _real_market_cap_map, _real_sector_map
 from backtest.strategy_id import (
     CODE_TO_HORIZON,
     build_strategy_id,
@@ -320,7 +320,10 @@ def run_orchestrator_backtest(
         elif channel == "fundamental":
             if not preset:
                 raise ValueError("channel=fundamental requires --preset")
-            adapter = FundamentalAdapter(preset=preset, top_n=top_n, sector_lookup=sector_map)
+            adapter = FundamentalAdapter(
+                preset=preset, top_n=top_n, sector_lookup=sector_map,
+                market_cap_lookup=_real_market_cap_map(),
+            )
         elif channel == "momentum":
             price_panel = ohlcv.pivot(index="date", columns="ticker", values="close")
             adapter = MomentumAdapter(price_panel=price_panel, top_n=top_n, lookback_months=lookback_months, sector_lookup=sector_map)

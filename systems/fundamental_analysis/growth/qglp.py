@@ -20,6 +20,18 @@ from typing import Dict, Optional
 
 from systems.fundamental_analysis.scoring_utils import combine_subscores, weighted_zscore_composite
 
+# NOTE [2026-07-28 second model-review, item 12]: shares its dominant
+# ROE/ROCE-family feature with Moat/Sector-Leader/Longevity (systems/
+# fundamental_analysis/quality/moat.py's own multicollinearity note) and
+# with owner_earnings/capital_efficiency/governance_quality_growth/
+# small_cap_compounders/capital_allocation below — roce/roe appear in the
+# QUALITY leg (0.4/0.3), avg_roce_5y in the LONGEVITY leg (0.4), and
+# delta_roce_3y in the GROWTH leg (0.2), so a ticker's overall ROCE
+# profile drives 3 of QGLP's 4 legs, not just an incidental one. By-
+# inspection finding, not a measured correlation-matrix backtest (tracked
+# outside this fix, same as Moat's own note) — left here so a future
+# reviewer doesn't re-litigate "is QGLP actually distinct from the
+# ROCE-heavy strategies?" from scratch.
 QUALITY_WEIGHTS = {"roce": 0.4, "roe": 0.3, "cfo_to_pat": 0.3}
 GROWTH_WEIGHTS = {"revenue_cagr_3yr": 0.4, "eps_growth_yoy": 0.4, "delta_roce_3y": 0.2}
 LONGEVITY_WEIGHTS = {"avg_roce_5y": 0.4, "margin_stability_5y": 0.3, "earnings_volatility_5y": -0.3}
