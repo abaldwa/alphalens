@@ -86,7 +86,7 @@ class TestQualityValueComposite:
 
 class TestFcfLowDebtScore:
     def test_cheap_and_safe_gives_above_50(self):
-        score = fcf_low_debt_score({"fcf_ev_yield": 1.0, "debt_to_ebitda": -1.0, "interest_coverage": 1.0})
+        score = fcf_low_debt_score({"fcf_ev_yield": 1.0, "net_debt_to_ebitda": -1.0, "interest_coverage": 1.0})
         assert score > 50
 
     def test_all_missing_returns_none(self):
@@ -224,9 +224,9 @@ class TestMatchesScreenerPreset:
         assert matches_screener_preset({**ratios, "roe": 0.1}, "quality_value") is False
 
     def test_fcf_low_debt_preset(self):
-        ratios = {"fcf_ev_yield": 1.0, "debt_to_ebitda": -1.0, "interest_coverage": 1.0}
+        ratios = {"fcf_ev_yield": 1.0, "net_debt_to_ebitda": -1.0, "interest_coverage": 1.0}
         assert matches_screener_preset(ratios, "fcf_low_debt") is True
-        assert matches_screener_preset({**ratios, "debt_to_ebitda": 1.0}, "fcf_low_debt") is False
+        assert matches_screener_preset({**ratios, "net_debt_to_ebitda": 1.0}, "fcf_low_debt") is False
 
     def test_turnaround_preset(self):
         ratios = {"revenue_growth_yoy": 1.5, "eps_growth_yoy": 1.5}
@@ -262,7 +262,7 @@ _ALL_POSITIVE_RATIOS = {
     name: 1.0 for name in [
         "roe", "roce", "net_margin", "debt_to_equity", "revenue_growth_yoy", "eps_growth_yoy",
         "revenue_cagr_3yr", "ev_ebit_yield", "fcf_ev_yield", "magic_formula_roc", "book_to_market",
-        "cfo_to_pat", "pe_ratio", "debt_to_ebitda", "interest_coverage", "reinvestment_rate",
+        "cfo_to_pat", "pe_ratio", "interest_coverage", "reinvestment_rate",
         "avg_roce_5y", "margin_stability_5y", "dilution_3y", "capital_allocation_efficiency",
         "sales_cagr_5y", "gross_margin", "asset_turnover", "delta_roce_3y", "eps_acceleration",
         "margin_expansion", "ev_to_ebitda", "market_cap", "company_age_years", "capex_intensity",

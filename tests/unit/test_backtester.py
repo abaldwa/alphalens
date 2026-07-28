@@ -203,6 +203,7 @@ class TestIntegrityChecker:
             "check_01_walk_forward", "check_02_pit", "check_03_corp_actions", "check_04_survivorship",
             "check_05_costs", "check_06_liquidity", "check_07_no_hpo_on_test", "check_08_fold_stability",
             "check_09_benchmarks", "check_10_random_feature", "check_11_sector_tier_lookahead",
+            "check_12_flat_equity_curve",
         }
 
     def test_no_critical_failure_does_not_raise_even_if_noncritical_fails(self):
@@ -218,11 +219,31 @@ class TestIntegrityChecker:
             applied_min_adt_inr=MIN_ADT_INR,
             hpo_dataset="train+validation",
             fold_sharpes=[5.0, -5.0, 0.1],  # high std -> fails check_08, non-critical
+            fold_returns=[0.3, -0.1, 0.02],  # non-flat, so check_12 (critical) passes here
         )
 
         results = checker.run_all_checks()  # must not raise
 
         assert results["check_08_fold_stability"] is False
+
+    def test_flat_equity_curve_fails_critically_not_just_benchmark_check(self):
+        """A zero-trade backtest (e.g. a screener that never matches any
+        ticker) produces fold_sharpes=[0,0,0] (std=0, passes check_08) and
+        fold_returns=[0,0,0] (only trips the non-critical check_09) — this
+        must be caught by the new CRITICAL check_12 instead of silently
+        looking like a clean, if boring, backtest."""
+        checker = BacktestIntegrityChecker(fold_sharpes=[0.0, 0.0, 0.0], fold_returns=[0.0, 0.0, 0.0])
+        result = checker.check_12_flat_equity_curve()
+        assert result.passed is False
+        assert result.critical is True
+
+        with pytest.raises(RuntimeError, match="check_12_flat_equity_curve"):
+            checker.run_all_checks(applicable_checks={"check_12_flat_equity_curve"})
+
+    def test_non_flat_equity_curve_passes_check_12(self):
+        checker = BacktestIntegrityChecker(fold_sharpes=[1.1, 1.2, 1.0], fold_returns=[0.2, 0.25, 0.18])
+        result = checker.check_12_flat_equity_curve()
+        assert result.passed is True
 
     def test_survivorship_check_flags_pure_current_universe(self):
         """If every historical ticker is still in the current universe, that's a survivorship-bias red flag."""

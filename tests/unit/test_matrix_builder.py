@@ -235,6 +235,20 @@ class TestNotYetListedTickerFiltering:
         )
         assert set(mat["ticker"]) == {"AAA", "BBB"}
 
+    def test_get_listing_dates_failure_logs_loudly_at_error_level(self, fake_client, caplog):
+        """[BUG FIX, 2026-07-28 model-review] The get_listing_dates()
+        fail-open (listing_dates={}) silently reintroduces the
+        not-yet-listed-ticker bug on any API hiccup — this must be a LOUD
+        (ERROR-level) log, not indistinguishable from a normal build."""
+        def raising_get_listing_dates():
+            raise ConnectionError("API down")
+
+        fake_client.get_listing_dates = raising_get_listing_dates
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        with caplog.at_level("ERROR"):
+            build_feature_matrix(target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False)
+        assert any("FEATURE_BUILD_DEGRADED" in r.message for r in caplog.records if r.levelname == "ERROR")
+
 
 class TestChunkedComputationMatchesUnchunked:
     """A47 (2026-07-10): the critical regression test — chunking

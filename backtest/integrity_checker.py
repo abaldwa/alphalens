@@ -89,6 +89,15 @@ _FUNDAMENTALS_DERIVED_PATTERNS = (
     "delta_roce", "avg_ebitda_margin", "eps_acceleration", "margin_expansion",
     "delta_roa", "delta_current_ratio", "delta_long_term_debt",
     "inventory_days", "dilution_3y", "capital_allocation", "reinvestment_rate",
+    # [BUG FIX, 2026-07-28 model-review] Confirmed exact matches against
+    # features/fundamental.py's VALUE_QUALITY_FEATURES/CAPITAL_EFFICIENCY_
+    # FEATURES/LEVERAGE_FEATURES/WORKING_CAPITAL_FEATURES column names —
+    # all restatement-sensitive (derived from a quarterly filing) and
+    # missed by every pattern above (none contain "_ratio"/"roe"/etc, and
+    # bare "margin"/"turnover" were deliberately not used above to avoid
+    # false positives, so these need their own specific compound tokens).
+    "gross_margin", "operating_margin", "net_margin", "asset_turnover",
+    "roic", "current_ratio", "payable_days", "cash_conversion_cycle",
 )
 
 
@@ -109,6 +118,7 @@ CRITICAL_CHECKS = {
     "check_05_costs",
     "check_06_liquidity",
     "check_07_no_hpo_on_test",
+    "check_12_flat_equity_curve",
 }
 
 ALL_CHECK_NAMES = [
@@ -123,6 +133,7 @@ ALL_CHECK_NAMES = [
     "check_09_benchmarks",
     "check_10_random_feature",
     "check_11_sector_tier_lookahead",
+    "check_12_flat_equity_curve",
 ]
 
 # REV15 (2026-07-21 review): sector/tier columns from config/build_universe.py
@@ -372,6 +383,59 @@ class BacktestIntegrityChecker:
             )
         return self._result(
             name, True, f"{suspect_cols} present but feature window is only {span_days} days (<= 1 year)",
+        )
+
+    def check_12_flat_equity_curve(self) -> CheckResult:
+        """
+        [BUG FIX, 2026-07-28 model-review] CRITICAL. A stale/empty feature
+        store (e.g. a screener preset that never matches any ticker) can
+        silently produce zero trades — an equity curve that never moves
+        off its starting value. That flat curve yields fold_sharpes of
+        exactly [0.0, 0.0, ...] (std=0.0 < 0.5), which used to PASS
+        check_08_fold_stability outright, and fold_returns of exactly
+        [0.0, 0.0, ...], which only ever tripped the NON-critical
+        check_09_benchmarks (a real strategy can legitimately underperform
+        a benchmark; "the strategy never did anything" is a different, far
+        more serious failure that must halt the run outright). This is the
+        exact "0 trades" incident class from this session (fcf_low_debt
+        screening on a nonexistent column, matching 0 tickers, forever).
+
+        Fires when EVERY fold's return AND Sharpe are exactly 0.0 — the
+        unambiguous signature of a backtest that never took a single trade
+        (or whose trades round-tripped to net-zero P&L on every single
+        fold, which is itself astronomically unlikely for a real strategy
+        on real market data and worth flagging just as hard).
+
+        Deliberately PASSES (not the "missing context fails" convention
+        every other check here uses) when fold_returns/fold_sharpes aren't
+        supplied at all: unlike, say, check_05's applied_roundtrip_cost_pct,
+        this data simply isn't wired through every existing caller yet
+        (e.g. backtest/engine.py's _run_integrity_check predates this check
+        and only ever ran checks 01-07) — treating "caller didn't opt in
+        yet" as an automatic critical failure would break every one of
+        those callers' otherwise-legitimate backtests. This check's real
+        job is being critical wherever it's given the fold data at all
+        (backtest/run_integrity_check.py's build_fold_metrics always
+        supplies both), not punishing callers who haven't wired it yet.
+        """
+        name = "check_12_flat_equity_curve"
+        if not self.fold_returns or not self.fold_sharpes:
+            return self._result(name, True, "no fold_returns/fold_sharpes provided — check not applicable")
+        all_flat = (
+            all(r == 0.0 for r in self.fold_returns)
+            and all(s == 0.0 for s in self.fold_sharpes)
+        )
+        if all_flat:
+            return self._result(
+                name, False,
+                f"equity curve is flat/empty across all {len(self.fold_returns)} folds "
+                "(fold_returns and fold_sharpes are all exactly 0.0) — this is the signature "
+                "of a zero-trade backtest (e.g. a screener that never matches any ticker), "
+                "not a genuinely bad-but-real strategy result",
+            )
+        return self._result(
+            name, True,
+            f"equity curve moves: fold_returns={self.fold_returns}, fold_sharpes={self.fold_sharpes}",
         )
 
     def run_all_checks(self, applicable_checks: Optional[Set[str]] = None) -> Dict[str, bool]:

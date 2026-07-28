@@ -172,6 +172,23 @@ class TestCompositeScoreStrategies:
         signals = adapter.generate_signals(["A"], date(2020, 6, 1), HorizonBucket.Y1)
         assert signals == []
 
+    def test_financial_services_excluded_even_for_a_top_scoring_ticker(self, monkeypatch):
+        """[BUG FIX, 2026-07-28 model-review] Composite-score strategies
+        (Moat here) never checked PRESET_EXCLUDED_SECTORS at all — a bank
+        with a great-looking (but structurally meaningless) avg_roce_5y/
+        debt_to_equity score would still get bought. Must be excluded now."""
+        import backtest.adapters.fundamental_adapter as mod
+        panel = _panel([
+            {"ticker": "BANK", "avg_roce_5y": 5.0, "margin_stability_5y": 5.0, "debt_to_equity": -5.0},
+            {"ticker": "NONBANK", "avg_roce_5y": 1.0, "margin_stability_5y": 1.0, "debt_to_equity": -1.0},
+        ])
+        monkeypatch.setattr(mod, "read_feature_day", lambda date_str: panel)
+        adapter = FundamentalAdapter(
+            preset="moat", top_n=5, sector_lookup={"BANK": "Financial Services", "NONBANK": "IT"},
+        )
+        signals = adapter.generate_signals(["BANK", "NONBANK"], date(2020, 6, 1), HorizonBucket.Y1)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"NONBANK"}
+
 
 class TestRealFeatureStoreIntegration:
     """No-Mock-Data Policy: exercises the adapter against the real feature

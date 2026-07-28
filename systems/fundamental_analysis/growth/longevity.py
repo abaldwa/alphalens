@@ -9,6 +9,16 @@ from typing import Dict, Optional
 
 from systems.fundamental_analysis.scoring_utils import weighted_zscore_composite
 
+# NOTE [2026-07-28 model-review]: heavily correlated with Moat
+# (systems/fundamental_analysis/quality/moat.py) and Sector-Leader
+# (systems/fundamental_analysis/quality/sector_leader.py) — all three are
+# dominated by avg_roce_5y + a stability term (margin_stability_5y for
+# Moat/Sector-Leader, earnings_volatility_5y here) plus debt_to_equity,
+# differing mainly in sales_cagr_5y's presence/weight. See moat.py's
+# identical note for the full comparison; a full correlation-matrix
+# backtest to quantify the actual overlap is a separate, larger effort
+# (tracked outside this fix) — this is a by-inspection finding, not a
+# measured one.
 LONGEVITY_COMPOUNDER_WEIGHTS = {
     "avg_roce_5y": 0.35,
     "sales_cagr_5y": 0.25,

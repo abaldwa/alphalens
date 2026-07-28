@@ -203,7 +203,7 @@ SCREENER_PRESETS = {
     # Quality-Value Composite: cheap (EV/EBIT, book-to-market) + quality (ROCE/ROE), above sector peers.
     "quality_value": {"ev_ebit_yield": 0.3, "book_to_market": 0.3, "roce": 0.3, "roe": 0.3},
     # FCF Yield + Low Debt: strong cash generation, below-peer leverage, above-peer interest coverage.
-    "fcf_low_debt": {"fcf_ev_yield": 0.5, "debt_to_ebitda": -0.5, "interest_coverage": 0.3},
+    "fcf_low_debt": {"fcf_ev_yield": 0.5, "net_debt_to_ebitda": -0.5, "interest_coverage": 0.3},
     # Deep Value with Solvency Filter: cheap only if leverage/liquidity are also above-peer safe.
     "deep_value_solvency": {
         "book_to_market": 0.3, "ev_ebit_yield": 0.3,
@@ -234,8 +234,41 @@ SCREENER_PRESETS = {
 # This project's sector taxonomy (config/sector_index_map.py) has a single
 # "Financial Services" bucket covering banks/NBFCs/insurers — no separate
 # per-subsector values exist.
+# [BUG FIX, 2026-07-28 model-review] Magic Formula was the only strategy
+# excluded here, but the same structural problem — EBIT/ROCE/debt-to-equity
+# aren't coherent concepts for a bank/NBFC/insurer's financial statements
+# (see the Magic Formula comment above for the full argument) — applies
+# equally to every other strategy whose formula LEANS on one or more of
+# ROE, ROCE (incl. its 5yr-average variant), or a leverage/solvency ratio
+# (debt_to_equity, net_debt_to_ebitda, current_ratio) as a dominant
+# component, not just an incidental one. Judgment call on "dominant":
+# these ratios collectively account for roughly half or more of the
+# formula's weight in every key added below (checked against each
+# strategy's own WEIGHTS dict) — strategies where such a ratio is present
+# but a minor/incidental component (e.g. earnings_rerating's 20%
+# delta_roce_3y leg, contrarian_recovery's 19% net_debt_to_ebitda leg)
+# were deliberately left out to avoid over-broadly excluding Financial
+# Services from strategies that aren't actually dominated by these ratios.
+# Keys cover both SCREENER_PRESETS ("preset" kind, enforced by
+# matches_screener_preset below) and SCORE_FUNCTIONS ("composite_score"
+# kind, enforced by backtest/adapters/fundamental_adapter.py's
+# generate_signals — see that module's SCORE_FUNCTIONS branch).
 PRESET_EXCLUDED_SECTORS: Dict[str, set] = {
     "magic_formula": {"Financial Services"},
+    # SCREENER_PRESETS ("preset" kind)
+    "quality_compounder": {"Financial Services"},  # roe(1.0)+roce(1.0)+debt_to_equity(-0.5): 100% leverage/ROE/ROCE
+    "deep_value_solvency": {"Financial Services"},  # debt_to_equity+interest_coverage+current_ratio: 57% of weight
+    "turnaround_recovery": {"Financial Services"},  # delta_roa+delta_current_ratio+delta_ltd/assets: 50% of weight
+    # SCORE_FUNCTIONS ("composite_score" kind)
+    "moat": {"Financial Services"},  # avg_roce_5y(.45)+debt_to_equity(-.25): 70% of weight
+    "sector_leader": {"Financial Services"},  # avg_roce_5y(.35): explicitly named in the 2026-07-28 review
+    "longevity": {"Financial Services"},  # avg_roce_5y(.35)+debt_to_equity(-.20): 55% of weight
+    "owner_earnings": {"Financial Services"},  # roce(.30) of fcf_ev_yield/roce/reinvestment_rate
+    "capital_allocation": {"Financial Services"},  # debt_to_equity(-.15)+interest_coverage(.15): 30% of weight
+    "qglp": {"Financial Services"},  # roce/roe/avg_roce_5y/delta_roce_3y spread across 3 of its 4 legs
+    "capital_efficiency": {"Financial Services"},  # roce(.30) of revenue_cagr/roce/asset_turnover/receivable_days
+    "governance_quality_growth": {"Financial Services"},  # roce(.4) of the 70%-weighted business_quality leg (28%)
+    "small_cap_compounders": {"Financial Services"},  # roce(.35) + debt_to_equity(-.5) across its two legs
 }
 
 

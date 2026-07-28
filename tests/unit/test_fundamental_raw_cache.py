@@ -175,6 +175,42 @@ class TestPanelCacheCorrectness:
         assert ("TEST", 2025, 1) not in misses
         assert ("OTHER", 2025, 1) in misses
 
+    def test_restated_filing_invalidates_the_cached_entry(self):
+        """[BUG FIX, 2026-07-28 model-review] A corrected/restated filing
+        for the SAME (fiscal_year, quarter) changes announcement_date (the
+        only PIT-eligible revision marker this data source exposes) —
+        that must be treated as a cache miss and recomputed, not served
+        from the now-stale cached ratios forever."""
+        client = MagicMock()
+        client.get_ohlcv.return_value = [{"date": "2025-06-01", "close": 100.0}]
+        raw_cache = {}
+
+        original_rows = _one_quarter_history()
+        compute_fundamental_features_panel(
+            client, ["TEST"], datetime(2025, 6, 1), {"TEST": "IT"},
+            data_cache=_FakeDataCache(original_rows), raw_cache=raw_cache,
+        )
+        assert raw_cache[("TEST", 2025, 1)]["announcement_date"] == "2025-04-30T00:00:00"
+        original_eps = raw_cache[("TEST", 2025, 1)]["ratios"]["roe"]
+
+        # Same (fiscal_year, quarter) but restated: new announcement_date
+        # and materially different PAT (drives roe) — simulating a
+        # corrected filing for the same quarter.
+        restated_rows = [
+            _quarter(
+                2025, 1, "2025-03-31", "2025-05-15",  # later announcement_date = restatement
+                revenue=100.0, ebit=20.0, ebitda=25.0, eps=5.0, pat=999.0,
+                book_value_per_share=50.0, shares_outstanding=1_000_000.0,
+                total_debt=10.0, cash_and_equivalents=5.0, fcf=8.0,
+            ),
+        ]
+        compute_fundamental_features_panel(
+            client, ["TEST"], datetime(2025, 6, 2), {"TEST": "IT"},
+            data_cache=_FakeDataCache(restated_rows), raw_cache=raw_cache,
+        )
+        assert raw_cache[("TEST", 2025, 1)]["announcement_date"] == "2025-05-15T00:00:00"
+        assert raw_cache[("TEST", 2025, 1)]["ratios"]["roe"] != pytest.approx(original_eps)
+
     def test_no_history_ticker_is_not_a_crash_and_not_cached(self):
         client = MagicMock()
         client.get_ohlcv.return_value = []
@@ -239,6 +275,29 @@ class TestPersistentCacheRoundTrip:
         loaded = load_fundamental_raw_cache(db_path=db_path)
         assert len(loaded) == 1
         assert loaded[key]["ratios"]["roe"] == pytest.approx(0.20)
+
+    def test_numpy_int64_value_does_not_silently_drop_the_entry(self, tmp_path):
+        """[BUG FIX, 2026-07-28 model-review] json.dumps can't natively
+        serialize numpy scalar types (e.g. a raw priced-input value read
+        straight off a pandas/duckdb result) — before the fix this raised
+        a TypeError inside save_fundamental_raw_cache_entries that the
+        surrounding except-and-warn silently swallowed, so the entry never
+        got persisted with no visible symptom. It must round-trip cleanly
+        now."""
+        db_path = tmp_path / "fundamental_raw_cache_test.duckdb"
+        key = ("INFY", 2025, 2)
+        entries = {
+            key: {
+                "ratios": {"roe": 0.18},
+                "priced_inputs": {"shares_outstanding": np.int64(4_207_000_000), "total_debt": np.float64(1234.5)},
+                "announcement_date": "2025-07-15T00:00:00",
+            },
+        }
+        save_fundamental_raw_cache_entries(entries, db_path=db_path)
+        loaded = load_fundamental_raw_cache(db_path=db_path)
+        assert key in loaded
+        assert loaded[key]["priced_inputs"]["shares_outstanding"] == 4_207_000_000
+        assert loaded[key]["priced_inputs"]["total_debt"] == pytest.approx(1234.5)
 
     def test_missing_db_file_returns_empty_dict(self, tmp_path):
         assert load_fundamental_raw_cache(db_path=tmp_path / "does_not_exist.duckdb") == {}

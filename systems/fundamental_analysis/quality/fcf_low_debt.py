@@ -2,7 +2,7 @@
 systems/fundamental_analysis/quality/fcf_low_debt.py
 
 FCF Yield + Low Debt: cash generation (FCF/EV) rewarded, leverage
-(debt_to_ebitda) penalized, interest_coverage rewarded. Same
+(net_debt_to_ebitda) penalized, interest_coverage rewarded. Same
 weighted-sector-z-score convention as quality_value.py.
 """
 
@@ -12,7 +12,7 @@ from systems.fundamental_analysis.scoring_utils import weighted_zscore_composite
 
 FCF_LOW_DEBT_WEIGHTS = {
     "fcf_ev_yield": 0.50,
-    "debt_to_ebitda": -0.30,
+    "net_debt_to_ebitda": -0.30,
     "interest_coverage": 0.20,
 }
 

@@ -27,11 +27,26 @@ Not wired into governance/mf_holdings/corporate_action/deep_forensic yet
 (2026-07-28 scoping decision: fundamental.py first, expand once this is
 validated) — those have their own PIT cache keys (filing_date, ex_date)
 and would need their own tables, not this one.
+
+Restatement invalidation [BUG FIX, 2026-07-28 model-review]: the cache
+key here is only (ticker, fiscal_year, quarter) — on its own, a
+corrected/restated quarterly filing for the same (fy, quarter) would be
+served stale forever. The one restatement-sensitive marker this data
+source exposes per row is announcement_date (SPEC-PIPE-003's PIT key),
+which IS stored in every cache entry (see `raw` dict's
+"announcement_date" field below). features/fundamental.py's cache-read
+path (compute_fundamental_features_panel) compares the freshly-fetched
+row's announcement_date against the cached one on every lookup and
+invalidates the entry on a mismatch — restatement invalidation is
+handled there, not in this module, since this module only knows about
+opaque JSON blobs, not the PIT semantics of what's inside them.
 """
 
 import json
 import logging
 from typing import Any, Dict, Tuple
+
+import numpy as np
 
 from config.settings import FUNDAMENTAL_RAW_CACHE_DB_PATH
 from datastore.api.db import get_duckdb_connection
@@ -41,6 +56,25 @@ logger = logging.getLogger(__name__)
 CacheKey = Tuple[str, int, int]  # (ticker, fiscal_year, quarter)
 
 _TABLE_NAME = "fundamental_raw_cache"
+
+
+def _json_default(obj: Any) -> Any:
+    """
+    [BUG FIX, 2026-07-28 model-review] json.dumps has no idea how to
+    serialize numpy scalar types (int64/float64/bool_ etc.) — raw
+    priced-input dicts built from pandas/duckdb query results routinely
+    carry these instead of native Python int/float. Before this fix, that
+    TypeError was caught by save_fundamental_raw_cache_entries's blanket
+    except-and-warn and the WHOLE bulk upsert call silently failed (one
+    bad value poisons the executemany batch), meaning affected tickers
+    never got cached, indefinitely, with no visible symptom beyond a
+    once-per-run WARNING log easy to miss. Cast any numpy scalar to its
+    native Python equivalent via .item(); anything else genuinely
+    unserializable still raises (unchanged behavior for real bugs).
+    """
+    if isinstance(obj, np.generic):
+        return obj.item()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def _ensure_table(conn) -> None:
@@ -101,7 +135,7 @@ def save_fundamental_raw_cache_entries(entries: Dict[CacheKey, Dict[str, Any]], 
     try:
         with get_duckdb_connection(path, read_only=False, persist=False) as conn:
             _ensure_table(conn)
-            rows = [(ticker, fy, q, json.dumps(raw)) for (ticker, fy, q), raw in entries.items()]
+            rows = [(ticker, fy, q, json.dumps(raw, default=_json_default)) for (ticker, fy, q), raw in entries.items()]
             conn.executemany(
                 f"""
                 INSERT INTO {_TABLE_NAME} (ticker, fiscal_year, quarter, raw_json)

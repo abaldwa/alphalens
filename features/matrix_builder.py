@@ -445,7 +445,20 @@ def build_feature_matrix(
     try:
         listing_dates = client.get_listing_dates()
     except Exception as exc:
-        logger.warning(f"Could not fetch listing_dates for active-ticker filtering: {exc}")
+        # [BUG FIX, 2026-07-28 model-review] This fail-open path (listing_dates
+        # = {}) silently REINTRODUCES the not-yet-listed-ticker bug this whole
+        # active_tickers filter exists to fix — every not-yet-listed ticker in
+        # the universe becomes indistinguishable from "listing_date unknown"
+        # and is included again. Non-fatal (a single API hiccup must not crash
+        # the whole feature build), but this must be LOUD: ERROR level (not
+        # WARNING) so it's visible in log-level-filtered monitoring, plus an
+        # explicit marker string a log-based alert/metric can grep for.
+        logger.error(
+            "FEATURE_BUILD_DEGRADED: could not fetch listing_dates for active-ticker filtering "
+            f"({exc}) — falling back to an EMPTY listing_dates map, which silently disables the "
+            "not-yet-listed-ticker filter for this entire feature build (every not-yet-listed "
+            "ticker will be treated as active). This is the exact bug that filter exists to fix."
+        )
         listing_dates = {}
 
     # Conservative: only exclude a ticker when its listing_date is KNOWN

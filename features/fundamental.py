@@ -438,6 +438,24 @@ def compute_fundamental_features(
     )
 
     # ---- Multi-year rolling stats (5-year window = 20 quarters back) ----
+    # [KNOWN DATA ARTIFACT, 2026-07-28 model-review, currently unaddressed]
+    # Ind-AS 116 (lease capitalization) became effective for Indian
+    # reporting periods starting FY2019-20 — from that date on, operating
+    # leases that previously stayed off-balance-sheet suddenly appear as a
+    # right-of-use asset + a matching lease liability. Any 5-year rolling
+    # window here (avg_roce_5y, margin_stability_5y, and by extension
+    # delta_roce_3y/earnings_volatility_5y below) that straddles FY2019-20
+    # for a company with material operating leases will show a real but
+    # SPURIOUS regime break: ROCE drops (denominator gains a liability
+    # that wasn't there before) and margin/earnings series can jump
+    # (interest + depreciation replaces a single lease-rental expense
+    # line) purely from the accounting standard change, not from any
+    # change in the underlying business. A future reviewer diffing
+    # pre-/post-2019 values for an early-2020s-and-earlier window should
+    # not mistake this for genuine noise or a real deterioration/
+    # improvement — no accounting adjustment is attempted here; this is
+    # deliberately just documentation of a known, currently-unmitigated
+    # limitation of these features for any window spanning that boundary.
     five_yr_fy, five_yr_q = _quarters_back(fy, q, 20)
     five_yr_window = history[
         (history["fiscal_year"] > five_yr_fy) | ((history["fiscal_year"] == five_yr_fy) & (history["quarter"] >= five_yr_q))
@@ -731,6 +749,25 @@ def compute_fundamental_features_panel(
                 else:
                     cache_key = (ticker, int(latest_row["fiscal_year"]), int(latest_row["quarter"]))
                     cached = raw_cache.get(cache_key)
+                    # [BUG FIX, 2026-07-28 model-review] Restatement invalidation:
+                    # the cache key is only (ticker, fiscal_year, quarter) — if a
+                    # company files a CORRECTED quarterly result for the same
+                    # (fiscal_year, quarter), the only PIT-eligible signal this
+                    # data source exposes that something changed is a new
+                    # announcement_date on that row (rows_for_peek/latest_row are
+                    # always freshly fetched live above, never cached). Compare it
+                    # against the announcement_date recorded when the entry was
+                    # cached; a mismatch means the filing was corrected/restated
+                    # since caching and must be treated as a miss (falls through
+                    # to a full recompute + cache overwrite below), not served stale.
+                    fresh_announcement_date = pd.Timestamp(latest_row["announcement_date"]).isoformat()
+                    if cached is not None and cached.get("announcement_date") != fresh_announcement_date:
+                        logger.info(
+                            f"fundamental_raw_cache: {ticker} FY{latest_row['fiscal_year']}Q{latest_row['quarter']} "
+                            f"announcement_date changed ({cached.get('announcement_date')} -> "
+                            f"{fresh_announcement_date}) — treating as a restatement and invalidating the cached entry"
+                        )
+                        cached = None
                     if cached is not None:
                         close = _latest_close_on_or_before(client, ticker, as_of, ticker_ohlcv=t_ohlcv)
                         feats = dict(cached["ratios"])
@@ -746,7 +783,7 @@ def compute_fundamental_features_panel(
                         new_entry = {
                             "ratios": {k: feats[k] for k in CACHEABLE_RATIO_FEATURES},
                             "priced_inputs": _priced_inputs_from_row(latest_row),
-                            "announcement_date": pd.Timestamp(latest_row["announcement_date"]).isoformat(),
+                            "announcement_date": fresh_announcement_date,
                         }
                         raw_cache[cache_key] = new_entry
                         if cache_misses_out is not None:

@@ -58,7 +58,12 @@ from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
 from datastore.api.utils.feature_store import read_feature_day
 from features.fundamental import FUNDAMENTAL_FEATURES
-from features.fundamental_composites import SCORE_FUNCTIONS, SCREENER_PRESETS, matches_screener_preset
+from features.fundamental_composites import (
+    PRESET_EXCLUDED_SECTORS,
+    SCORE_FUNCTIONS,
+    SCREENER_PRESETS,
+    matches_screener_preset,
+)
 from features.governance import GOVERNANCE_FEATURES
 
 logger = logging.getLogger(__name__)
@@ -159,10 +164,20 @@ class FundamentalAdapter:
             # since _composite_strength on a single-entry {"score": v} dict
             # is exactly v.
             score_fn = SCORE_FUNCTIONS[self.preset]
+            excluded_sectors = PRESET_EXCLUDED_SECTORS.get(self.preset, set())
             matched = []
             if panel is not None:
                 in_universe = panel[panel["ticker"].isin(universe_set)]
                 for _, row in in_universe.iterrows():
+                    # [BUG FIX, 2026-07-28 model-review] Composite-score strategies
+                    # (Moat, Sector-Leader, Longevity, etc.) never checked
+                    # PRESET_EXCLUDED_SECTORS at all — only the plain-preset branch
+                    # below did. Several of these formulas lean on ROE/ROCE/
+                    # debt-to-equity just as heavily as Magic Formula (see that
+                    # dict's comment in features/fundamental_composites.py), so the
+                    # same Financial-Services exclusion must apply here too.
+                    if excluded_sectors and self._sector_lookup.get(row["ticker"]) in excluded_sectors:
+                        continue
                     ratios = {c: row.get(c) for c in RATIO_FEATURES if c in in_universe.columns}
                     score = score_fn(ratios)
                     if score is None or (isinstance(score, float) and pd.isna(score)):
