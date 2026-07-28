@@ -74,7 +74,7 @@ from datastore.client import DataStoreClient
 logger = logging.getLogger(__name__)
 
 
-def load_ever_fno_eligible_tickers() -> Set[str]:
+def load_ever_fno_eligible_tickers() -> Optional[Set[str]]:
     """
     Every ticker with at least one real STO/STF row anywhere in fno_data's
     history — no date filter, deliberately. Unlike config.universe's
@@ -85,6 +85,19 @@ def load_ever_fno_eligible_tickers() -> Set[str]:
     any point and can never resolve to anything but the all-NaN row
     get_fno_chain would return for it anyway — this only skips the
     guaranteed-empty API call, never changes what a given date returns.
+
+    Returns
+    -------
+    Optional[Set[str]]
+        The confirmed set of ever-F&O-eligible tickers, or None if it could
+        not be determined (fno_data missing, or a transient error such as
+        DuckDB lock contention against the live scheduler). Callers MUST
+        treat None distinctly from an empty set: an empty set here would
+        incorrectly claim "confirmed zero tickers are ever F&O-eligible"
+        and (via compute_fno_features_panel's `is not None` pre-filter
+        check) cause EVERY ticker to silently get an all-NaN F&O row —
+        None correctly signals "unknown, fall back to the old per-ticker
+        API behavior" instead. [BUG FIX 2026-07-28 model-review item 1]
     """
     try:
         from datastore.api.db import fno_db_path_for, get_duckdb_connection
@@ -92,13 +105,13 @@ def load_ever_fno_eligible_tickers() -> Set[str]:
         fno_path = fno_db_path_for(str(DUCKDB_PATH))
         if not fno_path.exists():
             logger.warning("fno_data not found at %s — no F&O eligibility pre-filter applied", fno_path)
-            return set()
+            return None
         with get_duckdb_connection(fno_path, persist=False, read_only=True) as conn:
             df = conn.execute("SELECT DISTINCT ticker FROM fno_data WHERE instrument IN ('STO', 'STF')").df()
         return set(df["ticker"])
     except Exception as exc:
         logger.warning("Could not load ever-F&O-eligible tickers (%s) — no pre-filter applied", exc)
-        return set()
+        return None
 
 FNO_FEATURES: List[str] = [
     "pcr_oi",

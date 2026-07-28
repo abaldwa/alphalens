@@ -138,6 +138,43 @@ class TestNonFNOStockReturnsNaN:
         assert client.get_fno_chain.call_count == 2
 
 
+class TestLoadEverFnoEligibleTickersFailOpen:
+    """[BUG FIX, 2026-07-28 model-review item 1] load_ever_fno_eligible_
+    tickers() must return None (not set()) on failure — an empty set is
+    indistinguishable from "confirmed zero tickers are ever F&O-eligible"
+    and, via compute_fno_features_panel's `is not None` pre-filter check,
+    used to silently give EVERY ticker an all-NaN F&O row for the rest of
+    the process's life after a single transient DuckDB error."""
+
+    def test_missing_fno_db_returns_none_not_empty_set(self, monkeypatch, tmp_path):
+        import features.fno_features as fno_mod
+
+        monkeypatch.setattr(fno_mod, "DUCKDB_PATH", tmp_path / "nonexistent.duckdb")
+        result = fno_mod.load_ever_fno_eligible_tickers()
+        assert result is None
+
+    def test_db_error_returns_none_not_empty_set(self, monkeypatch, tmp_path):
+        import features.fno_features as fno_mod
+
+        db_path = tmp_path / "alphalens.duckdb"
+        db_path.touch()  # exists but is not a valid DuckDB file -> forces an exception path
+        monkeypatch.setattr(fno_mod, "DUCKDB_PATH", db_path)
+        result = fno_mod.load_ever_fno_eligible_tickers()
+        assert result is None
+
+    def test_none_result_does_not_silently_nan_every_ticker(self):
+        """A caller that receives None (transient failure) and passes it
+        straight through to compute_fno_features_panel must fall back to
+        calling the API for every ticker, not NaN everyone out."""
+        client = MagicMock()
+        client.get_fno_chain.return_value = []
+
+        panel = compute_fno_features_panel(client, ["A", "B"], AS_OF, fno_eligible_tickers=None)
+
+        assert client.get_fno_chain.call_count == 2
+        assert len(panel) == 2
+
+
 class TestPcrOiRange:
     """pcr_oi must be in (0, 10] for any realistic chain."""
 

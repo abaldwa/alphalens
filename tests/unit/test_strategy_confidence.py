@@ -143,6 +143,24 @@ class TestRegimeSegmentation:
         _, detail = sc.evaluate_signals_with_detail(signals, ohlcv, regime_df=regime_df, horizon_days=3)
         assert detail.iloc[0]["regime"] == sc.REGIME_UNKNOWN
 
+    def test_nan_hmm_regime_maps_to_unknown_not_the_literal_string_nan(self):
+        """[BUG FIX, 2026-07-28 model-review item 3] A feature parquet built
+        with compute_hmm=False (matrix_builder.py's own documented
+        "recommended" flag for a full historical backfill) has NaN
+        hmm_regime. str(nan) == "nan", which must NOT be treated as a real,
+        distinct regime bucket — it must map to REGIME_UNKNOWN so these
+        rows are excluded from regime-conditioned confidence stats exactly
+        like genuinely unknown regimes are."""
+        import numpy as np
+
+        dates = _dates(10)
+        ohlcv = _make_ohlcv("N", [100 + i for i in range(10)], dates)
+        regime_df = pd.DataFrame({"date": [pd.Timestamp(dates[0])], "hmm_regime": [np.nan]})
+        signals = [sc.SignalEvent(date=pd.Timestamp(dates[2]), ticker="N", strategy_id="tmpl")]
+        _, detail = sc.evaluate_signals_with_detail(signals, ohlcv, regime_df=regime_df, horizon_days=3)
+        assert detail.iloc[0]["regime"] == sc.REGIME_UNKNOWN
+        assert detail.iloc[0]["regime"] != "nan"
+
 
 class TestTierAssignment:
     def test_below_min_independent_dates_is_insufficient(self):

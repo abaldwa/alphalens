@@ -119,14 +119,53 @@ def _get_fundamental_raw_cache() -> dict:
 # build_feature_matrix call (once per date in a backfill), the same
 # already-fixed-elsewhere pattern as _get_fundamental_raw_cache above.
 # Module-level singleton, populated once per process.
+#
+# [BUG FIX, 2026-07-28 third model-review, item 1] load_ever_fno_eligible_
+# tickers() returns None (not set()) when it could not determine the set
+# (e.g. transient DuckDB lock contention against the live scheduler). This
+# cache must NOT permanently memoize that failure as "confirmed empty" —
+# doing so used to make compute_fno_features_panel silently NaN-out every
+# ticker for the rest of the process's life after a single transient error.
+# Only a successful (non-None) result is cached; a None result is retried
+# on the next call.
 _ever_fno_eligible_tickers: Optional[set] = None
 
 
-def _get_ever_fno_eligible_tickers() -> set:
+def _get_ever_fno_eligible_tickers() -> Optional[set]:
     global _ever_fno_eligible_tickers
     if _ever_fno_eligible_tickers is None:
         _ever_fno_eligible_tickers = load_ever_fno_eligible_tickers()
     return _ever_fno_eligible_tickers
+
+
+# [BUG FIX, 2026-07-28 third model-review, item 5] get_listing_dates() is
+# also PIT-agnostic (a ticker's listing date does not change across calls
+# within one process) but was being re-fetched from the DataStore API on
+# every build_feature_matrix call — once per date in a multi-thousand-date
+# backfill. Mirrors the singleton pattern above; a failed/empty fetch is
+# NOT cached as "confirmed no listing dates" so a transient error is
+# retried on the next date rather than permanently disabling the
+# not-yet-listed-ticker filter for the rest of the process.
+_listing_dates_cache: Optional[dict] = None
+
+
+def _get_listing_dates(client: "DataStoreClient") -> dict:
+    global _listing_dates_cache
+    if not _listing_dates_cache:
+        try:
+            fetched = client.get_listing_dates()
+        except Exception as exc:
+            logger.error(
+                "FEATURE_BUILD_DEGRADED: could not fetch listing_dates for active-ticker filtering "
+                f"({exc}) — falling back to an EMPTY listing_dates map for this call, which silently "
+                "disables the not-yet-listed-ticker filter (every not-yet-listed ticker will be "
+                "treated as active). This is the exact bug that filter exists to fix."
+            )
+            fetched = {}
+        if fetched:
+            _listing_dates_cache = fetched
+        return fetched
+    return _listing_dates_cache
 
 
 def _fetch_ohlcv_panel(
@@ -358,10 +397,31 @@ def _compute_chunked_ticker_independent_panels(
 
 
 def _save_feature_matrix(matrix: pd.DataFrame, target_date: pd.Timestamp) -> Path:
-    """SPEC-DS-005/007: feature Parquets live at datastore/features/daily/YYYY-MM-DD.parquet."""
+    """SPEC-DS-005/007: feature Parquets live at datastore/features/daily/YYYY-MM-DD.parquet.
+
+    [BUG FIX, 2026-07-28 model-review item 2] Writes to a temp file in the
+    same directory first, then atomically renames it to the final path.
+    `matrix.to_parquet(out_path, ...)` used to write directly to the final
+    name; a kill mid-write (systemd-oomd, laptop suspend — both have
+    documented precedent on this machine) left a truncated/corrupt parquet
+    at the final path, and feature_backfill.py's existence-only resume
+    check then silently treated that ghost file as "already done" forever
+    (only `--force`, recomputing the entire history, would fix it). A
+    same-filesystem os.replace() is atomic: a kill mid-write leaves either
+    the old file (on a resume/overwrite) or no file at all at the final
+    name, never a corrupt one.
+    """
+    import os
+
     FEATURES_DAILY_DIR.mkdir(parents=True, exist_ok=True)
     out_path = FEATURES_DAILY_DIR / f"{target_date.date().isoformat()}.parquet"
-    matrix.to_parquet(out_path, index=False)
+    tmp_path = out_path.with_suffix(".parquet.tmp")
+    try:
+        matrix.to_parquet(tmp_path, index=False)
+        os.replace(tmp_path, out_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     logger.info(f"Wrote feature matrix to {out_path} ({len(matrix)} rows x {len(ALL_FEATURE_COLUMNS)} features)")
     return out_path
 
@@ -458,24 +518,16 @@ def build_feature_matrix(
     # data, as expected" for these tickers, every single day — the
     # dominant cost for early-history backfill dates where a large
     # fraction of today's ~2,317-ticker universe didn't exist yet.
-    try:
-        listing_dates = client.get_listing_dates()
-    except Exception as exc:
-        # [BUG FIX, 2026-07-28 model-review] This fail-open path (listing_dates
-        # = {}) silently REINTRODUCES the not-yet-listed-ticker bug this whole
-        # active_tickers filter exists to fix — every not-yet-listed ticker in
-        # the universe becomes indistinguishable from "listing_date unknown"
-        # and is included again. Non-fatal (a single API hiccup must not crash
-        # the whole feature build), but this must be LOUD: ERROR level (not
-        # WARNING) so it's visible in log-level-filtered monitoring, plus an
-        # explicit marker string a log-based alert/metric can grep for.
-        logger.error(
-            "FEATURE_BUILD_DEGRADED: could not fetch listing_dates for active-ticker filtering "
-            f"({exc}) — falling back to an EMPTY listing_dates map, which silently disables the "
-            "not-yet-listed-ticker filter for this entire feature build (every not-yet-listed "
-            "ticker will be treated as active). This is the exact bug that filter exists to fix."
-        )
-        listing_dates = {}
+    # [BUG FIX, 2026-07-28 model-review] Fail-open (listing_dates = {}) on a
+    # fetch error silently REINTRODUCES the not-yet-listed-ticker bug this
+    # whole active_tickers filter exists to fix — every not-yet-listed
+    # ticker in the universe becomes indistinguishable from "listing_date
+    # unknown" and is included again. Non-fatal (a single API hiccup must
+    # not crash the whole feature build) but loud (ERROR level, logged
+    # inside _get_listing_dates) and, per item 5, cached across calls only
+    # on success so a transient failure doesn't disable the filter for
+    # every remaining date in a backfill.
+    listing_dates = _get_listing_dates(client)
 
     # Conservative: only exclude a ticker when its listing_date is KNOWN
     # and confirms it hadn't listed yet — an unknown listing_date (missing

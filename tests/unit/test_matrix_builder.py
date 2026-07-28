@@ -74,6 +74,25 @@ def fake_client():
     return _FakeDataStoreClient({"AAA": rows_a, "BBB": rows_b, **bm_rows})
 
 
+@pytest.fixture(autouse=True)
+def _reset_matrix_builder_process_singletons():
+    """[BUG FIX, 2026-07-28 model-review item 5] build_feature_matrix now
+    caches get_listing_dates() (and the pre-existing F&O/fundamental-cache
+    singletons) once per process, on purpose — but each test here installs
+    its own fake_client with different listing_dates behavior, so the cache
+    must be reset between tests or a later test would silently see an
+    earlier test's cached result instead of calling its own fake client."""
+    import features.matrix_builder as mb
+
+    mb._listing_dates_cache = None
+    mb._ever_fno_eligible_tickers = None
+    mb._fundamental_raw_cache = None
+    yield
+    mb._listing_dates_cache = None
+    mb._ever_fno_eligible_tickers = None
+    mb._fundamental_raw_cache = None
+
+
 class TestBuildFeatureMatrix:
     def test_empty_tickers_raises(self, fake_client):
         with pytest.raises(ValueError):
@@ -248,6 +267,80 @@ class TestNotYetListedTickerFiltering:
         with caplog.at_level("ERROR"):
             build_feature_matrix(target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False)
         assert any("FEATURE_BUILD_DEGRADED" in r.message for r in caplog.records if r.levelname == "ERROR")
+
+    def test_listing_dates_is_only_fetched_once_across_multiple_calls(self, fake_client):
+        """[BUG FIX, 2026-07-28 model-review item 5] get_listing_dates() is
+        PIT-agnostic, same singleton-caching pattern already applied to the
+        F&O-eligibility set — it must not be re-fetched from the API on
+        every build_feature_matrix call in a multi-thousand-date backfill."""
+        calls = {"n": 0}
+
+        def counting_get_listing_dates():
+            calls["n"] += 1
+            return {"AAA": pd.Timestamp("2020-01-01")}
+
+        fake_client.get_listing_dates = counting_get_listing_dates
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        build_feature_matrix(target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False)
+        build_feature_matrix(target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False)
+        assert calls["n"] == 1
+
+    def test_listing_dates_failure_is_not_permanently_cached(self, fake_client):
+        """A transient get_listing_dates() failure must be retried on the
+        next call, not permanently memoized as "confirmed no listing
+        dates" for the rest of the process's life."""
+        calls = {"n": 0}
+
+        def flaky_get_listing_dates():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("API down")
+            return {"AAA": pd.Timestamp("2020-01-01")}
+
+        fake_client.get_listing_dates = flaky_get_listing_dates
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        build_feature_matrix(target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False)
+        build_feature_matrix(target_date, ["AAA", "BBB"], client=fake_client, save=False, compute_hmm=False)
+        assert calls["n"] == 2  # first call failed and was not cached; second call retried it
+
+
+class TestSaveFeatureMatrixAtomicWrite:
+    """[BUG FIX, 2026-07-28 model-review item 2] A kill mid-write must never
+    leave a corrupt/truncated parquet at the final path — write-then-rename
+    is atomic on the same filesystem."""
+
+    def test_write_failure_does_not_leave_a_file_at_the_final_path(self, monkeypatch, tmp_path):
+        import features.matrix_builder as mb
+
+        monkeypatch.setattr(mb, "FEATURES_DAILY_DIR", tmp_path)
+        matrix = pd.DataFrame({"ticker": ["AAA"], "close": [100.0]})
+
+        def raising_to_parquet(self, path, index=False):
+            raise OSError("simulated kill mid-write")
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", raising_to_parquet)
+
+        target_date = pd.Timestamp("2024-06-30")
+        with pytest.raises(OSError):
+            mb._save_feature_matrix(matrix, target_date)
+
+        final_path = tmp_path / "2024-06-30.parquet"
+        tmp_leftover = tmp_path / "2024-06-30.parquet.tmp"
+        assert not final_path.exists()
+        assert not tmp_leftover.exists()  # temp file is cleaned up on failure too
+
+    def test_successful_write_lands_at_the_final_path_only(self, tmp_path):
+        import features.matrix_builder as mb
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mb, "FEATURES_DAILY_DIR", tmp_path)
+            matrix = pd.DataFrame({"ticker": ["AAA"], "close": [100.0]})
+            target_date = pd.Timestamp("2024-06-30")
+            out_path = mb._save_feature_matrix(matrix, target_date)
+
+        assert out_path == tmp_path / "2024-06-30.parquet"
+        assert out_path.exists()
+        assert not (tmp_path / "2024-06-30.parquet.tmp").exists()
 
 
 class TestChunkedComputationMatchesUnchunked:

@@ -198,7 +198,17 @@ def _regime_as_of(regime_idx: Optional[pd.DataFrame], sig_date: np.datetime64) -
     idx = np.searchsorted(dates, sig_date, side="right") - 1
     if idx < 0:
         return REGIME_UNKNOWN
-    return str(regime_idx.iloc[idx]["hmm_regime"])
+    regime = regime_idx.iloc[idx]["hmm_regime"]
+    # [BUG FIX, 2026-07-28 model-review item 3] hmm_regime is NaN for any
+    # feature parquet built with compute_hmm=False (matrix_builder.py's own
+    # documented "recommended" flag for a full historical backfill).
+    # str(nan) == "nan", which is NOT REGIME_UNKNOWN ("unknown"), so these
+    # rows used to silently pool into a fabricated "nan" regime bucket and
+    # get treated as real regime data for confidence-per-regime stats
+    # instead of being excluded like genuinely unknown regimes are.
+    if pd.isna(regime):
+        return REGIME_UNKNOWN
+    return str(regime)
 
 
 def _evaluate_one(

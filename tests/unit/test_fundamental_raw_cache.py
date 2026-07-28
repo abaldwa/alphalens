@@ -347,3 +347,29 @@ class TestPersistentCacheRoundTrip:
         db_path = tmp_path / "fundamental_raw_cache_test.duckdb"
         save_fundamental_raw_cache_entries({}, db_path=db_path)
         assert not db_path.exists()
+
+    def test_one_unencodable_entry_does_not_block_sibling_entries(self, tmp_path):
+        """[BUG FIX, 2026-07-28 model-review item 4] The batch used to be
+        built via an eager list comprehension that called json.dumps for
+        every entry BEFORE executemany ran — one bad entry (e.g. a raw
+        datetime.date/Decimal/bytes value _json_default doesn't special-
+        case) raised while building the list, and the outer except-and-warn
+        then silently dropped the ENTIRE batch, not just the poisoned
+        entry. A poisoned entry must now be skipped (logged) while its
+        siblings still persist."""
+        import datetime as dt
+
+        db_path = tmp_path / "fundamental_raw_cache_test.duckdb"
+        good_key = ("GOODCO", 2025, 1)
+        bad_key = ("BADCO", 2025, 1)
+        entries = {
+            good_key: {"ratios": {"roe": 0.12}, "priced_inputs": {}, "announcement_date": "2025-04-30T00:00:00"},
+            # datetime.date is not natively JSON-serializable and _json_default
+            # only special-cases np.generic, so this raises TypeError.
+            bad_key: {"ratios": {"roe": 0.05}, "priced_inputs": {"weird": dt.date(2025, 1, 1)}, "announcement_date": None},
+        }
+        save_fundamental_raw_cache_entries(entries, db_path=db_path)
+        loaded = load_fundamental_raw_cache(db_path=db_path)
+        assert good_key in loaded
+        assert loaded[good_key]["ratios"]["roe"] == pytest.approx(0.12)
+        assert bad_key not in loaded

@@ -167,10 +167,28 @@ def save_fundamental_raw_cache_entries(entries: Dict[CacheKey, Dict[str, Any]], 
     if not entries:
         return
     path = db_path or FUNDAMENTAL_RAW_CACHE_DB_PATH
+    # [BUG FIX, 2026-07-28 model-review item 4] Encode each entry inside its
+    # own try/except rather than an eager list comprehension over the whole
+    # batch. json.dumps(raw, default=_json_default) only special-cases
+    # np.generic — any other JSON-unencodable value (datetime.date,
+    # pd.Timestamp, Decimal, bytes, ...) anywhere in the batch used to raise
+    # while building `rows`, which the outer except caught and logged as a
+    # single WARNING — silently dropping EVERY entry in that date's batch,
+    # not just the one bad one. Skipping just the poisoned entry lets its
+    # siblings still upsert.
+    rows = []
+    for (ticker, fy, q), raw in entries.items():
+        try:
+            rows.append((ticker, fy, q, json.dumps(raw, default=_json_default)))
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Skipping unencodable fundamental_raw_cache entry (%s, %s, %s): %s", ticker, fy, q, exc
+            )
+    if not rows:
+        return
     try:
         with get_duckdb_connection(path, read_only=False, persist=False) as conn:
             _ensure_table(conn)
-            rows = [(ticker, fy, q, json.dumps(raw, default=_json_default)) for (ticker, fy, q), raw in entries.items()]
             conn.executemany(
                 f"""
                 INSERT INTO {_TABLE_NAME} (ticker, fiscal_year, quarter, raw_json)
@@ -182,4 +200,4 @@ def save_fundamental_raw_cache_entries(entries: Dict[CacheKey, Dict[str, Any]], 
     except Exception as exc:
         # A cache-write failure must never break the feature build itself —
         # worst case, tomorrow's run recomputes these entries again.
-        logger.warning("Could not persist %d fundamental_raw_cache entries (%s)", len(entries), exc)
+        logger.warning("Could not persist %d fundamental_raw_cache entries (%s)", len(rows), exc)
