@@ -276,6 +276,23 @@ class TestIntegrityChecker:
         result = checker.check_12_flat_equity_curve()
         assert result.passed is True
 
+    def test_zero_trades_fails_even_when_fold_data_could_not_be_derived(self):
+        """[BUG FIX, 2026-07-28 third model-review pass] Reproduced live via
+        a real orchestrator run: a genuinely zero-trade backtest (screener
+        matched nothing) typically has NO regime segments to derive
+        fold_returns/fold_sharpes from at all, so backtest/core/
+        post_run_checks.py's `fold_sharpes or None` coercion turns the
+        empty-but-real derivation into None — indistinguishable from "caller
+        never wired fold data". The n_trades floor check must fire from
+        this state regardless, not silently return the "not applicable"
+        pass reserved for callers who never supplied fold data in the first
+        place. n_trades must be checked BEFORE the missing-fold-data
+        early-return, not after."""
+        checker = BacktestIntegrityChecker(fold_sharpes=None, fold_returns=None, n_trades=0)
+        result = checker.check_12_flat_equity_curve()
+        assert result.passed is False
+        assert result.critical is True
+
     def test_survivorship_check_flags_pure_current_universe(self):
         """If every historical ticker is still in the current universe, that's a survivorship-bias red flag."""
         checker = BacktestIntegrityChecker(universe_tickers={"A", "B"}, historical_tickers={"A", "B"})

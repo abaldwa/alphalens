@@ -432,6 +432,19 @@ class BacktestIntegrityChecker:
         supplies both), not punishing callers who haven't wired it yet.
         """
         name = "check_12_flat_equity_curve"
+        # [BUG FIX, 2026-07-28 third model-review pass] n_trades must be
+        # checked BEFORE the "no fold data" early-return below, not after —
+        # a real zero-trade run typically derives EMPTY fold_returns/
+        # fold_sharpes (no regime segments to compute over), which used to
+        # hit the early-return's "not applicable" pass and never reach this
+        # check at all, defeating the whole point of wiring n_trades in.
+        if self.n_trades is not None and self.n_trades < self.MIN_TRADES_FLOOR:
+            return self._result(
+                name, False,
+                f"only {self.n_trades} trade(s) across the whole backtest (< minimum floor of "
+                f"{self.MIN_TRADES_FLOOR}) — a zero/near-zero-trade backtest is the flat-equity-curve "
+                "failure class regardless of whether fold data could even be derived",
+            )
         if not self.fold_returns or not self.fold_sharpes:
             return self._result(name, True, "no fold_returns/fold_sharpes provided — check not applicable")
         all_flat = (
@@ -446,23 +459,9 @@ class BacktestIntegrityChecker:
                 "of a zero-trade backtest (e.g. a screener that never matches any ticker), "
                 "not a genuinely bad-but-real strategy result",
             )
-        # [BUG FIX, 2026-07-28 second model-review] Exact-zero blind spot: a
-        # strategy that fires exactly once across a multi-year backtest
-        # produces one nonzero fold among otherwise-zero folds, which the
-        # all_flat test above cleanly passes — same failure class ("this
-        # backtest barely traded"), one notch less extreme than all-zero.
-        # Only enforced when the caller actually supplies n_trades (None
-        # never fails this on its own — same "caller hasn't wired it yet
-        # must not become an automatic critical failure" reasoning as the
-        # fold_returns/fold_sharpes check above).
-        if self.n_trades is not None and self.n_trades < self.MIN_TRADES_FLOOR:
-            return self._result(
-                name, False,
-                f"only {self.n_trades} trade(s) across the whole backtest (< minimum floor of "
-                f"{self.MIN_TRADES_FLOOR}) despite a non-flat fold_returns/fold_sharpes signature — "
-                "a near-zero-trade backtest is the same failure class as a flat equity curve, just "
-                "less extreme (e.g. one lucky/unlucky trade skews a single fold nonzero)",
-            )
+        # n_trades floor already checked above (before the fold-data
+        # early-return) — a non-flat fold signature with a healthy trade
+        # count reaches here and passes.
         return self._result(
             name, True,
             f"equity curve moves: fold_returns={self.fold_returns}, fold_sharpes={self.fold_sharpes}",
