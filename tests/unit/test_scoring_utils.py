@@ -26,11 +26,18 @@ class TestWeightedZscoreCompositeCoverage:
         # 1 of 4 equal weights present -> 25% coverage, below 50%.
         assert weighted_zscore_composite({"a": 1.0}, self.WEIGHTS) is None
 
-    def test_exactly_at_min_coverage_scores(self):
-        # 2 of 4 equal weights present -> exactly 50% coverage.
+    def test_exactly_at_min_coverage_now_insufficient(self):
+        """[BUG FIX, 4th fundamental-strategies review, item 5] exactly
+        MIN_COVERAGE (50%) is no longer sufficient — strict `<` previously
+        let this through (2 of 4 equal weights present -> exactly 50%
+        coverage), now `<=` correctly excludes it."""
         score = weighted_zscore_composite({"a": 1.0, "b": 1.0}, self.WEIGHTS)
+        assert score is None
+
+    def test_just_above_min_coverage_scores(self):
+        # 3 of 4 equal weights present -> 75% coverage, comfortably above.
+        score = weighted_zscore_composite({"a": 1.0, "b": 1.0, "c": 1.0}, self.WEIGHTS)
         assert score is not None
-        assert score == pytest.approx(60.0)
 
     def test_all_missing_returns_none(self):
         assert weighted_zscore_composite({}, self.WEIGHTS) is None
@@ -45,6 +52,28 @@ class TestWeightedZscoreCompositeCoverage:
         weights = {"dominant": 0.8, "minor": 0.2}
         score = weighted_zscore_composite({"dominant": 1.0}, weights)
         assert score is not None
+
+
+class TestTwoFactorFiftyPercentCoverageRegression:
+    """[BUG FIX, 4th fundamental-strategies review, item 5] The majority
+    shape in this catalog (garp.py, magic_formula.py, promoter_aligned.py,
+    recovery.py, etc.) is a 2-factor equal-weighted leg — with only strict
+    `<`, 1-of-2 factors present (exactly 50% coverage) wrongly passed the
+    floor and produced a full-confidence score. Must now return None."""
+
+    def test_two_factor_equal_weight_one_present_returns_none(self):
+        weights = {"factor_a": 0.5, "factor_b": 0.5}
+        assert weighted_zscore_composite({"factor_a": 2.0}, weights) is None
+        assert weighted_zscore_composite({"factor_b": -2.0}, weights) is None
+
+    def test_two_factor_equal_weight_both_present_scores(self):
+        weights = {"factor_a": 0.5, "factor_b": 0.5}
+        score = weighted_zscore_composite({"factor_a": 2.0, "factor_b": 2.0}, weights)
+        assert score is not None
+
+    def test_combine_subscores_two_leg_one_present_returns_none(self):
+        weights = {"leg1": 0.5, "leg2": 0.5}
+        assert combine_subscores({"leg1": 80.0}, weights) is None
 
 
 class TestCombineSubscoresCoverage:

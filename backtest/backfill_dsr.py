@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 def backfill_dsr_for_queue(queue_id: str) -> dict:
     from backtest.core.run_store import update_dsr
+    from backtest.core.metrics import TRADING_DAYS_PER_YEAR
     from backtest.overfit_checks import deflated_sharpe_ratio
 
     with get_duckdb_connection(
@@ -71,7 +72,14 @@ def backfill_dsr_for_queue(queue_id: str) -> dict:
                 skipped += 1
                 continue
             n_obs = max(int((end_date - start_date).days * (252 / 365.25)), 1)
-            dsr = deflated_sharpe_ratio(sharpe=sharpe, n_trials=n_trials, n_obs=n_obs)
+            # [BUG FIX, 4th fundamental-strategies review] `sharpe` here is the
+            # ANNUALIZED Sharpe from backtest/core/metrics.py::sharpe_ratio() —
+            # deflated_sharpe_ratio expects a per-period (daily) Sharpe. See
+            # run_strategy_queue.py::_compute_and_write_dsr for the full
+            # rationale; de-annualizing by dividing out sqrt(TRADING_DAYS_
+            # PER_YEAR) is exact, not an approximation.
+            raw_sharpe = sharpe / (TRADING_DAYS_PER_YEAR ** 0.5)
+            dsr = deflated_sharpe_ratio(sharpe=raw_sharpe, n_trials=n_trials, n_obs=n_obs)
             update_dsr(conn, run_id, dsr, n_trials, post_hoc=True)
             updated += 1
 

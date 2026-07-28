@@ -227,7 +227,10 @@ export interface OrchestratorTriggerResponse {
 
 export interface OrchestratorStatusResponse {
   run_id: string
-  status: 'running' | 'completed' | 'failed' | 'unknown'
+  // 'integrity_check_failed' added (4th fundamental-strategies review, item
+  // 4) — a persisted run whose integrity_passed is False is no longer
+  // indistinguishable from a genuinely clean 'completed' run here.
+  status: 'running' | 'completed' | 'integrity_check_failed' | 'failed' | 'unknown'
   run: BacktestRunSummary | null
   log_tail: string | null
 }
@@ -303,7 +306,14 @@ export interface StrategyQueueJobStatus {
   job_index: number
   kind: string
   label: string
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'skipped'
+  // 'dsr_gate_failed' / 'integrity_check_failed' added (4th fundamental-
+  // strategies review, item 4): backend/run_strategy_queue.py can mark a
+  // job with either status when its computed DSR falls below an opt-in
+  // min_dsr_threshold, or when its persisted run's integrity_passed is
+  // False (SPEC-BT-001 critical checks failed) — both are distinct from a
+  // subprocess crash ('failed') and from a genuinely clean run
+  // ('completed').
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'skipped' | 'dsr_gate_failed' | 'integrity_check_failed'
 }
 
 export interface StrategyQueueStatusResponse {

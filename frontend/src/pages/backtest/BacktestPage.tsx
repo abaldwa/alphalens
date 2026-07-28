@@ -534,8 +534,28 @@ interface BoardItem {
 
 function bucketForStatus(status: string): Bucket {
   if (status === 'running') return 'in_progress'
-  if (status === 'completed' || status === 'failed' || status === 'skipped') return 'completed'
+  // 'dsr_gate_failed' / 'integrity_check_failed' (4th fundamental-strategies
+  // review, item 4) — the subprocess itself finished without crashing (so
+  // these aren't 'failed'), and the run is a real, finished result (so they
+  // belong in the "completed" bucket, not "queued") — just not a clean pass.
+  // See the badge styling below for how they're kept visually distinct from
+  // both a genuine 'completed' pass and a crash ('failed').
+  if (
+    status === 'completed' || status === 'failed' || status === 'skipped'
+    || status === 'dsr_gate_failed' || status === 'integrity_check_failed'
+  ) {
+    return 'completed'
+  }
   return 'queued'
+}
+
+// Amber "warning" badge for the two gate-failure statuses — distinct from
+// both a clean pass (green 'default') and a crash (red 'destructive').
+function badgeVariantForStatus(status: string): 'default' | 'destructive' | 'warning' | 'outline' {
+  if (status === 'dsr_gate_failed' || status === 'integrity_check_failed') return 'warning'
+  if (status === 'failed') return 'destructive'
+  if (status === 'completed') return 'default'
+  return 'outline'
 }
 
 // A "queue" job expands into one board item per strategy inside it (so 42
@@ -634,9 +654,7 @@ function RunsStatusBoard({ jobs, onDismiss }: { jobs: ActiveJob[]; onDismiss: (i
                       <div className="truncate font-mono-data text-muted-foreground">{item.idLabel}</div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      <Badge
-                        variant={item.status === 'failed' ? 'destructive' : item.status === 'completed' ? 'default' : 'outline'}
-                      >
+                      <Badge variant={badgeVariantForStatus(item.status)}>
                         {item.status}
                       </Badge>
                       {item.dismissId ? (
@@ -1046,7 +1064,7 @@ function OrchestratorTriggerPanel({
             <span className="text-xs text-muted-foreground">run_id: {runId}</span>
             {status.data ? (
               <div className="mt-1">
-                <Badge variant={status.data.status === 'completed' ? 'default' : 'outline'}>{status.data.status}</Badge>
+                <Badge variant={badgeVariantForStatus(status.data.status)}>{status.data.status}</Badge>
                 {status.data.status === 'completed' && status.data.run ? (
                   <>
                     <p className="mt-2 text-xs text-muted-foreground">
@@ -1286,7 +1304,7 @@ function StrategyQueuePanel({
             <span className="text-xs text-muted-foreground">queue_id: {queueId}</span>
             {status.data ? (
               <div className="mt-1">
-                <Badge variant={status.data.status === 'completed' ? 'default' : 'outline'}>{status.data.status}</Badge>
+                <Badge variant={badgeVariantForStatus(status.data.status)}>{status.data.status}</Badge>
                 {status.data.summary ? (
                   <>
                     <p className="mt-2 text-sm text-muted-foreground">

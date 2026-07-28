@@ -162,6 +162,16 @@ class BacktestResults:
         }
 
 
+def _raw_sharpe_from_returns(returns: pd.Series) -> float:
+    """Per-period (daily) Sharpe from a raw return series — NOT annualized.
+    Extracted as its own function (4th fundamental-strategies review, item 1)
+    so the deflated_sharpe_ratio wiring below is independently unit-testable
+    against the annualization bug (feeding it aggregate["sharpe_mean"], which
+    IS annualized, inflated the DSR statistic by ~sqrt(252))."""
+    std = float(returns.std())
+    return float(returns.mean() / std) if std > 0 else 0.0
+
+
 def _cagr_sharpe_from_equity(equity: np.ndarray, initial_capital: float) -> tuple:
     """Shared CAGR/Sharpe computation for any equity curve array (strategy or benchmark)."""
     final_equity = float(equity[-1])
@@ -986,8 +996,19 @@ class BacktestEngine:
         _all_fold_returns = pd.concat(fold_return_series) if fold_return_series else None
         if _all_fold_returns is not None and len(_all_fold_returns) >= 3 and aggregate["sharpe_mean"] is not None:
             try:
+                # [BUG FIX, 4th fundamental-strategies review] deflated_sharpe_
+                # ratio's formula (Bailey/Lopez de Prado) expects a per-period
+                # (daily) Sharpe, not the ANNUALIZED aggregate["sharpe_mean"]
+                # (mean of _cagr_sharpe_from_equity's annualized per-fold
+                # Sharpes) — feeding it the annualized value inflates the DSR
+                # statistic by ~sqrt(252), saturating it near 1.0 for almost
+                # any non-negative-Sharpe strategy and defeating the gate.
+                # The real per-period returns are already concatenated here
+                # (_all_fold_returns) — use their own raw mean/std directly
+                # rather than deriving from the annualized scalar.
+                _raw_sharpe = _raw_sharpe_from_returns(_all_fold_returns)
                 aggregate["deflated_sharpe_ratio"] = deflated_sharpe_ratio(
-                    sharpe=aggregate["sharpe_mean"], n_trials=max(self.optuna_trials, 1),
+                    sharpe=_raw_sharpe, n_trials=max(self.optuna_trials, 1),
                     n_obs=len(_all_fold_returns), returns=_all_fold_returns,
                 )
             except ValueError as exc:

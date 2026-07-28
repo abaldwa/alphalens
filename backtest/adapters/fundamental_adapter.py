@@ -54,6 +54,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from backtest.core.adtv import adtv_cr_for_ticker
+
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
 from datastore.api.utils.feature_store import read_feature_day
@@ -119,6 +121,8 @@ class FundamentalAdapter:
     def __init__(
         self, preset: str, top_n: int = 10, sector_lookup: Optional[Dict[str, str]] = None,
         db_conn: Optional[Any] = None, market_cap_lookup: Optional[Dict[str, float]] = None,
+        price_panel: Optional[pd.DataFrame] = None, volume_panel: Optional[pd.DataFrame] = None,
+        adtv_lookback_days: int = 20,
     ) -> None:
         if preset not in BESPOKE_PRESETS and preset not in SCREENER_PRESETS and preset not in SCORE_FUNCTIONS:
             raise ValueError(
@@ -137,6 +141,17 @@ class FundamentalAdapter:
         # (small_cap_compounders, smile, under_followed). None/empty is a
         # safe no-op (gate simply doesn't apply), never a fabricated cap.
         self._market_cap_lookup = market_cap_lookup or {}
+        # [BUG FIX, 4th fundamental-strategies review, item 2] optional wide
+        # price/volume panels (date index, ticker columns — same shape
+        # momentum_adapter.py's price_panel/volume_panel already use) so
+        # emitted Signals can carry a real Signal.adtv_cr, letting
+        # post_run_checks.py's check_06_liquidity actually enforce
+        # MIN_ADT_INR for this channel instead of silently no-op'ing.
+        # None (default) preserves prior behavior exactly (adtv_cr stays
+        # unset) for any caller that doesn't pass them.
+        self.price_panel = price_panel
+        self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
+        self.adtv_lookback_days = adtv_lookback_days
         # db_conn is intentionally NOT required at construction time (unlike
         # the initial version of this class) — callers that only have the
         # DUCKDB_PATH connection available inside a `with get_duckdb_
@@ -148,6 +163,11 @@ class FundamentalAdapter:
         self._db_conn = db_conn
         self._currently_held: set = set()
         self._last_ratios: Dict[str, Dict[str, float]] = {}  # ticker -> ratio dict, from the most recent call
+
+    def _adtv_cr(self, ticker: str, as_of_date: date_type) -> Optional[float]:
+        return adtv_cr_for_ticker(
+            ticker, as_of_date, self.price_panel, self.volume_panel, self.adtv_lookback_days,
+        )
 
     def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
         universe_set = set(universe)
@@ -256,11 +276,13 @@ class FundamentalAdapter:
         for ticker in sorted(self._currently_held - target):
             signals.append(Signal(
                 ticker=ticker, action="sell", sector=self._sector_lookup.get(ticker, "Unknown"), conviction=0.0,
+                adtv_cr=self._adtv_cr(ticker, as_of_date),
             ))
         for ticker in sorted(target - self._currently_held):
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
                 conviction=_composite_strength(self._last_ratios[ticker]), template=self.preset,
+                adtv_cr=self._adtv_cr(ticker, as_of_date),
             ))
 
         self._currently_held = target

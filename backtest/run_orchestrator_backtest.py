@@ -312,11 +312,22 @@ def run_orchestrator_backtest(
         ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
         sector_map = _real_sector_map()
         config = _build_config(ohlcv, sector_map)
+        # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
+        # price/volume panels from the same ohlcv pull momentum's branch
+        # below already uses — passed to Technical/Fundamental too so their
+        # emitted Signals carry a real Signal.adtv_cr (previously always
+        # None outside Momentum, silently no-op'ing check_06_liquidity's
+        # MIN_ADT_INR floor for these two channels).
+        _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
+        _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
 
         if channel == "technical":
             if not template_name:
                 raise ValueError("channel=technical requires --template-name")
-            adapter = TechnicalAdapter(template_name=template_name, top_n=top_n, sector_lookup=sector_map)
+            adapter = TechnicalAdapter(
+                template_name=template_name, top_n=top_n, sector_lookup=sector_map,
+                price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+            )
         elif channel == "fundamental":
             if not preset:
                 raise ValueError("channel=fundamental requires --preset")
@@ -335,10 +346,13 @@ def run_orchestrator_backtest(
             adapter = FundamentalAdapter(
                 preset=preset, top_n=top_n, sector_lookup=sector_map,
                 market_cap_lookup=_real_market_cap_map(),
+                price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
             )
         elif channel == "momentum":
-            price_panel = ohlcv.pivot(index="date", columns="ticker", values="close")
-            adapter = MomentumAdapter(price_panel=price_panel, top_n=top_n, lookback_months=lookback_months, sector_lookup=sector_map)
+            adapter = MomentumAdapter(
+                price_panel=_price_panel_for_adtv, top_n=top_n, lookback_months=lookback_months,
+                sector_lookup=sector_map,
+            )
         else:
             raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
 

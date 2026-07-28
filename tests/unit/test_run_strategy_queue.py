@@ -123,6 +123,119 @@ class TestDsrGate:
         assert progress["jobs"][0]["status"] == "dsr_gate_failed"
 
 
+class TestIntegrityGate:
+    """[BUG FIX, 4th fundamental-strategies review, item 3] integrity_passed
+    is NOT opt-in (unlike min_dsr_threshold) — a persisted run with
+    integrity_passed=False must always surface as a distinct status
+    ('integrity_check_failed'), never plain 'completed'/all_passed=True."""
+
+    def _run(self, monkeypatch, tmp_path, job, integrity_passed, dsr_value=0.9):
+        monkeypatch.setattr(run_strategy_queue_mod, "REPORTS_DIR", tmp_path)
+        monkeypatch.setattr(
+            run_strategy_queue_mod, "_run_job",
+            lambda job, i, suffix: {"job_index": i, "kind": job.get("kind"), "job": job, "returncode": 0, "elapsed_s": 1.0},
+        )
+        monkeypatch.setattr(
+            run_strategy_queue_mod, "_compute_and_write_dsr",
+            lambda job, i, suffix, n_trials: dsr_value,
+        )
+        monkeypatch.setattr(
+            run_strategy_queue_mod, "_check_integrity_passed",
+            lambda job, i, suffix: integrity_passed,
+        )
+        monkeypatch.setattr(run_strategy_queue_mod, "wait_for_headroom", lambda *a, **k: None)
+        return run_queue([job], report_suffix="qtest", resume=False)
+
+    def test_integrity_passed_false_fails_the_job_even_without_dsr_threshold(self, monkeypatch, tmp_path):
+        job = {"kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder"}
+        summary = self._run(monkeypatch, tmp_path, job, integrity_passed=False)
+        assert summary["all_passed"] is False
+        progress = json.loads((tmp_path / "strategy_queue_progress_qtest.json").read_text())
+        assert progress["jobs"][0]["status"] == "integrity_check_failed"
+
+    def test_integrity_passed_true_leaves_job_completed(self, monkeypatch, tmp_path):
+        job = {"kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder"}
+        summary = self._run(monkeypatch, tmp_path, job, integrity_passed=True)
+        assert summary["all_passed"] is True
+        progress = json.loads((tmp_path / "strategy_queue_progress_qtest.json").read_text())
+        assert progress["jobs"][0]["status"] == "completed"
+
+    def test_integrity_unresolvable_none_does_not_fail_the_job(self, monkeypatch, tmp_path):
+        """None means 'couldn't verify' — must not be conflated with a real
+        failure (that would be a false positive, unlike the DSR gate's
+        deliberate None-treated-as-failure choice, which only applies when
+        the operator explicitly opted into a min_dsr_threshold)."""
+        job = {"kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder"}
+        summary = self._run(monkeypatch, tmp_path, job, integrity_passed=None)
+        assert summary["all_passed"] is True
+        progress = json.loads((tmp_path / "strategy_queue_progress_qtest.json").read_text())
+        assert progress["jobs"][0]["status"] == "completed"
+
+
+class TestDsrAnnualizationBug:
+    """[BUG FIX, 4th fundamental-strategies review, item 1] The Sharpe stored
+    in an orchestrator report's metrics.sharpe is ANNUALIZED (backtest/core/
+    metrics.py::sharpe_ratio's docstring). deflated_sharpe_ratio's Bailey/
+    Lopez de Prado formula expects a per-period (daily) Sharpe — feeding it
+    the annualized value inflates the DSR statistic by ~sqrt(252). This test
+    constructs a realistic daily-returns series, computes both scales, and
+    confirms _compute_and_write_dsr wires the PER-PERIOD value into
+    deflated_sharpe_ratio, not the annualized one."""
+
+    def test_wires_per_period_not_annualized_sharpe(self, monkeypatch, tmp_path):
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        daily_returns = rng.normal(loc=0.0006, scale=0.01, size=252)
+        raw_sharpe = float(daily_returns.mean() / daily_returns.std())
+        annualized_sharpe = raw_sharpe * (252 ** 0.5)
+        assert abs(annualized_sharpe) > abs(raw_sharpe) * 10  # sanity: sqrt(252) ~ 15.9x
+
+        monkeypatch.setattr(run_strategy_queue_mod, "REPORTS_DIR", tmp_path)
+        report_path = tmp_path / "orchestrator_qtest_job0.json"
+        report_path.write_text(json.dumps({
+            "run": {"run_id": "run-1", "start_date": "2025-01-01", "end_date": "2026-01-01"},
+            "metrics": {"sharpe": annualized_sharpe},
+        }))
+
+        captured = {}
+
+        def _fake_dsr(sharpe, n_trials, n_obs, returns=None):
+            captured["sharpe"] = sharpe
+            return 0.42
+
+        monkeypatch.setattr(run_strategy_queue_mod, "deflated_sharpe_ratio", _fake_dsr, raising=False)
+        # deflated_sharpe_ratio is imported inside the function body (`from
+        # backtest.overfit_checks import deflated_sharpe_ratio`) — patch it
+        # at the source module so the local import picks up the fake.
+        import backtest.overfit_checks as overfit_checks_mod
+        monkeypatch.setattr(overfit_checks_mod, "deflated_sharpe_ratio", _fake_dsr)
+
+        class _FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(run_strategy_queue_mod, "update_dsr", lambda *a, **k: None, raising=False)
+        import backtest.core.run_store as run_store_mod
+        monkeypatch.setattr(run_store_mod, "update_dsr", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "datastore.api.db.get_duckdb_connection", lambda *a, **k: _FakeConn(),
+        )
+
+        job = {"kind": "orchestrator", "channel": "fundamental", "preset": "quality_compounder"}
+        dsr = run_strategy_queue_mod._compute_and_write_dsr(job, 0, "qtest", n_trials_so_far=1)
+
+        assert dsr == 0.42
+        assert "sharpe" in captured
+        # Wired value must match the per-period Sharpe (within float precision
+        # of the exact de-annualization), not the annualized one.
+        assert captured["sharpe"] == pytest.approx(raw_sharpe, rel=1e-9)
+        assert captured["sharpe"] != pytest.approx(annualized_sharpe, rel=1e-3)
+
+
 class TestJobLabel:
     def test_iterative_retrain_label(self):
         assert _job_label({"kind": "iterative_retrain"}) == "Iterative Retrain (MetaLabeler)"

@@ -388,7 +388,12 @@ class OrchestratorTriggerResponse(BaseModel):
 
 class OrchestratorStatusResponse(BaseModel):
     run_id: str
-    status: str  # "running" | "completed" | "failed" | "unknown"
+    # [BUG FIX, 4th fundamental-strategies review, item 4] "integrity_check_
+    # failed" added — the row existing in backtest_runs previously always
+    # meant "completed" even when integrity_passed is False (CRITICAL
+    # SPEC-BT-001 checks failed), which was invisible to any API/frontend
+    # caller of this endpoint.
+    status: str  # "running" | "completed" | "integrity_check_failed" | "failed" | "unknown"
     run: Optional[BacktestRunSummary] = None
     log_tail: Optional[str] = None
 
@@ -460,13 +465,18 @@ async def trigger_orchestrator_backtest(
 @router.get("/orchestrator/status/{run_id}", response_model=OrchestratorStatusResponse)
 async def get_orchestrator_status(run_id: str) -> OrchestratorStatusResponse:
     """"completed" once `run_id` exists in backtest_runs (save_run_result()
-    is the last thing run_orchestrator_backtest.py does), "failed" if the
-    subprocess's log shows a traceback with no row yet, "running" otherwise."""
+    is the last thing run_orchestrator_backtest.py does) AND its persisted
+    integrity_passed is not False; "integrity_check_failed" if the row
+    exists but integrity_passed is False (2026-07-28, 4th fundamental-
+    strategies review, item 4 — previously indistinguishable from a clean
+    "completed" run here); "failed" if the subprocess's log shows a
+    traceback with no row yet, "running" otherwise."""
     with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
         row = get_run(conn, run_id)
         if row is not None:
             signal_counts = get_signal_counts(conn, [run_id])
-            return OrchestratorStatusResponse(run_id=run_id, status="completed", run=_summary(row, signal_counts))
+            status = "integrity_check_failed" if row.get("integrity_passed") is False else "completed"
+            return OrchestratorStatusResponse(run_id=run_id, status=status, run=_summary(row, signal_counts))
 
     log_path = _ORCHESTRATOR_TRIGGER_LOGS_DIR / f"{run_id}.log"
     if not log_path.exists():

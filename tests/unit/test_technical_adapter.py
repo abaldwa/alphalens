@@ -10,6 +10,7 @@ the No-Mock-Data Policy.
 
 from datetime import date
 
+import pandas as pd
 import pytest
 
 from backtest.adapters.technical_adapter import TechnicalAdapter
@@ -187,6 +188,38 @@ class TestScreenerCacheIntegration:
         assert fv["matched"] is True
         assert fv["score"] == 0.9
         assert fv["feature__rsi_14"] == 28.0
+
+
+class TestAdtvWiring:
+    """[BUG FIX, 4th fundamental-strategies review, item 2] Signal.adtv_cr
+    was never populated for the Technical channel (always None), forcing
+    check_06_liquidity's applied_min_adt_inr=0.0 — the MIN_ADT_INR floor was
+    silently never enforced. Confirms adtv_cr is real/non-None when a real
+    OHLCV-derived price/volume panel is supplied."""
+
+    def test_adtv_cr_populated_from_price_volume_panels(self):
+        dates = pd.date_range("2019-12-01", periods=25, freq="B")
+        price_panel = pd.DataFrame({"A": [100.0 + i for i in range(25)]}, index=dates)
+        volume_panel = pd.DataFrame({"A": [10_000.0 + i * 10 for i in range(25)]}, index=dates)
+
+        engine = _FakeScreenerEngine({
+            str(dates[-1].date()): [_FakeResult("A", 0.9)],
+        })
+        adapter = TechnicalAdapter(
+            template_name="A1", top_n=1, screener_engine=engine,
+            price_panel=price_panel, volume_panel=volume_panel,
+        )
+        signals = adapter.generate_signals(["A"], dates[-1].date(), HorizonBucket.D21)
+        buy = next(s for s in signals if s.action == "buy")
+        assert buy.adtv_cr is not None
+        assert buy.adtv_cr > 0
+
+    def test_adtv_cr_none_when_panels_not_supplied(self):
+        engine = _FakeScreenerEngine({"2020-01-01": [_FakeResult("A", 0.9)]})
+        adapter = TechnicalAdapter(template_name="A1", top_n=1, screener_engine=engine)
+        signals = adapter.generate_signals(["A"], date(2020, 1, 1), HorizonBucket.D21)
+        buy = next(s for s in signals if s.action == "buy")
+        assert buy.adtv_cr is None
 
 
 class TestRealScreenerIntegration:

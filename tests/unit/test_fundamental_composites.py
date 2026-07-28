@@ -158,7 +158,17 @@ class TestFcfLowDebtRealColumnPipeline:
 
 class TestGarpScore:
     def test_growth_and_cheap_valuation_gives_above_50(self):
-        score = garp_score({"revenue_growth_yoy": 1.0, "eps_growth_yoy": 1.0, "pe_ratio": -1.0})
+        # [BUG FIX, 4th fundamental-strategies review, item 5 follow-up] the
+        # original inputs here ("revenue_growth_yoy") didn't match GARP's
+        # actual growth leg feature ("revenue_cagr_3yr" — see garp.py's
+        # GROWTH_WEIGHTS), so this test previously only produced a non-None
+        # score by relying on the exact MIN_COVERAGE boundary bug this
+        # review fixed (1-of-2 factors present in both the growth leg and
+        # the overall leg combination, each exactly at the old-permissive
+        # 50% threshold). Using the real feature name gives the growth leg
+        # full (100%) coverage, so this test now exercises real signal
+        # rather than the coverage-floor edge case.
+        score = garp_score({"revenue_cagr_3yr": 1.0, "eps_growth_yoy": 1.0, "pe_ratio": -1.0})
         assert score > 50
 
     def test_all_missing_returns_none(self):

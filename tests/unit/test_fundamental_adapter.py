@@ -106,6 +106,41 @@ class TestGenerateSignals:
         assert {s.ticker for s in signals if s.action == "buy"} == {"STRONG"}
 
 
+class TestAdtvWiring:
+    """[BUG FIX, 4th fundamental-strategies review, item 2] Signal.adtv_cr
+    was never populated for the Fundamental channel (always None), forcing
+    check_06_liquidity's applied_min_adt_inr=0.0 — the MIN_ADT_INR floor was
+    silently never enforced. Confirms adtv_cr is real/non-None when a real
+    OHLCV-derived price/volume panel is supplied."""
+
+    def test_adtv_cr_populated_from_price_volume_panels(self, monkeypatch):
+        import backtest.adapters.fundamental_adapter as mod
+
+        dates = pd.date_range("2020-04-15", periods=25, freq="B")
+        price_panel = pd.DataFrame({"GOOD": [500.0 + i for i in range(25)]}, index=dates)
+        volume_panel = pd.DataFrame({"GOOD": [50_000.0 + i * 25 for i in range(25)]}, index=dates)
+
+        panel = _panel([{"ticker": "GOOD", "roe": 1.5, "roce": 1.2, "debt_to_equity": -0.8}])
+        monkeypatch.setattr(mod, "read_feature_day", lambda date_str: panel)
+        adapter = FundamentalAdapter(
+            preset="quality_compounder", top_n=5,
+            price_panel=price_panel, volume_panel=volume_panel,
+        )
+        signals = adapter.generate_signals(["GOOD"], dates[-1].date(), HorizonBucket.Y1)
+        buy = next(s for s in signals if s.action == "buy")
+        assert buy.adtv_cr is not None
+        assert buy.adtv_cr > 0
+
+    def test_adtv_cr_none_when_panels_not_supplied(self, monkeypatch):
+        import backtest.adapters.fundamental_adapter as mod
+        panel = _panel([{"ticker": "GOOD", "roe": 1.5, "roce": 1.2, "debt_to_equity": -0.8}])
+        monkeypatch.setattr(mod, "read_feature_day", lambda date_str: panel)
+        adapter = FundamentalAdapter(preset="quality_compounder", top_n=5)
+        signals = adapter.generate_signals(["GOOD"], date(2020, 6, 1), HorizonBucket.Y1)
+        buy = next(s for s in signals if s.action == "buy")
+        assert buy.adtv_cr is None
+
+
 class TestFeatureVector:
     def test_matched_ticker_reports_ratio_values(self, monkeypatch):
         import backtest.adapters.fundamental_adapter as mod

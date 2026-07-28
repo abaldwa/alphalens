@@ -50,7 +50,18 @@ def weighted_zscore_composite(ratios: Dict[str, float], weights: Dict[str, float
             continue
         weighted_sum += w * v
         covered_weight += abs(w)
-    if total_weight == 0 or covered_weight == 0 or (covered_weight / total_weight) < MIN_COVERAGE:
+    # [BUG FIX, 4th fundamental-strategies review, item 5] strict `<` let a
+    # leg at EXACTLY 50% coverage through — for the majority-shape 2-factor
+    # equal-weighted composites in this catalog (garp.py, magic_formula.py,
+    # promoter_aligned.py, recovery.py, etc.), that means 1-of-2 factors
+    # present clears the floor and produces a full-confidence score
+    # indistinguishable from a fully-covered one, defeating MIN_COVERAGE's
+    # intent for exactly the shape it's meant to protect. `<=` makes exact-
+    # 50% insufficient uniformly; a 3+-factor leg only lands on exactly 50%
+    # for specific weight combinations (e.g. 2-of-4 equal-weighted), which
+    # is a narrower, less common case than the 2-factor 1-of-2 pattern this
+    # fix targets — not worth a per-factor-count carve-out.
+    if total_weight == 0 or covered_weight == 0 or (covered_weight / total_weight) <= MIN_COVERAGE:
         return None
     weighted_z = weighted_sum / covered_weight
     return float(np.clip(50 + 10 * weighted_z, 0, 100))
@@ -77,6 +88,17 @@ def combine_subscores(scores: Dict[str, Optional[float]], weights: Dict[str, flo
             continue
         weighted_sum += w * v
         covered_weight += abs(w)
-    if total_weight == 0 or covered_weight == 0 or (covered_weight / total_weight) < MIN_COVERAGE:
+    # [BUG FIX, 4th fundamental-strategies review, item 5] strict `<` let a
+    # leg at EXACTLY 50% coverage through — for the majority-shape 2-factor
+    # equal-weighted composites in this catalog (garp.py, magic_formula.py,
+    # promoter_aligned.py, recovery.py, etc.), that means 1-of-2 factors
+    # present clears the floor and produces a full-confidence score
+    # indistinguishable from a fully-covered one, defeating MIN_COVERAGE's
+    # intent for exactly the shape it's meant to protect. `<=` makes exact-
+    # 50% insufficient uniformly; a 3+-factor leg only lands on exactly 50%
+    # for specific weight combinations (e.g. 2-of-4 equal-weighted), which
+    # is a narrower, less common case than the 2-factor 1-of-2 pattern this
+    # fix targets — not worth a per-factor-count carve-out.
+    if total_weight == 0 or covered_weight == 0 or (covered_weight / total_weight) <= MIN_COVERAGE:
         return None
     return float(np.clip(weighted_sum / covered_weight, 0, 100))

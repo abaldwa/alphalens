@@ -242,6 +242,40 @@ class TestExperimentTradeLogDownload:
         assert "RELIANCE" in response.text
 
 
+class TestOrchestratorStatusIntegrityGate:
+    """[BUG FIX, 4th fundamental-strategies review, item 4] GET /orchestrator/
+    status/{run_id} previously always returned status='completed' once the
+    row existed, even when the persisted run's integrity_passed is False
+    (CRITICAL SPEC-BT-001 checks failed) — that must now surface as a
+    distinct 'integrity_check_failed' status."""
+
+    def test_integrity_passed_false_surfaces_as_distinct_status(self, client):
+        run = _run(strategy_id="ta_integrity_fail")
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(conn, _result(run, integrity_passed=False))
+        resp = client.get(f"/api/v1/backtest/orchestrator/status/{run.run_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "integrity_check_failed"
+
+    def test_integrity_passed_true_is_plain_completed(self, client):
+        run = _run(strategy_id="ta_integrity_ok")
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(conn, _result(run, integrity_passed=True))
+        resp = client.get(f"/api/v1/backtest/orchestrator/status/{run.run_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "completed"
+
+    def test_integrity_passed_none_is_still_plain_completed(self, client):
+        """None (undetermined) must not be conflated with a real failure —
+        only an explicit False changes the status."""
+        run = _run(strategy_id="ta_integrity_unknown")
+        with get_duckdb_connection(client.db_path, persist=False) as conn:
+            save_run_result(conn, _result(run, integrity_passed=None))
+        resp = client.get(f"/api/v1/backtest/orchestrator/status/{run.run_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "completed"
+
+
 class TestQueueStatusAndDiscovery:
     def _patch_queue_dirs(self, tmp_path, monkeypatch):
         reports_dir = tmp_path / "reports"

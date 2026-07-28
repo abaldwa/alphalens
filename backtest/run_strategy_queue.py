@@ -163,11 +163,23 @@ def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_t
         n_obs = max(int((end_date - start_date).days * (252 / 365.25)), 1)
 
         from backtest.overfit_checks import deflated_sharpe_ratio
+        from backtest.core.metrics import TRADING_DAYS_PER_YEAR
         from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S
         from backtest.core.run_store import update_dsr
         from datastore.api.db import get_duckdb_connection
 
-        dsr = deflated_sharpe_ratio(sharpe=sharpe, n_trials=n_trials_so_far, n_obs=n_obs)
+        # [BUG FIX, 4th fundamental-strategies review] `sharpe` here comes from
+        # backtest/core/metrics.py::sharpe_ratio(), which is ANNUALIZED
+        # (returns.mean()/std * sqrt(TRADING_DAYS_PER_YEAR)) — deflated_sharpe_
+        # ratio's Bailey/Lopez de Prado formula expects a per-period (daily)
+        # Sharpe. Feeding it the annualized value inflates the DSR statistic by
+        # ~sqrt(252), saturating it near 1.0 and defeating the gate. The report
+        # only carries the scalar annualized Sharpe (no raw daily-return
+        # series), but de-annualizing is exact — sharpe_annualized = sharpe_
+        # daily * sqrt(TRADING_DAYS_PER_YEAR) by construction — so dividing
+        # back out recovers the true per-period value with no approximation.
+        raw_sharpe = sharpe / (TRADING_DAYS_PER_YEAR ** 0.5)
+        dsr = deflated_sharpe_ratio(sharpe=raw_sharpe, n_trials=n_trials_so_far, n_obs=n_obs)
         with get_duckdb_connection(
             BACKTEST_DUCKDB_PATH, read_only=False, persist=False,
             retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
@@ -179,6 +191,48 @@ def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_t
         return dsr
     except Exception:
         logger.warning(f"run_strategy_queue: DSR computation failed for job[{job_index}] — leaving unset", exc_info=True)
+        return None
+
+
+def _check_integrity_passed(job: Dict[str, Any], job_index: int, suffix: str) -> Optional[bool]:
+    """[BUG FIX, 4th fundamental-strategies review, item 3] A job could show
+    status='completed'/all_passed=True even when the persisted run's
+    integrity_passed is False (a CRITICAL SPEC-BT-001 check failed) — the
+    queue only ever read the subprocess returncode plus the opt-in
+    min_dsr_threshold, never integrity_passed from the saved report. This
+    reads it back from backtest_runs (via the same orchestrator report
+    file/run_id lookup _compute_and_write_dsr already uses) so a critical
+    integrity failure is always visible, regardless of whether
+    min_dsr_threshold was ever set (unlike the DSR gate, this isn't opt-in).
+
+    Returns True/False when determinable, or None (not orchestrator kind,
+    missing report, or an unexpected error — logged, never raised) when it
+    can't be — callers must treat None as "couldn't verify," not "passed."
+    """
+    if job.get("kind") != "orchestrator":
+        return None
+    try:
+        report_path = REPORTS_DIR / f"orchestrator_{suffix}_job{job_index}.json"
+        report = json.loads(report_path.read_text())
+        run_id = report["run"]["run_id"]
+
+        from backtest.core.run_store import get_run
+        from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S
+        from datastore.api.db import get_duckdb_connection
+
+        with get_duckdb_connection(
+            BACKTEST_DUCKDB_PATH, read_only=True, persist=False,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        ) as conn:
+            run_record = get_run(conn, run_id)
+        if run_record is None:
+            logger.warning(f"run_strategy_queue: job[{job_index}] run_id={run_id!r} not found in backtest_runs")
+            return None
+        return bool(run_record.get("integrity_passed"))
+    except Exception:
+        logger.warning(f"run_strategy_queue: integrity_passed lookup failed for job[{job_index}]", exc_info=True)
         return None
 
 
@@ -286,6 +340,7 @@ def run_queue(
         statuses[i] = "completed" if result["returncode"] == 0 else "failed"
         _write_progress(progress_path, jobs, statuses)
         job_dsr_gate_failed = False
+        job_integrity_failed = False
         if statuses[i] == "completed":
             n_trials_so_far = sum(1 for s in statuses if s == "completed")
             dsr = _compute_and_write_dsr(job, i, suffix, n_trials_so_far)
@@ -303,9 +358,26 @@ def run_queue(
                     f"(dsr={dsr!r} < min_dsr_threshold={min_dsr_threshold!r})"
                 )
                 _write_progress(progress_path, jobs, statuses)
-        results.append(result)
-        if result["returncode"] != 0 or job_dsr_gate_failed:
+
+            # [BUG FIX, 4th fundamental-strategies review, item 3] NOT opt-in
+            # (unlike min_dsr_threshold above) — a run whose persisted
+            # integrity_passed is False (CRITICAL SPEC-BT-001 checks failed)
+            # must never be indistinguishable from a genuinely clean
+            # 'completed' run, regardless of whether this job set a DSR gate.
             if not job_dsr_gate_failed:
+                integrity_passed = _check_integrity_passed(job, i, suffix)
+                if integrity_passed is False:
+                    job_integrity_failed = True
+                    statuses[i] = "integrity_check_failed"
+                    result["integrity_passed"] = integrity_passed
+                    logger.error(
+                        f"run_strategy_queue: job[{i}] failed post-run integrity checks "
+                        "(integrity_passed=False)"
+                    )
+                    _write_progress(progress_path, jobs, statuses)
+        results.append(result)
+        if result["returncode"] != 0 or job_dsr_gate_failed or job_integrity_failed:
+            if not job_dsr_gate_failed and not job_integrity_failed:
                 logger.error(f"run_strategy_queue: job[{i}] failed (exit {result['returncode']})")
             if stop_on_failure:
                 logger.error("run_strategy_queue: stopping the remainder of the queue")
@@ -324,6 +396,7 @@ def run_queue(
         "all_passed": (
             all(r["returncode"] == 0 for r in results)
             and not any(statuses[r["job_index"]] == "dsr_gate_failed" for r in results)
+            and not any(statuses[r["job_index"]] == "integrity_check_failed" for r in results)
             and len(results) + n_skipped_prior == len(jobs)
         ),
         "runtime_seconds": time.monotonic() - run_started,

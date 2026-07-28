@@ -33,6 +33,9 @@ import logging
 from datetime import date as date_type
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
+
+from backtest.core.adtv import adtv_cr_for_ticker
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
 from systems.technical_analysis.screener.engine import ScreenerEngine
@@ -47,6 +50,8 @@ class TechnicalAdapter:
         self, template_name: str, screener_engine: Optional[ScreenerEngine] = None,
         top_n: int = 10, sector_lookup: Optional[Dict[str, str]] = None,
         screener_cache_conn=None,
+        price_panel: Optional[pd.DataFrame] = None, volume_panel: Optional[pd.DataFrame] = None,
+        adtv_lookback_days: int = 20,
     ) -> None:
         """
         template_name : one of the 42 pre-built screener templates
@@ -76,8 +81,20 @@ class TechnicalAdapter:
         self._engine = screener_engine or ScreenerEngine()
         self._sector_lookup = sector_lookup or {}
         self._screener_cache_conn = screener_cache_conn
+        # [BUG FIX, 4th fundamental-strategies review, item 2] see
+        # fundamental_adapter.py's matching comment — same optional
+        # price_panel/volume_panel wiring so Signal.adtv_cr is real, not
+        # always None, for this channel too.
+        self.price_panel = price_panel
+        self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
+        self.adtv_lookback_days = adtv_lookback_days
         self._currently_held: set = set()
         self._last_results: Dict[str, Any] = {}  # ticker -> ScreenerResult, from the most recent generate_signals() call
+
+    def _adtv_cr(self, ticker: str, as_of_date: date_type) -> Optional[float]:
+        return adtv_cr_for_ticker(
+            ticker, as_of_date, self.price_panel, self.volume_panel, self.adtv_lookback_days,
+        )
 
     def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
         universe_set = set(universe)
@@ -110,12 +127,14 @@ class TechnicalAdapter:
         for ticker in sorted(self._currently_held - target):
             signals.append(Signal(
                 ticker=ticker, action="sell", sector=self._sector_lookup.get(ticker, "Unknown"), conviction=0.0,
+                adtv_cr=self._adtv_cr(ticker, as_of_date),
             ))
         for ticker in sorted(target - self._currently_held):
             result = self._last_results[ticker]
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
                 conviction=result.score, template=self.template_name,
+                adtv_cr=self._adtv_cr(ticker, as_of_date),
             ))
 
         self._currently_held = target

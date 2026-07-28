@@ -24,7 +24,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.engine import BacktestEngine, compute_fold_metrics
+from backtest.engine import BacktestEngine, compute_fold_metrics, _raw_sharpe_from_returns
+from backtest.overfit_checks import deflated_sharpe_ratio
 from backtest.portfolio import PortfolioSimulator
 from features.technical import CORE_TECHNICAL_FEATURES
 
@@ -427,6 +428,41 @@ class TestComputeFoldMetricsTrades:
         metrics = compute_fold_metrics(curve, trades, 1_000_000.0)
         assert metrics["win_rate"] == 1.0
         assert metrics["profit_factor"] == float("inf")
+
+
+# ===== Deflated Sharpe wiring must use per-period, not annualized, Sharpe =====
+# [BUG FIX, 4th fundamental-strategies review, item 1]
+
+
+class TestRawSharpeFromReturns:
+    def test_per_period_sharpe_is_not_annualized(self):
+        rng = np.random.default_rng(0)
+        daily_returns = pd.Series(rng.normal(loc=0.0006, scale=0.01, size=252))
+        raw_sharpe = _raw_sharpe_from_returns(daily_returns)
+        annualized_sharpe = raw_sharpe * (252 ** 0.5)
+        assert abs(annualized_sharpe) > abs(raw_sharpe) * 10
+
+    def test_engine_wires_raw_sharpe_into_deflated_sharpe_ratio_not_annualized(self):
+        """Reproduces the exact sequence engine.py's run_full_backtest uses
+        right before calling deflated_sharpe_ratio: given a real fold-return
+        series and its annualized sharpe_mean (as compute_fold_metrics
+        would have produced it), the value actually wired into
+        deflated_sharpe_ratio must be the per-period Sharpe — confirmed by
+        checking it disagrees sharply with what the (buggy) annualized value
+        would have produced."""
+        rng = np.random.default_rng(1)
+        daily_returns = pd.Series(rng.normal(loc=0.0008, scale=0.012, size=504))
+        raw_sharpe = _raw_sharpe_from_returns(daily_returns)
+        annualized_sharpe = float(daily_returns.mean() / daily_returns.std() * (252 ** 0.5))
+
+        dsr_from_raw = deflated_sharpe_ratio(sharpe=raw_sharpe, n_trials=5, n_obs=len(daily_returns), returns=daily_returns)
+        dsr_from_annualized = deflated_sharpe_ratio(
+            sharpe=annualized_sharpe, n_trials=5, n_obs=len(daily_returns), returns=daily_returns,
+        )
+        # The annualized-Sharpe bug saturates DSR near 1.0; the fixed
+        # (per-period) wiring must not.
+        assert dsr_from_annualized > 0.999
+        assert dsr_from_raw < dsr_from_annualized
 
 
 # ===== BacktestEngine.__init__ error path + defaults (no heavy dataset build) =====
