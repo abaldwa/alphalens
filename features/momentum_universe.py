@@ -176,7 +176,12 @@ def market_cap_snapshot(normalised_conn: Any, tickers: List[str], as_of_date: st
     ).fetch_df()
     if all_fund.empty:
         return empty
-    all_fund["announcement_date"] = pd.to_datetime(all_fund["announcement_date"])
+    # fundamentals.announcement_date is VARCHAR with genuinely mixed
+    # formats across sources ("2026-07-28" from XBRL vs "2026-08-14
+    # 00:00:00" from Trendlyne) — format='mixed' parses each value on its
+    # own terms instead of inferring one format from the first row and
+    # choking on later rows that don't match it.
+    all_fund["announcement_date"] = pd.to_datetime(all_fund["announcement_date"], format="mixed")
     as_of_ts = pd.Timestamp(as_of_date)
 
     pit_eligible = all_fund[all_fund["announcement_date"] <= as_of_ts]
