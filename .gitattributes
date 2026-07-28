@@ -1,0 +1,8 @@
+# Momentum sweep reports aggregate hundreds of variants, each carrying its
+# own full equity curve + transaction ledger — these routinely exceed
+# GitHub's 50MB recommended file size (momentum_experimentation_20260727_
+# 091745.json hit 66MB), unlike the much smaller per-run orchestrator
+# reports elsewhere in backtest/reports/. Tracked via Git LFS so the repo's
+# packed size/clone time doesn't grow with every future sweep.
+backtest/reports/momentum/momentum_experimentation_*.json filter=lfs diff=lfs merge=lfs -text
+backtest/reports/momentum/momentum_filter_overlays_*.json filter=lfs diff=lfs merge=lfs -text
