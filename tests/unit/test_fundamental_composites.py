@@ -50,6 +50,17 @@ class TestQualityScore:
         score = quality_score({"roe": 2.0, "roce": 2.0})
         assert score == pytest.approx(50 + 10 * 2.0)
 
+    def test_four_factor_exactly_50pct_coverage_still_scores(self):
+        """[BUG FIX, 5th fundamental-strategies review, item 7] roe (0.30)
+        + net_margin (0.20) = exactly 50% of QUALITY_WEIGHTS' total
+        absolute weight (1.0) — the 4th review's uniform `<=` coverage-
+        floor fix silently flipped this real 4-factor consumer's
+        exactly-50%-covered case to None too, contradicting this module's
+        own documented "at least half" (inclusive) intent. Must still
+        score, matching pre-3ec3301 behavior for this shape."""
+        score = quality_score({"roe": 2.0, "net_margin": 2.0})
+        assert score is not None
+
     def test_clipped_to_0_100(self):
         score = quality_score({"roe": 100.0, "roce": 100.0, "net_margin": 100.0, "debt_to_equity": -100.0})
         assert score == 100.0

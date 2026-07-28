@@ -84,7 +84,15 @@ class MomentumAdapter:
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
-        self.price_panel = price_panel
+        # [BUG FIX, 5th fundamental-strategies review, item 3] same
+        # unsorted-price_panel bug as fundamental_adapter.py/
+        # technical_adapter.py (adtv.py's adtv_cr_for_ticker's
+        # `.loc[:ts].tail(n)` silently returns a wrong window on an
+        # unsorted index) — not yet triggered here in practice (this
+        # adapter's own momentum-ranking code already required a sorted
+        # price_panel elsewhere), but fixed for consistency since it's the
+        # same underlying bug.
+        self.price_panel = price_panel.sort_index() if price_panel is not None else None
         self.top_n = top_n
         self.lookback_days = lookback_trading_days(lookback_months)
         self._sector_lookup = sector_lookup or {}

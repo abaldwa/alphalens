@@ -32,6 +32,7 @@ class FakeTrade:
     cost_inr: float
     exit_date: date
     pnl_inr: float = 0.0
+    adtv_cr: float = None
 
 
 class TestRealizedCostAndLiquidity:
@@ -70,6 +71,35 @@ class TestRealizedCostAndLiquidity:
         trades = [FakeTrade(entry_price=100.0, quantity=10, cost_inr=20.0, exit_date=date(2024, 1, 1))]
         data_gaps = [{"reason": "some_other_gap"}]
         _, adt = realized_cost_and_liquidity(trades, data_gaps)
+        from config.settings import MIN_ADT_INR
+
+        assert adt == float(MIN_ADT_INR)
+
+    def test_real_trades_with_adtv_cr_derive_applied_floor_from_actual_minimum(self):
+        # [BUG FIX, 5th fundamental-strategies review, item 4] previously
+        # applied_min_adt_inr always echoed back the MIN_ADT_INR constant
+        # whenever no uncapped gap was recorded — never actually DERIVED
+        # from real per-trade ADTV. With real (distinct) Trade.adtv_cr
+        # values present, the result must be the genuine minimum observed
+        # (converted crore -> INR), not the constant.
+        trades = [
+            FakeTrade(entry_price=100.0, quantity=10, cost_inr=20.0, exit_date=date(2024, 1, 1), adtv_cr=5.0),
+            FakeTrade(entry_price=200.0, quantity=5, cost_inr=10.0, exit_date=date(2024, 2, 1), adtv_cr=2.5),
+            FakeTrade(entry_price=150.0, quantity=8, cost_inr=15.0, exit_date=date(2024, 3, 1), adtv_cr=9.0),
+        ]
+        cost, adt = realized_cost_and_liquidity(trades, [])
+
+        from config.settings import MIN_ADT_INR
+
+        assert adt == pytest.approx(2.5 * 1e7)
+        assert adt != float(MIN_ADT_INR)
+
+    def test_trades_without_any_real_adtv_cr_falls_back_to_constant(self):
+        # No trade carries a real adtv_cr (e.g. Trade objects predating
+        # this field) -> nothing to derive from -> falls back to echoing
+        # the config constant, same as before this fix.
+        trades = [FakeTrade(entry_price=100.0, quantity=10, cost_inr=20.0, exit_date=date(2024, 1, 1), adtv_cr=None)]
+        _, adt = realized_cost_and_liquidity(trades, [])
         from config.settings import MIN_ADT_INR
 
         assert adt == float(MIN_ADT_INR)
@@ -185,8 +215,37 @@ class TestRunPostRunIntegrity:
             run_start=date(2024, 1, 1), run_end=date(2024, 1, 30),
         )
         assert integrity_passed is False
-        assert detail["checks"] == {}
+        # [BUG FIX, 5th fundamental-strategies review, item 5] a failing
+        # CRITICAL check (check_05_costs here, since applied_roundtrip_
+        # cost_pct is None with zero trades) used to discard the FULLY
+        # computed per-check breakdown and persist "checks": {} — hiding
+        # which specific checks passed/failed. Confirms the breakdown
+        # (including checks that were NOT the critical failure) is still
+        # persisted, not an empty dict.
+        assert detail["checks"] != {}
+        assert detail["checks"]["check_05_costs"] is False
+        assert detail["checks"]["check_12_flat_equity_curve"] is False
         assert detail["realized_cost_pct"] is None
+
+    def test_critical_check_failure_still_persists_other_checks_pass_fail(self):
+        # A run with real trades (so check_05_costs/check_06_liquidity
+        # would legitimately PASS) but a genuinely flat equity curve and
+        # too few trades (check_12_flat_equity_curve — CRITICAL — fails).
+        # The persisted breakdown must show check_05/06 as PASSED even
+        # though check_12 failing raised RuntimeError internally.
+        equity_curve = self._make_equity_curve(n=30, flat=True)
+        trades = [
+            FakeTrade(entry_price=100.0, quantity=10, cost_inr=5.0, exit_date=date(2024, 1, 5), pnl_inr=0.0)
+            for _ in range(2)  # below MIN_TRADES_FLOOR -> check_12 fails
+        ]
+        integrity_passed, detail = run_post_run_integrity(
+            channel="fundamental", trades=trades, data_gaps=[], equity_curve=equity_curve,
+            run_start=date(2024, 1, 1), run_end=date(2024, 1, 30),
+        )
+        assert integrity_passed is False
+        assert detail["checks"]["check_12_flat_equity_curve"] is False
+        assert detail["checks"]["check_05_costs"] is True
+        assert detail["checks"]["check_06_liquidity"] is True
 
     def test_healthy_run_with_real_trades_and_regimes_can_pass(self):
         equity_curve = self._make_equity_curve(n=30)
@@ -226,13 +285,17 @@ class TestRunPostRunIntegrity:
         )
         # check_12 is a CRITICAL check — a critical failure raises inside
         # BacktestIntegrityChecker.run_all_checks, which run_post_run_integrity
-        # catches and reports as an overall fail with an empty checks map
-        # (see its own RuntimeError-handling branch) rather than a per-check
-        # False entry; the real assertion is that this run failed at all,
+        # catches and reports as an overall fail. [BUG FIX, 5th
+        # fundamental-strategies review, item 5] the per-check breakdown is
+        # still recovered from the checker's own results cache (not
+        # discarded to {}) — the real assertion is that this run failed
         # for exactly the reason named in the warning log above (24, the
-        # duration-scaled floor, not the fixed constant 5).
+        # duration-scaled floor, not the fixed constant 5), and that OTHER
+        # checks' real pass/fail status is still visible in the persisted
+        # detail rather than hidden behind an empty dict.
         assert integrity_passed is False
-        assert detail["checks"] == {}
+        assert detail["checks"]["check_12_flat_equity_curve"] is False
+        assert detail["checks"] != {}
 
     def test_check_12_floor_stays_at_baseline_for_a_short_run(self):
         """Same 8-trade count as above, but a short (~1 month) run — the

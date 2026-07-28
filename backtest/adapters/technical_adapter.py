@@ -85,7 +85,12 @@ class TechnicalAdapter:
         # fundamental_adapter.py's matching comment — same optional
         # price_panel/volume_panel wiring so Signal.adtv_cr is real, not
         # always None, for this channel too.
-        self.price_panel = price_panel
+        # [BUG FIX, 5th fundamental-strategies review, item 3] see the
+        # matching note in fundamental_adapter.py — adtv.py's
+        # adtv_cr_for_ticker's `.loc[:ts].tail(n)` silently produces the
+        # wrong ADTV on an unsorted price_panel; only volume_panel was
+        # being sorted here.
+        self.price_panel = price_panel.sort_index() if price_panel is not None else None
         self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
         self.adtv_lookback_days = adtv_lookback_days
         self._currently_held: set = set()

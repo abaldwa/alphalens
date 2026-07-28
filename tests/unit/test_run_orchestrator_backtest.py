@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from backtest.run_orchestrator_backtest import _build_config, build_technical_feature_lookup
+from backtest.run_orchestrator_backtest import _build_config, _fetch_real_ohlcv, build_technical_feature_lookup
 
 
 def _ohlcv_row(ticker, d, close=100.0):
@@ -132,3 +132,53 @@ class TestBuildTechnicalFeatureLookupCaching:
             lookup = build_technical_feature_lookup()
             result = lookup("TICK", date(2023, 1, 3))
         assert result == {}
+
+
+class TestFetchRealOhlcvKeepsColumnsPivotNeeds:
+    """Regression test for the crash confirmed by 3 independent reviewers:
+    _fetch_real_ohlcv used to select only ["date", "ticker", "close"] from
+    the bulk pull, but run_orchestrator_backtest's ADTV wiring pivots the
+    SAME returned DataFrame on a "volume" column too
+    (ohlcv.pivot(..., values="volume")), raising KeyError on every real
+    run. Unlike hand-built panel fixtures elsewhere in this suite (which
+    already have "volume" present and would never catch this), this test
+    mocks only the DB/API call (DataStoreClient.get_ohlcv_bulk) and keeps
+    the full realistic multi-column OHLCV shape
+    (date/ticker/open/high/low/close/volume/...) that the real /_bulk
+    endpoint returns, then exercises the exact downstream pivot calls
+    run_orchestrator_backtest.py performs on _fetch_real_ohlcv's output."""
+
+    def _bulk_df(self):
+        rows = []
+        for ticker in ("TICK_A", "TICK_B"):
+            for d in pd.bdate_range("2023-01-01", "2023-03-31"):
+                rows.append({
+                    "date": d, "ticker": ticker,
+                    "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+                    "volume": 12345.0, "delivery_pct": 40.0, "adj_factor": 1.0,
+                })
+        return pd.DataFrame(rows)
+
+    def test_pivot_on_volume_and_close_succeeds(self):
+        with patch(
+            "backtest.run_orchestrator_backtest.DataStoreClient.get_ohlcv_bulk",
+            return_value=self._bulk_df(),
+        ), patch(
+            "backtest.run_orchestrator_backtest.get_tickers",
+            return_value=["TICK_A", "TICK_B"],
+        ):
+            ohlcv = _fetch_real_ohlcv(
+                max_tickers=None, min_history_days=1,
+                start_date=date(2023, 1, 1), end_date=date(2023, 3, 31),
+            )
+
+        assert "volume" in ohlcv.columns
+        assert "close" in ohlcv.columns
+
+        # Exercises the exact pivot calls run_orchestrator_backtest.py's
+        # run_orchestrator_backtest() performs right after _fetch_real_ohlcv
+        # — this used to raise KeyError('volume').
+        price_panel = ohlcv.pivot(index="date", columns="ticker", values="close")
+        volume_panel = ohlcv.pivot(index="date", columns="ticker", values="volume")
+        assert not price_panel.empty
+        assert not volume_panel.empty

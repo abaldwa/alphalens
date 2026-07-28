@@ -121,7 +121,7 @@ def _fetch_real_ohlcv(max_tickers: Optional[int], min_history_days: int, start_d
     to_dt = pd.Timestamp(end_date)
 
     bulk = client.get_ohlcv_bulk(from_dt, to_dt)
-    bulk = bulk[bulk["ticker"].isin(ticker_set)][["date", "ticker", "close"]]
+    bulk = bulk[bulk["ticker"].isin(ticker_set)][["date", "ticker", "close", "volume"]]
 
     counts = bulk.groupby("ticker").size()
     keep = counts[counts >= min_history_days].index

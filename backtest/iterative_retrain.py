@@ -62,6 +62,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from backtest.core.feature_log import FeatureLogWriter, query_feature_log
+from backtest.core.metrics import TRADING_DAYS_PER_YEAR
 from backtest.engine import BacktestEngine, BacktestResults
 from backtest.overfit_checks import deflated_sharpe_ratio, random_feature_test
 from config.timezone import now_ist
@@ -305,8 +306,19 @@ class RetrainLoop:
             calmar_mean = results.aggregate.get("calmar_mean")
             win_rate = results.aggregate.get("win_rate_mean") or 0.0
             n_obs = len(results.fold_returns) if results.fold_returns is not None else 0
+            # [BUG FIX, 5th fundamental-strategies review, item 2] `sharpe`
+            # above (results.aggregate["sharpe_mean"]) is ANNUALIZED (see
+            # backtest/core/metrics.py::sharpe_ratio) but deflated_sharpe_
+            # ratio's Bailey/Lopez de Prado formula expects a per-period
+            # (daily) Sharpe — this was the 4th call site still feeding it
+            # the annualized value, missed when run_strategy_queue.py/
+            # backfill_dsr.py/engine.py were fixed for the same bug. De-
+            # annualize the same exact way (sharpe_annualized = sharpe_daily
+            # * sqrt(TRADING_DAYS_PER_YEAR) by construction, so dividing back
+            # out is exact, no approximation).
+            raw_sharpe = sharpe / (TRADING_DAYS_PER_YEAR ** 0.5)
             dsr = (
-                deflated_sharpe_ratio(sharpe=sharpe, n_trials=n_trials_so_far, n_obs=max(n_obs, 2), returns=results.fold_returns)
+                deflated_sharpe_ratio(sharpe=raw_sharpe, n_trials=n_trials_so_far, n_obs=max(n_obs, 2), returns=results.fold_returns)
                 if n_obs >= 2 else 0.0
             )
 

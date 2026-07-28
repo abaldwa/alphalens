@@ -24,6 +24,32 @@ MIN_COVERAGE = 0.5
 # total absolute weight to be backed by real data before returning a
 # score at all; below that, returns None (same "no score" signal already
 # used for "every input missing") rather than a misleadingly precise number.
+#
+# [BUG FIX, 5th fundamental-strategies review, item 7] the 4th review's
+# `<=` fix (below) correctly closed the 2-factor/50%-coverage gap it
+# targeted, but as a strict inequality it applies uniformly to EVERY leg
+# shape — silently flipping previously-scoring 4-factor composites
+# (quality_score/growth_score in features/fundamental_composites.py, both
+# confirmed real consumers of this shared helper) at exactly 50% coverage
+# (2-of-4 populated) to None too, contradicting this module's own
+# documented "at least half" (inclusive) intent above. Coverage-floor
+# strictness is made factor-count-aware instead: a 2-factor leg can only
+# ever be at "half" via its single non-degenerate split (1-of-2), which is
+# mathematically indistinguishable from "less than half" of the leg's
+# informative content — `<=` (exact-50%-insufficient) is correct there.
+# A 3+-factor leg's exact-50% split (e.g. 2-of-4) genuinely IS "at least
+# half" of the leg's content in the sense the module's docstring promises,
+# so it keeps the original inclusive `<` behavior.
+_MIN_FACTORS_FOR_STRICT_50PCT = 2
+
+
+def _coverage_insufficient(covered_weight: float, total_weight: float, n_factors: int) -> bool:
+    if total_weight == 0 or covered_weight == 0:
+        return True
+    coverage = covered_weight / total_weight
+    if n_factors <= _MIN_FACTORS_FOR_STRICT_50PCT:
+        return coverage <= MIN_COVERAGE
+    return coverage < MIN_COVERAGE
 
 
 def weighted_zscore_composite(ratios: Dict[str, float], weights: Dict[str, float]) -> Optional[float]:
@@ -50,18 +76,11 @@ def weighted_zscore_composite(ratios: Dict[str, float], weights: Dict[str, float
             continue
         weighted_sum += w * v
         covered_weight += abs(w)
-    # [BUG FIX, 4th fundamental-strategies review, item 5] strict `<` let a
-    # leg at EXACTLY 50% coverage through — for the majority-shape 2-factor
-    # equal-weighted composites in this catalog (garp.py, magic_formula.py,
-    # promoter_aligned.py, recovery.py, etc.), that means 1-of-2 factors
-    # present clears the floor and produces a full-confidence score
-    # indistinguishable from a fully-covered one, defeating MIN_COVERAGE's
-    # intent for exactly the shape it's meant to protect. `<=` makes exact-
-    # 50% insufficient uniformly; a 3+-factor leg only lands on exactly 50%
-    # for specific weight combinations (e.g. 2-of-4 equal-weighted), which
-    # is a narrower, less common case than the 2-factor 1-of-2 pattern this
-    # fix targets — not worth a per-factor-count carve-out.
-    if total_weight == 0 or covered_weight == 0 or (covered_weight / total_weight) <= MIN_COVERAGE:
+    # [BUG FIX, 5th fundamental-strategies review, item 7] factor-count-
+    # aware coverage floor — see module-level note above _coverage_
+    # insufficient for why a 2-factor leg's exact-50% split is treated
+    # differently from a 3+-factor leg's.
+    if _coverage_insufficient(covered_weight, total_weight, len(weights)):
         return None
     weighted_z = weighted_sum / covered_weight
     return float(np.clip(50 + 10 * weighted_z, 0, 100))
@@ -88,17 +107,9 @@ def combine_subscores(scores: Dict[str, Optional[float]], weights: Dict[str, flo
             continue
         weighted_sum += w * v
         covered_weight += abs(w)
-    # [BUG FIX, 4th fundamental-strategies review, item 5] strict `<` let a
-    # leg at EXACTLY 50% coverage through — for the majority-shape 2-factor
-    # equal-weighted composites in this catalog (garp.py, magic_formula.py,
-    # promoter_aligned.py, recovery.py, etc.), that means 1-of-2 factors
-    # present clears the floor and produces a full-confidence score
-    # indistinguishable from a fully-covered one, defeating MIN_COVERAGE's
-    # intent for exactly the shape it's meant to protect. `<=` makes exact-
-    # 50% insufficient uniformly; a 3+-factor leg only lands on exactly 50%
-    # for specific weight combinations (e.g. 2-of-4 equal-weighted), which
-    # is a narrower, less common case than the 2-factor 1-of-2 pattern this
-    # fix targets — not worth a per-factor-count carve-out.
-    if total_weight == 0 or covered_weight == 0 or (covered_weight / total_weight) <= MIN_COVERAGE:
+    # [BUG FIX, 5th fundamental-strategies review, item 7] see the matching
+    # note in weighted_zscore_composite / the module-level docstring above
+    # _coverage_insufficient.
+    if _coverage_insufficient(covered_weight, total_weight, len(weights)):
         return None
     return float(np.clip(weighted_sum / covered_weight, 0, 100))

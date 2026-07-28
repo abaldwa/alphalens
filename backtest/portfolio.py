@@ -57,6 +57,16 @@ class Position:
     # (trade_log CSV's stock_rank column). None when market cap data isn't
     # available for the ticker (config/universe.py's "not yet sourced" case).
     entry_market_cap_rank: Optional[int] = None
+    # [BUG FIX, 5th fundamental-strategies review, item 4] the real ADTV
+    # (INR crore) actually used to size/cap this position at buy time
+    # (Signal.adtv_cr, threaded through StrategyPortfolio.buy's adtv_cr
+    # param) — carried over to Trade at close so post_run_checks.py's
+    # applied_min_adt_inr audit-trail figure can be derived from genuine
+    # per-trade data instead of echoing back the MIN_ADT_INR config
+    # constant. None when the signal that opened this position never
+    # populated adtv_cr (same "uncapped" case check_06_liquidity's
+    # no_adtv_data_position_sized_uncapped data_gap already flags).
+    entry_adtv_cr: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.peak_price is None:
@@ -78,6 +88,9 @@ class Trade:
     # Carried over from Position.entry_market_cap_rank at close time — see
     # that field's docstring.
     entry_market_cap_rank: Optional[int] = None
+    # Carried over from Position.entry_adtv_cr at close time — see that
+    # field's docstring ([BUG FIX, 5th fundamental-strategies review, item 4]).
+    adtv_cr: Optional[float] = None
 
 
 class PortfolioSimulator:

@@ -210,7 +210,7 @@ class StrategyPortfolio:
         position = Position(
             ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty,
             entry_atr_pct=entry_atr_pct, template=template, pillar=pillar,
-            entry_market_cap_rank=market_cap_rank,
+            entry_market_cap_rank=market_cap_rank, entry_adtv_cr=adtv_cr,
         )
         self.positions[ticker] = position
         return position
@@ -256,6 +256,7 @@ class StrategyPortfolio:
             entry_price=position.entry_price, exit_price=price, quantity=qty,
             pnl_inr=pnl_inr, pnl_pct=pnl_pct, cost_inr=cost, exit_reason=reason,
             entry_market_cap_rank=position.entry_market_cap_rank,
+            adtv_cr=position.entry_adtv_cr,
         )
         self.trades.append(trade)
         return trade

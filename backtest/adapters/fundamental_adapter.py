@@ -149,7 +149,15 @@ class FundamentalAdapter:
         # MIN_ADT_INR for this channel instead of silently no-op'ing.
         # None (default) preserves prior behavior exactly (adtv_cr stays
         # unset) for any caller that doesn't pass them.
-        self.price_panel = price_panel
+        # [BUG FIX, 5th fundamental-strategies review, item 3] adtv.py's
+        # adtv_cr_for_ticker does `.loc[:ts].tail(n)` on price_panel, which
+        # silently returns the WRONG (understated) window if price_panel's
+        # date index isn't sorted — unlike volume_panel (sorted right
+        # above), price_panel was left as whatever row order the caller
+        # passed in (run_orchestrator_backtest.py's real OHLCV pivot is
+        # already sorted, but nothing enforced that here, and a caller
+        # that isn't gets no error, just quietly wrong ADTV).
+        self.price_panel = price_panel.sort_index() if price_panel is not None else None
         self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
         self.adtv_lookback_days = adtv_lookback_days
         # db_conn is intentionally NOT required at construction time (unlike

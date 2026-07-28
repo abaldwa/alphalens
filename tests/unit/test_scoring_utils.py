@@ -26,13 +26,18 @@ class TestWeightedZscoreCompositeCoverage:
         # 1 of 4 equal weights present -> 25% coverage, below 50%.
         assert weighted_zscore_composite({"a": 1.0}, self.WEIGHTS) is None
 
-    def test_exactly_at_min_coverage_now_insufficient(self):
-        """[BUG FIX, 4th fundamental-strategies review, item 5] exactly
-        MIN_COVERAGE (50%) is no longer sufficient — strict `<` previously
-        let this through (2 of 4 equal weights present -> exactly 50%
-        coverage), now `<=` correctly excludes it."""
+    def test_four_factor_exactly_at_min_coverage_still_scores(self):
+        """[BUG FIX, 5th fundamental-strategies review, item 7] The 4th
+        review's `<=` fix (targeted at the 2-factor 1-of-2 shape) had a
+        collateral regression: applied uniformly, it also flipped a
+        4-factor, exactly-50%-covered leg (2-of-4 populated) — the shape
+        features/fundamental_composites.py's quality_score/growth_score
+        actually use — to None, contradicting this module's own
+        documented "at least half" (inclusive) intent. A 3+-factor leg's
+        exact-50% split must still score, matching pre-3ec3301 behavior
+        for this shape."""
         score = weighted_zscore_composite({"a": 1.0, "b": 1.0}, self.WEIGHTS)
-        assert score is None
+        assert score is not None
 
     def test_just_above_min_coverage_scores(self):
         # 3 of 4 equal weights present -> 75% coverage, comfortably above.

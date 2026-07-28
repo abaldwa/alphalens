@@ -63,7 +63,27 @@ def deflated_sharpe_ratio(
     Parameters
     ----------
     sharpe : float
-        Observed (annualized) Sharpe ratio of the selected configuration.
+        Observed PER-PERIOD (e.g. daily) Sharpe ratio of the selected
+        configuration — NOT annualized. [BUG FIX, 5th fundamental-
+        strategies review, item 6] this docstring previously said
+        "annualized", which is wrong and was itself the direct cause of a
+        real bug: 3 of 4 production call sites (backtest/
+        run_strategy_queue.py, backtest/backfill_dsr.py, backtest/
+        iterative_retrain.py) fed this an ANNUALIZED Sharpe (backtest/
+        core/metrics.py::sharpe_ratio's output), inflating the statistic
+        by ~sqrt(TRADING_DAYS_PER_YEAR) and saturating DSR near 1.0 —
+        silently defeating the multiple-comparisons gate this function
+        exists to enforce. The null-distribution correction terms below
+        (expected-max-Sharpe-under-the-null, the skewness/kurtosis-
+        adjusted standard error) are derived in Bailey & Lopez de Prado
+        (2014) entirely in PER-PERIOD units; annualizing sharpe before
+        calling this function is not a harmless unit conversion, it
+        changes the statistic's meaning. If a caller only has an
+        annualized Sharpe on hand, de-annualize it first: raw_sharpe =
+        sharpe_annualized / sqrt(TRADING_DAYS_PER_YEAR) (exact, since
+        sharpe_annualized = sharpe_daily * sqrt(TRADING_DAYS_PER_YEAR) by
+        construction) — see any of the 4 fixed call sites above for the
+        working pattern. Do not trust a stale docstring over those.
     n_trials : int
         Number of configurations/strategies compared before selecting this one.
     n_obs : int

@@ -55,7 +55,9 @@ logger = logging.getLogger(__name__)
 _APPLICABLE_CHECKS_NON_ML = set(ALL_CHECK_NAMES) - {"check_10_random_feature"}
 
 
-def realized_cost_and_liquidity(trades: List[Any], data_gaps: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+def realized_cost_and_liquidity(
+    trades: List[Any], data_gaps: List[Dict[str, Any]],
+) -> Tuple[Optional[float], Optional[float]]:
     """Derive (realized_cost_pct, applied_min_adt_inr) from what this run
     ACTUALLY did, not a config constant asserted to equal itself.
 
@@ -66,14 +68,28 @@ def realized_cost_and_liquidity(trades: List[Any], data_gaps: List[Dict[str, Any
     (nothing to derive from — integrity_checker.py's check_05 correctly
     fails on None, not a fabricated pass).
 
-    applied_min_adt_inr: MIN_ADT_INR (the configured floor) if the ADTV
-    cap was actually exercised for every buy this run made — i.e. no
-    "no_adtv_data_position_sized_uncapped" data_gap was recorded (backtest/
-    core/engine.py records one every time a buy signal had no adtv_cr and
-    therefore bypassed the cap, per Truthful Review Gap #6). If even one
-    such gap exists, liquidity enforcement was NOT actually applied for
-    every trade this run made, so this returns 0.0 — an honest fail,
-    not a value that would trivially pass check_06_liquidity.
+    applied_min_adt_inr: [BUG FIX, 5th fundamental-strategies review,
+    item 4] previously this unconditionally echoed back the config
+    constant MIN_ADT_INR whenever no "no_adtv_data_position_sized_
+    uncapped" gap was recorded — i.e. the persisted "applied" figure was
+    never actually DERIVED from real per-ticker ADTV, only asserted equal
+    to the constant it should have been compared against. Trade.adtv_cr
+    (backtest/portfolio.py — populated at buy time from Signal.adtv_cr,
+    see core/portfolio.py::StrategyPortfolio.buy/_close) now carries the
+    REAL ADTV (INR crore) each executed trade was sized/capped against.
+    This returns the minimum such value actually observed across this
+    run's trades (INR, converted from crore) — the tightest liquidity
+    constraint genuinely enforced this run, not a constant echoed back.
+    Falls back to echoing MIN_ADT_INR (unchanged prior behavior) ONLY
+    when no trade carries a real adtv_cr at all (e.g. Trade objects
+    predating this field, or a channel that genuinely never populates
+    Signal.adtv_cr) — that fallback case's detail string tags itself
+    "unverified_against_real_adtv" so a reader can tell "verified against
+    real per-trade data" apart from "no real data to verify against". If
+    even one buy bypassed the cap outright (uncapped_gap), liquidity
+    enforcement was NOT applied for every trade this run made, so this
+    still returns 0.0 — an honest fail, not a value that would trivially
+    pass check_06_liquidity.
     """
     if not trades:
         return None, None
@@ -84,7 +100,16 @@ def realized_cost_and_liquidity(trades: List[Any], data_gaps: List[Dict[str, Any
     realized_cost_pct = total_cost / total_turnover
 
     uncapped_gap = any(g.get("reason") == "no_adtv_data_position_sized_uncapped" for g in data_gaps)
-    applied_min_adt_inr = 0.0 if uncapped_gap else float(MIN_ADT_INR)
+    if uncapped_gap:
+        return realized_cost_pct, 0.0
+
+    real_adtv_cr_values = [
+        getattr(t, "adtv_cr", None) for t in trades if getattr(t, "adtv_cr", None) is not None
+    ]
+    if real_adtv_cr_values:
+        applied_min_adt_inr = min(real_adtv_cr_values) * 1e7  # crore -> INR
+    else:
+        applied_min_adt_inr = float(MIN_ADT_INR)
 
     return realized_cost_pct, applied_min_adt_inr
 
@@ -162,6 +187,14 @@ def run_post_run_integrity(
     validation.
     """
     realized_cost_pct, applied_min_adt_inr = realized_cost_and_liquidity(trades, data_gaps)
+    # [BUG FIX, 5th fundamental-strategies review, item 4] lets a reader
+    # of the persisted detail JSON tell "applied_min_adt_inr was verified
+    # against real per-trade ADTV data" apart from "no trade carried real
+    # ADTV data, so the config constant was echoed back unverified" —
+    # otherwise both cases look identical in the audit trail.
+    applied_min_adt_inr_verified_against_real_data = any(
+        getattr(t, "adtv_cr", None) is not None for t in trades
+    )
     fold_sharpes, fold_returns, benchmark_returns, subperiod_note = subperiod_check_inputs(
         equity_curve, trades, run_start, run_end, regime_segments or [], regime_conn, regime_index_name,
     )
@@ -209,14 +242,24 @@ def run_post_run_integrity(
         # A CRITICAL check among the ones we ran failed — real signal, not
         # a bug in this wiring; propagate as a failed (not fabricated-pass)
         # result rather than raising and losing the run's other metrics.
+        #
+        # [BUG FIX, 5th fundamental-strategies review, item 5] run_all_checks
+        # computes every applicable check's result into self._results_cache
+        # BEFORE it raises on a critical failure — but this handler used to
+        # simply discard that fully-computed dict and persist "checks": {},
+        # hiding which OTHER checks passed/failed on a run that failed for
+        # one specific reason. Recover the per-check breakdown from the
+        # checker's own cache instead of losing it.
         logger.warning("post-run integrity check failed: %s", exc)
         integrity_passed = False
-        passed_map = {}
+        cached = getattr(checker, "_results_cache", None) or {}
+        passed_map = {name: result.passed for name, result in cached.items()}
 
     detail = {
         "checks": passed_map,
         "realized_cost_pct": realized_cost_pct,
         "applied_min_adt_inr": applied_min_adt_inr,
+        "applied_min_adt_inr_verified_against_real_data": applied_min_adt_inr_verified_against_real_data,
         "subperiod_note": subperiod_note,
         "n_subperiods": len(fold_sharpes),
     }
