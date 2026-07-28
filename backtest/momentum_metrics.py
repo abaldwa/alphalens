@@ -12,6 +12,7 @@ average — 2026-07-14 user decision).
 
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 
@@ -114,3 +115,66 @@ def churn_factor(rebalance_events: List[Dict]) -> Dict:
     avg_per_year = float(per_year.mean())
 
     return {"per_rebalance": per_rebalance, "avg_transactions_per_year": avg_per_year}
+
+
+_NEAR_ZERO_STD = 1e-9
+
+
+def sharpe_sortino_calmar(equity_curve: List[Dict], cagr_value: Optional[float]) -> Dict[str, Optional[float]]:
+    """
+    Sharpe/Sortino/Calmar for a MomentumBacktestResult.equity_curve
+    (2026-07-27 user request — computed straight from the equity curve
+    every already-completed sweep/experimentation run already has, no
+    fresh backtest needed).
+
+    equity_curve : [{"date": iso_str, "total_value": float}, ...] in
+        chronological REBALANCE order — NOT daily. backtest/core/
+        metrics.py's sharpe_ratio/sortino_ratio hardcode a 252-trading-
+        day annualization, which is correct for the unified engine's
+        daily equity curve but would misstate a weekly/biweekly/monthly/
+        bimonthly/quarterly momentum rebalance schedule. This instead
+        infers real periods-per-year from the curve's own average
+        calendar-day spacing, so every rebalance frequency annualizes
+        correctly.
+
+    cagr_value : this variant's already-computed calendar/365.25 CAGR
+        (backtest/momentum_metrics.py::cagr) — reused for Calmar rather
+        than recomputed, for consistency with the CAGR already reported
+        elsewhere in the same variant dict.
+    """
+    if len(equity_curve) < 3:
+        return {"sharpe": None, "sortino": None, "calmar": None}
+
+    dates = pd.to_datetime([e["date"] for e in equity_curve])
+    values = np.array([e["total_value"] for e in equity_curve], dtype=float)
+
+    period_returns = pd.Series(values[1:] / values[:-1] - 1.0)
+    period_returns = period_returns[np.isfinite(period_returns)]
+    if len(period_returns) < 2:
+        return {"sharpe": None, "sortino": None, "calmar": None}
+
+    span_days = (dates[-1] - dates[0]).days
+    periods_per_year = (len(dates) - 1) / max(span_days / 365.25, 1e-9)
+
+    std = period_returns.std()
+    sharpe = (
+        float(period_returns.mean() / std * (periods_per_year**0.5))
+        if pd.notna(std) and std > _NEAR_ZERO_STD else None
+    )
+
+    downside = period_returns[period_returns < 0]
+    if len(downside) == 0:
+        sortino = None
+    else:
+        downside_std = downside.std()
+        sortino = (
+            float((period_returns.mean() * periods_per_year) / (downside_std * (periods_per_year**0.5)))
+            if pd.notna(downside_std) and downside_std > _NEAR_ZERO_STD else None
+        )
+
+    running_max = np.maximum.accumulate(values)
+    drawdown = (values - running_max) / running_max
+    mdd = float(drawdown.min()) if len(drawdown) else 0.0
+    calmar = (cagr_value / abs(mdd)) if (cagr_value is not None and abs(mdd) > _NEAR_ZERO_STD) else None
+
+    return {"sharpe": sharpe, "sortino": sortino, "calmar": calmar}

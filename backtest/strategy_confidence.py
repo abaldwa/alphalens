@@ -62,6 +62,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from backtest.core.metrics import calmar_ratio, max_drawdown, sortino_ratio
 from backtest.costs import IndianTransactionCosts
 from backtest.integrity_checker import BacktestIntegrityChecker
 from backtest.overfit_checks import deflated_sharpe_ratio
@@ -104,7 +105,9 @@ class ConfidenceResult:
     baseline_win_rate: Optional[float]
     delta_vs_baseline: Optional[float]
     deflated_sharpe: Optional[float]
-    tier: str
+    sortino: Optional[float] = None
+    calmar: Optional[float] = None
+    tier: str = TIER_INSUFFICIENT
     reasons: List[str] = field(default_factory=list)
     per_regime: Dict[str, "ConfidenceResult"] = field(default_factory=dict)
 
@@ -121,6 +124,37 @@ def wilson_interval(wins: int, n: int, z: float = 1.96) -> "tuple[float, float]"
     lo = (center - margin) / denom
     hi = (center + margin) / denom
     return max(0.0, lo), min(1.0, hi)
+
+
+def _sortino_calmar_from_returns(dated_returns: "pd.Series") -> "tuple[Optional[float], Optional[float]]":
+    """Sortino/Calmar computed straight from real, already-recorded signal
+    outcomes (strategy_confidence_outcomes.net_return_pct, aggregated to
+    one mean-return-per-independent-date series — the exact same series
+    deflated_sharpe above is computed from) — 2026-07-27 user request:
+    "is it possible to calculate these ratios without running the
+    backtest?" Yes here, since every input is a real, already-resolved
+    trade outcome already sitting in the DB; no new backtest run needed.
+
+    Reuses backtest/core/metrics.py's shared sortino_ratio/calmar_ratio
+    (same _NEAR_ZERO_STD-guarded implementations the unified orchestrator
+    path uses) rather than a third hand-rolled copy. Calmar needs a
+    cumulative equity curve, built by compounding this per-date mean
+    return series in chronological order — a real proxy (every value is a
+    real realized net_return_pct), not a synthetic one; annualized via the
+    same calendar-day span the series' own dates cover."""
+    dated_returns = dated_returns.dropna().sort_index()
+    if len(dated_returns) < 2:
+        return None, None
+    sortino, _sortino_reason = sortino_ratio(dated_returns)
+
+    equity = (1.0 + dated_returns).cumprod()
+    mdd = max_drawdown(equity)
+    span_days = (dated_returns.index[-1] - dated_returns.index[0]).days
+    years = max(span_days / 365.25, 1e-9)
+    ending_value = float(equity.iloc[-1])
+    cagr_equiv = ending_value ** (1.0 / years) - 1.0 if ending_value > 0 else None
+    calmar, _calmar_reason = calmar_ratio(cagr_equiv, mdd)
+    return sortino, calmar
 
 
 def compute_forward_net_return(
@@ -622,11 +656,15 @@ def _build_confidence_result_from_agg(
     delta_vs_baseline = (win_rate - baseline_win_rate) if (win_rate is not None and baseline_win_rate is not None) else None
 
     deflated_sharpe = None
+    sortino = None
+    calmar = None
     if n_independent_dates >= 2:
         daily_returns = decided["mean_net_return"].dropna()
         if len(daily_returns) >= 2 and daily_returns.std(ddof=1) > 0:
             sharpe = float(daily_returns.mean() / daily_returns.std(ddof=1))
             deflated_sharpe = deflated_sharpe_ratio(sharpe, max(n_strategies_compared, 1), len(daily_returns))
+        dated_returns = decided.set_index("date")["mean_net_return"].dropna()
+        sortino, calmar = _sortino_calmar_from_returns(dated_returns)
 
     tier, reasons = _assign_tier(
         n_independent_dates, regime_date_counts, integrity_ok, wilson_lo, baseline_win_rate, deflated_sharpe,
@@ -637,7 +675,7 @@ def _build_confidence_result_from_agg(
         n_independent_dates=n_independent_dates, wins=wins, losses=losses, pending=pending,
         win_rate=win_rate, wilson_lo=wilson_lo, wilson_hi=wilson_hi,
         baseline_win_rate=baseline_win_rate, delta_vs_baseline=delta_vs_baseline,
-        deflated_sharpe=deflated_sharpe, tier=tier, reasons=reasons,
+        deflated_sharpe=deflated_sharpe, sortino=sortino, calmar=calmar, tier=tier, reasons=reasons,
     )
 
 
@@ -667,6 +705,8 @@ def _build_confidence_result(
     delta_vs_baseline = (win_rate - baseline_win_rate) if (win_rate is not None and baseline_win_rate is not None) else None
 
     deflated_sharpe = None
+    sortino = None
+    calmar = None
     if n_independent_dates >= 2:
         daily_returns = decided.groupby("date")["net_return_pct"].mean()
         if daily_returns.std(ddof=1) > 0:
@@ -674,6 +714,7 @@ def _build_confidence_result(
             deflated_sharpe = deflated_sharpe_ratio(
                 sharpe, max(n_strategies_compared, 1), len(daily_returns), returns=daily_returns
             )
+        sortino, calmar = _sortino_calmar_from_returns(daily_returns)
 
     tier, reasons = _assign_tier(
         n_independent_dates, regime_date_counts, integrity_ok, wilson_lo, baseline_win_rate, deflated_sharpe,
@@ -684,7 +725,7 @@ def _build_confidence_result(
         n_independent_dates=n_independent_dates, wins=wins, losses=losses, pending=pending,
         win_rate=win_rate, wilson_lo=wilson_lo, wilson_hi=wilson_hi,
         baseline_win_rate=baseline_win_rate, delta_vs_baseline=delta_vs_baseline,
-        deflated_sharpe=deflated_sharpe, tier=tier, reasons=reasons,
+        deflated_sharpe=deflated_sharpe, sortino=sortino, calmar=calmar, tier=tier, reasons=reasons,
     )
 
 
@@ -736,6 +777,13 @@ def create_summary_table(conn) -> None:
         )
         """
     )
+    # 2026-07-27: Sortino/Calmar, computed from the same real per-signal
+    # net_return_pct outcomes deflated_sharpe already uses — added after
+    # this table already existed in real deployments, so CREATE TABLE IF
+    # NOT EXISTS alone wouldn't reach it (same ALTER TABLE ADD COLUMN IF
+    # NOT EXISTS pattern datastore/schema/create_backtest.py uses).
+    conn.execute("ALTER TABLE strategy_confidence_summary ADD COLUMN IF NOT EXISTS sortino DOUBLE")
+    conn.execute("ALTER TABLE strategy_confidence_summary ADD COLUMN IF NOT EXISTS calmar DOUBLE")
 
 
 def persist_detail(conn, detail_df: pd.DataFrame) -> int:
@@ -800,7 +848,7 @@ def persist_summary(conn, results: Dict[str, ConfidenceResult]) -> int:
             rows.append((
                 r.strategy_id, r.regime, r.n_signals, r.n_independent_dates,
                 r.wins, r.losses, r.pending, r.win_rate, r.wilson_lo, r.wilson_hi,
-                r.baseline_win_rate, r.delta_vs_baseline, r.deflated_sharpe, r.tier,
+                r.baseline_win_rate, r.delta_vs_baseline, r.deflated_sharpe, r.sortino, r.calmar, r.tier,
                 "; ".join(r.reasons),
             ))
     if not rows:
@@ -815,14 +863,15 @@ def persist_summary(conn, results: Dict[str, ConfidenceResult]) -> int:
         INSERT INTO strategy_confidence_summary
             (strategy_id, regime, n_signals, n_independent_dates, wins, losses, pending,
              win_rate, wilson_lo, wilson_hi, baseline_win_rate, delta_vs_baseline,
-             deflated_sharpe, tier, reasons, computed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+             deflated_sharpe, sortino, calmar, tier, reasons, computed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
         ON CONFLICT (strategy_id, regime) DO UPDATE SET
             n_signals = excluded.n_signals, n_independent_dates = excluded.n_independent_dates,
             wins = excluded.wins, losses = excluded.losses, pending = excluded.pending,
             win_rate = excluded.win_rate, wilson_lo = excluded.wilson_lo, wilson_hi = excluded.wilson_hi,
             baseline_win_rate = excluded.baseline_win_rate, delta_vs_baseline = excluded.delta_vs_baseline,
-            deflated_sharpe = excluded.deflated_sharpe, tier = excluded.tier, reasons = excluded.reasons,
+            deflated_sharpe = excluded.deflated_sharpe, sortino = excluded.sortino, calmar = excluded.calmar,
+            tier = excluded.tier, reasons = excluded.reasons,
             computed_at = excluded.computed_at
         """,
         rows,

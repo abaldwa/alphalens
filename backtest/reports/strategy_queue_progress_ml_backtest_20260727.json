@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-07-27T23:43:23.402292",
+  "jobs": [
+    {
+      "job_index": 0,
+      "kind": "iterative_retrain",
+      "label": "Iterative Retrain (MetaLabeler)",
+      "status": "failed"
+    },
+    {
+      "job_index": 1,
+      "kind": "iterative_retrain",
+      "label": "Iterative Retrain (MetaLabeler)",
+      "status": "running"
+    },
+    {
+      "job_index": 2,
+      "kind": "iterative_retrain",
+      "label": "Iterative Retrain (MetaLabeler)",
+      "status": "queued"
+    }
+  ]
+}

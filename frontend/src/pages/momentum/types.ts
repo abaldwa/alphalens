@@ -74,3 +74,44 @@ export interface MomentumRankingRow {
   price: number | null
   sparkline: number[]
 }
+
+// scripts/run_momentum_experimentation.py's rank-band x lookback x
+// rebalance x top_n sweep (bands 1-50 through 501-800), surfaced via
+// GET /api/v1/momentum/experimentation.
+export interface MomentumExperimentationVariant {
+  band_id: number
+  rank_start: number
+  rank_end: number
+  lookback_months: number
+  rebalance_period: string
+  top_n: number
+  cagr: number | null
+  sharpe: number | null
+  sortino: number | null
+  calmar: number | null
+  post_tax_cagr: number | null
+  sip_xirr: number | null
+  win_rate: number | null
+  churn_avg_transactions_per_year: number | null
+  n_closed_trades: number | null
+  n_open_trades: number | null
+  avg_days_held: number | null
+}
+
+export interface MomentumExperimentationReport {
+  generated_at: string | null
+  report_file: string
+  variants: MomentumExperimentationVariant[]
+}
+
+export interface MomentumTriggerResponse {
+  job_id: string
+  status: string
+}
+
+export interface MomentumTriggerStatus {
+  job_id: string
+  status: 'running' | 'completed' | 'failed' | 'unknown'
+  log_tail: string | null
+  report_file: string | null
+}

@@ -123,6 +123,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'portfolio', label: 'Portfolio', href: '/momentum-portfolio' },
       { id: 'rebalance', label: 'Rebalance', href: '/momentum-rebalance' },
       { id: 'universe', label: 'Universe', href: '/momentum-universe' },
+      { id: 'experimentation', label: 'Universe Sweep', href: '/momentum-experimentation' },
       // Research artifacts (732-variant grid backtest ledger, year-on-year
       // report) live outside this app as published Claude artifacts, not
       // local screens — mirrors dashboard/static/js/shell.js's momentum

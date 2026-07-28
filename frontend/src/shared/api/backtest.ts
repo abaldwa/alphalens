@@ -17,6 +17,7 @@ export interface BacktestRunMetrics {
   max_drawdown: number
   win_rate: number | null
   profit_factor: number | null
+  sharpe: number | null
   sortino: number | null
   calmar: number | null
   n_distinct_tickers_traded: number
@@ -142,6 +143,8 @@ export interface IterativeRetrainIteration {
   run_id: string
   hyperparams: Record<string, unknown>
   sharpe_mean: number
+  sortino_mean: number | null
+  calmar_mean: number | null
   win_rate_mean: number
   dsr: number
   random_feature_accuracy: number | null
@@ -386,11 +389,13 @@ export interface ExperimentRow {
   created_at: string
   cagr: number | null
   xirr: number | null
+  sharpe: number | null
   sortino: number | null
   calmar: number | null
   max_drawdown: number | null
   win_rate: number | null
   profit_factor: number | null
+  turnover_ratio: number | null
   avg_days_held: number | null
   n_trades: number | null
   excess_return: number | null

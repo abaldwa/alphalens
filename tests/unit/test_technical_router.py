@@ -499,6 +499,7 @@ def _seed_strategy_confidence_summary(db_path, rows):
                 wins INTEGER, losses INTEGER, pending INTEGER,
                 win_rate DOUBLE, wilson_lo DOUBLE, wilson_hi DOUBLE,
                 baseline_win_rate DOUBLE, delta_vs_baseline DOUBLE,
+                deflated_sharpe DOUBLE, sortino DOUBLE, calmar DOUBLE,
                 tier VARCHAR, reasons VARCHAR,
                 PRIMARY KEY (strategy_id, regime)
             )
@@ -509,15 +510,17 @@ def _seed_strategy_confidence_summary(db_path, rows):
                 """
                 INSERT INTO strategy_confidence_summary
                     (strategy_id, regime, wins, losses, pending, win_rate, wilson_lo,
-                     wilson_hi, baseline_win_rate, delta_vs_baseline, tier, reasons)
-                VALUES (?, 'ALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     wilson_hi, baseline_win_rate, delta_vs_baseline, deflated_sharpe, sortino, calmar,
+                     tier, reasons)
+                VALUES (?, 'ALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 """,
                 [
                     r["strategy_id"], r["wins"], r["losses"], r.get("pending", 0),
                     r["win_rate"], r.get("wilson_lo", r["win_rate"]),
                     r.get("wilson_hi", r["win_rate"]), r.get("baseline_win_rate"),
-                    r.get("delta_vs_baseline"), r["tier"], r.get("reasons", ""),
+                    r.get("delta_vs_baseline"), r.get("deflated_sharpe"), r.get("sortino"), r.get("calmar"),
+                    r["tier"], r.get("reasons", ""),
                 ],
             )
 

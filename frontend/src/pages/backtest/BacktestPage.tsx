@@ -356,8 +356,10 @@ function RunDetail({ run }: { run: BacktestRunSummary }) {
             <StatCard label="Total Contributed" value={fmtInr(m.total_contributed)} />
             <StatCard label="Max Drawdown" value={fmtPct(m.max_drawdown)} tone={m.max_drawdown < -0.2 ? 'red' : 'default'} />
             <StatCard label="Win Rate" value={fmtPct(m.win_rate)} />
+            <StatCard label="Sharpe" value={fmtNum(m.sharpe)} />
             <StatCard label="Sortino" value={fmtNum(m.sortino)} />
             <StatCard label="Calmar" value={fmtNum(m.calmar)} />
+            <StatCard label="Profit Factor" value={fmtNum(m.profit_factor)} />
             <StatCard label="Trades" value={String(m.n_trades)} />
             <StatCard label="Distinct Tickers Traded" value={String(m.n_distinct_tickers_traded)} />
             <StatCard label="Turnover Ratio" value={fmtNum(m.turnover_ratio)} />
@@ -768,6 +770,8 @@ function IterativeRetrainPanel({ onTriggered }: { onTriggered: (job: ActiveJob) 
                       <TableRow>
                         <TableHead>#</TableHead>
                         <TableHead>Sharpe</TableHead>
+                        <TableHead>Sortino</TableHead>
+                        <TableHead>Calmar</TableHead>
                         <TableHead>Win Rate</TableHead>
                         <TableHead>DSR</TableHead>
                         <TableHead>Random-Feature Acc.</TableHead>
@@ -781,6 +785,8 @@ function IterativeRetrainPanel({ onTriggered }: { onTriggered: (job: ActiveJob) 
                         <TableRow key={it.iteration}>
                           <TableCell>{it.iteration}</TableCell>
                           <TableCell className="font-mono-data">{it.sharpe_mean.toFixed(3)}</TableCell>
+                          <TableCell className="font-mono-data">{it.sortino_mean != null ? it.sortino_mean.toFixed(3) : '—'}</TableCell>
+                          <TableCell className="font-mono-data">{it.calmar_mean != null ? it.calmar_mean.toFixed(3) : '—'}</TableCell>
                           <TableCell className="font-mono-data">{(it.win_rate_mean * 100).toFixed(1)}%</TableCell>
                           <TableCell className="font-mono-data">{it.dsr.toFixed(3)}</TableCell>
                           <TableCell className="font-mono-data">

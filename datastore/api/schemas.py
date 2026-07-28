@@ -1260,6 +1260,13 @@ class TAStrategyWinRateRow(BaseModel):
     wilson_hi: Optional[float] = None
     baseline_win_rate: Optional[float] = None
     delta_vs_baseline: Optional[float] = None
+    # 2026-07-27: deflated_sharpe was already computed for tiering
+    # (_assign_tier) but never surfaced; sortino/calmar are new — all
+    # three computed straight from strategy_confidence_outcomes'
+    # already-recorded net_return_pct rows (no fresh backtest needed).
+    deflated_sharpe: Optional[float] = None
+    sortino: Optional[float] = None
+    calmar: Optional[float] = None
     tier: str = "INSUFFICIENT_DATA"
     reasons: List[str] = Field(default_factory=list)
 

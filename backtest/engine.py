@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 import talib
 
+from backtest.core.metrics import calmar_ratio, sortino_ratio
 from backtest.costs import IndianTransactionCosts
 from backtest.integrity_checker import BacktestIntegrityChecker
 from backtest.overfit_checks import deflated_sharpe_ratio, random_feature_test
@@ -91,6 +92,8 @@ class FoldResult:
     test_end: Any
     cagr: float
     sharpe: float
+    sortino: float
+    calmar: float
     max_drawdown: float
     win_rate: float
     profit_factor: float
@@ -147,7 +150,8 @@ class BacktestResults:
                     "fold_index": f.fold_index,
                     "train_start": str(f.train_start), "train_end": str(f.train_end),
                     "test_start": str(f.test_start), "test_end": str(f.test_end),
-                    "cagr": f.cagr, "sharpe": f.sharpe, "max_drawdown": f.max_drawdown,
+                    "cagr": f.cagr, "sharpe": f.sharpe, "sortino": f.sortino, "calmar": f.calmar,
+                    "max_drawdown": f.max_drawdown,
                     "win_rate": f.win_rate, "profit_factor": f.profit_factor,
                     "n_trades": f.n_trades, "final_equity": f.final_equity,
                     "benchmark_cagr": f.benchmark_cagr, "benchmark_sharpe": f.benchmark_sharpe,
@@ -203,7 +207,7 @@ def compute_fold_metrics(
     """
     if equity_curve.empty:
         return {
-            "cagr": 0.0, "sharpe": 0.0, "max_drawdown": 0.0, "win_rate": 0.0,
+            "cagr": 0.0, "sharpe": 0.0, "sortino": 0.0, "calmar": 0.0, "max_drawdown": 0.0, "win_rate": 0.0,
             "profit_factor": 0.0, "n_trades": 0, "final_equity": initial_capital,
             "benchmark_cagr": None, "benchmark_sharpe": None, "excess_return": None,
         }
@@ -215,6 +219,19 @@ def compute_fold_metrics(
     running_max = np.maximum.accumulate(equity)
     drawdown = (equity - running_max) / running_max
     max_drawdown = float(drawdown.min()) if len(drawdown) else 0.0
+
+    # 2026-07-27 user request: Sortino/Calmar alongside the existing
+    # Sharpe — reuses backtest/core/metrics.py's shared implementations
+    # (same _NEAR_ZERO_STD-guarded logic the unified orchestrator path
+    # already relies on) rather than a second hand-rolled copy. Both take
+    # the exact same daily-return series/max_drawdown already computed
+    # above for Sharpe — no extra equity-curve work needed.
+    daily_returns_series = pd.Series(np.diff(equity) / equity[:-1])
+    daily_returns_series = daily_returns_series[np.isfinite(daily_returns_series)]
+    sortino, _sortino_reason = sortino_ratio(daily_returns_series)
+    calmar, _calmar_reason = calmar_ratio(cagr, max_drawdown)
+    sortino = sortino if sortino is not None else 0.0
+    calmar = calmar if calmar is not None else 0.0
 
     if not trades_df.empty:
         win_rate = float((trades_df["pnl_inr"] > 0).mean())
@@ -235,7 +252,7 @@ def compute_fold_metrics(
             excess_return = cagr - benchmark_cagr
 
     return {
-        "cagr": cagr, "sharpe": sharpe, "max_drawdown": max_drawdown,
+        "cagr": cagr, "sharpe": sharpe, "sortino": sortino, "calmar": calmar, "max_drawdown": max_drawdown,
         "win_rate": win_rate, "profit_factor": profit_factor,
         "n_trades": n_trades, "final_equity": final_equity,
         "benchmark_cagr": benchmark_cagr, "benchmark_sharpe": benchmark_sharpe,
@@ -895,6 +912,8 @@ class BacktestEngine:
         aggregate = {
             "cagr_mean": float(np.mean([f.cagr for f in fold_results])),
             "sharpe_mean": float(np.mean([f.sharpe for f in fold_results])),
+            "sortino_mean": float(np.mean([f.sortino for f in fold_results])),
+            "calmar_mean": float(np.mean([f.calmar for f in fold_results])),
             "max_drawdown_worst": float(np.min([f.max_drawdown for f in fold_results])),
             "win_rate_mean": float(np.mean([f.win_rate for f in fold_results])),
             "profit_factor_mean": float(

@@ -1010,7 +1010,7 @@ async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
                 df = conn.execute(
                     """
                     SELECT strategy_id, wins, losses, pending, win_rate, wilson_lo, wilson_hi,
-                           baseline_win_rate, delta_vs_baseline, tier, reasons
+                           baseline_win_rate, delta_vs_baseline, deflated_sharpe, sortino, calmar, tier, reasons
                     FROM strategy_confidence_summary
                     WHERE regime = 'ALL'
                     """
@@ -1044,6 +1044,9 @@ async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
             wilson_hi=(float(s["wilson_hi"]) if pd.notna(s.get("wilson_hi")) else None),
             baseline_win_rate=(float(s["baseline_win_rate"]) if pd.notna(s.get("baseline_win_rate")) else None),
             delta_vs_baseline=(float(s["delta_vs_baseline"]) if pd.notna(s.get("delta_vs_baseline")) else None),
+            deflated_sharpe=(float(s["deflated_sharpe"]) if pd.notna(s.get("deflated_sharpe")) else None),
+            sortino=(float(s["sortino"]) if pd.notna(s.get("sortino")) else None),
+            calmar=(float(s["calmar"]) if pd.notna(s.get("calmar")) else None),
             tier=tier,
             reasons=str(s["reasons"]).split("; ") if s.get("reasons") else [],
         ))

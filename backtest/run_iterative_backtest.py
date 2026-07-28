@@ -150,7 +150,8 @@ def run_iterative_backtest(
         "iterations": [
             {
                 "iteration": it.iteration, "run_id": it.run_id, "hyperparams": it.hyperparams,
-                "sharpe_mean": it.sharpe_mean, "win_rate_mean": it.win_rate_mean, "dsr": it.dsr,
+                "sharpe_mean": it.sharpe_mean, "sortino_mean": it.sortino_mean, "calmar_mean": it.calmar_mean,
+                "win_rate_mean": it.win_rate_mean, "dsr": it.dsr,
                 "random_feature_accuracy": it.random_feature_accuracy,
                 "promoted": it.promoted, "rejection_reason": it.rejection_reason,
                 "runtime_seconds": it.runtime_seconds, "dropped_candidates": it.dropped_candidates,

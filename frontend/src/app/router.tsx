@@ -48,6 +48,7 @@ import { MlToolsPage } from '@/pages/ml/tools'
 import { MomentumUniversePage } from '@/pages/momentum/universe'
 import { MomentumPortfolioPage } from '@/pages/momentum/portfolio'
 import { MomentumRebalancePage } from '@/pages/momentum/rebalance'
+import { MomentumExperimentationPage } from '@/pages/momentum/experimentation'
 
 import { BigInvestorsPage } from '@/pages/big_investors/BigInvestorsPage'
 import { BigInvestorsAnnouncementsPage } from '@/pages/big_investors/announcements'
@@ -119,6 +120,7 @@ export const router = createBrowserRouter([
   { path: '/momentum-portfolio', element: <MomentumPortfolioPage /> },
   { path: '/momentum-rebalance', element: <MomentumRebalancePage /> },
   { path: '/momentum-universe', element: <MomentumUniversePage /> },
+  { path: '/momentum-experimentation', element: <MomentumExperimentationPage /> },
 
   { path: '/big_investors', element: <BigInvestorsPage /> },
   { path: '/big_investors-announcements', element: <BigInvestorsAnnouncementsPage /> },

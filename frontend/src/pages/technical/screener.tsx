@@ -96,6 +96,10 @@ function fmtInterval(lo: number | null, hi: number | null): string {
   return `${(lo * 100).toFixed(0)}–${(hi * 100).toFixed(0)}%`
 }
 
+function fmtRatio(v: number | null): string {
+  return v == null ? '—' : v.toFixed(2)
+}
+
 function fmtDelta(v: number | null): string {
   if (v == null) return '—'
   const pct = (v * 100).toFixed(0)
@@ -151,6 +155,9 @@ function StrategyWinRates({ onSelectTemplate }: { onSelectTemplate: (template: s
                         <TableHead className="text-right">W / L / Pending</TableHead>
                         <TableHead className="text-right">Win Rate (95% CI)</TableHead>
                         <TableHead className="text-right">vs. Baseline</TableHead>
+                        <TableHead className="text-right">Sharpe (Deflated)</TableHead>
+                        <TableHead className="text-right">Sortino</TableHead>
+                        <TableHead className="text-right">Calmar</TableHead>
                         <TableHead className="text-right">Tier</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -177,6 +184,9 @@ function StrategyWinRates({ onSelectTemplate }: { onSelectTemplate: (template: s
                             <span className="ml-1 text-xs text-muted-foreground">({fmtInterval(r.wilson_lo, r.wilson_hi)})</span>
                           </TableCell>
                           <TableCell className="text-right font-mono-data text-xs">{fmtDelta(r.delta_vs_baseline)}</TableCell>
+                          <TableCell className="text-right font-mono-data text-xs">{fmtRatio(r.deflated_sharpe)}</TableCell>
+                          <TableCell className="text-right font-mono-data text-xs">{fmtRatio(r.sortino)}</TableCell>
+                          <TableCell className="text-right font-mono-data text-xs">{fmtRatio(r.calmar)}</TableCell>
                           <TableCell className="text-right">
                             <Badge variant={TIER_BADGE_VARIANT[r.tier] ?? 'outline'}>{r.tier}</Badge>
                           </TableCell>

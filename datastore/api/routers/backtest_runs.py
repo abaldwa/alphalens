@@ -198,11 +198,13 @@ class ExperimentRow(BaseModel):
     """One backtest_runs row for the Experiments comparison page — the
     270-job exit-variant x template/preset matrix (backtest/reports/
     experiment_matrix_45x6.json). Metrics are unpacked from metrics_json
-    (backtest/core/metrics.py's BacktestMetrics — no `sharpe` field exists
-    there, only `sortino`/`calmar`; `sortino` is surfaced here as the
-    risk-adjusted ratio for "which Entry+Exit combination wins" comparison)
-    rather than nesting the raw dict, so the frontend table can sort/filter
-    on these columns directly."""
+    (backtest/core/metrics.py's BacktestMetrics — `sharpe` was added
+    2026-07-26 for REV6's deflated_sharpe_ratio wiring; `sortino`/`calmar`
+    predate it. 2026-07-27: `sharpe`/`turnover_ratio` were being computed
+    by the backend but silently dropped here — added below so every
+    computed ratio the frontend asks for is actually surfaced, not just
+    sortino) rather than nesting the raw dict, so the frontend table can
+    sort/filter on these columns directly."""
 
     run_id: str
     strategy_id: str
@@ -213,11 +215,13 @@ class ExperimentRow(BaseModel):
     created_at: str
     cagr: Optional[float] = None
     xirr: Optional[float] = None
+    sharpe: Optional[float] = None
     sortino: Optional[float] = None
     calmar: Optional[float] = None
     max_drawdown: Optional[float] = None
     win_rate: Optional[float] = None
     profit_factor: Optional[float] = None
+    turnover_ratio: Optional[float] = None
     avg_days_held: Optional[float] = None
     n_trades: Optional[int] = None
     excess_return: Optional[float] = None
@@ -244,11 +248,13 @@ def _experiment_row(row: dict) -> ExperimentRow:
         created_at=row["created_at"],
         cagr=metrics.get("cagr"),
         xirr=metrics.get("xirr"),
+        sharpe=metrics.get("sharpe"),
         sortino=metrics.get("sortino"),
         calmar=metrics.get("calmar"),
         max_drawdown=metrics.get("max_drawdown"),
         win_rate=metrics.get("win_rate"),
         profit_factor=metrics.get("profit_factor"),
+        turnover_ratio=metrics.get("turnover_ratio"),
         avg_days_held=metrics.get("avg_days_held"),
         n_trades=metrics.get("n_trades"),
         excess_return=metrics.get("excess_return"),

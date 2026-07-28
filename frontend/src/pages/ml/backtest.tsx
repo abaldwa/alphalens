@@ -19,7 +19,10 @@ function PhaseSection({ phaseKey, phase }: { phaseKey: string; phase: Record<str
   const detail = (phase.integrity_detail as Record<string, unknown>) ?? {}
   const failures = (detail.critical_failures as unknown[]) ?? []
   const folds = (phase.folds as Record<string, unknown>[]) ?? []
-  const foldCols = ['fold_index', 'train_start', 'train_end', 'test_start', 'test_end', 'cagr', 'sharpe', 'max_drawdown', 'win_rate', 'profit_factor', 'n_trades']
+  const foldCols = [
+    'fold_index', 'train_start', 'train_end', 'test_start', 'test_end',
+    'cagr', 'sharpe', 'sortino', 'calmar', 'max_drawdown', 'win_rate', 'profit_factor', 'n_trades',
+  ]
 
   return (
     <Card className="mt-4">
@@ -35,6 +38,8 @@ function PhaseSection({ phaseKey, phase }: { phaseKey: string; phase: Record<str
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatCard label="CAGR (mean)" value={fmtPct(agg.cagr_mean)} />
           <StatCard label="Sharpe (mean)" value={fmtNum(agg.sharpe_mean)} />
+          <StatCard label="Sortino (mean)" value={fmtNum(agg.sortino_mean)} />
+          <StatCard label="Calmar (mean)" value={fmtNum(agg.calmar_mean)} />
           <StatCard label="Max Drawdown (worst)" value={fmtPct(agg.max_drawdown_worst)} />
           <StatCard label="Win Rate (mean)" value={fmtPct(agg.win_rate_mean)} />
           <StatCard label="Profit Factor (mean)" value={fmtNum(agg.profit_factor_mean)} />
@@ -68,7 +73,7 @@ function PhaseSection({ phaseKey, phase }: { phaseKey: string; phase: Record<str
                     {foldCols.map((c) => {
                       let v = f[c]
                       if (['cagr', 'max_drawdown', 'win_rate'].includes(c)) v = fmtPct(v)
-                      else if (typeof v === 'number') v = fmtNum(v, c === 'sharpe' || c === 'profit_factor' ? 2 : 0)
+                      else if (typeof v === 'number') v = fmtNum(v, ['sharpe', 'sortino', 'calmar', 'profit_factor'].includes(c) ? 2 : 0)
                       else if (typeof v === 'string' && v.includes(' 00:00:00')) v = v.slice(0, 10)
                       return (
                         <TableCell key={c} className="font-mono-data">

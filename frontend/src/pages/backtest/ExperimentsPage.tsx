@@ -110,9 +110,21 @@ export function ExperimentsPage() {
       },
       { accessorKey: 'regime_label', header: 'Regime', cell: (i) => i.getValue<string | null>() ?? '—' },
       {
+        accessorKey: 'sharpe',
+        header: 'Sharpe',
+        meta: { align: 'right' },
+        cell: (i) => fmtNum(i.getValue<number | null>()),
+      },
+      {
         accessorKey: 'sortino',
         header: 'Sortino',
         meta: { align: 'right' },
+        cell: (i) => fmtNum(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'calmar',
+        header: 'Calmar',
+        meta: { align: 'right', priority: 'medium' },
         cell: (i) => fmtNum(i.getValue<number | null>()),
       },
       {
@@ -132,6 +144,18 @@ export function ExperimentsPage() {
         header: 'Win Rate',
         meta: { align: 'right' },
         cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'profit_factor',
+        header: 'Profit Factor',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtNum(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'turnover_ratio',
+        header: 'Turnover',
+        meta: { align: 'right', priority: 'low' },
+        cell: (i) => fmtNum(i.getValue<number | null>()),
       },
       {
         accessorKey: 'avg_days_held',

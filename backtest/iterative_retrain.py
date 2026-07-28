@@ -172,6 +172,8 @@ class IterationRecord:
     run_id: str
     hyperparams: Dict[str, Any]
     sharpe_mean: float
+    sortino_mean: Optional[float]
+    calmar_mean: Optional[float]
     win_rate_mean: float
     n_trials_so_far: int
     dsr: float
@@ -299,6 +301,8 @@ class RetrainLoop:
             )
 
             sharpe = results.aggregate.get("sharpe_mean") or 0.0
+            sortino_mean = results.aggregate.get("sortino_mean")
+            calmar_mean = results.aggregate.get("calmar_mean")
             win_rate = results.aggregate.get("win_rate_mean") or 0.0
             n_obs = len(results.fold_returns) if results.fold_returns is not None else 0
             dsr = (
@@ -342,6 +346,7 @@ class RetrainLoop:
             iter_runtime = time.monotonic() - iter_started
             record = IterationRecord(
                 iteration=i, run_id=iter_run_id, hyperparams=hyperparams, sharpe_mean=sharpe,
+                sortino_mean=sortino_mean, calmar_mean=calmar_mean,
                 win_rate_mean=win_rate, n_trials_so_far=n_trials_so_far, dsr=dsr,
                 random_feature_accuracy=random_feature_accuracy, promoted=promoted,
                 rejection_reason=rejection_reason, runtime_seconds=iter_runtime,

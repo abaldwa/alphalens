@@ -125,6 +125,9 @@ export interface TAStrategyWinRateRow {
   wilson_hi: number | null
   baseline_win_rate: number | null
   delta_vs_baseline: number | null
+  deflated_sharpe: number | null
+  sortino: number | null
+  calmar: number | null
   tier: string
   reasons: string[]
 }

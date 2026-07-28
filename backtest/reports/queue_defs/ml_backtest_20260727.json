@@ -1,0 +1,7 @@
+{
+  "jobs": [
+    {"kind": "iterative_retrain", "horizon_days": 5, "folds": 4, "seed": 42},
+    {"kind": "iterative_retrain", "horizon_days": 21, "folds": 4, "seed": 42},
+    {"kind": "iterative_retrain", "horizon_days": 63, "folds": 4, "seed": 42}
+  ]
+}

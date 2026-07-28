@@ -37,13 +37,45 @@ GET    /api/v1/momentum/summary?strategy_id=          — Holding Dashboard:
                                                         capital invested,
                                                         current value,
                                                         CAGR, XIRR, tax
+GET    /api/v1/momentum/experimentation               — rank-band sweep
+                                                        report (see below)
+POST   /api/v1/momentum/experimentation/trigger        — launch a fresh
+                                                        rank-band sweep
+GET    /api/v1/momentum/experimentation/trigger/status/{job_id}
+POST   /api/v1/momentum/filter_overlays/trigger        — launch a fresh
+                                                        filter-overlay sweep
+GET    /api/v1/momentum/filter_overlays/trigger/status/{job_id}
 
 Table creation is idempotent (lazy, `_ensure_tables(conn)`), matching
 holdings.py's convention.
+
+2026-07-27 NAMING DISAMBIGUATION (user-flagged confusion): "Momentum" is
+used for two UNRELATED things in this codebase —
+  1. THIS router / features.momentum_universe / backtest.momentum_backtest
+     — the ML38 rank/momentum FACTOR STRATEGY: market-cap rank bands
+     (1-50 through 501-800), trailing N-month return ranking, top-N
+     equal-weight, grace-period churn control. Triggered below.
+  2. systems.technical_analysis.screener.templates.TEMPLATE_STYLE's
+     "Momentum" STYLE label — a classification of ~16 Technical Analysis
+     screener templates (A2, C1-C4, D4, E5/E6, F2/F8, S008, etc.) whose
+     entry rules are MACD/breakout/time-series-momentum technical
+     patterns. These run through the Technical channel's orchestrator
+     (backtest/adapters/technical_adapter.py), NOT through this router or
+     MomentumBacktester — they share a style label, nothing else.
+Both are legitimately named "Momentum" (one is an asset-allocation
+factor strategy, the other a technical-pattern style); the distinction
+matters when picking which one a "run the Momentum strategies" request
+means, e.g. this router's /experimentation/trigger vs. the Technical
+channel's orchestrator trigger for template_name in {A2, C1, C2, ...}.
 """
 
+import json
 import logging
+import subprocess
+import sys
+import uuid
 from datetime import date as date_type
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -69,6 +101,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/momentum", tags=["Momentum"])
 
 DEFAULT_STRATEGY_ID = momentum_live.DEFAULT_STRATEGY_ID
+
+# scripts/run_momentum_experimentation.py's output dir — the rank-band x
+# lookback x rebalance x top_n sweep (2026-07-27 user request: surface it
+# on the dashboard instead of a raw JSON file on disk).
+_EXPERIMENTATION_REPORTS_DIR = Path(__file__).resolve().parents[3] / "backtest" / "reports" / "momentum"
 
 _TRADE_COLUMNS = [
     "id", "strategy_id", "ticker", "purchase_date", "qty", "purchase_price",
@@ -625,3 +662,132 @@ async def get_summary(strategy_id: str = DEFAULT_STRATEGY_ID) -> dict:
         "post_tax_value": post_tax_value,
         "total_contributed": total_contributed,
     }
+
+
+# ------------------------------------------------------------ experimentation
+
+class ExperimentationVariant(BaseModel):
+    band_id: int
+    rank_start: int
+    rank_end: int
+    lookback_months: int
+    rebalance_period: str
+    top_n: int
+    cagr: Optional[float] = None
+    sharpe: Optional[float] = None
+    sortino: Optional[float] = None
+    calmar: Optional[float] = None
+    post_tax_cagr: Optional[float] = None
+    sip_xirr: Optional[float] = None
+    win_rate: Optional[float] = None
+    churn_avg_transactions_per_year: Optional[float] = None
+    n_closed_trades: Optional[int] = None
+    n_open_trades: Optional[int] = None
+    avg_days_held: Optional[float] = None
+
+
+class ExperimentationReport(BaseModel):
+    generated_at: Optional[str] = None
+    report_file: str
+    variants: List[ExperimentationVariant]
+
+
+@router.get("/experimentation", response_model=ExperimentationReport)
+async def get_experimentation() -> ExperimentationReport:
+    """The ML38 rank-band sweep (scripts/run_momentum_experimentation.py) —
+    every (band, lookback, rebalance, top_n) variant across bands 1-50
+    through 501-800. Reads the most recently written
+    momentum_experimentation_*.json report file directly (no DB write
+    path exists for this data); 404 until that script has been run at
+    least once."""
+    files = sorted(_EXPERIMENTATION_REPORTS_DIR.glob("momentum_experimentation_*.json"))
+    if not files:
+        raise HTTPException(status_code=404, detail="No momentum experimentation report found yet")
+    latest = files[-1]
+    data = json.loads(latest.read_text())
+    variant_fields = set(ExperimentationVariant.model_fields)
+    variants = [
+        ExperimentationVariant(**{k: v.get(k) for k in variant_fields if k in v})
+        for v in data.get("variants", [])
+    ]
+    return ExperimentationReport(generated_at=data.get("generated_at"), report_file=latest.name, variants=variants)
+
+
+# --------------------------------------------------- experimentation trigger
+
+# Deliberate, single-named-job trigger endpoints (same pattern as
+# datastore/api/routers/backtest_runs.py's /iterative/trigger and
+# /orchestrator/trigger — a detached background subprocess per named
+# script, not a general "run any command" endpoint) — 2026-07-27 user
+# request: a UI link to (re)launch the rank-band sweep / filter-overlay
+# sweep instead of asking an operator to run them by hand from a shell.
+_TRIGGER_LOGS_DIR = _EXPERIMENTATION_REPORTS_DIR / "trigger_logs"
+
+
+class TriggerResponse(BaseModel):
+    job_id: str
+    status: str = "started"
+
+
+class TriggerStatusResponse(BaseModel):
+    job_id: str
+    status: str  # "running" | "completed" | "failed" | "unknown"
+    log_tail: Optional[str] = None
+    report_file: Optional[str] = None
+
+
+def _launch_trigger(module: str, job_prefix: str) -> TriggerResponse:
+    job_id = f"{job_prefix}_{uuid.uuid4().hex[:10]}"
+    _TRIGGER_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _TRIGGER_LOGS_DIR / f"{job_id}.log"
+    cmd = [sys.executable, "-m", module]
+    logger.info(f"momentum._launch_trigger: job_id={job_id} cmd={' '.join(cmd)}")
+    with open(log_path, "w") as log_fh:
+        subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, start_new_session=True)
+    return TriggerResponse(job_id=job_id)
+
+
+def _trigger_status(job_id: str, report_glob: str) -> TriggerStatusResponse:
+    log_path = _TRIGGER_LOGS_DIR / f"{job_id}.log"
+    if not log_path.exists():
+        return TriggerStatusResponse(job_id=job_id, status="unknown")
+
+    log_tail = "".join(log_path.read_text(errors="replace").splitlines(keepends=True)[-40:])
+    launched_at = log_path.stat().st_mtime
+    newer_reports = sorted(
+        (p for p in _EXPERIMENTATION_REPORTS_DIR.glob(report_glob) if p.stat().st_mtime >= launched_at - 5),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if newer_reports:
+        return TriggerStatusResponse(
+            job_id=job_id, status="completed", log_tail=log_tail, report_file=newer_reports[-1].name,
+        )
+    if "Traceback (most recent call last)" in log_tail:
+        return TriggerStatusResponse(job_id=job_id, status="failed", log_tail=log_tail)
+    return TriggerStatusResponse(job_id=job_id, status="running", log_tail=log_tail)
+
+
+@router.post("/experimentation/trigger", response_model=TriggerResponse)
+async def trigger_experimentation() -> TriggerResponse:
+    """Launches scripts/run_momentum_experimentation.py (the ML38
+    rank-band sweep — see this module's NAMING DISAMBIGUATION note) as a
+    detached subprocess; poll /experimentation/trigger/status/{job_id}."""
+    return _launch_trigger("scripts.run_momentum_experimentation", "momentum_experimentation")
+
+
+@router.get("/experimentation/trigger/status/{job_id}", response_model=TriggerStatusResponse)
+async def get_experimentation_trigger_status(job_id: str) -> TriggerStatusResponse:
+    return _trigger_status(job_id, "momentum_experimentation_*.json")
+
+
+@router.post("/filter_overlays/trigger", response_model=TriggerResponse)
+async def trigger_filter_overlays() -> TriggerResponse:
+    """Launches scripts/run_momentum_filter_overlays.py (the 7-filter
+    robustness sweep against the rank-band baseline) as a detached
+    subprocess; poll /filter_overlays/trigger/status/{job_id}."""
+    return _launch_trigger("scripts.run_momentum_filter_overlays", "momentum_filter_overlays")
+
+
+@router.get("/filter_overlays/trigger/status/{job_id}", response_model=TriggerStatusResponse)
+async def get_filter_overlays_trigger_status(job_id: str) -> TriggerStatusResponse:
+    return _trigger_status(job_id, "momentum_filter_overlays_*.json")

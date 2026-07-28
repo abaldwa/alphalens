@@ -33,7 +33,7 @@ import hashlib
 
 from backtest.core.horizon import HorizonBucket
 from backtest.momentum_backtest import MomentumBacktester, MomentumBacktestResult
-from backtest.momentum_metrics import cagr, churn_factor, total_return, xirr
+from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, total_return, xirr
 from backtest.momentum_tax import compute_total_tax, post_tax_ending_value
 from backtest.strategy_id import build_strategy_id
 from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
@@ -104,7 +104,9 @@ def _summarize(result: MomentumBacktestResult, top_n: int, min_momentum: Optiona
 
     total_tax = compute_total_tax(txns)
     post_tax_value = post_tax_ending_value(result.ending_value, txns)
+    variant_cagr = cagr(result.starting_capital, result.ending_value, result.start_date, result.end_date)
     post_tax_cagr = cagr(result.starting_capital, post_tax_value, result.start_date, result.end_date)
+    ratios = sharpe_sortino_calmar(result.equity_curve, variant_cagr)
 
     return {
         "top_n": top_n,
@@ -114,7 +116,10 @@ def _summarize(result: MomentumBacktestResult, top_n: int, min_momentum: Optiona
         "start_date": result.start_date,
         "end_date": result.end_date,
         "total_return": total_return(result.starting_capital, result.ending_value),
-        "cagr": cagr(result.starting_capital, result.ending_value, result.start_date, result.end_date),
+        "cagr": variant_cagr,
+        "sharpe": ratios["sharpe"],
+        "sortino": ratios["sortino"],
+        "calmar": ratios["calmar"],
         "churn_avg_transactions_per_year": churn["avg_transactions_per_year"],
         "n_rebalances": len(result.rebalance_events),
         "total_invested": total_invested,
