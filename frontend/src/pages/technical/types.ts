@@ -2,6 +2,19 @@
 // TAMarketOverviewResponse/TASectorBreadthRow — kept minimal (only the
 // fields this page actually renders).
 
+export interface TAWatchlistStrategyMatch {
+  template_name: string
+  template_description: string | null
+  template_strategy_description: string | null
+  category: string
+  date: string
+  score: number
+  rationale: string
+  matched_conditions: number
+  total_conditions: number
+  key_values: Record<string, number | null>
+}
+
 export interface TAWatchlistRow {
   ticker: string
   company_name: string | null
@@ -14,14 +27,9 @@ export interface TAWatchlistRow {
   recommendation_date: string | null
   recommended_price: number | null
   current_price: number | null
-  template_name: string
-  template_description: string | null
-  template_strategy_description: string | null
-  category: string
-  score: number
-  rationale: string
-  matched_conditions: number
-  total_conditions: number
+  /** Every template that fired for this ticker in the lookback window,
+   * most recent first — a ticker can carry several. */
+  strategies: TAWatchlistStrategyMatch[]
   resistance_levels: number[]
   support_levels: number[]
 }

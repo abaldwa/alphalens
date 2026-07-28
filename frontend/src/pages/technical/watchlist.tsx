@@ -1,10 +1,35 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Button, Card, CardContent, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink, formatCurrencyINR } from '@/lib/ui'
+import {
+  AppShell,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  DataTable,
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  InfoTooltip,
+  TickerLink,
+  formatCurrencyINR,
+} from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
-import type { TAStrategyWinRateResponse, TAStrategyWinRateRow, TAWatchlistResponse, TAWatchlistRow } from './types'
+import type {
+  TAStrategyWinRateResponse,
+  TAStrategyWinRateRow,
+  TATemplateListResponse,
+  TAWatchlistResponse,
+  TAWatchlistRow,
+} from './types'
 
 function fmtLevels(v: number[] | null | undefined): string {
   return v && v.length ? v.map((x) => formatCurrencyINR(x)).join(' / ') : '—'
@@ -97,53 +122,68 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     },
   },
   {
-    // Strategy — the template that fired this recommendation.
-    id: 'template',
-    accessorFn: (row) => row.template_name,
-    header: 'Template',
-    size: 110,
-    cell: ({ row }) => {
-      const wr = winRateByTemplate.get(row.original.template_name)
-      return (
-        <span className="inline-flex items-center gap-1.5">
-          <Badge>{row.original.category}</Badge>
-          {row.original.template_name}
-          <InfoTooltip>
-            <div className="flex max-w-xs flex-col gap-1">
-              <span className="font-medium">
-                {row.original.template_description ?? row.original.template_name}
-              </span>
-              <span className="text-muted-foreground">
-                {row.original.template_strategy_description ?? 'No strategy description available.'}
-              </span>
-              <span>
-                {wr?.win_rate != null
-                  ? `Win rate: ${(wr.win_rate * 100).toFixed(0)}% (95% CI ${(wr.wilson_lo! * 100).toFixed(0)}–${(wr.wilson_hi! * 100).toFixed(0)}%) across ${wr.times_recommended} calls`
-                  : 'Win rate: not enough recommendation history yet'}
-              </span>
-            </div>
-          </InfoTooltip>
-        </span>
-      )
-    },
+    // Strategies — every template that fired for this ticker in the
+    // lookback window (not just one "best" match), each with its own
+    // win-rate tooltip.
+    id: 'strategies',
+    accessorFn: (row) => row.strategies.map((s) => s.template_name).join(', '),
+    header: () => (
+      <span className="inline-flex items-center gap-1">
+        Strategies
+        <InfoTooltip>Every screener template that matched this ticker in the trailing lookback window — a ticker can be recommended by more than one strategy at once.</InfoTooltip>
+      </span>
+    ),
+    size: 220,
+    cell: ({ row }) => (
+      <div className="flex flex-wrap items-center gap-1.5">
+        {row.original.strategies.map((s) => {
+          const wr = winRateByTemplate.get(s.template_name)
+          return (
+            <span key={s.template_name} className="inline-flex items-center gap-1">
+              <Badge>{s.category}</Badge>
+              {s.template_name}
+              <InfoTooltip>
+                <div className="flex max-w-xs flex-col gap-1">
+                  <span className="font-medium">{s.template_description ?? s.template_name}</span>
+                  <span className="text-muted-foreground">
+                    {s.template_strategy_description ?? 'No strategy description available.'}
+                  </span>
+                  <span>
+                    {wr?.win_rate != null
+                      ? `Win rate: ${(wr.win_rate * 100).toFixed(0)}% (95% CI ${(wr.wilson_lo! * 100).toFixed(0)}–${(wr.wilson_hi! * 100).toFixed(0)}%) across ${wr.times_recommended} calls`
+                      : 'Win rate: not enough recommendation history yet'}
+                  </span>
+                  <span>Fired {s.date}, {s.matched_conditions}/{s.total_conditions} conditions</span>
+                </div>
+              </InfoTooltip>
+            </span>
+          )
+        })}
+      </div>
+    ),
   },
   {
-    // Success rate — the strategy's own win rate, immediately after the
-    // strategy name it belongs to (previously only visible inside the
-    // Template column's tooltip).
+    // Success rate — the best win rate among this ticker's matched
+    // strategies (previously only visible inside the Template tooltip,
+    // and only for a single strategy).
     id: 'win_rate',
-    accessorFn: (row) => winRateByTemplate.get(row.template_name)?.win_rate ?? null,
+    accessorFn: (row) => {
+      const rates = row.strategies
+        .map((s) => winRateByTemplate.get(s.template_name)?.win_rate)
+        .filter((v): v is number => v != null)
+      return rates.length ? Math.max(...rates) : null
+    },
     header: () => (
       <span className="inline-flex items-center gap-1">
         Win Rate
-        <InfoTooltip>Historical win rate for this template across all its past recommendations (95% Wilson CI shown in the Template tooltip).</InfoTooltip>
+        <InfoTooltip>Best historical win rate among this ticker's matched strategies (per-strategy detail in the Strategies column tooltips).</InfoTooltip>
       </span>
     ),
     size: 85,
     meta: { align: 'right' },
-    cell: ({ row }) => {
-      const wr = winRateByTemplate.get(row.original.template_name)
-      return wr?.win_rate != null ? `${(wr.win_rate * 100).toFixed(0)}%` : '—'
+    cell: (i) => {
+      const v = i.getValue<number | null>()
+      return v != null ? `${(v * 100).toFixed(0)}%` : '—'
     },
   },
   {
@@ -154,21 +194,23 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     cell: (i) => formatCurrencyINR(i.getValue<number | null>()),
   },
   {
-    accessorKey: 'score',
+    id: 'score',
     header: () => (
       <span className="inline-flex items-center gap-1">
         Score
         <InfoTooltip>
-          matched_conditions / total_conditions for the template — e.g. 5/5 = 1.00. This screener only surfaces full
-          matches (score ≥ 1.0, every one of the template's conditions true), so 1.00 here means "all conditions
-          met," not a confidence or strength rating — it isn't a partial-match score you'll see below 1.00 on this
-          page.
+          matched_conditions / total_conditions per matched template — e.g. 5/5 = 1.00. This screener only surfaces
+          full matches (score ≥ 1.0, every one of the template's conditions true), so 1.00 here means "all conditions
+          met," not a confidence or strength rating.
         </InfoTooltip>
       </span>
     ),
-    size: 85,
+    size: 110,
     meta: { align: 'right', priority: 'medium' },
-    cell: ({ row }) => `${row.original.score.toFixed(2)} (${row.original.matched_conditions}/${row.original.total_conditions})`,
+    cell: ({ row }) =>
+      row.original.strategies
+        .map((s) => `${s.score.toFixed(2)} (${s.matched_conditions}/${s.total_conditions})`)
+        .join(', '),
   },
   {
     // Kept as a column for layout/column-set uniformity with the ML
@@ -188,7 +230,8 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     cell: () => '—',
   },
   {
-    accessorKey: 'rationale',
+    id: 'rationale',
+    accessorFn: (row) => row.strategies.map((s) => s.rationale).join(' | '),
     header: 'Rationale',
     meta: { priority: 'low' },
     cell: (i) => <span className="block max-w-[480px] truncate text-xs text-muted-foreground">{i.getValue<string>()}</span>,
@@ -227,7 +270,7 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
     meta: { align: 'center' },
     cell: ({ row }) => (
       <a
-        href={`/technical-deep_dive?ticker=${row.original.ticker}&reason=${encodeURIComponent(row.original.rationale || '')}`}
+        href={`/technical-deep_dive?ticker=${row.original.ticker}&reason=${encodeURIComponent(row.original.strategies.map((s) => s.rationale).join(' | '))}`}
         target="_blank"
         rel="noopener"
         title="Technical Deep Dive"
@@ -240,9 +283,21 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
 }
 
 export function TechnicalWatchlistPage() {
+  const [selectedTemplates, setSelectedTemplates] = useState<string[]>([])
+
+  const templates = useQuery({
+    queryKey: ['ta-screener-templates'],
+    queryFn: () => apiGet<TATemplateListResponse>('/api/v1/ta/screener/templates'),
+  })
+
   const watchlist = useQuery({
-    queryKey: ['ta-watchlist-weekly'],
-    queryFn: () => apiGet<TAWatchlistResponse>('/api/v1/ta/watchlist/daily', { limit: 30, lookback_days: 5 }),
+    queryKey: ['ta-watchlist-weekly', selectedTemplates],
+    queryFn: () =>
+      apiGet<TAWatchlistResponse>('/api/v1/ta/watchlist/daily', {
+        limit: 30,
+        lookback_days: 5,
+        ...(selectedTemplates.length ? { templates: selectedTemplates.join(',') } : {}),
+      }),
   })
 
   const winRates = useQuery({
@@ -260,20 +315,53 @@ export function TechnicalWatchlistPage() {
 
   const columns = useMemo(() => buildColumns(winRateByTemplate), [winRateByTemplate])
 
+  const toggleTemplate = (name: string) => {
+    setSelectedTemplates((prev) => (prev.includes(name) ? prev.filter((t) => t !== name) : [...prev, name]))
+  }
+
   return (
     <AppShell
       title="Technical — Weekly Watchlist"
       description={
         watchlist.data?.date
-          ? `Best template match per stock, pooled across the trailing 5 trading days ending ${watchlist.data.date}`
+          ? `Every matching template per stock, pooled across the trailing 5 trading days ending ${watchlist.data.date}`
           : 'Weekly TA WatchList'
       }
       actions={
-        <Button asChild variant="outline" size="sm">
-          <a href="/explain/backtest-guide.html#technical-strategies" target="_blank" rel="noreferrer">
-            📖 Strategy reference (all 42 templates)
-          </a>
-        </Button>
+        <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                Strategies{selectedTemplates.length ? ` (${selectedTemplates.length})` : ' (all)'}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-96 overflow-y-auto">
+              <DropdownMenuLabel>Show only these strategies</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {selectedTemplates.length > 0 && (
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSelectedTemplates([]) }}>
+                  Clear selection (show all)
+                </DropdownMenuItem>
+              )}
+              {(templates.data?.templates ?? []).map((t) => (
+                <DropdownMenuCheckboxItem
+                  key={t.name}
+                  checked={selectedTemplates.includes(t.name)}
+                  onSelect={(e) => e.preventDefault()}
+                  onCheckedChange={() => toggleTemplate(t.name)}
+                >
+                  <Badge className="mr-1">{t.category}</Badge>
+                  {t.name}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button asChild variant="outline" size="sm">
+            <a href="/explain/backtest-guide.html#technical-strategies" target="_blank" rel="noreferrer">
+              📖 Strategy reference (all 42 templates)
+            </a>
+          </Button>
+        </div>
       }
     >
       <Card>
@@ -289,10 +377,7 @@ export function TechnicalWatchlistPage() {
               data={watchlist.data?.rows ?? []}
               isLoading={watchlist.isLoading}
               placeholder="Search ticker, name, template…"
-              facetFilters={[
-                { columnId: 'category', label: 'Category' },
-                { columnId: 'recommendation_date', label: 'Rec. Date', formatValue: fmtRecDate },
-              ]}
+              facetFilters={[{ columnId: 'recommendation_date', label: 'Rec. Date', formatValue: fmtRecDate }]}
             />
           )}
         </CardContent>

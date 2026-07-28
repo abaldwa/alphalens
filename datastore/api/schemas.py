@@ -205,6 +205,17 @@ class FundamentalsResponse(BaseModel):
     record_count: int
 
 
+class FundamentalsBulkResponse(BaseModel):
+    """Response for GET /api/v1/fundamentals/bulk — same PIT filtering as the
+    single-ticker endpoint, applied once across all requested tickers in one
+    query instead of one request per ticker (features/backfill_cache.py's
+    BackfillDataCache preload)."""
+
+    as_of: datetime
+    data: Dict[str, List[FundamentalsRow]]
+    record_count: int
+
+
 # ===== Shareholding — full row schema (SPEC-DS-003, SPEC-PIPE-003, P2.1) =====
 class ShareholdingWrite(BaseModel):
     """One quarterly shareholding row — upsert unit for POST /api/v1/shareholding/write."""
@@ -248,6 +259,15 @@ class ShareholdingResponse(BaseModel):
     record_count: int
 
 
+class ShareholdingBulkResponse(BaseModel):
+    """Response for GET /api/v1/shareholding/bulk — same PIT filtering as the
+    single-ticker endpoint, applied once across all requested tickers."""
+
+    as_of: datetime
+    data: Dict[str, List[ShareholdingRow]]
+    record_count: int
+
+
 # ===== Corporate Actions (SPEC-DS-001, SPEC-PIPE-002, P2.2) — read-only =====
 # [AS BUILT, P2.2] No write endpoint: ingestion/scrapers/bhavcopy.py and
 # ingestion/adjust/price_adjuster.py already write `corporate_actions`
@@ -271,6 +291,14 @@ class CorporateActionResponse(BaseModel):
 
     ticker: str
     data: List[CorporateActionRow]
+    record_count: int
+
+
+class CorporateActionBulkResponse(BaseModel):
+    """Response for GET /api/v1/corporate_actions/bulk — same shape as the
+    single-ticker endpoint, one query across all requested tickers."""
+
+    data: Dict[str, List[CorporateActionRow]]
     record_count: int
 
 
@@ -1162,9 +1190,28 @@ class TAAlertResponse(BaseModel):
 
 
 # ===== TA Daily WatchList (SPEC-TA daily watchlist) =====
+class TAWatchlistStrategyMatch(BaseModel):
+    """One template's match for a ticker within the watchlist's lookback
+    window — a ticker can carry several of these when more than one
+    template fires for it."""
+
+    template_name: str
+    template_description: Optional[str] = None
+    template_strategy_description: Optional[str] = None
+    category: str
+    date: str
+    score: float
+    rationale: str
+    matched_conditions: int
+    total_conditions: int
+    key_values: Dict[str, Optional[float]] = Field(default_factory=dict)
+
+
 class TAWatchlistRow(BaseModel):
-    """One ticker's TA-driven daily recommendation: which template fired,
-    the plain-English rationale, and the next resistance levels above price."""
+    """One ticker's TA-driven daily recommendation: every template that
+    fired for it in the lookback window (not just the single best match),
+    the plain-English rationale per template, and the next resistance
+    levels above price."""
 
     ticker: str
     company_name: Optional[str] = None
@@ -1174,15 +1221,7 @@ class TAWatchlistRow(BaseModel):
     recommendation_date: Optional[str] = None
     recommended_price: Optional[float] = None
     current_price: Optional[float] = None
-    template_name: str
-    template_description: Optional[str] = None
-    template_strategy_description: Optional[str] = None
-    category: str
-    score: float
-    rationale: str
-    matched_conditions: int
-    total_conditions: int
-    key_values: Dict[str, Optional[float]] = Field(default_factory=dict)
+    strategies: List[TAWatchlistStrategyMatch] = Field(default_factory=list)
     resistance_levels: List[float] = Field(default_factory=list)
     support_levels: List[float] = Field(default_factory=list)
 

@@ -297,7 +297,12 @@ class TestWatchlistDaily:
         by_ticker = {row["ticker"]: row for row in body["rows"]}
         row_a = by_ticker[_TICKER_A]
         assert row_a["recommendation_date"] == "2026-06-03"
-        assert row_a["template_name"] == "A2"
+        # Both A1 (2026-06-01) and A2 (2026-06-03) fired for this ticker in
+        # the window — the row surfaces every matched template, most
+        # recent first, instead of picking a single "best" one.
+        template_names_a = {s["template_name"] for s in row_a["strategies"]}
+        assert template_names_a == {"A1", "A2"}
+        assert row_a["strategies"][0]["template_name"] == "A2"
         assert row_a["recommended_price"] == row_a["current_price"]
 
         row_b = by_ticker[_TICKER_B]
@@ -305,6 +310,41 @@ class TestWatchlistDaily:
         # Recommended earlier in the window at a lower price than today's —
         # recommended_price and current_price must diverge.
         assert row_b["recommended_price"] < row_b["current_price"]
+
+    def test_templates_param_filters_to_selected_strategies(self, client):
+        # Ticker A fires A1 and A2; ticker B fires only B1. Filtering to
+        # just "A1" should drop B entirely and leave only A1 under A.
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A,
+            template_name="A1", category="A", score=1.0,
+        )
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_A,
+            template_name="A2", category="A", score=1.0,
+        )
+        _seed_ta_signal(
+            technical_router.SIGNALS_DUCKDB_PATH, d="2026-06-01", ticker=_TICKER_B,
+            template_name="B1", category="B", score=1.0,
+        )
+        base = date(2026, 1, 1)
+        rows = []
+        for i in range(60):
+            d = (base + timedelta(days=i)).isoformat()
+            price = 100.0 + i * 0.5
+            rows.append((d, price + 2, price - 2, price))
+        _seed_ohlcv(technical_router.DUCKDB_PATH, _TICKER_A, rows)
+        _seed_ohlcv(technical_router.DUCKDB_PATH, _TICKER_B, rows)
+
+        r = client.get(
+            "/api/v1/ta/watchlist/daily",
+            params={"date": "2026-06-01", "templates": "A1"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["count"] == 1
+        row = body["rows"][0]
+        assert row["ticker"] == _TICKER_A
+        assert [s["template_name"] for s in row["strategies"]] == ["A1"]
 
 
 class TestConsensusDaily:

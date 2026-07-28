@@ -65,6 +65,7 @@ from datastore.api.schemas import (
     TAUserAlertRow,
     TAWatchlistResponse,
     TAWatchlistRow,
+    TAWatchlistStrategyMatch,
 )
 from datastore.api.utils.feature_store import read_feature_row, resolve_date
 from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
@@ -508,18 +509,25 @@ async def get_ta_daily_watchlist(
     date: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to latest ta_signals date"),
     limit: int = Query(20, ge=1, le=100, description="Maximum tickers"),
     lookback_days: int = Query(5, ge=1, le=20, description="Trading-day window to pool recommendations from"),
+    templates: Optional[str] = Query(
+        None, description="Comma-separated template names to restrict to; omit for all templates"
+    ),
 ) -> TAWatchlistResponse:
     """Weekly TA WatchList: pools every screener-template recommendation
     (ta_signals, SPEC-TA-006) across the trailing `lookback_days` real
     trading days ending on the target date, keeping each ticker's single
-    best (highest-score, most-recent-on-tie) recommendation from that
-    window — so a ticker recommended earlier in the week still shows up
-    even if it didn't fire again today. Reports a plain-English rationale,
-    the price at the time of that recommendation (`recommended_price`) next
-    to today's price (`current_price`), and the next resistance levels
-    above the current price (rolling 20d/50d/252d swing highs plus classic
-    floor-pivot R1/R2, computed from real OHLCV — SPEC-TA-004)."""
+    best (highest-score, most-recent-on-tie) match per template — so a
+    ticker with several templates firing in the window shows every one of
+    them (see `strategies`), not just whichever template happens to win a
+    tie-break. Optionally restricted to a caller-selected subset of
+    templates via `templates`. Reports a plain-English rationale per
+    matched template, the price as of the ticker's most recent trigger in
+    the window (`recommended_price`) next to today's price
+    (`current_price`), and the next resistance levels above the current
+    price (rolling 20d/50d/252d swing highs plus classic floor-pivot R1/R2,
+    computed from real OHLCV — SPEC-TA-004)."""
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    template_filter = [t.strip() for t in templates.split(",") if t.strip()] if templates else None
     try:
         with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
             tables = [r[0] for r in conn.execute(
@@ -546,21 +554,25 @@ async def get_ta_daily_watchlist(
                 return TAWatchlistResponse(count=0)
             window_placeholders = ",".join("?" * len(window_dates))
 
+            template_clause = ""
+            params: List[object] = list(window_dates)
+            if template_filter:
+                template_clause = f" AND template_name IN ({','.join('?' * len(template_filter))})"
+                params += template_filter
+
             df = conn.execute(
                 f"""
                 SELECT date, ticker, template_name, category, score,
                        matched_conditions, total_conditions, key_values
                 FROM ta_signals
-                WHERE date IN ({window_placeholders})
+                WHERE date IN ({window_placeholders}){template_clause}
                 QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY ticker
-                    ORDER BY score DESC, matched_conditions DESC, date DESC, template_name ASC
+                    PARTITION BY ticker, template_name
+                    ORDER BY score DESC, matched_conditions DESC, date DESC
                 ) = 1
-                ORDER BY score DESC, matched_conditions DESC, ticker ASC
-                LIMIT ?
+                ORDER BY ticker ASC, template_name ASC
                 """,
-                # ML24 (2026-07-11): over-fetch, ADTV-gate below, then trim.
-                window_dates + [limit * 5],
+                params,
             ).fetchdf()
     except duckdb.Error as exc:  # REV12 (2026-07-21 review): narrowed from bare Exception —
         # only a real DuckDB-layer failure (missing table, malformed query, lock
@@ -575,7 +587,21 @@ async def get_ta_daily_watchlist(
     universe = load_universe_raw()
     from config.training_universe import filter_recommendable
 
-    df = filter_recommendable(df, universe=universe).head(limit)
+    df = filter_recommendable(df, universe=universe)
+    if df.empty:
+        return TAWatchlistResponse(date=target_date, count=0)
+
+    # Rank tickers by how many templates fired for them (most corroborated
+    # first), then by the most recent trigger date, and trim to `limit`
+    # tickers — not `limit` raw (ticker, template) rows, since a ticker can
+    # now carry several matched templates.
+    ticker_rank = (
+        df.groupby("ticker")
+        .agg(match_count=("template_name", "count"), latest_date=("date", "max"))
+        .sort_values(["match_count", "latest_date"], ascending=[False, False])
+    )
+    top_tickers = ticker_rank.index[:limit].tolist()
+    df = df[df["ticker"].isin(top_tickers)].copy()
     if df.empty:
         return TAWatchlistResponse(date=target_date, count=0)
 
@@ -606,23 +632,46 @@ async def get_ta_daily_watchlist(
     hist["date"] = pd.to_datetime(hist["date"])
 
     rows: List[TAWatchlistRow] = []
-    for _, r in df.iterrows():
-        ticker = str(r["ticker"])
-        tmpl = TEMPLATE_MAP.get(str(r["template_name"]))
-        matched, total = int(r["matched_conditions"]), int(r["total_conditions"])
-        key_values = _parse_key_values(r.get("key_values"))
-        if tmpl is not None and tmpl.conditions:
-            detail = "; ".join(_describe_condition(c, key_values) for c in tmpl.conditions)
-            rationale = f"{tmpl.description}: {detail}"
-        elif tmpl is not None:
-            rationale = f"{tmpl.description} — {matched}/{total} conditions matched"
-        else:
-            rationale = f"{matched}/{total} conditions matched"
+    # Preserve the ticker_rank ordering (most templates matched, then most
+    # recent) rather than df's ticker-ASC ordering from the SQL query.
+    for ticker in top_tickers:
+        tdf = df[df["ticker"] == ticker]
+        if tdf.empty:
+            continue
+        ticker = str(ticker)
+
+        strategies: List[TAWatchlistStrategyMatch] = []
+        for _, r in tdf.iterrows():
+            tmpl = TEMPLATE_MAP.get(str(r["template_name"]))
+            matched, total = int(r["matched_conditions"]), int(r["total_conditions"])
+            key_values = _parse_key_values(r.get("key_values"))
+            if tmpl is not None and tmpl.conditions:
+                detail = "; ".join(_describe_condition(c, key_values) for c in tmpl.conditions)
+                rationale = f"{tmpl.description}: {detail}"
+            elif tmpl is not None:
+                rationale = f"{tmpl.description} — {matched}/{total} conditions matched"
+            else:
+                rationale = f"{matched}/{total} conditions matched"
+
+            strategies.append(TAWatchlistStrategyMatch(
+                template_name=str(r["template_name"]),
+                template_description=tmpl.description if tmpl is not None else None,
+                template_strategy_description=_template_strategy_description(tmpl),
+                category=str(r["category"]),
+                date=pd.Timestamp(r["date"]).strftime("%Y-%m-%d"),
+                score=float(r["score"]),
+                rationale=rationale,
+                matched_conditions=matched,
+                total_conditions=total,
+                key_values=key_values,
+            ))
+        # Most recently fired template first.
+        strategies.sort(key=lambda s: s.date, reverse=True)
 
         g = hist[hist["ticker"] == ticker]
         current_price = float(g["close"].iloc[-1]) if not g.empty else None
 
-        rec_date = pd.Timestamp(r["date"]).strftime("%Y-%m-%d")
+        rec_date = strategies[0].date
         g_asof_rec = g[g["date"] <= pd.Timestamp(rec_date)]
         recommended_price = float(g_asof_rec["close"].iloc[-1]) if not g_asof_rec.empty else None
 
@@ -655,15 +704,7 @@ async def get_ta_daily_watchlist(
             recommendation_date=rec_date,
             recommended_price=round(recommended_price, 2) if recommended_price is not None else None,
             current_price=round(current_price, 2) if current_price is not None else None,
-            template_name=str(r["template_name"]),
-            template_description=tmpl.description if tmpl is not None else None,
-            template_strategy_description=_template_strategy_description(tmpl),
-            category=str(r["category"]),
-            score=float(r["score"]),
-            rationale=rationale,
-            matched_conditions=matched,
-            total_conditions=total,
-            key_values=key_values,
+            strategies=strategies,
             resistance_levels=resistance_levels,
             support_levels=support_levels,
         ))
