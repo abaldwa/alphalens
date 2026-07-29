@@ -347,6 +347,18 @@ class TestWatchlistDaily:
         assert [s["template_name"] for s in row["strategies"]] == ["A1"]
 
 
+class TestPillarSummary:
+    def test_no_data_returns_200_not_500(self, client):
+        # Regression: get_ta_pillar_summary calls get_ta_daily_watchlist
+        # directly (bypassing FastAPI's request cycle, so Query(...)
+        # defaults never resolve) and must pass every one of its
+        # parameters — including `templates` — as a literal value. A
+        # forgotten `templates=None` previously left the raw Query object
+        # in place, crashing on `.split()` inside get_ta_daily_watchlist.
+        r = client.get("/api/v1/ta/pillar_summary")
+        assert r.status_code == 200, r.text
+
+
 class TestConsensusDaily:
     def test_no_ta_signals_table_returns_empty(self, client):
         r = client.get("/api/v1/ta/consensus/daily")

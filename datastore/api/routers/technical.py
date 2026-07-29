@@ -1005,8 +1005,8 @@ async def get_ta_pillar_summary() -> Dict[str, Any]:
     # request) bypasses FastAPI's dependency injection, so its Query(...)
     # parameter objects never resolve to their defaults — pass the same
     # literal defaults FastAPI would have used (date=None, limit=20,
-    # lookback_days=5) explicitly.
-    watchlist = await get_ta_daily_watchlist(date=None, limit=20, lookback_days=5)
+    # lookback_days=5, templates=None) explicitly.
+    watchlist = await get_ta_daily_watchlist(date=None, limit=20, lookback_days=5, templates=None)
     gains = []
     for row in watchlist.rows:
         if row.current_price and row.resistance_levels:
