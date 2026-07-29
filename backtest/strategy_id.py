@@ -109,6 +109,32 @@ FUNDAMENTAL_PRESET_DEFAULT_HORIZON = {
     "fcf_low_debt": HorizonBucket.D63,
     "cash_flow_backed_earnings": HorizonBucket.D63,
     "turnaround_recovery": HorizonBucket.D63,
+    # [2026-07-29] The 16 "composite_score" STRATEGY_CATALOG entries
+    # (features/fundamental_composites.py::SCORE_FUNCTIONS, ranked top-N
+    # by continuous score rather than binary threshold — see
+    # backtest/adapters/fundamental_adapter.py's SCORE_FUNCTIONS branch)
+    # had no horizon default at all, so queuing any of them raised
+    # ValueError at job start. Same reasoning style as above: structural
+    # quality/moat/capital-allocation theses that only re-rate slowly are
+    # patient buy-and-hold bets (1y); recovery/re-rating/under-discovery
+    # theses that resolve once the market notices a specific catalyst are
+    # quarter-ish plays (63d).
+    "moat": HorizonBucket.Y1,
+    "longevity": HorizonBucket.Y1,
+    "sector_leader": HorizonBucket.Y1,
+    "governance_quality_growth": HorizonBucket.Y1,
+    "capital_allocation": HorizonBucket.Y1,
+    "capital_efficiency": HorizonBucket.Y1,
+    "promoter_aligned": HorizonBucket.Y1,
+    "owner_earnings": HorizonBucket.Y1,
+    "qglp": HorizonBucket.Y1,
+    "contrarian_recovery": HorizonBucket.D63,
+    "earnings_rerating": HorizonBucket.D63,
+    "normalization_value": HorizonBucket.D63,
+    "story_numbers": HorizonBucket.D63,
+    "small_cap_compounders": HorizonBucket.D63,
+    "smile": HorizonBucket.D63,
+    "under_followed": HorizonBucket.D63,
 }
 
 # Per-preset exit params (PerTemplateExitPolicy) — same reasoning that
@@ -138,6 +164,27 @@ FUNDAMENTAL_PRESET_EXIT_PARAMS: Dict[str, Dict[str, float]] = {
     "fcf_low_debt": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
     "cash_flow_backed_earnings": {"stop_pct": 0.07, "target_pct": 0.15, "max_hold_days": 40},
     "turnaround_recovery": {"stop_pct": 0.10, "target_pct": 0.25, "max_hold_days": 45},
+    # [2026-07-29] Paired with the FUNDAMENTAL_PRESET_DEFAULT_HORIZON
+    # extension above — same 16 composite-score entries, same reasoning:
+    # the 1y buy-and-hold group gets quality_compounder's wider stop/
+    # target/hold; the 63d recovery/re-rating group gets garp/magic_
+    # formula's tighter, quicker-resolving parameters.
+    "moat": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "longevity": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "sector_leader": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "governance_quality_growth": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "capital_allocation": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "capital_efficiency": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "promoter_aligned": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "owner_earnings": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "qglp": {"stop_pct": 0.08, "target_pct": 0.20, "max_hold_days": 60},
+    "contrarian_recovery": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "earnings_rerating": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "normalization_value": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "story_numbers": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "small_cap_compounders": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "smile": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
+    "under_followed": {"stop_pct": 0.07, "target_pct": 0.16, "max_hold_days": 45},
 }
 
 

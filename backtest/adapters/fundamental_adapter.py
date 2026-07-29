@@ -214,7 +214,19 @@ class FundamentalAdapter:
                     if result["passes"]:
                         matched.append(ticker)
                         self._last_ratios[ticker] = {"ncav_per_share": result["ncav_per_share"]}
-        elif self.preset in SCORE_FUNCTIONS:
+        elif self.preset in SCORE_FUNCTIONS and self.preset not in SCREENER_PRESETS:
+            # [BUG FIX, 2026-07-29] SCORE_FUNCTIONS and SCREENER_PRESETS are
+            # NOT disjoint: 4 names (magic_formula, garp, fcf_low_debt,
+            # quality_value) exist in both dicts, but STRATEGY_CATALOG only
+            # ever classifies them with kind="preset" — SCORE_FUNCTIONS'
+            # entries under those same names are internal score helpers, not
+            # a second top-level strategy. Checking `self.preset in
+            # SCORE_FUNCTIONS` alone (as this branch originally did) silently
+            # hijacked those 4 genuine screener presets into this ranking
+            # path instead of the binary matches_screener_preset path below,
+            # so this branch now only claims a preset name if SCREENER_PRESETS
+            # doesn't already claim it first.
+            #
             # Composite-score strategies (QGLP, Moat, Owner Earnings, etc.)
             # have no binary pass/fail — every ticker with a computable
             # score is a candidate, ranked by score. `matched` here is
