@@ -32,10 +32,12 @@ DuckDB staging table as each chunk finishes — not held in one large
 in-memory structure spanning the whole run. This keeps peak memory
 bounded to one chunk's derived DataFrames at a time (mirrors
 matrix_builder.py's existing per-chunk memory-bounding rationale) and
-makes a crash between "compute" and "the per-date write pass" recoverable
-in principle (the already-staged chunks survive; only IN-PROGRESS/
-un-staged work is lost) — full resume-from-partial-staging logic is not
-implemented here, but nothing about this schema/design precludes it.
+makes a crash between "compute" and "the per-date write pass" recoverable:
+`stage_batch_panels` re-invoked with the SAME run_id skips any ticker
+that already has a full chunk staged (see its `force_restage` parameter)
+instead of recomputing/re-staging everything from zero — the already-
+staged chunks survive a crash and only genuinely IN-PROGRESS/un-staged
+work is redone.
 
 Storage: a SEPARATE DuckDB file
 (config.settings.FEATURE_PANEL_STAGING_DB_PATH), not the main
@@ -163,6 +165,7 @@ def stage_batch_panels(
     dates: List[pd.Timestamp],
     run_id: str,
     db_path=None,
+    force_restage: bool = False,
 ) -> int:
     """
     Compute technical/intraday/pnd/adv_tech/patterns ONCE per ticker chunk
@@ -190,11 +193,27 @@ def stage_batch_panels(
         and `drop_staging_run`.
     db_path : Path, optional
         Defaults to FEATURE_PANEL_STAGING_DB_PATH.
+    force_restage : bool, optional
+        [Resumability fix, 2026-07-29] Default False: any ticker that
+        already has ALL of its rows staged for this `run_id` (i.e. was
+        fully staged before a crash/restart) is skipped — its already-
+        computed rows are left as-is and NOT recomputed. This is what
+        makes re-invoking this function with the SAME run_id after an
+        OOM kill / crash a genuine, cheap resume instead of starting the
+        whole run over from zero. Chunks are staged atomically (one
+        INSERT per chunk), so a ticker either has all its requested dates
+        staged or none — "any staged row for this ticker" is therefore a
+        safe proxy for "this ticker's chunk fully completed".
+        Pass True only for a deliberate fresh restart (e.g. re-running
+        after fixing a bug in the feature computation itself, where prior
+        staged rows would be wrong) — this wipes ALL prior progress for
+        `run_id` before staging anything.
 
     Returns
     -------
     int
-        Total (ticker, date) rows staged.
+        Total (ticker, date) rows staged in THIS call (already-staged
+        tickers that were skipped are not counted).
     """
     if not dates:
         return 0
@@ -234,7 +253,26 @@ def stage_batch_panels(
     path = db_path or FEATURE_PANEL_STAGING_DB_PATH
     with get_duckdb_connection(path, read_only=False, persist=False) as conn:
         _ensure_staging_table(conn)
-        conn.execute(f"DELETE FROM {_TABLE_NAME} WHERE run_id = ?", [run_id])
+
+        if force_restage:
+            conn.execute(f"DELETE FROM {_TABLE_NAME} WHERE run_id = ?", [run_id])
+            already_staged_tickers = set()
+        else:
+            already_staged_tickers = {
+                row[0]
+                for row in conn.execute(
+                    f"SELECT DISTINCT ticker FROM {_TABLE_NAME} WHERE run_id = ?", [run_id]
+                ).fetchall()
+            }
+
+        n_already_staged = len(already_staged_tickers & set(tickers))
+        n_to_compute = len(tickers) - n_already_staged
+        if already_staged_tickers:
+            logger.info(
+                "panel_staging: resume run_id=%s — %d/%d tickers already fully staged "
+                "(skipping recompute), %d tickers still to compute",
+                run_id, n_already_staged, len(tickers), n_to_compute,
+            )
 
         total_staged = 0
         i = 0
@@ -242,8 +280,12 @@ def stage_batch_panels(
         while i < len(tickers):
             base_chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
             chunk_size = max(_BATCH_CHUNK_SIZE_FLOOR, base_chunk_size // _BATCH_CHUNK_SIZE_DIVISOR)
-            chunk_tickers = tickers[i : i + chunk_size]
+            candidate_tickers = tickers[i : i + chunk_size]
             i += chunk_size
+
+            chunk_tickers = [t for t in candidate_tickers if t not in already_staged_tickers]
+            if not chunk_tickers:
+                continue
 
             chunk_panel = universe_panel[universe_panel["ticker"].isin(set(chunk_tickers))]
             if chunk_panel.empty:

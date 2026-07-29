@@ -183,3 +183,89 @@ class TestBatchStagingMatchesPerDateSequential:
         pd.testing.assert_frame_equal(staged_sorted, baseline_sorted, check_dtype=False)
 
         panel_staging.drop_staging_run(run_id)
+
+
+class TestResumeSkipsAlreadyStagedTickers:
+    def test_resume_does_not_recompute_already_staged_tickers(
+        self, monkeypatch, tmp_path
+    ):
+        """Simulates an interrupted first attempt (only some tickers ever
+        got staged before the process died) followed by a restart with the
+        SAME run_id and the FULL ticker list. The already-staged tickers
+        must not be recomputed (proven by making the compute function
+        raise if invoked for them), the missing tickers must get staged,
+        and load_staged_panel_for_date must return complete data for every
+        ticker afterward."""
+        from features import panel_staging
+
+        tickers = ["AAA", "BBB", "CCC", "DDD"]
+        rows = {t: _make_ohlcv_rows(320, seed=i) for i, t in enumerate(tickers)}
+        bm_rows = {name: _make_ohlcv_rows(320, seed=hash(name) % 1000) for name in BENCHMARK_TICKERS.values()}
+        client = _FakeDataStoreClient({**rows, **bm_rows})
+
+        staging_db_path = tmp_path / "panel_staging_resume_test.duckdb"
+        monkeypatch.setattr(panel_staging, "FEATURE_PANEL_STAGING_DB_PATH", staging_db_path)
+
+        # Force each chunk to contain exactly one ticker, so per-ticker
+        # skip behavior is easy to reason about/assert on.
+        monkeypatch.setattr(panel_staging, "_BATCH_CHUNK_SIZE_DIVISOR", 1)
+        import ingestion.scheduler.resource_guard as resource_guard
+        monkeypatch.setattr(resource_guard, "adaptive_chunk_size", lambda *a, **k: 1)
+
+        all_dates = pd.bdate_range(start="2024-01-01", periods=320)
+        target_dates = list(all_dates[-5:])
+        run_id = "test_resume_run"
+
+        # --- "Interrupted first attempt": stage only AAA, BBB -----------
+        first_attempt_tickers = ["AAA", "BBB"]
+        staged_first = panel_staging.stage_batch_panels(
+            client, first_attempt_tickers, target_dates, run_id=run_id
+        )
+        assert staged_first > 0
+        for t in first_attempt_tickers:
+            for d in target_dates:
+                loaded = panel_staging.load_staged_panel_for_date(run_id, d)
+                assert t in set(loaded["ticker"]), f"{t} should be staged after first attempt"
+
+        # --- Restart with SAME run_id, FULL ticker list -----------------
+        # Wrap compute_full_range_chunk_panels so it raises if invoked on a
+        # chunk containing an already-staged ticker (AAA/BBB) — proves
+        # resume genuinely skips recomputation, not just re-staging
+        # identical results.
+        import features.matrix_builder as mb
+
+        real_compute = mb.compute_full_range_chunk_panels
+        calls = []
+
+        def _guarded_compute(chunk_panel, benchmark_wide):
+            chunk_tickers = set(chunk_panel["ticker"].unique())
+            calls.append(chunk_tickers)
+            if chunk_tickers & set(first_attempt_tickers):
+                raise AssertionError(
+                    f"compute_full_range_chunk_panels invoked for already-staged "
+                    f"ticker(s) {chunk_tickers & set(first_attempt_tickers)} — resume "
+                    f"did not skip them"
+                )
+            return real_compute(chunk_panel, benchmark_wide)
+
+        monkeypatch.setattr(panel_staging, "compute_full_range_chunk_panels", _guarded_compute)
+
+        staged_second = panel_staging.stage_batch_panels(
+            client, tickers, target_dates, run_id=run_id
+        )
+        assert staged_second > 0
+
+        computed_tickers = set().union(*calls) if calls else set()
+        assert computed_tickers == {"CCC", "DDD"}, (
+            f"expected only the previously-missing tickers to be (re)computed, got {computed_tickers}"
+        )
+
+        # --- All 4 tickers now present for every requested date ---------
+        for d in target_dates:
+            loaded = panel_staging.load_staged_panel_for_date(run_id, d)
+            assert loaded is not None
+            assert set(loaded["ticker"]) == set(tickers), (
+                f"expected all 4 tickers staged for {d}, got {set(loaded['ticker'])}"
+            )
+
+        panel_staging.drop_staging_run(run_id)

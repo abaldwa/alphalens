@@ -47,6 +47,24 @@ Usage
     # Force recompute even if parquet already exists
     .venv/bin/python3 scripts/feature_backfill.py --force
 
+--force is only actually honored ONCE per run_id
+------------------------------------------------
+    The first invocation of a given --run-id (explicit or auto-generated)
+    that passes --force recomputes dates with an existing parquet, as
+    expected, AND writes a sentinel file
+    (datastore/features/daily/.<run-id>.force_applied). Any LATER
+    invocation with the SAME run_id that also passes --force is treated as
+    an automatic crash/OOM-kill restart of the same run, not a fresh
+    request to blow away already-correct progress — it silently ignores
+    --force and falls back to normal skip-if-exists behavior. This exists
+    so an unattended restart supervisor (see
+    scripts/run_feature_backfill_supervised.sh /
+    alphalens-feature-backfill@.service) can always pass --force
+    unconditionally on every attempt without ever redoing already-finished
+    work after a restart — only the FIRST attempt for a run_id actually
+    forces. Use a fresh --run-id if you deliberately want --force to apply
+    again from scratch.
+
 Timing
 ------
     Each date: ~60-300 s (2492 tickers × API fetch + vectorised feature math).
@@ -90,7 +108,11 @@ def _parse_args() -> argparse.Namespace:
                         "pattern_scores chunk loop across N worker processes (default: 1, "
                         "unchanged sequential behavior). See "
                         "features/matrix_builder.py::_compute_chunked_ticker_independent_panels "
-                        "for the BLAS-thread-capping safeguard this uses.")
+                        "for the BLAS-thread-capping safeguard this uses. Recommended max on "
+                        "this project's 16GB laptop: 8, not 12 — 12 simultaneous workers was "
+                        "implicated in a sharp temporary memory dip during a real launch "
+                        "(2026-07-29), on a machine with a real history of systemd-oomd kills "
+                        "during long backfills.")
     p.add_argument("--run-id", default=None,
                    help="Identifier for this run's failed-dates manifest file "
                         "(default: a timestamp+PID, e.g. 20260728_101500_12345). The manifest is "
@@ -123,7 +145,46 @@ def main() -> None:
     logger.info("Found %d trading dates from %s to %s", len(all_dates), from_dt, to_dt)
 
     FEATURES_DAILY_DIR.mkdir(parents=True, exist_ok=True)
-    if args.force:
+
+    # run_id is normally computed further below (it also keys the
+    # failed-dates manifest), but it's needed here too — see the
+    # --force-only-once sentinel handling immediately below.
+    run_id = args.run_id or f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+
+    # [Auto-restart support, 2026-07-29] --force means "recompute dates
+    # that already have a parquet" — correct and intentional on the FIRST
+    # launch of a run (e.g. stale/wrong-schema parquets need clearing),
+    # but WRONG on every automatic restart after a crash/OOM-kill of the
+    # SAME run: by then this run's own earlier (pre-crash) progress has
+    # already written CORRECT parquets for those dates, and blindly
+    # honoring --force again on every restart would mean an unattended
+    # supervisor loop (e.g. systemd Restart=on-failure) never converges —
+    # every restart would redo all the work its own prior attempt already
+    # finished. A marker file, keyed by run_id, records that --force has
+    # already been "spent" once for this run_id; subsequent invocations
+    # with the same run_id silently fall back to normal skip-if-exists
+    # behavior even if the restart supervisor still passes --force
+    # (simplest, since the supervisor then doesn't need its own separate
+    # "strip --force after the first attempt" logic).
+    force_sentinel = FEATURES_DAILY_DIR / f".{run_id}.force_applied"
+    effective_force = args.force
+    if args.force and force_sentinel.exists():
+        effective_force = False
+        logger.info(
+            "--force was passed but run_id=%s already applied --force once before "
+            "(sentinel %s exists) — treating this as an automatic restart and falling "
+            "back to normal skip-if-exists behavior instead of recomputing everything again",
+            run_id, force_sentinel,
+        )
+    elif args.force:
+        force_sentinel.write_text(datetime.now().isoformat())
+        logger.info(
+            "--force applied for run_id=%s (first time) — wrote sentinel %s so any "
+            "automatic restart with this same run_id will NOT re-force",
+            run_id, force_sentinel,
+        )
+
+    if effective_force:
         pending = all_dates
     else:
         existing = {p.stem for p in FEATURES_DAILY_DIR.glob("*.parquet")}
@@ -162,8 +223,8 @@ def main() -> None:
     # failures without re-scanning a huge log.
     # run-id defaults to a second-resolution timestamp + PID so two backfill
     # launches started in the same second (e.g. a quick manual retry, or two
-    # concurrent agents) don't share one manifest file.
-    run_id = args.run_id or f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+    # concurrent agents) don't share one manifest file. (Computed earlier,
+    # above, so the --force-only-once sentinel could also key off it.)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     manifest_path = LOGS_DIR / f"feature_backfill_failed_{run_id}.txt"
     logger.info("Failed-dates manifest (if any): %s", manifest_path)

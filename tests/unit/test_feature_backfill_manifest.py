@@ -93,6 +93,57 @@ def test_failed_date_is_written_to_the_manifest(patched_backfill_env, monkeypatc
     assert failed_dates == ["2024-01-03"]
 
 
+def test_force_is_only_honored_once_per_run_id(patched_backfill_env, monkeypatch):
+    """--force on the first invocation of a run_id recomputes every date
+    (including ones with an existing parquet); a SECOND invocation with the
+    SAME run_id and --force again (simulating an auto-restart-supervisor
+    that always passes --force) must NOT re-force — it should fall back to
+    normal skip-if-exists behavior instead, so an unattended restart loop
+    converges instead of redoing already-finished work forever."""
+    fb, tmp_path = patched_backfill_env
+    features_dir = tmp_path / "features_daily"
+
+    computed_dates = []
+
+    def fake_step_compute_features(d, compute_hmm=True, data_cache=None, **kwargs):
+        computed_dates.append(d)
+        # Simulate this date's parquet now existing (as the real
+        # step_compute_features would produce).
+        (features_dir / f"{d.isoformat()}.parquet").write_bytes(b"")
+        return None
+
+    fake_pipeline = SimpleNamespace(step_compute_features=fake_step_compute_features)
+    monkeypatch.setitem(sys.modules, "ingestion.scheduler.daily_pipeline", fake_pipeline)
+
+    # Pre-seed one date with an existing (stale) parquet so --force's
+    # "recompute even if it exists" behavior is actually exercised.
+    (features_dir / "2024-01-02.parquet").write_bytes(b"stale")
+
+    argv = [
+        "feature_backfill.py", "--from-date", "2024-01-02", "--to-date", "2024-01-04",
+        "--run-id", "force_once_test", "--no-hmm", "--force",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    # --- First invocation: --force should be honored, recomputing ALL 3
+    # dates (including 2024-01-02, which already had a stale parquet). ---
+    fb.main()
+    assert sorted(computed_dates) == [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    sentinel = features_dir / ".force_once_test.force_applied"
+    assert sentinel.exists()
+
+    # --- Second invocation, SAME run_id, --force passed again (simulating
+    # an auto-restart supervisor): must NOT recompute dates that already
+    # have a parquet from the first invocation. ---
+    computed_dates.clear()
+    monkeypatch.setattr(sys, "argv", argv)
+    fb.main()
+    assert computed_dates == [], (
+        f"expected no dates recomputed on restart (all 3 already have parquets from "
+        f"attempt 1, --force should be ignored the 2nd time), got {computed_dates}"
+    )
+
+
 def test_no_failures_leaves_no_manifest_entries(patched_backfill_env, monkeypatch):
     fb, tmp_path = patched_backfill_env
 
