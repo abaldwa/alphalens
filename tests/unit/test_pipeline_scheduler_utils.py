@@ -31,6 +31,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datastore.api.db import close_all_connections, get_duckdb_connection, get_sqlite_connection
 from datastore.schema import create_normalised, create_signals
 from ingestion.scheduler.pipeline_scheduler import (
+    _execute_queued_feature_backfill_job,
     _job_timer_stats,
     _job_timer_start,
     _record_heartbeat,
@@ -157,3 +158,88 @@ class TestRecordHeartbeat:
         monkeypatch.setattr(settings_mod, "DUCKDB_PATH", tmp_path / "no_such.duckdb")
 
         _record_heartbeat("daily_pipeline", "success", db_path=bogus_db_path)  # must not raise
+
+
+class TestQueuedFeatureBackfillJobWaitsForPipelineLock:
+    """
+    _execute_queued_feature_backfill_job's whole reason for existing (over
+    just launching scripts/feature_backfill.py directly) is that it defers
+    to the daily pipeline's advisory lock instead of running concurrently
+    with it via APScheduler's default (parallel-by-job-id) executor —
+    2026-07-28: an unmanaged concurrent backfill run caused a live
+    pnd_filter step to time out. These tests exercise that waiting/give-up
+    logic with subprocess.run, pipeline_run_lock, and time.sleep all
+    monkeypatched — no real backfill subprocess or scheduler process runs.
+    """
+
+    def test_waits_then_runs_once_lock_is_free(self, monkeypatch):
+        import contextlib
+
+        import ingestion.scheduler.pipeline_scheduler as sched_mod
+
+        # First two lock attempts are busy (pipeline running), third is free.
+        lock_results = iter([False, False, True])
+
+        @contextlib.contextmanager
+        def fake_lock():
+            yield next(lock_results)
+
+        monkeypatch.setattr(sched_mod, "pipeline_run_lock", fake_lock)
+        sleeps = []
+        monkeypatch.setattr(sched_mod.time, "sleep", lambda s: sleeps.append(s))
+
+        run_calls = []
+
+        class _FakeResult:
+            returncode = 0
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda cmd, **kw: (run_calls.append(cmd), _FakeResult())[1],
+        )
+        heartbeats = []
+        monkeypatch.setattr(
+            sched_mod, "_record_heartbeat",
+            lambda job_id, status, error=None, **kw: heartbeats.append((job_id, status, error)),
+        )
+
+        _execute_queued_feature_backfill_job(
+            "2023-01-01", "2023-01-10", "test_run", poll_interval_seconds=1,
+        )
+
+        assert len(sleeps) == 2  # two busy polls before the third (free) attempt
+        assert len(run_calls) == 1
+        assert "--from-date" in run_calls[0] and "2023-01-01" in run_calls[0]
+        assert heartbeats == [("queued_feature_backfill_test_run", "success", None)]
+
+    def test_gives_up_after_timeout_without_ever_running_subprocess(self, monkeypatch):
+        import contextlib
+
+        import ingestion.scheduler.pipeline_scheduler as sched_mod
+
+        @contextlib.contextmanager
+        def always_busy():
+            yield False
+
+        monkeypatch.setattr(sched_mod, "pipeline_run_lock", always_busy)
+        monkeypatch.setattr(sched_mod.time, "sleep", lambda s: None)
+
+        run_calls = []
+        monkeypatch.setattr("subprocess.run", lambda cmd, **kw: run_calls.append(cmd))
+        heartbeats = []
+        monkeypatch.setattr(
+            sched_mod, "_record_heartbeat",
+            lambda job_id, status, error=None, **kw: heartbeats.append((job_id, status, error)),
+        )
+
+        _execute_queued_feature_backfill_job(
+            "2023-01-01", "2023-01-10", "test_run2",
+            wait_for_lock_timeout_seconds=5, poll_interval_seconds=2,
+        )
+
+        assert run_calls == []  # never ran — lock was never free
+        assert len(heartbeats) == 1
+        job_id, status, error = heartbeats[0]
+        assert job_id == "queued_feature_backfill_test_run2"
+        assert status == "failed"
+        assert "pipeline lock unavailable" in error

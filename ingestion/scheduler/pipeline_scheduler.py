@@ -44,6 +44,7 @@ from typing import Callable, Iterator, List, Optional
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from config.timezone import now_ist
 from datastore.api.db import get_sqlite_connection
@@ -1988,6 +1989,148 @@ def schedule_weekend_feature_backfill(
         coalesce=True,
     )
     logger.info(f"Weekend feature backfill scheduled: {schedule_time} IST (saturday)")
+
+
+def _execute_queued_feature_backfill_job(
+    from_date: str,
+    to_date: str,
+    run_id: str,
+    no_hmm: bool = True,
+    force: bool = False,
+    chronological: bool = False,
+    wait_for_lock_timeout_seconds: int = 21600,
+    poll_interval_seconds: int = 60,
+) -> None:
+    """
+    Ad-hoc scripts/feature_backfill.py invocation, queued through this
+    scheduler process rather than launched as an unmanaged background
+    shell job, so it never runs concurrently with the daily pipeline and
+    contends for the DuckDB write lock (2026-07-28: an unmanaged backfill
+    run caused a live pnd_filter step to time out and directly slowed the
+    backfill itself to ~700s/date via repeated 503 lock-contention
+    retries).
+
+    Waits (polling pipeline_run_lock() — the same advisory flock
+    run_steps_for_date already uses to prevent its own concurrent
+    invocations) until the daily pipeline is idle before starting the
+    backfill subprocess, rather than assuming APScheduler's thread-pool
+    executor will serialize it against a differently-named job (it won't
+    — different job IDs run concurrently in separate threads by default).
+    Gives up (records a 'failed' heartbeat, does not run the backfill) if
+    the lock never frees within wait_for_lock_timeout_seconds, rather than
+    blocking this scheduler process indefinitely.
+
+    Top-level + picklable (APScheduler SQLAlchemyJobStore requirement).
+    """
+    import subprocess
+    import sys
+
+    job_id = f"queued_feature_backfill_{run_id}"
+    _t0 = _job_timer_start()
+
+    waited = 0.0
+    while True:
+        with pipeline_run_lock() as acquired:
+            if acquired:
+                break
+        if waited >= wait_for_lock_timeout_seconds:
+            duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+            logger.error(
+                f"{job_id}: gave up waiting for the pipeline lock after {waited:.0f}s — not running"
+            )
+            _record_heartbeat(
+                job_id, "failed", f"pipeline lock unavailable after {waited:.0f}s",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+            return
+        time.sleep(poll_interval_seconds)
+        waited += poll_interval_seconds
+
+    # pipeline_run_lock() above is released (it's a context manager) the
+    # instant the `with` block exits, i.e. right after confirming it was
+    # free — it does NOT stay held for the backfill subprocess's duration.
+    # This only guarantees the daily pipeline wasn't running the moment we
+    # checked, not exclusivity for the whole backfill run; a cron-triggered
+    # daily pipeline firing mid-backfill can still contend. Acceptable
+    # here since this job is for short, narrow ad-hoc ranges (a handful of
+    # dates), not the full multi-day historical sweep.
+    cmd = [sys.executable, "scripts/feature_backfill.py", "--from-date", from_date, "--to-date", to_date,
+           "--run-id", run_id]
+    if no_hmm:
+        cmd.append("--no-hmm")
+    if force:
+        cmd.append("--force")
+    if chronological:
+        cmd.append("--chronological")
+
+    try:
+        logger.info(f"{job_id}: pipeline lock free after {waited:.0f}s wait — starting backfill")
+        result = subprocess.run(cmd, capture_output=False, timeout=3600 * 6)
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        if result.returncode != 0:
+            logger.error(f"{job_id}: script exited with code {result.returncode}")
+            _record_heartbeat(
+                job_id, "failed", f"exit code {result.returncode}",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+        else:
+            logger.info(f"{job_id}: completed successfully")
+            _record_heartbeat(
+                job_id, "success",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+    except subprocess.TimeoutExpired:
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        logger.error(f"{job_id}: exceeded 6-hour timeout")
+        _record_heartbeat(
+            job_id, "failed", "timeout after 6h",
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+    except Exception as exc:
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        logger.error(f"{job_id} raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat(
+            job_id, "failed", str(exc),
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+
+
+def schedule_feature_backfill_once(
+    scheduler: BackgroundScheduler,
+    from_date: str,
+    to_date: str,
+    run_id: str,
+    no_hmm: bool = True,
+    force: bool = False,
+    chronological: bool = False,
+) -> None:
+    """
+    Enqueue a one-time scripts/feature_backfill.py run through this
+    scheduler's persistent jobstore. Safe to call from a separate client
+    process (a fresh BackgroundScheduler bound to the same SQLAlchemyJobStore
+    file, never .start()ed) — add_job() persists synchronously to the
+    jobstore regardless of whether the calling scheduler instance is
+    running; the already-running scheduler process picks it up on its next
+    poll of that same jobstore.
+
+    Fires ASAP (DateTrigger with no run_date defaults to "now"), but
+    _execute_queued_feature_backfill_job itself waits for the daily
+    pipeline's advisory lock to be free before actually starting the
+    backfill subprocess — see that function's docstring.
+    """
+    job_id = f"queued_feature_backfill_{run_id}"
+    scheduler.add_job(
+        _execute_queued_feature_backfill_job,
+        DateTrigger(),
+        kwargs={
+            "from_date": from_date, "to_date": to_date, "run_id": run_id,
+            "no_hmm": no_hmm, "force": force, "chronological": chronological,
+        },
+        id=job_id,
+        replace_existing=True,
+        misfire_grace_time=86400,
+    )
+    logger.info(f"Queued one-time feature backfill job {job_id}: {from_date} -> {to_date}")
 
 
 def _execute_weekend_fundamentals_job() -> None:
