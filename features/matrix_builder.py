@@ -46,11 +46,19 @@ from config.settings import DELIVERY_PCT_RANGE, FEATURES_DAILY_DIR, NULL_RATE_AL
 from config.universe import load_universe
 from datastore.client import DataStoreClient
 from features.calendar import CALENDAR_FEATURES, compute_calendar_features
-from features.corporate_action_features import CORPORATE_ACTION_FEATURES, compute_corporate_action_features_panel
+from features.corporate_action_features import (
+    CORPORATE_ACTION_FEATURES,
+    compute_corporate_action_features_panel,
+    compute_corporate_action_features_panel_vectorized,
+)
 from features.fno_features import FNO_FEATURES, compute_fno_features_panel, load_ever_fno_eligible_tickers
 from features.fundamental import FUNDAMENTAL_FEATURES, compute_fundamental_features_panel
 from features.fundamental_cache import load_fundamental_raw_cache, save_fundamental_raw_cache_entries
-from features.governance import GOVERNANCE_FEATURES, compute_governance_features_panel
+from features.governance import (
+    GOVERNANCE_FEATURES,
+    compute_governance_features_panel,
+    compute_governance_features_panel_vectorized,
+)
 from features.intraday import INTRADAY_FEATURES, compute_intraday_features
 from features.macro_features import MACRO_FEATURES, compute_macro_features, load_macro_indicators
 from features.mf_holdings import (
@@ -58,6 +66,7 @@ from features.mf_holdings import (
     MF_HOLDINGS_FEATURES,
     compute_mf_holdings_features,
     compute_mf_holdings_features_panel,
+    compute_mf_holdings_features_panel_vectorized,
     load_mf_holdings_history,
 )
 from features.multibagger import MULTIBAGGER_FEATURES, compute_multibagger_features
@@ -1087,26 +1096,25 @@ def build_feature_matrix(
     # the universe once warm), not the whole cache — see
     # features/fundamental_cache.py's docstring for why.
     save_fundamental_raw_cache_entries(cache_misses)
-    # [2026-07-29] governance/mf_holdings/corp_action each confirmed
-    # per-ticker-independent aside from mf_holdings' single post-loop
-    # groupby-rank step (handled correctly inside the _chunked wrapper —
-    # see compute_mf_holdings_features_panel_chunked's docstring) —
-    # dispatched across the same panel_workers pool as the technical/
-    # intraday/hmm/pnd/adv_tech/patterns panels above. panel_workers=1
-    # (the default) calls the original unparallelized functions directly,
-    # unchanged.
-    governance = compute_governance_features_panel_chunked(
+    # [2026-07-29] governance/mf_holdings/corp_action switched from the
+    # per-ticker-loop-dispatched-across-a-process-pool (_chunked, commit
+    # 07d0122) path to single-pass pandas-groupby vectorization (model-review
+    # approved with mandatory fixes — see compute_governance_features_panel_vectorized's
+    # docstring for the quarter_end_date sort-key / dedup / shift-before-lookup
+    # details). No process pool needed here anymore; panel_workers no longer
+    # applies to these three panels. The _chunked/_panel functions remain in
+    # features/matrix_builder.py and the respective feature modules as the
+    # parity baseline (tests/unit/test_panel_vectorized_parity.py).
+    governance = compute_governance_features_panel_vectorized(
         client, active_tickers, target_date,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
-        panel_workers=panel_workers,
     )
-    mf_holdings = compute_mf_holdings_features_panel_chunked(
-        active_tickers, target_date, tier_map=tier_map, panel_workers=panel_workers,
+    mf_holdings = compute_mf_holdings_features_panel_vectorized(
+        active_tickers, target_date, tier_map=tier_map,
     )
-    corp_action = compute_corporate_action_features_panel_chunked(
+    corp_action = compute_corporate_action_features_panel_vectorized(
         client, active_tickers, target_date, listing_dates=listing_dates,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
-        panel_workers=panel_workers,
     )
     # [2026-07-26 perf fix] ~2,100 of ~2,300 universe tickers have never had
     # F&O activity at all — compute_fno_features_panel used to call the F&O

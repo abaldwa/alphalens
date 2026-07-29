@@ -351,3 +351,272 @@ def compute_corporate_action_features_panel(
 
     panel = pd.DataFrame(records)
     return panel[["ticker"] + CORPORATE_ACTION_FEATURES]
+
+
+def _vectorized_window_return(
+    ohlcv_panel: Optional[pd.DataFrame],
+    bounds: pd.DataFrame,
+) -> pd.Series:
+    """
+    Shared helper for `corp_action_anticipation_return` and
+    `post_earnings_drift_signal` — both are "(last_close / first_close) -
+    1.0 over a per-ticker [window_start, window_end] window, NaN unless
+    >= 2 OHLCV rows fall inside it" (same formula, same guard, only the
+    bounds differ). `bounds` is indexed by ticker with `window_start`/
+    `window_end` Timestamp columns (may be NaT — such tickers are simply
+    excluded from the result, matching the sequential function's `if
+    window_start <= as_of` / `if drift_window_end > announcement_date`
+    guards).
+
+    Returns
+    -------
+    pd.Series indexed by ticker — only tickers with a defined, >=2-row
+    window are present (missing tickers must be treated as NaN by the caller).
+    """
+    if ohlcv_panel is None or ohlcv_panel.empty or bounds.empty:
+        return pd.Series(dtype=float)
+    b = bounds.dropna(subset=["window_start", "window_end"])
+    if b.empty:
+        return pd.Series(dtype=float)
+    merged = ohlcv_panel.merge(b.reset_index(), on="ticker", how="inner")
+    if merged.empty:
+        return pd.Series(dtype=float)
+    merged = merged[(merged["date"] >= merged["window_start"]) & (merged["date"] <= merged["window_end"])]
+    if merged.empty:
+        return pd.Series(dtype=float)
+    merged = merged.sort_values(["ticker", "date"], kind="mergesort")
+    g = merged.groupby("ticker", sort=False)
+    counts = g.size()
+    first_close = g["close"].first().astype(float)
+    last_close = g["close"].last().astype(float)
+    valid = counts >= 2
+    ret = (last_close / first_close) - 1.0
+    return ret[valid]
+
+
+def compute_corporate_action_features_panel_vectorized(
+    client: DataStoreClient,
+    tickers: List[str],
+    as_of: datetime,
+    listing_dates: Optional[Dict[str, datetime]] = None,
+    data_cache=None,
+    ohlcv_panel: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """
+    Vectorized alternative to `compute_corporate_action_features_panel`:
+    assembles every ticker's PIT-eligible corporate-action rows (and, for
+    `post_earnings_drift_signal`, fundamentals rows) into shared
+    DataFrames and computes all 10 features with pandas groupby
+    operations instead of a per-ticker Python function call in a loop.
+
+    Kept alongside (not replacing) `compute_corporate_action_features_panel`
+    / `compute_corporate_action_features_panel_chunked` (commit 07d0122)
+    as an alternative path — the sequential function remains the
+    production baseline this is diffed against
+    (tests/unit/test_corporate_action_features.py's parity tests).
+
+    Preserves, unchanged from the sequential function:
+      - `_pit_filter_actions`'s exact fallback chain
+        (announcement_date -> record_date -> ex_date) — applied here to
+        the whole multi-ticker frame at once, same filter logic, same
+        `known_as_of <= as_of` gate.
+      - The OHLCV window-return formula and its `len(window) >= 2` guard
+        for both `corp_action_anticipation_return` and
+        `post_earnings_drift_signal` (via `_vectorized_window_return`),
+        including the live `client.get_ohlcv` fallback for tickers with
+        no rows in `ohlcv_panel` (mirroring `ticker_ohlcv is not None and
+        not ticker_ohlcv.empty` vs the sequential function's `else` branch).
+      - `buyback_price_spread`'s `if close and buyback_price` guard against
+        the ratio==0.0 ("unknown price") sentinel.
+
+    Spec References
+    ----------------
+    SPEC-PIPE-002, SPEC-PIPE-003 (CRITICAL), SPEC-PIPE-004.
+    """
+    listing_dates = listing_dates or {}
+
+    action_rows: List[Dict[str, Any]] = []
+    fundamentals_rows: List[Dict[str, Any]] = []
+    for ticker in tickers:
+        try:
+            raw_actions = (
+                data_cache.get_corp_actions(ticker) if data_cache is not None
+                else client.get_corporate_actions(ticker)
+            )
+        except Exception as exc:
+            logger.warning(f"corp_action vectorized: actions fetch failed for {ticker}: {exc}")
+            raw_actions = []
+        for r in raw_actions or []:
+            r2 = dict(r)
+            r2["ticker"] = ticker
+            action_rows.append(r2)
+
+        try:
+            f_rows = (
+                data_cache.get_fundamentals(ticker, as_of) if data_cache is not None
+                else client.get_fundamentals_history(ticker, as_of, lookback_years=1)
+            )
+        except Exception as exc:
+            logger.warning(f"corp_action vectorized: fundamentals fetch failed for {ticker}: {exc}")
+            f_rows = []
+        for r in f_rows or []:
+            r2 = dict(r)
+            r2["ticker"] = ticker
+            fundamentals_rows.append(r2)
+
+    as_of_ts = pd.Timestamp(as_of)
+    result = pd.DataFrame({"ticker": list(tickers)}).set_index("ticker")
+    for f in CORPORATE_ACTION_FEATURES:
+        result[f] = np.nan
+
+    # ── corporate_actions: PIT filter, once, across the whole panel ──────
+    if action_rows:
+        actions = pd.DataFrame(action_rows)
+        actions["ex_date"] = pd.to_datetime(actions["ex_date"])
+        actions["announcement_date"] = pd.to_datetime(actions["announcement_date"])
+        actions["record_date"] = pd.to_datetime(actions["record_date"])
+        actions["known_as_of"] = actions["announcement_date"].fillna(actions["record_date"]).fillna(actions["ex_date"])
+        actions = actions[actions["known_as_of"].notna() & (actions["known_as_of"] <= as_of_ts)]
+        actions = actions.sort_values(["ticker", "ex_date"], kind="mergesort")
+    else:
+        actions = pd.DataFrame(columns=["ticker", "ex_date", "action_type", "ratio", "announcement_date", "record_date", "known_as_of"])
+
+    if not actions.empty:
+        # days_to_record_date: nearest FUTURE record_date per ticker.
+        future_record = actions[actions["record_date"].notna() & (actions["record_date"] > as_of_ts)]
+        if not future_record.empty:
+            future_record = future_record.sort_values(["ticker", "record_date"], kind="mergesort")
+            first_future = future_record.groupby("ticker", sort=False).first()
+            days = (first_future["record_date"] - as_of_ts).dt.days
+            result.loc[days.index, "days_to_record_date"] = days
+
+        # corp_action_anticipation_return: window ending at the nearest
+        # PAST ex_date, starting CORP_ACTION_ANTICIPATION_WINDOW_DAYS
+        # earlier, clipped so it never extends beyond as_of.
+        past_actions = actions[actions["ex_date"] <= as_of_ts]
+        if not past_actions.empty:
+            nearest_ex = past_actions.groupby("ticker", sort=False)["ex_date"].last()
+            window_start = nearest_ex - pd.Timedelta(days=CORP_ACTION_ANTICIPATION_WINDOW_DAYS)
+            window_end = nearest_ex.clip(upper=as_of_ts)
+            bounds = pd.DataFrame({"window_start": window_start, "window_end": window_end})
+            bounds = bounds[bounds["window_start"] <= as_of_ts]
+            ret, fallback_candidates = _window_return_with_fallback(
+                client, ohlcv_panel, bounds, CORP_ACTION_ANTICIPATION_WINDOW_DAYS
+            )
+            if not ret.empty:
+                result.loc[ret.index, "corp_action_anticipation_return"] = ret
+
+        # buyback_price_spread: last close on/before as_of (global cutoff,
+        # same for every ticker) vs. the latest BUYBACK row's ratio.
+        buyback_rows = actions[actions["action_type"] == "BUYBACK"]
+        if not buyback_rows.empty:
+            latest_buyback = buyback_rows.groupby("ticker", sort=False).last()
+            closes = _last_close_on_or_before(client, ohlcv_panel, list(latest_buyback.index), as_of_ts)
+            for t, buyback_price in latest_buyback["ratio"].items():
+                close = closes.get(t)
+                if close and buyback_price:
+                    result.loc[t, "buyback_price_spread"] = (buyback_price - close) / close
+
+        index_rows = actions[actions["action_type"] == "INDEX_INCLUSION"]
+        if not index_rows.empty:
+            latest_index = index_rows.groupby("ticker", sort=False)["ex_date"].last()
+            result.loc[latest_index.index, "index_inclusion_days"] = (as_of_ts - latest_index).dt.days
+
+        qip_rows = actions[actions["action_type"] == "QIP"]
+        if not qip_rows.empty:
+            latest_qip = qip_rows.groupby("ticker", sort=False).last()
+            result.loc[latest_qip.index, "qip_dilution_impact"] = latest_qip["ratio"]
+
+    result["buyback_acceptance_estimated"] = np.nan  # NaN-by-design, see module docstring
+    result["dividend_yield_vs_fd_rate"] = np.nan  # NaN-by-design, see module docstring
+    _ = ASSUMED_FD_RATE  # referenced for the future real implementation; see module docstring
+
+    # ── IPO features: pure date arithmetic, vectorizable via a Series map ──
+    listing_series = pd.Series({t: listing_dates.get(t) for t in tickers if listing_dates.get(t) is not None})
+    if not listing_series.empty:
+        listing_ts = pd.to_datetime(listing_series)
+        lockin_expiry = listing_ts + pd.Timedelta(days=IPO_LOCKIN_DAYS)
+        result.loc[listing_ts.index, "ipo_lockin_expiry_proximity"] = (lockin_expiry - as_of_ts).dt.days
+        result.loc[listing_ts.index, "ipo_listing_age_months"] = (as_of_ts - listing_ts).dt.days / 30.44
+
+    # ── post_earnings_drift_signal ──────────────────────────────────────
+    if fundamentals_rows:
+        fdf = pd.DataFrame(fundamentals_rows)
+        fdf["announcement_date"] = pd.to_datetime(fdf["announcement_date"])
+        fdf = fdf.sort_values(["ticker", "announcement_date"], kind="mergesort")
+        latest_fund = fdf.groupby("ticker", sort=False).last()
+        window_start = latest_fund["announcement_date"]
+        window_end = (window_start + pd.Timedelta(days=POST_EARNINGS_DRIFT_WINDOW_DAYS)).clip(upper=as_of_ts)
+        bounds = pd.DataFrame({"window_start": window_start, "window_end": window_end})
+        bounds = bounds[bounds["window_end"] > bounds["window_start"]]
+        if not bounds.empty:
+            ret, _ = _window_return_with_fallback(
+                client, ohlcv_panel, bounds, POST_EARNINGS_DRIFT_WINDOW_DAYS
+            )
+            if not ret.empty:
+                result.loc[ret.index, "post_earnings_drift_signal"] = ret
+
+    result = result.reset_index()
+    return result[["ticker"] + CORPORATE_ACTION_FEATURES]
+
+
+def _window_return_with_fallback(
+    client: DataStoreClient,
+    ohlcv_panel: Optional[pd.DataFrame],
+    bounds: pd.DataFrame,
+    _lookback_days_unused: int,
+) -> "tuple":
+    """
+    Computes `_vectorized_window_return` against the pre-sliced
+    `ohlcv_panel`, then falls back to a live `client.get_ohlcv` call
+    (per-ticker) for any ticker in `bounds` that has zero rows in
+    `ohlcv_panel` — mirroring `ticker_ohlcv is not None and not
+    ticker_ohlcv.empty` vs. the sequential function's `else` branch,
+    exactly.
+    """
+    covered = set()
+    if ohlcv_panel is not None and not ohlcv_panel.empty:
+        covered = set(ohlcv_panel[ohlcv_panel["ticker"].isin(bounds.index)]["ticker"].unique())
+    ret = _vectorized_window_return(ohlcv_panel, bounds)
+
+    needs_fallback = [t for t in bounds.index if t not in covered]
+    fallback_values = {}
+    for t in needs_fallback:
+        row = bounds.loc[t]
+        price_rows = client.get_ohlcv(t, from_date=row["window_start"], to_date=row["window_end"])
+        if len(price_rows) >= 2:
+            ordered = sorted(price_rows, key=lambda r: r["date"])
+            fallback_values[t] = (ordered[-1]["close"] / ordered[0]["close"]) - 1.0
+    if fallback_values:
+        ret = pd.concat([ret, pd.Series(fallback_values)])
+    return ret, needs_fallback
+
+
+def _last_close_on_or_before(
+    client: DataStoreClient,
+    ohlcv_panel: Optional[pd.DataFrame],
+    tickers: List[str],
+    as_of_ts: pd.Timestamp,
+) -> Dict[str, Optional[float]]:
+    """
+    Last OHLCV close on or before `as_of_ts`, per ticker — vectorized
+    against `ohlcv_panel` (same global cutoff for every ticker), with the
+    same live `client.get_ohlcv` fallback used elsewhere in this module
+    for tickers absent from `ohlcv_panel`.
+    """
+    closes: Dict[str, Optional[float]] = {}
+    covered = set()
+    if ohlcv_panel is not None and not ohlcv_panel.empty:
+        covered = set(ohlcv_panel[ohlcv_panel["ticker"].isin(tickers)]["ticker"].unique())
+        w = ohlcv_panel[ohlcv_panel["ticker"].isin(tickers) & (ohlcv_panel["date"] <= as_of_ts)]
+        if not w.empty:
+            w = w.sort_values(["ticker", "date"], kind="mergesort")
+            last_close = w.groupby("ticker", sort=False)["close"].last()
+            closes.update(last_close.to_dict())
+
+    for t in tickers:
+        if t in covered:
+            continue
+        price_rows = client.get_ohlcv(t, from_date=as_of_ts - timedelta(days=14), to_date=as_of_ts)
+        closes[t] = _close_on_or_before(price_rows, as_of_ts)
+    return closes

@@ -241,3 +241,188 @@ def compute_governance_features_panel(
 
     panel = pd.DataFrame(records)
     return panel[["ticker"] + GOVERNANCE_FEATURES]
+
+
+def compute_governance_features_panel_vectorized(
+    client: DataStoreClient,
+    tickers: List[str],
+    as_of: datetime,
+    data_cache=None,
+    ohlcv_panel: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """
+    Vectorized alternative to `compute_governance_features_panel`: gathers
+    every ticker's already-PIT-eligible shareholding rows into ONE
+    DataFrame and computes latest/prior/QoQ/flags with pandas
+    groupby/shift, instead of a per-ticker Python function call in a loop.
+
+    Kept alongside (not replacing) `compute_governance_features_panel` /
+    `compute_governance_features_panel_chunked` (see
+    features/matrix_builder.py, commit 07d0122) as an alternative path —
+    the sequential function remains the production baseline this is
+    diffed against (tests/unit/test_governance_features.py's parity
+    tests).
+
+    Correctness notes (2026-07-29 model-review, mandatory fixes)
+    --------------------------------------------------------------
+    1. Ordering key: PIT eligibility is still `filing_date <= as_of`
+       (unchanged — trusted entirely from the caller's already-filtered
+       rows, same as the sequential function). Once eligible rows are
+       gathered, "latest"/"prior" (QoQ) selection sorts by
+       `quarter_end_date` — never by filing_date or merge order — exactly
+       matching `compute_governance_features`'s own
+       `history.sort_values("quarter_end_date")` before `iloc[-1]`/`iloc[-2]`.
+    2. Dedup: checked directly against the live DuckDB `shareholding`
+       table (2026-07-29) — zero duplicate (ticker, quarter_end_date) rows
+       exist today. `drop_duplicates(subset=["ticker","quarter_end_date"],
+       keep="last")` after a stable (mergesort) sort is applied
+       defensively anyway, so a future duplicate resolves the same way a
+       stable per-ticker sort + `iloc[-1]` would (last row in original
+       insertion/API-return order for a tie).
+    3. `shift(1)` (the "prior" row) is computed on the deduped,
+       quarter_end_date-sorted, per-ticker history BEFORE any lookup —
+       there is no second independent as-of lookup for "prior"; it is
+       always the row immediately preceding "latest" in the same
+       groupby-shift operation.
+    4. `promoter_pledge_spiral_flag` preserves both the pre-sliced
+       `ohlcv_panel` window path and the live `client.get_ohlcv` fallback
+       (used only for tickers with zero rows in `ohlcv_panel`, or when
+       `ohlcv_panel` itself is None — mirroring the sequential function's
+       `ticker_ohlcv is not None and not ticker_ohlcv.empty` branch
+       exactly), and the `len(window) >= 2` guard (fewer than 2 OHLCV rows
+       -> flag stays 0, never NaN-propagates).
+
+    Spec References
+    ----------------
+    SPEC-PIPE-003 (CRITICAL), SPEC-FEAT-002, SPEC-PIPE-004.
+    """
+    rows: List[Dict[str, Any]] = []
+    no_data_tickers: List[str] = []
+    for ticker in tickers:
+        try:
+            t_rows = (
+                data_cache.get_shareholding(ticker, as_of) if data_cache is not None
+                else client.get_shareholding_history(ticker, as_of)
+            )
+        except Exception as exc:
+            logger.warning(f"governance vectorized: shareholding fetch failed for {ticker}: {exc}")
+            t_rows = []
+        if not t_rows:
+            no_data_tickers.append(ticker)
+            continue
+        for r in t_rows:
+            r2 = dict(r)
+            r2["ticker"] = ticker
+            rows.append(r2)
+
+    def _no_data_frame(tks: List[str]) -> pd.DataFrame:
+        frame = pd.DataFrame({"ticker": tks})
+        for f in GOVERNANCE_FEATURES:
+            frame[f] = np.nan
+        if not frame.empty:
+            frame["promoter_pledge_spiral_flag"] = 0
+            frame["institutional_conviction_flag"] = 0
+        return frame
+
+    if not rows:
+        return _no_data_frame(list(tickers))[["ticker"] + GOVERNANCE_FEATURES]
+
+    df = pd.DataFrame(rows)
+    df["quarter_end_date"] = pd.to_datetime(df["quarter_end_date"])
+
+    # Points 1+2: stable sort by (ticker, quarter_end_date), then explicit
+    # dedup tiebreak (see docstring).
+    df = df.sort_values(["ticker", "quarter_end_date"], kind="mergesort")
+    df = df.drop_duplicates(subset=["ticker", "quarter_end_date"], keep="last")
+
+    # Point 3: shift(1) on the deduped/sorted per-ticker history BEFORE
+    # any downstream lookup.
+    change_cols = ["promoter_pct", "promoter_pledge", "fii_pct", "dii_pct", "mf_pct"]
+    grouped = df.groupby("ticker", sort=False)
+    for col in change_cols:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[f"_prior_{col}"] = grouped[col].shift(1)
+    df["_has_prior"] = grouped.cumcount() > 0
+
+    latest = df.groupby("ticker", sort=False).tail(1).set_index("ticker")
+
+    def _chg(col: str) -> np.ndarray:
+        cur = latest[col]
+        prior = latest[f"_prior_{col}"]
+        both_present = cur.notna() & prior.notna()
+        return np.where(both_present, cur - prior, np.nan)
+
+    result = pd.DataFrame(index=latest.index)
+    for col in ["promoter_pct", "promoter_pledge", "fii_pct", "dii_pct", "mf_pct"]:
+        result[col] = latest[col] if col in latest.columns else np.nan
+    result["promoter_change_qoq"] = _chg("promoter_pct")
+    result["promoter_pledge_change_qoq"] = _chg("promoter_pledge")
+    result["fii_change_qoq"] = _chg("fii_pct")
+    result["dii_change_qoq"] = _chg("dii_pct")
+    result["mf_change_qoq"] = _chg("mf_pct")
+
+    fii = pd.to_numeric(latest["fii_pct"], errors="coerce")
+    dii = pd.to_numeric(latest["dii_pct"], errors="coerce")
+    mf = pd.to_numeric(latest["mf_pct"], errors="coerce")
+    any_present = fii.notna() | dii.notna() | mf.notna()
+    result["institutional_ownership_pct"] = np.where(
+        any_present, fii.fillna(0.0) + dii.fillna(0.0) + mf.fillna(0.0), np.nan
+    )
+
+    has_prior = latest["_has_prior"]
+    fii_up = fii.notna() & latest["_prior_fii_pct"].notna() & (fii > latest["_prior_fii_pct"])
+    dii_up = dii.notna() & latest["_prior_dii_pct"].notna() & (dii > latest["_prior_dii_pct"])
+    mf_up = mf.notna() & latest["_prior_mf_pct"].notna() & (mf > latest["_prior_mf_pct"])
+    result["institutional_conviction_flag"] = np.where(
+        has_prior, (fii_up & dii_up & mf_up).astype(int), 0
+    ).astype(int)
+
+    # Point 4: promoter_pledge_spiral_flag.
+    pledge = latest["promoter_pledge"]
+    high_pledge = pledge.notna() & (pledge > PLEDGE_SPIRAL_THRESHOLD_PCT)
+    spiral_flag = pd.Series(0, index=latest.index, dtype=int)
+    candidates = list(latest.index[high_pledge])
+
+    if candidates:
+        cutoff = pd.Timestamp(as_of) - pd.Timedelta(days=PRICE_FALL_LOOKBACK_DAYS)
+        as_of_ts = pd.Timestamp(as_of)
+
+        covered_tickers = set()
+        if ohlcv_panel is not None and not ohlcv_panel.empty:
+            covered_tickers = set(ohlcv_panel[ohlcv_panel["ticker"].isin(candidates)]["ticker"].unique())
+            window_all = ohlcv_panel[
+                ohlcv_panel["ticker"].isin(candidates)
+                & (ohlcv_panel["date"] >= cutoff)
+                & (ohlcv_panel["date"] <= as_of_ts)
+            ].sort_values(["ticker", "date"], kind="mergesort")
+            if not window_all.empty:
+                g = window_all.groupby("ticker", sort=False)
+                counts = g.size()
+                first_close = g["close"].first().astype(float)
+                last_close = g["close"].last().astype(float)
+                falling = (last_close < first_close) & (counts >= 2)
+                for t, val in falling.items():
+                    spiral_flag.loc[t] = int(bool(val))
+
+        # Live fallback: only for candidates with zero rows in ohlcv_panel
+        # (or ohlcv_panel is None entirely) — mirrors the sequential
+        # function's `else: client.get_ohlcv(...)` branch exactly.
+        needs_fallback = [t for t in candidates if t not in covered_tickers]
+        for t in needs_fallback:
+            price_rows = client.get_ohlcv(
+                t, from_date=as_of - timedelta(days=PRICE_FALL_LOOKBACK_DAYS), to_date=as_of
+            )
+            if len(price_rows) >= 2:
+                ordered = sorted(price_rows, key=lambda r: r["date"])
+                spiral_flag.loc[t] = int(ordered[-1]["close"] < ordered[0]["close"])
+
+    result["promoter_pledge_spiral_flag"] = spiral_flag
+    result = result.reset_index()
+
+    no_data_frame = _no_data_frame(no_data_tickers)
+    full = pd.concat([result, no_data_frame], ignore_index=True) if not no_data_frame.empty else result
+    full["promoter_pledge_spiral_flag"] = full["promoter_pledge_spiral_flag"].fillna(0).astype(int)
+    full["institutional_conviction_flag"] = full["institutional_conviction_flag"].fillna(0).astype(int)
+    full = full.set_index("ticker").loc[list(tickers)].reset_index()
+    return full[["ticker"] + GOVERNANCE_FEATURES]

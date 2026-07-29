@@ -169,10 +169,30 @@ def compute_mf_holdings_features(
     None — missing/insufficient history degrades to NaN/0, not an exception.
     """
     ticker_history = history[history["ticker"] == ticker]
+    return _compute_mf_holdings_features_from_group(ticker, as_of, ticker_history, history.empty, superstar_holdings)
+
+
+def _compute_mf_holdings_features_from_group(
+    ticker: str,
+    as_of: datetime,
+    ticker_history: pd.DataFrame,
+    history_is_empty: bool,
+    superstar_holdings: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
+    """
+    Shared computation body for one ticker, given its already-sliced
+    history sub-frame (`ticker_history`). Factored out of
+    `compute_mf_holdings_features` so `compute_mf_holdings_features_panel_vectorized`
+    can pass in a pre-grouped sub-frame (via one `history.groupby("ticker")`
+    pass over the whole panel) instead of re-filtering the full
+    multi-ticker `history` DataFrame with a boolean mask once per ticker
+    (the O(n_tickers x n_rows) hotspot in the sequential per-ticker loop).
+    Output is bit-for-bit identical either way — same logic, same inputs.
+    """
     months = _latest_two_months(ticker_history)
 
     if not months:
-        if history.empty:
+        if history_is_empty:
             # No MF holdings data loaded for ANY ticker this period — a
             # genuinely unknown state (e.g. no AMC source registered yet),
             # not a confirmed zero. Every feature is honestly NaN.
@@ -324,6 +344,66 @@ def compute_mf_holdings_features_panel(
     records = []
     for ticker in tickers:
         feats = compute_mf_holdings_features(ticker, as_of, history, superstar_holdings)
+        feats["ticker"] = ticker
+        feats["tier"] = tier_map.get(ticker, -1)
+        records.append(feats)
+
+    panel = pd.DataFrame(records)
+    panel["mf_crowdedness_rank"] = panel.groupby("tier")["mf_scheme_count"].rank(pct=True)
+    return panel[["ticker"] + MF_HOLDINGS_FEATURES]
+
+
+def compute_mf_holdings_features_panel_vectorized(
+    tickers: List[str],
+    as_of: datetime,
+    tier_map: Optional[Dict[str, int]] = None,
+    superstar_holdings: Optional[pd.DataFrame] = None,
+    holdings_dir: Path = MF_HOLDINGS_DIR,
+) -> pd.DataFrame:
+    """
+    Alternative to `compute_mf_holdings_features_panel` (and the
+    ticker-chunked `compute_mf_holdings_features_panel_chunked`, commit
+    07d0122) that groups `history` by ticker ONCE (`history.groupby("ticker")`)
+    instead of re-filtering the whole multi-ticker `history` DataFrame with
+    a boolean mask (`history[history["ticker"] == ticker]`) inside every
+    per-ticker call — the real hotspot in the sequential loop for large
+    universes x long lookback windows.
+
+    Per-ticker feature *logic* (scheme-count deltas, concentration,
+    avg_holding_period's per-scheme consecutive-month streak,
+    sip_inflow_proxy, superstar flags) is intentionally NOT rewritten as a
+    single groupby-vectorized expression here — `mf_avg_holding_period` in
+    particular is a genuinely sequential per-scheme streak computation
+    (see `compute_mf_holdings_features`'s own docstring/comments) that
+    resists a clean single-shot vectorization without materially changing
+    its semantics; reusing the exact existing per-ticker body against a
+    pre-grouped sub-frame keeps output bit-for-bit identical to
+    `compute_mf_holdings_features_panel` while removing the repeated
+    O(n_tickers x n_rows) filter cost.
+
+    `tier_map` is passed in fresh by the caller every time this function
+    is invoked (build_feature_matrix computes it fresh per `as_of` — see
+    features/matrix_builder.py — this function does not cache or reuse it
+    across dates), matching the existing sequential/chunked functions'
+    behavior exactly (no new time-variance regression).
+
+    Spec References
+    ----------------
+    SPEC-PIPE-004.
+    """
+    tier_map = tier_map or {}
+    history = load_mf_holdings_history(as_of, holdings_dir=holdings_dir)
+    history_is_empty = history.empty
+    empty_ticker_history = history.iloc[0:0]
+
+    grouped = {} if history_is_empty else dict(tuple(history.groupby("ticker", sort=False)))
+
+    records = []
+    for ticker in tickers:
+        ticker_history = grouped.get(ticker, empty_ticker_history)
+        feats = _compute_mf_holdings_features_from_group(
+            ticker, as_of, ticker_history, history_is_empty, superstar_holdings
+        )
         feats["ticker"] = ticker
         feats["tier"] = tier_map.get(ticker, -1)
         records.append(feats)
