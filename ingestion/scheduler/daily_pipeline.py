@@ -804,7 +804,13 @@ def step_adjust_prices(run_date: date_type, db_path: Optional[Path] = None) -> N
     )
 
 
-def step_compute_features(run_date: date_type, db_path: Optional[Path] = None, compute_hmm: bool = True, data_cache=None) -> None:
+def step_compute_features(
+    run_date: date_type,
+    db_path: Optional[Path] = None,
+    compute_hmm: bool = True,
+    data_cache=None,
+    panel_workers: Optional[int] = None,
+) -> None:
     """
     Build today's two feature matrices and save both to Parquet (SPEC-DS-005):
     ALL_FEATURE_COLUMNS (features/matrix_builder.py) and PND_FEATURES
@@ -818,6 +824,11 @@ def step_compute_features(run_date: date_type, db_path: Optional[Path] = None, c
         Unused — both builders reach OHLCV exclusively through
         DataStoreClient/the API (SPEC-SOLID-005), never a direct DuckDB
         connection, so there is nothing for this step to open directly.
+    panel_workers : int, optional
+        Forwarded to build_feature_matrix's panel_workers (default: None,
+        which falls back to config.settings.PANEL_COMPUTE_WORKERS). See
+        features/matrix_builder.py::_compute_chunked_ticker_independent_panels
+        for the parallelization pattern this controls.
 
     Returns
     -------
@@ -845,7 +856,11 @@ def step_compute_features(run_date: date_type, db_path: Optional[Path] = None, c
         FEATURE_CACHE_PRELOAD_WORKERS,
         FEATURES_PND_DAILY_DIR,
         HMM_FEATURE_WORKERS,
+        PANEL_COMPUTE_WORKERS,
     )
+
+    if panel_workers is None:
+        panel_workers = PANEL_COMPUTE_WORKERS
     from config.universe import get_tickers
     from datastore.client import DataStoreClient
     from features.backfill_cache import BackfillDataCache
@@ -877,7 +892,7 @@ def step_compute_features(run_date: date_type, db_path: Optional[Path] = None, c
 
     matrix = build_feature_matrix(
         date_str, tickers, compute_hmm=compute_hmm, data_cache=data_cache,
-        hmm_workers=HMM_FEATURE_WORKERS,
+        hmm_workers=HMM_FEATURE_WORKERS, panel_workers=panel_workers,
     )
     logger.info(f"compute_features: built {len(matrix)}-row ALL_FEATURE_COLUMNS matrix for {date_str}")
 

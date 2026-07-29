@@ -607,6 +607,21 @@ IV_SOLVER_MAX_VOL = 5.0
 HMM_FEATURE_WORKERS = int(os.environ.get("HMM_FEATURE_WORKERS", "3"))
 FEATURE_CACHE_PRELOAD_WORKERS = int(os.environ.get("FEATURE_CACHE_PRELOAD_WORKERS", "16"))
 
+# features/matrix_builder.py::_compute_chunked_ticker_independent_panels
+# (2026-07-29 perf fix). Profiling a real feature_backfill.py run found this
+# phase (compute_technical_features/compute_intraday_features/
+# compute_pnd_features/compute_advanced_technical_features/
+# compute_pattern_scores, per ticker-chunk) pinned at 100% of a single core
+# for ~400+ of a ~540s per-date total, with 14 CPU threads idle on this
+# machine. Unlike HMM's per-ticker GaussianHMM fits, these are vectorized
+# numpy/pandas feature math, not model fits — no OOM precedent for this
+# specific parallelization yet, so default stays 1 (opt-in), same
+# conservative convention as HMM_FEATURE_WORKERS. See
+# _compute_chunked_ticker_independent_panels's docstring for the BLAS-
+# thread-capping safeguard this uses (same pattern as
+# compute_hmm_regime_features's n_workers).
+PANEL_COMPUTE_WORKERS = int(os.environ.get("PANEL_COMPUTE_WORKERS", "1"))
+
 # ---------------------------------------------------------------------------
 # Off-machine backup — rclone to Backblaze B2 (2026-07-04 architecture
 # review; switched from an initial Google Drive design after the OAuth

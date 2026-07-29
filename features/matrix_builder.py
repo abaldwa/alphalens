@@ -300,6 +300,49 @@ def _validate_feature_matrix(matrix: pd.DataFrame) -> None:
             logger.warning(f"{len(bad)}/{len(vals)} '{col}' values outside [{lo}, {hi}]")
 
 
+def _compute_one_chunk_panels(
+    args: "tuple",
+) -> "tuple":
+    """
+    Picklable, module-level worker: computes the 6 per-chunk panels for one
+    ticker chunk (technical/intraday/hmm/pnd/adv_tech/patterns), each
+    already sliced down to `target_date`'s row.
+
+    Must be module-level (not a closure/nested function) so spawn-context
+    multiprocessing can pickle it — same requirement as
+    systems/ml_signal_engine/models/hmm/regime_detector.py's
+    `_fit_and_decode_one_ticker_star`.
+
+    `hmm_workers` here is deliberately forced to <=1 by the caller when
+    dispatching into a `panel_workers > 1` pool (see
+    `_compute_chunked_ticker_independent_panels`) — a worker process
+    spawning its OWN nested multiprocessing.Pool for
+    compute_hmm_regime_features would be unsafe/wasteful (nested pools),
+    so this function never receives hmm_workers > 1 from that caller.
+    """
+    chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers = args
+
+    technical = compute_technical_features(chunk_panel, benchmark_wide)
+    intraday = compute_intraday_features(chunk_panel)
+    hmm = (
+        compute_hmm_regime_features(chunk_panel, n_workers=hmm_workers)
+        if compute_hmm
+        else pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
+    )
+    pnd = compute_pnd_features(chunk_panel)
+    adv_tech = compute_advanced_technical_features(chunk_panel)
+    pat_scores = compute_pattern_scores(chunk_panel)
+
+    return (
+        _extract_target_date_panel(technical, target_date, CORE_TECHNICAL_FEATURES),
+        _extract_target_date_panel(intraday, target_date, INTRADAY_FEATURES),
+        _extract_target_date_panel(hmm, target_date, HMM_REGIME_FEATURES),
+        _extract_target_date_panel(pnd, target_date, PND_FEATURES),
+        adv_tech[adv_tech["date"] == target_date].drop(columns=["date"]),
+        pat_scores[pat_scores["date"] == target_date].drop(columns=["date"]),
+    )
+
+
 def _compute_chunked_ticker_independent_panels(
     universe_panel: pd.DataFrame,
     benchmark_wide: Optional[pd.DataFrame],
@@ -307,6 +350,7 @@ def _compute_chunked_ticker_independent_panels(
     target_date: pd.Timestamp,
     compute_hmm: bool,
     hmm_workers: int,
+    panel_workers: int = 1,
 ) -> "tuple":
     """
     A47 (2026-07-10): computes technical/intraday/hmm/pnd/adv_tech/patterns
@@ -334,6 +378,21 @@ def _compute_chunked_ticker_independent_panels(
     peak memory vs. holding all 6 full-universe-sized derived frames at
     once, without touching the raw OHLCV panel's own footprint.
 
+    panel_workers : int
+        1 (default) keeps the original single-process sequential-`while`-
+        loop behavior, unchanged for every existing caller/test. >1
+        computes chunks concurrently via a spawn-context
+        multiprocessing.Pool — same safeguarded pattern as
+        compute_hmm_regime_features's n_workers (see that function's
+        docstring for the full 331s->257s->19.8s BLAS-oversubscription
+        history this pattern exists to avoid): BLAS thread-count env vars
+        are capped to 1 before the pool is created (restored after, in a
+        `finally`) so N worker processes don't each also spawn their own
+        internal BLAS thread pool and oversubscribe the machine's cores.
+        When panel_workers > 1, each chunk's own compute_hmm_regime_features
+        call is forced to n_workers=1 regardless of `hmm_workers` — an
+        outer pool worker spawning its own nested Pool would be unsafe.
+
     Returns
     -------
     tuple of 6 pd.DataFrame
@@ -349,6 +408,13 @@ def _compute_chunked_ticker_independent_panels(
     technical_chunks, intraday_chunks, hmm_chunks, pnd_chunks = [], [], [], []
     adv_tech_chunks, patterns_chunks = [], []
 
+    # Build the full list of non-empty chunk panels eagerly (rather than the
+    # original lazy `while i < len(tickers)` loop) — each chunk becomes one
+    # task dispatched to the pool when panel_workers > 1, so the full task
+    # list must exist before dispatch. adaptive_chunk_size is re-queried per
+    # chunk (matches the original loop's behavior) in case memory pressure
+    # changes mid-build.
+    chunk_panels = []
     i = 0
     while i < len(tickers):
         chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
@@ -358,27 +424,67 @@ def _compute_chunked_ticker_independent_panels(
         chunk_panel = universe_panel[universe_panel["ticker"].isin(set(chunk_tickers))]
         if chunk_panel.empty:
             continue
+        chunk_panels.append(chunk_panel)
 
-        technical = compute_technical_features(chunk_panel, benchmark_wide)
-        intraday = compute_intraday_features(chunk_panel)
-        hmm = (
-            compute_hmm_regime_features(chunk_panel, n_workers=hmm_workers)
-            if compute_hmm
-            else pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
+    if panel_workers <= 1 or len(chunk_panels) <= 1:
+        for chunk_panel in chunk_panels:
+            results = _compute_one_chunk_panels(
+                (chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers)
+            )
+            technical, intraday, hmm, pnd, adv_tech, pat_scores = results
+            technical_chunks.append(technical)
+            intraday_chunks.append(intraday)
+            hmm_chunks.append(hmm)
+            pnd_chunks.append(pnd)
+            adv_tech_chunks.append(adv_tech)
+            patterns_chunks.append(pat_scores)
+
+            del chunk_panel, results, technical, intraday, hmm, pnd, adv_tech, pat_scores
+            gc.collect()
+    else:
+        import multiprocessing
+        import os
+
+        # See compute_hmm_regime_features's docstring/comment for the full
+        # measured history behind this pattern (331s -> 257s parallel-
+        # unpinned -> 19.8s parallel-pinned on this machine). Spawned
+        # children inherit os.environ at process creation, before their own
+        # numpy import initializes BLAS, so setting these here (before Pool
+        # creation) reliably caps each worker to one BLAS thread.
+        _blas_env_vars = (
+            "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
         )
-        pnd = compute_pnd_features(chunk_panel)
-        adv_tech = compute_advanced_technical_features(chunk_panel)
-        pat_scores = compute_pattern_scores(chunk_panel)
+        _prev_env = {var: os.environ.get(var) for var in _blas_env_vars}
+        try:
+            for var in _blas_env_vars:
+                os.environ[var] = "1"
 
-        technical_chunks.append(_extract_target_date_panel(technical, target_date, CORE_TECHNICAL_FEATURES))
-        intraday_chunks.append(_extract_target_date_panel(intraday, target_date, INTRADAY_FEATURES))
-        hmm_chunks.append(_extract_target_date_panel(hmm, target_date, HMM_REGIME_FEATURES))
-        pnd_chunks.append(_extract_target_date_panel(pnd, target_date, PND_FEATURES))
-        adv_tech_chunks.append(adv_tech[adv_tech["date"] == target_date].drop(columns=["date"]))
-        patterns_chunks.append(pat_scores[pat_scores["date"] == target_date].drop(columns=["date"]))
+            # Force per-chunk HMM fitting to n_workers=1 inside the pool —
+            # nested pools (a spawned worker spawning its own Pool) are
+            # unsafe/wasteful. Callers that want parallel HMM fitting should
+            # use panel_workers=1 with hmm_workers>1 instead.
+            worker_args = [
+                (chunk_panel, benchmark_wide, target_date, compute_hmm, 1)
+                for chunk_panel in chunk_panels
+            ]
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes=panel_workers) as pool:
+                all_results = list(pool.imap(_compute_one_chunk_panels, worker_args))
+        finally:
+            for var, val in _prev_env.items():
+                if val is None:
+                    os.environ.pop(var, None)
+                else:
+                    os.environ[var] = val
 
-        del chunk_panel, technical, intraday, hmm, pnd, adv_tech, pat_scores
-        gc.collect()
+        for technical, intraday, hmm, pnd, adv_tech, pat_scores in all_results:
+            technical_chunks.append(technical)
+            intraday_chunks.append(intraday)
+            hmm_chunks.append(hmm)
+            pnd_chunks.append(pnd)
+            adv_tech_chunks.append(adv_tech)
+            patterns_chunks.append(pat_scores)
 
     def _concat(frames: List[pd.DataFrame], cols: List[str]) -> pd.DataFrame:
         non_empty = [f for f in frames if not f.empty]
@@ -434,6 +540,7 @@ def build_feature_matrix(
     compute_hmm: bool = True,
     data_cache=None,
     hmm_workers: int = 1,
+    panel_workers: int = 1,
 ) -> pd.DataFrame:
     """
     Build the full daily feature matrix for `tickers` on `date`.
@@ -462,6 +569,15 @@ def build_feature_matrix(
         Forwarded to compute_hmm_regime_features's n_workers (default 1 =
         original single-process behavior). See that function's docstring
         for the OOM history behind not defaulting this higher.
+    panel_workers : int
+        Forwarded to _compute_chunked_ticker_independent_panels (default 1
+        = original sequential-chunk-loop behavior). >1 parallelizes across
+        ticker chunks (technical/intraday/hmm/pnd/advanced_technical/
+        pattern_scores) via a spawn-context multiprocessing.Pool with BLAS
+        thread-count capping — see that function's docstring for the full
+        rationale/history. When panel_workers > 1, per-chunk HMM fitting is
+        forced to n_workers=1 regardless of hmm_workers to avoid nested
+        pools.
 
     Returns
     -------
@@ -576,6 +692,7 @@ def build_feature_matrix(
         today_technical, today_intraday, today_hmm, today_pnd, today_adv_tech, today_patterns = (
             _compute_chunked_ticker_independent_panels(
                 universe_panel, benchmark_wide, active_tickers, target_date, compute_hmm, hmm_workers,
+                panel_workers=panel_workers,
             )
         )
 

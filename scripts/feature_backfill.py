@@ -85,6 +85,12 @@ def _parse_args() -> argparse.Namespace:
                    help="Skip HMM regime-feature fitting (HMM cols become NaN). "
                         "~14x faster per date — recommended for full historical backfill. "
                         "Deep-learning models handle NaN via masking.")
+    p.add_argument("--panel-workers", type=int, default=1,
+                   help="Parallelize the technical/intraday/pnd/advanced_technical/"
+                        "pattern_scores chunk loop across N worker processes (default: 1, "
+                        "unchanged sequential behavior). See "
+                        "features/matrix_builder.py::_compute_chunked_ticker_independent_panels "
+                        "for the BLAS-thread-capping safeguard this uses.")
     p.add_argument("--run-id", default=None,
                    help="Identifier for this run's failed-dates manifest file "
                         "(default: a timestamp+PID, e.g. 20260728_101500_12345). The manifest is "
@@ -168,7 +174,10 @@ def main() -> None:
     for i, d in enumerate(pending, start=1):
         t0 = time.monotonic()
         try:
-            step_compute_features(d, compute_hmm=compute_hmm, data_cache=backfill_cache)
+            step_compute_features(
+                d, compute_hmm=compute_hmm, data_cache=backfill_cache,
+                panel_workers=args.panel_workers,
+            )
             elapsed = time.monotonic() - t0
             elapsed_times.append(elapsed)
             remaining = len(pending) - i

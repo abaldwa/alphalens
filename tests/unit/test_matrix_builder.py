@@ -382,6 +382,7 @@ class TestChunkedComputationMatchesUnchunked:
         mat_chunked = mat_chunked.sort_values("ticker").reset_index(drop=True)
         pd.testing.assert_frame_equal(mat_unchunked, mat_chunked)
 
+
     def test_single_ticker_chunks_match_full_pass(self, multi_ticker_client, monkeypatch):
         """Most extreme case: chunk size 1 -- every ticker computed alone."""
         import config.settings as settings
@@ -402,3 +403,73 @@ class TestChunkedComputationMatchesUnchunked:
         mat_unchunked = mat_unchunked.sort_values("ticker").reset_index(drop=True)
         mat_chunked = mat_chunked.sort_values("ticker").reset_index(drop=True)
         pd.testing.assert_frame_equal(mat_unchunked, mat_chunked)
+
+
+class TestPanelWorkersParallelization:
+    """2026-07-29 perf fix: parallelizing
+    _compute_chunked_ticker_independent_panels across ticker chunks via a
+    spawn-context multiprocessing.Pool (mirroring
+    compute_hmm_regime_features's n_workers pattern) must not change any
+    computed feature value vs. the original sequential (panel_workers=1)
+    path — this is the correctness bar that matters most for this change."""
+
+    @pytest.fixture
+    def multi_ticker_client(self):
+        rows = {
+            t: _make_ohlcv_rows(300, seed=i)
+            for i, t in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
+        }
+        bm_rows = {name: _make_ohlcv_rows(300, seed=hash(name) % 1000) for name in BENCHMARK_TICKERS.values()}
+        return _FakeDataStoreClient({**rows, **bm_rows})
+
+    def test_panel_workers_two_matches_sequential_default(self, multi_ticker_client, monkeypatch):
+        """panel_workers=2 (real spawn-context Pool, small chunks so >1 chunk
+        exists to dispatch) produces byte-identical output to panel_workers=1
+        for the same input — correctness under parallelization, not just
+        'it runs without crashing'."""
+        import config.settings as settings
+
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+
+        # Small chunk size so 6 tickers become 3 chunks -> pool actually
+        # gets multiple tasks to dispatch.
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 2)
+
+        mat_sequential = build_feature_matrix(
+            target_date, tickers, client=multi_ticker_client, save=False, compute_hmm=False,
+            panel_workers=1,
+        )
+        mat_parallel = build_feature_matrix(
+            target_date, tickers, client=multi_ticker_client, save=False, compute_hmm=False,
+            panel_workers=2,
+        )
+
+        mat_sequential = mat_sequential.sort_values("ticker").reset_index(drop=True)
+        mat_parallel = mat_parallel.sort_values("ticker").reset_index(drop=True)
+        pd.testing.assert_frame_equal(mat_sequential, mat_parallel)
+
+    def test_panel_workers_restores_blas_env_vars_after_pool_exits(self, multi_ticker_client, monkeypatch):
+        """BLAS thread-count env vars are capped to '1' before Pool creation
+        and must be restored (or left unset, matching pre-call state)
+        afterwards, so this doesn't leak into unrelated code running later
+        in the same process — same safeguard as compute_hmm_regime_features."""
+        import os
+
+        import config.settings as settings
+
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 2)
+        monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+        os.environ["OPENBLAS_NUM_THREADS"] = "7"  # a pre-existing, non-"1" value to check restoration
+
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+        try:
+            build_feature_matrix(
+                target_date, tickers, client=multi_ticker_client, save=False, compute_hmm=False,
+                panel_workers=2,
+            )
+            assert "OMP_NUM_THREADS" not in os.environ
+            assert os.environ["OPENBLAS_NUM_THREADS"] == "7"
+        finally:
+            os.environ.pop("OPENBLAS_NUM_THREADS", None)
