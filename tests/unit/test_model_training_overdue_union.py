@@ -26,6 +26,14 @@ def _isolated_model_training_env(tmp_path, monkeypatch):
     models_dir.mkdir()
     monkeypatch.setattr(settings_mod, "MODELS_DIR", models_dir)
     monkeypatch.setattr(settings_mod, "PIPELINE_LOG_DB_PATH", tmp_path / "pipeline_log.db")
+    # _record_heartbeat (called on every _execute_model_training_job
+    # invocation) also writes a job_run_log row into config.settings.
+    # DUCKDB_PATH — a separate DB from PIPELINE_LOG_DB_PATH that was NOT
+    # isolated here before. Every run of this test therefore wrote a real
+    # "skipped" row into the production alphalens.duckdb job_run_log
+    # table, which is what made a healthy scheduler look like it had been
+    # silently failing every week (see BuildLog 2026-07-29 audit).
+    monkeypatch.setattr(settings_mod, "DUCKDB_PATH", tmp_path / "isolated_test.duckdb")
 
     return models_dir
 

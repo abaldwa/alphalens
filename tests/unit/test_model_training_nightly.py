@@ -31,6 +31,18 @@ def _isolated_model_training_env(tmp_path, monkeypatch):
     models_dir.mkdir()
     monkeypatch.setattr(settings_mod, "MODELS_DIR", models_dir)
     monkeypatch.setattr(settings_mod, "PIPELINE_LOG_DB_PATH", tmp_path / "pipeline_log.db")
+    # _record_heartbeat (called by _execute_model_training_job_for_group on
+    # every invocation, including a "registry.json not found" skip) also
+    # appends a row to job_run_log in config.settings.DUCKDB_PATH — a
+    # SEPARATE DB from PIPELINE_LOG_DB_PATH. Without isolating this too,
+    # every test run in this module writes real "skipped — registry.json
+    # not found" rows into the PRODUCTION alphalens.duckdb job_run_log
+    # table, which is exactly what made a healthy scheduler look like it
+    # had been failing every week (see BuildLog 2026-07-29 audit). Point
+    # it at a throwaway file so the DuckDB insert either lands in an
+    # isolated DB or (table not yet created there) is swallowed by
+    # _record_heartbeat's own try/except — either way, never the real DB.
+    monkeypatch.setattr(settings_mod, "DUCKDB_PATH", tmp_path / "isolated_test.duckdb")
     return models_dir
 
 
@@ -110,6 +122,55 @@ class TestExecuteModelTrainingJobForGroup:
             ).fetchone()
         assert row is not None
         assert row[1] == "skipped"
+
+    def test_job_run_log_write_is_isolated_from_production_duckdb(
+        self, _isolated_model_training_env, monkeypatch, tmp_path
+    ):
+        """
+        Regression test: _execute_model_training_job_for_group -> _record_
+        heartbeat also appends a row to job_run_log in config.settings.
+        DUCKDB_PATH (a DB separate from PIPELINE_LOG_DB_PATH). Before this
+        fix, _isolated_model_training_env only patched MODELS_DIR/
+        PIPELINE_LOG_DB_PATH, so every test run of this suite silently
+        wrote a real "skipped — registry.json not found" row into the
+        PRODUCTION alphalens.duckdb job_run_log table — which is exactly
+        what made a healthy weekly scheduler look like it had been
+        failing every week (2026-07-29 audit). Assert here that running
+        the job under the isolated fixture never touches the real
+        production DuckDB file at all.
+        """
+        import config.settings as settings_mod
+        from config.settings import NORMALISED_DIR
+
+        REAL_PROD_DUCKDB_PATH = NORMALISED_DIR / "alphalens.duckdb"
+
+        assert settings_mod.DUCKDB_PATH != REAL_PROD_DUCKDB_PATH, (
+            "fixture must repoint DUCKDB_PATH away from the real production file"
+        )
+
+        import duckdb
+
+        if REAL_PROD_DUCKDB_PATH.exists():
+            with duckdb.connect(str(REAL_PROD_DUCKDB_PATH), read_only=True) as conn:
+                before = conn.execute(
+                    "SELECT count(*) FROM job_run_log WHERE job_id = 'model_training_multibagger'"
+                ).fetchone()[0]
+        else:
+            before = 0
+
+        # No registry.json -> hits the "registry.json not found" skip path,
+        # which is the exact path that was polluting production before.
+        _execute_model_training_job_for_group("multibagger")
+
+        if REAL_PROD_DUCKDB_PATH.exists():
+            with duckdb.connect(str(REAL_PROD_DUCKDB_PATH), read_only=True) as conn:
+                after = conn.execute(
+                    "SELECT count(*) FROM job_run_log WHERE job_id = 'model_training_multibagger'"
+                ).fetchone()[0]
+            assert after == before, (
+                "test run must not write to the production job_run_log table — "
+                "DUCKDB_PATH isolation regressed"
+            )
 
 
 class TestScheduleModelTrainingNightlyRegistersOneJobPerGroup:
