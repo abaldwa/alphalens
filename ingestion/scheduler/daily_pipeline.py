@@ -494,6 +494,14 @@ def step_download_macro_morning(run_date: date_type, db_path: Optional[Path] = N
         ("NIKKEI_225", macro.download_nikkei, "nikkei_225"),
         ("HANG_SENG", macro.download_hangseng, "hang_seng"),
         ("DXY", macro.download_dxy, "dxy"),
+        # 2026-07-28: download_crude_oil/download_gold existed (Yahoo-sourced,
+        # real data, working previous-value fallback) but were never actually
+        # called anywhere in the pipeline — same class of gap as the
+        # 2026-07-07 bond-yields fix above. features/*'s crude_oil_price/
+        # gold_price were 100% NaN for every ticker/date purely from this
+        # missing wire-up.
+        ("CRUDE_OIL", macro.download_crude_oil, "crude_oil_price"),
+        ("GOLD", macro.download_gold, "gold_price"),
     ):
         try:
             result = fetch_fn(date_str, db_path=resolved_db_path)
@@ -810,6 +818,7 @@ def step_compute_features(
     compute_hmm: bool = True,
     data_cache=None,
     panel_workers: Optional[int] = None,
+    staged_panel=None,
 ) -> None:
     """
     Build today's two feature matrices and save both to Parquet (SPEC-DS-005):
@@ -829,6 +838,11 @@ def step_compute_features(
         which falls back to config.settings.PANEL_COMPUTE_WORKERS). See
         features/matrix_builder.py::_compute_chunked_ticker_independent_panels
         for the parallelization pattern this controls.
+    staged_panel : pd.DataFrame, optional
+        [2026-07-29] Forwarded to build_feature_matrix's `staged_panel`
+        (default: None, unchanged live-daily-path behavior). Only
+        scripts/feature_backfill.py passes this — see
+        features/panel_staging.py for what it is and why.
 
     Returns
     -------
@@ -893,6 +907,7 @@ def step_compute_features(
     matrix = build_feature_matrix(
         date_str, tickers, compute_hmm=compute_hmm, data_cache=data_cache,
         hmm_workers=HMM_FEATURE_WORKERS, panel_workers=panel_workers,
+        staged_panel=staged_panel,
     )
     logger.info(f"compute_features: built {len(matrix)}-row ALL_FEATURE_COLUMNS matrix for {date_str}")
 

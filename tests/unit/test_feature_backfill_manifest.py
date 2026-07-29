@@ -56,7 +56,11 @@ def patched_backfill_env(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "datastore.api.db", fake_db)
 
     # step_compute_features fails for 2024-01-03, succeeds otherwise.
-    def fake_step_compute_features(d, compute_hmm=True, data_cache=None):
+    # **kwargs tolerates step_compute_features/main() growing new forwarded
+    # kwargs over time (e.g. panel_workers, staged_panel) without this fake
+    # needing to track every one of them — this test only cares about the
+    # manifest-writing behavior around success/failure, not the call shape.
+    def fake_step_compute_features(d, compute_hmm=True, data_cache=None, **kwargs):
         if d == date(2024, 1, 3):
             raise RuntimeError("simulated feature-build failure")
         return None
@@ -93,7 +97,9 @@ def test_no_failures_leaves_no_manifest_entries(patched_backfill_env, monkeypatc
     fb, tmp_path = patched_backfill_env
 
     # Redefine the fake pipeline so nothing fails this time.
-    fake_pipeline = SimpleNamespace(step_compute_features=lambda d, compute_hmm=True, data_cache=None: None)
+    fake_pipeline = SimpleNamespace(
+        step_compute_features=lambda d, compute_hmm=True, data_cache=None, **kwargs: None
+    )
     monkeypatch.setitem(sys.modules, "ingestion.scheduler.daily_pipeline", fake_pipeline)
 
     monkeypatch.setattr(

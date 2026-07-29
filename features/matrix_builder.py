@@ -319,27 +319,50 @@ def _compute_one_chunk_panels(
     spawning its OWN nested multiprocessing.Pool for
     compute_hmm_regime_features would be unsafe/wasteful (nested pools),
     so this function never receives hmm_workers > 1 from that caller.
-    """
-    chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers = args
 
-    technical = compute_technical_features(chunk_panel, benchmark_wide)
-    intraday = compute_intraday_features(chunk_panel)
+    `skip_batch_categories` [2026-07-29, batch feature-backfill staging]:
+    when True, the caller (features/panel_staging.py, via
+    scripts/feature_backfill.py) has already computed
+    technical/intraday/pnd/adv_tech/patterns ONCE across the full backfill
+    date range (not once per date — see that module's docstring for the
+    full rationale) and staged them in
+    config.settings.FEATURE_PANEL_STAGING_DB_PATH; recomputing them here
+    too would defeat the entire point. Only HMM (explicitly out of scope
+    for batching — "today only" per 02_models.md M-01, and stateful model
+    fitting rather than a vectorized rolling-window computation) is still
+    computed here; the other 5 return empty placeholders that the caller
+    (build_feature_matrix) ignores in favor of its own `staged_panel` arg.
+    """
+    chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories = args
+
+    if skip_batch_categories:
+        technical = pd.DataFrame(columns=["date", "ticker"] + CORE_TECHNICAL_FEATURES)
+        intraday = pd.DataFrame(columns=["date", "ticker"] + INTRADAY_FEATURES)
+        pnd = pd.DataFrame(columns=["date", "ticker"] + PND_FEATURES)
+        adv_tech = pd.DataFrame(columns=["date", "ticker"] + ADVANCED_TECHNICAL_FEATURES)
+        pat_scores = pd.DataFrame(columns=["date", "ticker"] + PATTERN_FEATURES)
+    else:
+        technical = compute_technical_features(chunk_panel, benchmark_wide)
+        intraday = compute_intraday_features(chunk_panel)
+        pnd = compute_pnd_features(chunk_panel)
+        adv_tech = compute_advanced_technical_features(chunk_panel)
+        pat_scores = compute_pattern_scores(chunk_panel)
+
     hmm = (
         compute_hmm_regime_features(chunk_panel, n_workers=hmm_workers)
         if compute_hmm
         else pd.DataFrame(columns=["date", "ticker"] + HMM_REGIME_FEATURES)
     )
-    pnd = compute_pnd_features(chunk_panel)
-    adv_tech = compute_advanced_technical_features(chunk_panel)
-    pat_scores = compute_pattern_scores(chunk_panel)
 
     return (
         _extract_target_date_panel(technical, target_date, CORE_TECHNICAL_FEATURES),
         _extract_target_date_panel(intraday, target_date, INTRADAY_FEATURES),
         _extract_target_date_panel(hmm, target_date, HMM_REGIME_FEATURES),
         _extract_target_date_panel(pnd, target_date, PND_FEATURES),
-        adv_tech[adv_tech["date"] == target_date].drop(columns=["date"]),
-        pat_scores[pat_scores["date"] == target_date].drop(columns=["date"]),
+        adv_tech[adv_tech["date"] == target_date].drop(columns=["date"]) if not skip_batch_categories
+        else pd.DataFrame(columns=["ticker"] + ADVANCED_TECHNICAL_FEATURES),
+        pat_scores[pat_scores["date"] == target_date].drop(columns=["date"]) if not skip_batch_categories
+        else pd.DataFrame(columns=["ticker"] + PATTERN_FEATURES),
     )
 
 
@@ -351,6 +374,7 @@ def _compute_chunked_ticker_independent_panels(
     compute_hmm: bool,
     hmm_workers: int,
     panel_workers: int = 1,
+    skip_batch_categories: bool = False,
 ) -> "tuple":
     """
     A47 (2026-07-10): computes technical/intraday/hmm/pnd/adv_tech/patterns
@@ -392,6 +416,13 @@ def _compute_chunked_ticker_independent_panels(
         When panel_workers > 1, each chunk's own compute_hmm_regime_features
         call is forced to n_workers=1 regardless of `hmm_workers` — an
         outer pool worker spawning its own nested Pool would be unsafe.
+    skip_batch_categories : bool
+        [2026-07-29] When True, skips recomputing technical/intraday/pnd/
+        adv_tech/patterns for every chunk (the caller already has them from
+        features/panel_staging.py's batch pre-computation) — only HMM is
+        computed here. The returned tuple's technical/intraday/pnd/
+        adv_tech/patterns entries are empty placeholders in that case; the
+        caller (build_feature_matrix) uses its own `staged_panel` instead.
 
     Returns
     -------
@@ -429,7 +460,7 @@ def _compute_chunked_ticker_independent_panels(
     if panel_workers <= 1 or len(chunk_panels) <= 1:
         for chunk_panel in chunk_panels:
             results = _compute_one_chunk_panels(
-                (chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers)
+                (chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories)
             )
             technical, intraday, hmm, pnd, adv_tech, pat_scores = results
             technical_chunks.append(technical)
@@ -465,7 +496,7 @@ def _compute_chunked_ticker_independent_panels(
             # unsafe/wasteful. Callers that want parallel HMM fitting should
             # use panel_workers=1 with hmm_workers>1 instead.
             worker_args = [
-                (chunk_panel, benchmark_wide, target_date, compute_hmm, 1)
+                (chunk_panel, benchmark_wide, target_date, compute_hmm, 1, skip_batch_categories)
                 for chunk_panel in chunk_panels
             ]
             ctx = multiprocessing.get_context("spawn")
@@ -500,6 +531,64 @@ def _compute_chunked_ticker_independent_panels(
         _concat(adv_tech_chunks, ADVANCED_TECHNICAL_FEATURES),
         _concat(patterns_chunks, PATTERN_FEATURES),
     )
+
+
+def compute_full_range_chunk_panels(
+    chunk_panel: pd.DataFrame, benchmark_wide: Optional[pd.DataFrame]
+) -> "tuple":
+    """
+    [2026-07-29, batch feature-backfill staging] The batch counterpart of
+    `_compute_one_chunk_panels` — computes technical/intraday/pnd/
+    adv_tech/patterns for ONE ticker chunk over its FULL input date range
+    (not sliced down to a single target date) and returns all 5 results
+    unfiltered, still spanning every date present in `chunk_panel`.
+
+    This is the one place that actually eliminates the redundant
+    computation: `_compute_one_chunk_panels`/`_compute_chunked_ticker_
+    independent_panels` call these same 5 category functions once PER
+    DATE, each time over an overlapping 760-day window, discarding every
+    row but the target date's. `features/panel_staging.py`'s batch driver
+    instead calls THIS function once per ticker chunk over the whole
+    multi-year backfill range and keeps every requested date's row, so
+    each (ticker, date) pair's rolling-window math runs exactly once.
+
+    Deliberately reuses the exact same category functions
+    (compute_technical_features/compute_intraday_features/
+    compute_pnd_features/compute_advanced_technical_features/
+    compute_pattern_scores) completely unchanged — those functions
+    already document "one row per (ticker, date) in the input panel" as
+    their contract, so calling them on a WIDE multi-date panel already
+    returns every date's row in one pass; the old per-date call path just
+    never made use of that.
+
+    HMM is intentionally not included — see module docstring / M-01: HMM
+    regime features are "today only, not backfill" in production and stay
+    on the existing per-date path.
+
+    Parameters
+    ----------
+    chunk_panel : pd.DataFrame
+        One ticker chunk's OHLCV rows spanning the FULL requested range
+        (earliest requested date - LOOKBACK_CALENDAR_DAYS) through the
+        latest requested date — not a single date's 760-day window.
+    benchmark_wide : pd.DataFrame, optional
+        Same shape as `_build_benchmark_wide`'s output, spanning the same
+        full range.
+
+    Returns
+    -------
+    tuple of 5 pd.DataFrame
+        (technical, intraday, pnd, adv_tech, patterns), each with a `date`
+        column retained (unlike `_compute_one_chunk_panels`, which drops
+        it after slicing to one date) — the caller needs `date` to stage
+        rows keyed by (ticker, date).
+    """
+    technical = compute_technical_features(chunk_panel, benchmark_wide)
+    intraday = compute_intraday_features(chunk_panel)
+    pnd = compute_pnd_features(chunk_panel)
+    adv_tech = compute_advanced_technical_features(chunk_panel)
+    pat_scores = compute_pattern_scores(chunk_panel)
+    return technical, intraday, pnd, adv_tech, pat_scores
 
 
 def _save_feature_matrix(matrix: pd.DataFrame, target_date: pd.Timestamp) -> Path:
@@ -541,6 +630,7 @@ def build_feature_matrix(
     data_cache=None,
     hmm_workers: int = 1,
     panel_workers: int = 1,
+    staged_panel: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Build the full daily feature matrix for `tickers` on `date`.
@@ -578,6 +668,20 @@ def build_feature_matrix(
         rationale/history. When panel_workers > 1, per-chunk HMM fitting is
         forced to n_workers=1 regardless of hmm_workers to avoid nested
         pools.
+    staged_panel : pd.DataFrame, optional
+        [2026-07-29, batch feature-backfill staging] When provided
+        (ONLY by scripts/feature_backfill.py, via features/panel_staging.py
+        — the live daily pipeline never passes this, default None), must
+        have columns ['ticker'] + CORE_TECHNICAL_FEATURES +
+        INTRADAY_FEATURES + PND_FEATURES + ADVANCED_TECHNICAL_FEATURES +
+        PATTERN_FEATURES for exactly `date` (already sliced to this one
+        date by the caller). When given, this function SKIPS recomputing
+        those 5 categories (which would otherwise re-run the same
+        expensive rolling-window math already computed once for the whole
+        backfill range) and slices its columns straight from
+        `staged_panel` instead — HMM is still computed here as normal
+        (out of batching scope; see 02_models.md M-01). None (default)
+        preserves the original, unchanged per-date computation path.
 
     Returns
     -------
@@ -692,9 +796,21 @@ def build_feature_matrix(
         today_technical, today_intraday, today_hmm, today_pnd, today_adv_tech, today_patterns = (
             _compute_chunked_ticker_independent_panels(
                 universe_panel, benchmark_wide, active_tickers, target_date, compute_hmm, hmm_workers,
-                panel_workers=panel_workers,
+                panel_workers=panel_workers, skip_batch_categories=staged_panel is not None,
             )
         )
+        # [2026-07-29] staged_panel already has this date's rows for the 5
+        # batch-computed categories (features/panel_staging.py) — use those
+        # instead of the (deliberately empty, per skip_batch_categories)
+        # placeholders _compute_chunked_ticker_independent_panels just
+        # returned for them. HMM (today_hmm) is unaffected — always
+        # computed above regardless of staged_panel.
+        if staged_panel is not None:
+            today_technical = staged_panel[["ticker"] + CORE_TECHNICAL_FEATURES].copy()
+            today_intraday = staged_panel[["ticker"] + INTRADAY_FEATURES].copy()
+            today_pnd = staged_panel[["ticker"] + PND_FEATURES].copy()
+            today_adv_tech = staged_panel[["ticker"] + ADVANCED_TECHNICAL_FEATURES].copy()
+            today_patterns = staged_panel[["ticker"] + PATTERN_FEATURES].copy()
 
     calendar_row = compute_calendar_features(target_date)
 

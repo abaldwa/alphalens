@@ -168,15 +168,75 @@ def main() -> None:
     manifest_path = LOGS_DIR / f"feature_backfill_failed_{run_id}.txt"
     logger.info("Failed-dates manifest (if any): %s", manifest_path)
 
+    # [2026-07-29] Batch pre-computation + DuckDB staging (features/
+    # panel_staging.py): computes technical/intraday/pnd/advanced_technical/
+    # pattern_scores ONCE per ticker chunk across the FULL `pending` date
+    # range (instead of once per date with an overlapping 760-day window —
+    # see that module's docstring for the full root-cause/rationale), and
+    # stages each chunk's rows to a temporary DuckDB table as it finishes
+    # (never held in one in-memory structure spanning the whole run). Only
+    # after every chunk is staged does the per-date write loop below run,
+    # pulling each date's precomputed rows back out via a fast indexed
+    # lookup. HMM and the PIT/fundamental/governance/etc. categories are
+    # untouched — the per-date loop still computes those exactly as before.
+    #
+    # A staging failure (e.g. the DataStore API genuinely unreachable) must
+    # not silently fall back to the (correct but ~760x slower) per-date
+    # path for a multi-thousand-date run — that defeats the whole point of
+    # this script existing. It DOES fail open per-date below: if a specific
+    # date's rows are missing from staging for any reason (e.g. --force
+    # combined with a `pending` set that grew after staging started), that
+    # one date's build_feature_matrix call falls back to recomputing those
+    # 5 categories itself (staged_panel=None), which is always correct,
+    # just not fast.
+    import pandas as pd
+
+    # Deliberately a distinct variable from `run_id` (manifest_path's id,
+    # already resolved above) — reusing that name would silently rename
+    # the failed-dates manifest file too, which is unrelated.
+    staging_run_id = f"feature_backfill_{run_id}"
+    panel_staging = None
+    pending_timestamps = [pd.Timestamp(d) for d in pending]
+    logger.info("panel_staging: staging %d dates under run_id=%s ...", len(pending_timestamps), staging_run_id)
+    t_stage0 = time.monotonic()
+    try:
+        # Imported here (not at module top) so an environment/test that
+        # fakes out config.settings/datastore.* wholesale (this script's
+        # own test suite does exactly that for the manifest-writing tests,
+        # which have nothing to do with panel staging) doesn't fail before
+        # even reaching this try/except — any import or runtime failure
+        # here is equally "batch staging unavailable, fall back per-date".
+        from features import panel_staging as _panel_staging
+
+        panel_staging = _panel_staging
+        panel_staging.stage_batch_panels(client, tickers_for_cache, pending_timestamps, run_id=staging_run_id)
+        logger.info("panel_staging: staging complete in %.1f min", (time.monotonic() - t_stage0) / 60)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "panel_staging: batch staging FAILED (%s) — falling back to the original per-date "
+            "computation path for this entire run (no staged_panel will be used)", exc,
+        )
+        staging_run_id = None
+        panel_staging = None
+
     ok = err = 0
     elapsed_times: list = []
 
     for i, d in enumerate(pending, start=1):
         t0 = time.monotonic()
         try:
+            staged_panel = None
+            if staging_run_id is not None:
+                staged_panel = panel_staging.load_staged_panel_for_date(staging_run_id, d)
+                if staged_panel is None:
+                    logger.warning(
+                        "panel_staging: no staged rows for %s (run_id=%s) — falling back to "
+                        "recomputing the 5 batched categories for this date only", d, staging_run_id,
+                    )
+
             step_compute_features(
                 d, compute_hmm=compute_hmm, data_cache=backfill_cache,
-                panel_workers=args.panel_workers,
+                panel_workers=args.panel_workers, staged_panel=staged_panel,
             )
             elapsed = time.monotonic() - t0
             elapsed_times.append(elapsed)
@@ -201,6 +261,9 @@ def main() -> None:
     )
     if err:
         logger.info("Failed dates written to %s — retry with those dates specifically", manifest_path)
+
+    if staging_run_id is not None:
+        panel_staging.drop_staging_run(staging_run_id)
 
 
 if __name__ == "__main__":

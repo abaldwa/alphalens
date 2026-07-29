@@ -147,6 +147,18 @@ SCHEDULER_DB_PATH = NORMALISED_DIR / "scheduler.db"
 # (ticker, fiscal_year, quarter) — persists across process restarts so a
 # multi-day backfill doesn't lose its warm cache on a crash/reboot.
 FUNDAMENTAL_RAW_CACHE_DB_PATH = NORMALISED_DIR / "fundamental_raw_cache.duckdb"
+# [2026-07-29] Batch backfill staging (features/panel_staging.py,
+# scripts/feature_backfill.py): a SEPARATE .duckdb file (not the main
+# alphalens.duckdb) so a multi-hour backfill's staging writes never
+# contend for alphalens.duckdb's single-writer lock against the live
+# scheduler/API process — see feedback re: DuckDB single-writer
+# contention with the live scheduler already causing intermittent
+# run_models timeouts on this project. Holds one wide row per (run_id,
+# ticker, date) for the 5 ticker-independent rolling-window feature
+# categories (technical/intraday/pnd/advanced_technical/pattern_scores),
+# computed once per ticker-chunk across a whole backfill date range
+# instead of once per date with an overlapping lookback window.
+FEATURE_PANEL_STAGING_DB_PATH = NORMALISED_DIR / "feature_panel_staging.duckdb"
 # 2026-07-05: cross-process advisory lock (fcntl.flock) so run_steps_for_date
 # can never execute concurrently from two OS processes (the scheduler's own
 # daily_pipeline + morning_catchup jobs both call it for "today", and the
