@@ -76,10 +76,12 @@ class _FixedConn:
 
 
 class TestStepDownloadFno:
-    def test_failure_is_caught_and_non_fatal(self, monkeypatch):
-        """SPEC-PIPE-001: F&O bhavcopy is non-critical for Phase 1 (NSE's
-        archive endpoint is currently broken) — a failure here must never
-        raise, so it can never block download_macro/adjust_prices."""
+    def test_scraper_failure_propagates(self, monkeypatch):
+        """2026-07-29: promoted to critical — a scrape failure must now
+        raise so the checkpoint is honestly marked 'failed' and picked up
+        by gap-backfill retry, instead of always recording 'success' even
+        when nothing was written (the root cause of 6 silently-missed
+        trading days, see step_download_fno's docstring)."""
         from ingestion.scrapers import fno
 
         def _raise(date_str):
@@ -87,7 +89,8 @@ class TestStepDownloadFno:
 
         monkeypatch.setattr(fno, "download_fno_bhavcopy", _raise)
 
-        daily_pipeline.step_download_fno(date(2026, 1, 5))  # must not raise
+        with pytest.raises(ConnectionError):
+            daily_pipeline.step_download_fno(date(2026, 1, 5))
 
     def test_success_is_persisted_to_fno_data(self, monkeypatch):
         """P2.3: fno_data now exists — a successful fetch is written there,
@@ -122,12 +125,11 @@ class TestStepDownloadFno:
             rows = conn.execute("SELECT ticker, instrument, oi FROM fno_data ORDER BY instrument").fetchall()
             assert rows == [("AAA", "STF", 1000), ("AAA", "STO", 500)]
 
-    def test_db_write_failure_is_caught_and_non_fatal(self, monkeypatch):
-        """A34: same class of bug as A31 — the DELETE+executemany DB write
-        previously sat outside the try/except that only wrapped the scraper
-        fetch, so a cross-process DuckDB lock conflict (SPEC-SCHED-013)
-        would have failed the whole step despite it being documented as
-        always-non-critical. Must be caught same as a scraper failure."""
+    def test_db_write_failure_propagates(self, monkeypatch):
+        """2026-07-29: now critical (see class docstring above) — a
+        cross-process DuckDB lock conflict (SPEC-SCHED-013) on the write
+        must raise same as a scraper failure, so the checkpoint is marked
+        'failed' and retried rather than silently recorded as 'success'."""
         from ingestion.scrapers import fno
 
         df = pd.DataFrame(
@@ -144,7 +146,8 @@ class TestStepDownloadFno:
 
         monkeypatch.setattr(daily_pipeline, "get_duckdb_connection", _raise_lock_conflict)
 
-        daily_pipeline.step_download_fno(date(2026, 1, 5))  # must not raise
+        with pytest.raises(RuntimeError):
+            daily_pipeline.step_download_fno(date(2026, 1, 5))
 
     def test_rerun_for_same_date_replaces_not_duplicates(self, monkeypatch):
         """Delete-then-insert per trade_date (see datastore/schema/create_normalised.py's

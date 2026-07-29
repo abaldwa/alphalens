@@ -213,8 +213,26 @@ def pd_isna(value) -> bool:
 def step_download_fno(run_date: date_type, db_path: Optional[Path] = None) -> None:
     """
     Download NSE F&O bhavcopy for run_date and persist into fno_data.
-    Non-critical: a failure here must never block download_macro/
-    adjust_prices.
+
+    2026-07-29 (user decision): promoted from non-critical to critical.
+    Through 2026-07 a scrape failure here was caught and swallowed so the
+    checkpoint was always marked 'success' even when nothing was written —
+    which is exactly why 6 trading days (07-02, 07-07, 07-08, 07-22, 07-23,
+    07-28) went missing for weeks without anyone noticing or anything
+    retrying them: `download_fno` is `is_backfillable: True` in
+    checkpoint.py's STEPS list, but a checkpoint already marked 'success'
+    is never retried. Now the scrape failure propagates so the checkpoint
+    is honestly marked 'failed', which the existing gap-backfill mechanism
+    (run_backfill/run_morning_catchup_sequence) will automatically retry on
+    a later run until NSE actually serves that date's bhavcopy. The DB
+    write is still wrapped separately below so a lock-conflict on write
+    doesn't get confused with a genuine scrape/data outage.
+
+    `publish_and_snapshot` depends_on ["download_fno", "adjust_prices"]
+    (checkpoint.py), so on a day this fails, only that day's snapshot step
+    is skipped (not aborted) until a later backfill run succeeds — it does
+    not block download_macro/adjust_prices/compute_features, which have no
+    dependency on this step.
 
     Parameters
     ----------
@@ -225,10 +243,6 @@ def step_download_fno(run_date: date_type, db_path: Optional[Path] = None) -> No
     Returns
     -------
     None
-        Always — failures are caught and logged, never raised (same
-        "mark unavailable, non-critical" philosophy SPEC-PIPE-006 already
-        applies to FII/DII and VIX; an F&O outage must not block the
-        Phase 1 OHLCV/macro steps this pipeline also runs daily).
 
     Spec References
     ----------------
@@ -240,56 +254,47 @@ def step_download_fno(run_date: date_type, db_path: Optional[Path] = None) -> No
 
     Raises
     ------
-    None
+    Exception
+        Propagated from fno.download_fno_bhavcopy() or the DB write on
+        failure — this step is now critical (see docstring above) and the
+        checkpoint is marked 'failed' so it gets retried on backfill.
     """
     from config.settings import DUCKDB_PATH
     from ingestion.scrapers import fno
 
     resolved_db_path = db_path or DUCKDB_PATH
     date_str = run_date.isoformat()
-    try:
-        df = fno.download_fno_bhavcopy(date_str)
 
-        rows = [
-            (
-                date_str,
-                row.ticker,
-                row.instrument,
-                row.expiry.date().isoformat() if pd.notna(row.expiry) else None,
-                None if pd.isna(row.strike) else float(row.strike),
-                None if pd.isna(row.option_type) else row.option_type,
-                None if pd.isna(row.oi) else int(row.oi),
-                None if pd.isna(row.oi_change) else int(row.oi_change),
-                None if pd.isna(row.volume) else int(row.volume),
-                None if pd.isna(row.settle_price) else float(row.settle_price),
-                None if pd.isna(row.close_price) else float(row.close_price),
-                None if pd.isna(row.underlying_price) else float(row.underlying_price),
-            )
-            for row in df.itertuples()
-            if pd.notna(row.expiry)
-        ]
+    df = fno.download_fno_bhavcopy(date_str)
 
-        # Delete-then-insert per trade_date: the bhavcopy file arrives as one
-        # atomic daily snapshot (no incremental updates within a day), and
-        # fno_data has no PRIMARY KEY (strike/option_type are NULL for
-        # futures rows) — see datastore/schema/create_normalised.py's
-        # _CREATE_FNO_DATA comment. persist=False per SPEC-SCHED-013, same as
-        # step_download_bhavcopy.
-        with get_duckdb_connection(resolved_db_path, persist=False) as conn:
-            conn.execute("DELETE FROM fno_data WHERE trade_date = ?", [date_str])
-            conn.executemany(_INSERT_FNO_DATA, rows)
-    except Exception as exc:
-        # 2026-07-09 (A34, same class of bug as A31): the DB write (e.g. a
-        # cross-process DuckDB lock conflict, SPEC-SCHED-013) previously sat
-        # outside this try/except, so it could fail the whole step despite
-        # the docstring documenting step_download_fno as always-non-critical.
-        # Widened to cover the write too, matching
-        # step_download_index_ohlcv's A31 fix.
-        logger.warning(
-            f"download_fno: unavailable for {date_str} ({exc}) — "
-            "non-critical, continuing"
+    rows = [
+        (
+            date_str,
+            row.ticker,
+            row.instrument,
+            row.expiry.date().isoformat() if pd.notna(row.expiry) else None,
+            None if pd.isna(row.strike) else float(row.strike),
+            None if pd.isna(row.option_type) else row.option_type,
+            None if pd.isna(row.oi) else int(row.oi),
+            None if pd.isna(row.oi_change) else int(row.oi_change),
+            None if pd.isna(row.volume) else int(row.volume),
+            None if pd.isna(row.settle_price) else float(row.settle_price),
+            None if pd.isna(row.close_price) else float(row.close_price),
+            None if pd.isna(row.underlying_price) else float(row.underlying_price),
         )
-        return
+        for row in df.itertuples()
+        if pd.notna(row.expiry)
+    ]
+
+    # Delete-then-insert per trade_date: the bhavcopy file arrives as one
+    # atomic daily snapshot (no incremental updates within a day), and
+    # fno_data has no PRIMARY KEY (strike/option_type are NULL for
+    # futures rows) — see datastore/schema/create_normalised.py's
+    # _CREATE_FNO_DATA comment. persist=False per SPEC-SCHED-013, same as
+    # step_download_bhavcopy.
+    with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+        conn.execute("DELETE FROM fno_data WHERE trade_date = ?", [date_str])
+        conn.executemany(_INSERT_FNO_DATA, rows)
 
     logger.info(f"download_fno: {len(rows)} rows written for {date_str}")
 

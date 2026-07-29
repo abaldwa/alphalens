@@ -73,9 +73,16 @@ logger = logging.getLogger(__name__)
 STEPS = [
     # Foundation: OHLCV is the hard prerequisite for everything downstream.
     {"name": "download_bhavcopy", "is_backfillable": True, "depends_on": []},
-    # Independent downloaders: failures are isolated; each handles its own
-    # source outages via try/except and returns normally on failure.
+    # Independent downloaders: failures are isolated (no other step
+    # depends_on them except publish_and_snapshot below), so failing them
+    # never blocks adjust_prices/compute_features.
+    # 2026-07-29: download_fno promoted to critical — it now propagates
+    # scrape/write failures instead of swallowing them, so a checkpoint
+    # failure here is real and gets picked up by gap-backfill retry (see
+    # step_download_fno's docstring in daily_pipeline.py).
     {"name": "download_fno", "is_backfillable": True, "depends_on": []},
+    # download_macro still swallows its own source outages internally
+    # (SPEC-PIPE-006 "mark unavailable, non-critical").
     {"name": "download_macro", "is_backfillable": True, "depends_on": []},
     # NSE indices-close archive (Nifty 50/500 + sector indices) — independent
     # of bhavcopy, same as download_fno/download_macro above.
