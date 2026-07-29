@@ -53,7 +53,13 @@ from features.fundamental_cache import load_fundamental_raw_cache, save_fundamen
 from features.governance import GOVERNANCE_FEATURES, compute_governance_features_panel
 from features.intraday import INTRADAY_FEATURES, compute_intraday_features
 from features.macro_features import MACRO_FEATURES, compute_macro_features, load_macro_indicators
-from features.mf_holdings import MF_HOLDINGS_FEATURES, compute_mf_holdings_features_panel
+from features.mf_holdings import (
+    MF_HOLDINGS_DIR,
+    MF_HOLDINGS_FEATURES,
+    compute_mf_holdings_features,
+    compute_mf_holdings_features_panel,
+    load_mf_holdings_history,
+)
 from features.multibagger import MULTIBAGGER_FEATURES, compute_multibagger_features
 from features.pnd_features import PND_FEATURES, compute_pnd_features
 from features.technical import BENCHMARK_TICKERS, CORE_TECHNICAL_FEATURES, compute_technical_features
@@ -300,6 +306,257 @@ def _validate_feature_matrix(matrix: pd.DataFrame) -> None:
             logger.warning(f"{len(bad)}/{len(vals)} '{col}' values outside [{lo}, {hi}]")
 
 
+def _run_pool_over_chunks(worker_fn, worker_args_list: list, panel_workers: int) -> list:
+    """
+    Generic BLAS-safe spawn-pool runner, factored out of
+    `_compute_chunked_ticker_independent_panels` [2026-07-29] so the
+    governance/corporate-action/mf-holdings chunked panel wrappers below
+    can reuse the exact same pool-creation/BLAS-thread-capping/
+    env-var-restore machinery instead of a second bespoke implementation.
+
+    `worker_fn` must be a module-level (picklable) callable taking one
+    positional arg from `worker_args_list` (spawn-context requirement —
+    same as `_compute_one_chunk_panels`).
+
+    panel_workers <= 1 or a single task: runs sequentially in-process,
+    preserving call order and (for I/O-bound worker_fns) letting exceptions
+    surface exactly as they would pre-parallelization.
+    """
+    if panel_workers <= 1 or len(worker_args_list) <= 1:
+        return [worker_fn(a) for a in worker_args_list]
+
+    import multiprocessing
+    import os
+
+    # See compute_hmm_regime_features's docstring for the full measured
+    # history behind capping BLAS threads to 1 per worker before Pool
+    # creation (spawned children inherit os.environ at process creation,
+    # before their own numpy import initializes BLAS).
+    _blas_env_vars = (
+        "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
+    )
+    _prev_env = {var: os.environ.get(var) for var in _blas_env_vars}
+    try:
+        for var in _blas_env_vars:
+            os.environ[var] = "1"
+        ctx = multiprocessing.get_context("spawn")
+        with ctx.Pool(processes=panel_workers) as pool:
+            return list(pool.imap(worker_fn, worker_args_list))
+    finally:
+        for var, val in _prev_env.items():
+            if val is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = val
+
+
+def _chunk_tickers(tickers: List[str]) -> List[List[str]]:
+    """
+    Splits `tickers` into adaptive-size chunks, same sizing policy
+    (config.settings.SCREENER_BATCH_EXPORT_CHUNK_SIZE /
+    PIPELINE_MEMORY_CEILING_MB via ingestion.scheduler.resource_guard.
+    adaptive_chunk_size) as `_compute_chunked_ticker_independent_panels`'s
+    own chunk-list build, so all panel_workers>1 code paths in this module
+    dispatch comparably-sized tasks to the pool.
+    """
+    from config.settings import PIPELINE_MEMORY_CEILING_MB, SCREENER_BATCH_EXPORT_CHUNK_SIZE
+    from ingestion.scheduler.resource_guard import adaptive_chunk_size
+
+    chunks = []
+    i = 0
+    while i < len(tickers):
+        chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
+        chunk = tickers[i : i + chunk_size]
+        i += chunk_size
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def _governance_chunk_worker(args: "tuple") -> pd.DataFrame:
+    """Picklable, module-level worker: one ticker chunk's governance panel."""
+    client, chunk_tickers, as_of, data_cache, chunk_ohlcv = args
+    return compute_governance_features_panel(
+        client, chunk_tickers, as_of, data_cache=data_cache, ohlcv_panel=chunk_ohlcv
+    )
+
+
+def compute_governance_features_panel_chunked(
+    client: DataStoreClient,
+    tickers: List[str],
+    as_of: datetime,
+    data_cache=None,
+    ohlcv_panel: Optional[pd.DataFrame] = None,
+    panel_workers: int = 1,
+) -> pd.DataFrame:
+    """
+    [2026-07-29] Ticker-chunked wrapper around
+    `features.governance.compute_governance_features_panel` — that
+    function's per-ticker loop has NO cross-ticker aggregation (its own
+    docstring: "governance features are NOT sector z-scored"), so chunking
+    tickers across a `panel_workers` pool and concatenating results is
+    output-identical to the sequential loop, just faster wall-clock.
+    `client`/`data_cache` (DataStoreClient/BackfillDataCache) hold only
+    plain picklable attributes (base_url/timeout, and in-memory dict-of-
+    lists respectively) — no open sockets/connections — so they're passed
+    straight through to spawned workers rather than re-instantiated there.
+
+    panel_workers <= 1 (default) calls the original function directly,
+    unchanged, for every existing caller.
+    """
+    if panel_workers <= 1:
+        return compute_governance_features_panel(client, tickers, as_of, data_cache=data_cache, ohlcv_panel=ohlcv_panel)
+
+    chunks = _chunk_tickers(tickers)
+    if len(chunks) <= 1:
+        return compute_governance_features_panel(client, tickers, as_of, data_cache=data_cache, ohlcv_panel=ohlcv_panel)
+
+    worker_args = [
+        (
+            client, chunk, as_of, data_cache,
+            ohlcv_panel[ohlcv_panel["ticker"].isin(set(chunk))] if ohlcv_panel is not None else None,
+        )
+        for chunk in chunks
+    ]
+    results = _run_pool_over_chunks(_governance_chunk_worker, worker_args, panel_workers)
+    non_empty = [r for r in results if not r.empty]
+    if not non_empty:
+        return pd.DataFrame(columns=["ticker"] + GOVERNANCE_FEATURES)
+    return pd.concat(non_empty, ignore_index=True)
+
+
+def _corp_action_chunk_worker(args: "tuple") -> pd.DataFrame:
+    """Picklable, module-level worker: one ticker chunk's corp-action panel."""
+    client, chunk_tickers, as_of, listing_dates, data_cache, chunk_ohlcv = args
+    return compute_corporate_action_features_panel(
+        client, chunk_tickers, as_of, listing_dates=listing_dates,
+        data_cache=data_cache, ohlcv_panel=chunk_ohlcv,
+    )
+
+
+def compute_corporate_action_features_panel_chunked(
+    client: DataStoreClient,
+    tickers: List[str],
+    as_of: datetime,
+    listing_dates: Optional[dict] = None,
+    data_cache=None,
+    ohlcv_panel: Optional[pd.DataFrame] = None,
+    panel_workers: int = 1,
+) -> pd.DataFrame:
+    """
+    [2026-07-29] Ticker-chunked wrapper around
+    `features.corporate_action_features.compute_corporate_action_features_panel`
+    — same rationale/guarantees as
+    `compute_governance_features_panel_chunked` above: that function's
+    per-ticker loop also does no cross-ticker aggregation, so chunking +
+    concatenating is output-identical to sequential, just faster.
+
+    panel_workers <= 1 (default) calls the original function directly,
+    unchanged, for every existing caller.
+    """
+    if panel_workers <= 1:
+        return compute_corporate_action_features_panel(
+            client, tickers, as_of, listing_dates=listing_dates, data_cache=data_cache, ohlcv_panel=ohlcv_panel,
+        )
+
+    chunks = _chunk_tickers(tickers)
+    if len(chunks) <= 1:
+        return compute_corporate_action_features_panel(
+            client, tickers, as_of, listing_dates=listing_dates, data_cache=data_cache, ohlcv_panel=ohlcv_panel,
+        )
+
+    worker_args = [
+        (
+            client, chunk, as_of, listing_dates, data_cache,
+            ohlcv_panel[ohlcv_panel["ticker"].isin(set(chunk))] if ohlcv_panel is not None else None,
+        )
+        for chunk in chunks
+    ]
+    results = _run_pool_over_chunks(_corp_action_chunk_worker, worker_args, panel_workers)
+    non_empty = [r for r in results if not r.empty]
+    if not non_empty:
+        return pd.DataFrame(columns=["ticker"] + CORPORATE_ACTION_FEATURES)
+    return pd.concat(non_empty, ignore_index=True)
+
+
+def _mf_holdings_chunk_worker(args: "tuple") -> pd.DataFrame:
+    """
+    Picklable, module-level worker: one ticker chunk's mf_holdings
+    per-ticker feature records — deliberately WITHOUT the
+    `mf_crowdedness_rank` cross-sectional rank step (that must run once on
+    the reassembled full panel, in the parent process — see
+    `compute_mf_holdings_features_panel_chunked`'s docstring). Returns the
+    raw per-ticker record DataFrame including a placeholder
+    `mf_crowdedness_rank` (NaN, same as `compute_mf_holdings_features`'s
+    own per-ticker dict) and `tier`, both required by the parent's
+    post-concat groupby-rank step.
+    """
+    chunk_tickers, as_of, tier_map, superstar_holdings, history = args
+    records = []
+    for ticker in chunk_tickers:
+        feats = compute_mf_holdings_features(ticker, as_of, history, superstar_holdings)
+        feats["ticker"] = ticker
+        feats["tier"] = tier_map.get(ticker, -1)
+        records.append(feats)
+    return pd.DataFrame(records)
+
+
+def compute_mf_holdings_features_panel_chunked(
+    tickers: List[str],
+    as_of: datetime,
+    tier_map: Optional[dict] = None,
+    superstar_holdings: Optional[pd.DataFrame] = None,
+    holdings_dir: Path = MF_HOLDINGS_DIR,
+    panel_workers: int = 1,
+) -> pd.DataFrame:
+    """
+    [2026-07-29] Ticker-chunked wrapper around
+    `features.mf_holdings.compute_mf_holdings_features_panel`.
+
+    Unlike governance/corp_action, this panel has ONE real cross-ticker
+    dependency: `mf_crowdedness_rank = panel.groupby("tier")
+    ["mf_scheme_count"].rank(pct=True)`, computed once AFTER the loop over
+    the assembled full panel. Chunking the per-ticker loop across workers
+    and then ranking per-chunk would silently corrupt this (each chunk
+    would only see its own sub-cohort's percentile, not the true
+    full-universe-within-tier percentile) — so this wrapper collects every
+    chunk's raw per-ticker records first, concatenates into the FULL panel,
+    and only then runs the groupby-rank step exactly once, identical to
+    the sequential function's own placement of that step.
+
+    `history` (this module's own picklable in-memory DataFrame, loaded
+    once here via `load_mf_holdings_history`, not per-chunk/per-ticker) is
+    passed to every worker task — same "load once, reuse everywhere"
+    contract as the sequential function's own docstring.
+
+    panel_workers <= 1 (default) calls the original function directly,
+    unchanged, for every existing caller.
+    """
+    if panel_workers <= 1:
+        return compute_mf_holdings_features_panel(
+            tickers, as_of, tier_map=tier_map, superstar_holdings=superstar_holdings, holdings_dir=holdings_dir,
+        )
+
+    chunks = _chunk_tickers(tickers)
+    if len(chunks) <= 1:
+        return compute_mf_holdings_features_panel(
+            tickers, as_of, tier_map=tier_map, superstar_holdings=superstar_holdings, holdings_dir=holdings_dir,
+        )
+
+    tier_map = tier_map or {}
+    history = load_mf_holdings_history(as_of, holdings_dir=holdings_dir)
+    worker_args = [(chunk, as_of, tier_map, superstar_holdings, history) for chunk in chunks]
+    results = _run_pool_over_chunks(_mf_holdings_chunk_worker, worker_args, panel_workers)
+    non_empty = [r for r in results if not r.empty]
+    if not non_empty:
+        return pd.DataFrame(columns=["ticker"] + MF_HOLDINGS_FEATURES)
+
+    panel = pd.concat(non_empty, ignore_index=True)
+    panel["mf_crowdedness_rank"] = panel.groupby("tier")["mf_scheme_count"].rank(pct=True)
+    return panel[["ticker"] + MF_HOLDINGS_FEATURES]
+
+
 def _compute_one_chunk_panels(
     args: "tuple",
 ) -> "tuple":
@@ -473,41 +730,20 @@ def _compute_chunked_ticker_independent_panels(
             del chunk_panel, results, technical, intraday, hmm, pnd, adv_tech, pat_scores
             gc.collect()
     else:
-        import multiprocessing
-        import os
-
-        # See compute_hmm_regime_features's docstring/comment for the full
-        # measured history behind this pattern (331s -> 257s parallel-
-        # unpinned -> 19.8s parallel-pinned on this machine). Spawned
-        # children inherit os.environ at process creation, before their own
-        # numpy import initializes BLAS, so setting these here (before Pool
-        # creation) reliably caps each worker to one BLAS thread.
-        _blas_env_vars = (
-            "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-            "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
-        )
-        _prev_env = {var: os.environ.get(var) for var in _blas_env_vars}
-        try:
-            for var in _blas_env_vars:
-                os.environ[var] = "1"
-
-            # Force per-chunk HMM fitting to n_workers=1 inside the pool —
-            # nested pools (a spawned worker spawning its own Pool) are
-            # unsafe/wasteful. Callers that want parallel HMM fitting should
-            # use panel_workers=1 with hmm_workers>1 instead.
-            worker_args = [
-                (chunk_panel, benchmark_wide, target_date, compute_hmm, 1, skip_batch_categories)
-                for chunk_panel in chunk_panels
-            ]
-            ctx = multiprocessing.get_context("spawn")
-            with ctx.Pool(processes=panel_workers) as pool:
-                all_results = list(pool.imap(_compute_one_chunk_panels, worker_args))
-        finally:
-            for var, val in _prev_env.items():
-                if val is None:
-                    os.environ.pop(var, None)
-                else:
-                    os.environ[var] = val
+        # Force per-chunk HMM fitting to n_workers=1 inside the pool —
+        # nested pools (a spawned worker spawning its own Pool) are
+        # unsafe/wasteful. Callers that want parallel HMM fitting should
+        # use panel_workers=1 with hmm_workers>1 instead.
+        worker_args = [
+            (chunk_panel, benchmark_wide, target_date, compute_hmm, 1, skip_batch_categories)
+            for chunk_panel in chunk_panels
+        ]
+        # [2026-07-29] Delegates to the shared _run_pool_over_chunks helper
+        # (factored out this same session — see its docstring) instead of
+        # duplicating the BLAS-capping/spawn-Pool machinery inline; behavior
+        # is unchanged (same env vars, same spawn context, same
+        # Pool(processes=panel_workers).imap dispatch).
+        all_results = _run_pool_over_chunks(_compute_one_chunk_panels, worker_args, panel_workers)
 
         for technical, intraday, hmm, pnd, adv_tech, pat_scores in all_results:
             technical_chunks.append(technical)
@@ -851,14 +1087,26 @@ def build_feature_matrix(
     # the universe once warm), not the whole cache — see
     # features/fundamental_cache.py's docstring for why.
     save_fundamental_raw_cache_entries(cache_misses)
-    governance = compute_governance_features_panel(
+    # [2026-07-29] governance/mf_holdings/corp_action each confirmed
+    # per-ticker-independent aside from mf_holdings' single post-loop
+    # groupby-rank step (handled correctly inside the _chunked wrapper —
+    # see compute_mf_holdings_features_panel_chunked's docstring) —
+    # dispatched across the same panel_workers pool as the technical/
+    # intraday/hmm/pnd/adv_tech/patterns panels above. panel_workers=1
+    # (the default) calls the original unparallelized functions directly,
+    # unchanged.
+    governance = compute_governance_features_panel_chunked(
         client, active_tickers, target_date,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+        panel_workers=panel_workers,
     )
-    mf_holdings = compute_mf_holdings_features_panel(active_tickers, target_date, tier_map=tier_map)
-    corp_action = compute_corporate_action_features_panel(
+    mf_holdings = compute_mf_holdings_features_panel_chunked(
+        active_tickers, target_date, tier_map=tier_map, panel_workers=panel_workers,
+    )
+    corp_action = compute_corporate_action_features_panel_chunked(
         client, active_tickers, target_date, listing_dates=listing_dates,
         data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+        panel_workers=panel_workers,
     )
     # [2026-07-26 perf fix] ~2,100 of ~2,300 universe tickers have never had
     # F&O activity at all — compute_fno_features_panel used to call the F&O

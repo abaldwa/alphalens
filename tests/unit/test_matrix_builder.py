@@ -473,3 +473,112 @@ class TestPanelWorkersParallelization:
             assert os.environ["OPENBLAS_NUM_THREADS"] == "7"
         finally:
             os.environ.pop("OPENBLAS_NUM_THREADS", None)
+
+
+class TestGovernanceCorpActionMfHoldingsChunkedParity:
+    """2026-07-29 perf fix: compute_governance_features_panel_chunked /
+    compute_corporate_action_features_panel_chunked /
+    compute_mf_holdings_features_panel_chunked must each produce output
+    byte-identical to their sequential (panel_workers=1) counterparts —
+    same correctness bar as TestPanelWorkersParallelization above, but
+    exercised directly (not just indirectly via build_feature_matrix) so
+    the mf_holdings post-concat groupby-rank step is specifically covered
+    with a tier assignment that actually varies mf_scheme_count."""
+
+    @pytest.fixture
+    def multi_ticker_client(self):
+        rows = {
+            t: _make_ohlcv_rows(300, seed=i)
+            for i, t in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
+        }
+        bm_rows = {name: _make_ohlcv_rows(300, seed=hash(name) % 1000) for name in BENCHMARK_TICKERS.values()}
+        return _FakeDataStoreClient({**rows, **bm_rows})
+
+    def test_governance_panel_chunked_matches_sequential(self, multi_ticker_client, monkeypatch):
+        import config.settings as settings
+        from features.governance import GOVERNANCE_FEATURES
+        from features.matrix_builder import compute_governance_features_panel_chunked
+
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 2)
+        tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+        as_of = pd.Timestamp("2024-12-01")
+
+        sequential = compute_governance_features_panel_chunked(
+            multi_ticker_client, tickers, as_of, panel_workers=1
+        ).sort_values("ticker").reset_index(drop=True)
+        parallel = compute_governance_features_panel_chunked(
+            multi_ticker_client, tickers, as_of, panel_workers=2
+        ).sort_values("ticker").reset_index(drop=True)
+
+        assert list(sequential.columns) == ["ticker"] + GOVERNANCE_FEATURES
+        pd.testing.assert_frame_equal(sequential, parallel)
+
+    def test_corp_action_panel_chunked_matches_sequential(self, multi_ticker_client, monkeypatch):
+        import config.settings as settings
+        from features.corporate_action_features import CORPORATE_ACTION_FEATURES
+        from features.matrix_builder import compute_corporate_action_features_panel_chunked
+
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 2)
+        tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+        as_of = pd.Timestamp("2024-12-01")
+
+        sequential = compute_corporate_action_features_panel_chunked(
+            multi_ticker_client, tickers, as_of, panel_workers=1
+        ).sort_values("ticker").reset_index(drop=True)
+        parallel = compute_corporate_action_features_panel_chunked(
+            multi_ticker_client, tickers, as_of, panel_workers=2
+        ).sort_values("ticker").reset_index(drop=True)
+
+        assert list(sequential.columns) == ["ticker"] + CORPORATE_ACTION_FEATURES
+        pd.testing.assert_frame_equal(sequential, parallel)
+
+    def test_mf_holdings_panel_chunked_matches_sequential_including_crowdedness_rank(
+        self, monkeypatch, tmp_path
+    ):
+        """Builds a small on-disk MF-holdings Parquet history (via the real
+        load_mf_holdings_history I/O path, not a function-level monkeypatch
+        — load_mf_holdings_history is only ever called ONCE in the parent
+        process before workers are dispatched, both for panel_workers=1
+        [in-process, sequential] and panel_workers>1 [loaded once, then
+        `history` is passed as picklable data to each worker task] — see
+        compute_mf_holdings_features_panel_chunked's docstring) with
+        multiple tiers and varying mf_scheme_count per ticker, so
+        mf_crowdedness_rank actually varies and a per-chunk (instead of
+        post-concat) rank bug would be caught."""
+        import config.settings as settings
+        from features.matrix_builder import compute_mf_holdings_features_panel_chunked
+        from features.mf_holdings import MF_HOLDINGS_FEATURES
+
+        as_of = pd.Timestamp("2024-06-15")
+        tickers = [f"TICK{i}" for i in range(8)]
+        # tier 1: TICK0..3 (varying scheme counts 1..4); tier 2: TICK4..7 (varying 1..4)
+        tier_map = {t: 1 if i < 4 else 2 for i, t in enumerate(tickers)}
+
+        rows = []
+        for i, t in enumerate(tickers):
+            n_schemes = (i % 4) + 1
+            for s in range(n_schemes):
+                rows.append({
+                    "scheme_name": f"Scheme{s}", "isin": f"ISIN{t}", "ticker": t,
+                    "quantity": 1000 * (s + 1), "value_inr": 1_000_000.0 * (s + 1),
+                    "month": "2024-05", "availability_date": "2024-06-10",
+                })
+        holdings_dir = tmp_path / "mf_holdings"
+        holdings_dir.mkdir()
+        pd.DataFrame(rows).to_parquet(holdings_dir / "2024-05.parquet")
+
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 2)
+
+        sequential = compute_mf_holdings_features_panel_chunked(
+            tickers, as_of, tier_map=tier_map, holdings_dir=holdings_dir, panel_workers=1
+        ).sort_values("ticker").reset_index(drop=True)
+        parallel = compute_mf_holdings_features_panel_chunked(
+            tickers, as_of, tier_map=tier_map, holdings_dir=holdings_dir, panel_workers=2
+        ).sort_values("ticker").reset_index(drop=True)
+
+        assert list(sequential.columns) == ["ticker"] + MF_HOLDINGS_FEATURES
+        # mf_scheme_count genuinely varies (1..4 within each tier), so
+        # mf_crowdedness_rank isn't a degenerate all-equal/all-NaN column —
+        # a real test of the post-concat groupby-rank correctness.
+        assert sequential["mf_crowdedness_rank"].nunique() > 1
+        pd.testing.assert_frame_equal(sequential, parallel)
