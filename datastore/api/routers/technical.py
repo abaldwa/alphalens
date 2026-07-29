@@ -591,15 +591,20 @@ async def get_ta_daily_watchlist(
     if df.empty:
         return TAWatchlistResponse(date=target_date, count=0)
 
-    # Rank tickers by how many templates fired for them (most corroborated
-    # first), then by the most recent trigger date, and trim to `limit`
-    # tickers — not `limit` raw (ticker, template) rows, since a ticker can
-    # now carry several matched templates.
-    ticker_rank = (
-        df.groupby("ticker")
-        .agg(match_count=("template_name", "count"), latest_date=("date", "max"))
-        .sort_values(["match_count", "latest_date"], ascending=[False, False])
-    )
+    # Rank tickers and trim to `limit` tickers — not `limit` raw
+    # (ticker, template) rows, since a ticker can now carry several matched
+    # templates. With no template filter (the default "which stocks are
+    # most corroborated" view), most-templates-matched wins ties. With an
+    # explicit template_filter, the caller asked for "any ticker matching
+    # ANY of these strategies" (OR semantics) — ranking by match_count
+    # there would starve single-strategy matches out of the `limit` cutoff
+    # whenever enough tickers happen to match several of the selected
+    # strategies at once, which reads to a user picking N strategies as
+    # "it's requiring ALL of them to match." Rank by recency instead so
+    # every selected strategy gets a fair chance to surface its own ticker.
+    agg = df.groupby("ticker").agg(match_count=("template_name", "count"), latest_date=("date", "max"))
+    sort_keys = ["latest_date"] if template_filter else ["match_count", "latest_date"]
+    ticker_rank = agg.sort_values(sort_keys, ascending=False)
     top_tickers = ticker_rank.index[:limit].tolist()
     df = df[df["ticker"].isin(top_tickers)].copy()
     if df.empty:

@@ -281,6 +281,8 @@ def _patch_global_indices(monkeypatch, macro, value_map=None):
         "download_nikkei": ("nikkei_225", 39000.0),
         "download_hangseng": ("hang_seng", 19000.0),
         "download_dxy": ("dxy", 101.5),
+        "download_crude_oil": ("crude_oil_price", 82.3),
+        "download_gold": ("gold_price", 2350.0),
     }
     for fn_name, (key, value) in value_map.items():
         monkeypatch.setattr(macro, fn_name, lambda d, db_path=None, k=key, v=value: {k: v})
@@ -339,6 +341,8 @@ class TestStepDownloadMacroMorning:
                 "NIKKEI_225": 39000.0,
                 "HANG_SENG": 19000.0,
                 "DXY": 101.5,
+                "CRUDE_OIL": 82.3,
+                "GOLD": 2350.0,
                 "YIELD_10YR": 7.02,
                 "YIELD_3M": 5.39,
             }
@@ -402,6 +406,8 @@ class TestStepDownloadMacroMorning:
         monkeypatch.setattr(macro, "download_nikkei", _raise)
         monkeypatch.setattr(macro, "download_hangseng", _raise)
         monkeypatch.setattr(macro, "download_dxy", _raise)
+        monkeypatch.setattr(macro, "download_crude_oil", _raise)
+        monkeypatch.setattr(macro, "download_gold", _raise)
         monkeypatch.setattr(macro, "download_bond_yields", _raise)
         from ingestion.scrapers import macro_real_economy
         monkeypatch.setattr(macro_real_economy, "upsert_macro_real_economy_parquet", _raise)

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -11,13 +11,6 @@ import {
   CardHeader,
   CardTitle,
   DataTable,
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   InfoTooltip,
   TickerLink,
   formatCurrencyINR,
@@ -282,8 +275,26 @@ function buildColumns(winRateByTemplate: Map<string, TAStrategyWinRateRow>): Col
   ]
 }
 
+// Persisted across page reloads/visits so the strategy filter doesn't
+// reset to "all" every time the user comes back to this page.
+const SELECTED_TEMPLATES_STORAGE_KEY = 'ta-watchlist-selected-templates'
+
+function loadPersistedTemplates(): string[] {
+  try {
+    const raw = localStorage.getItem(SELECTED_TEMPLATES_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+
 export function TechnicalWatchlistPage() {
-  const [selectedTemplates, setSelectedTemplates] = useState<string[]>([])
+  const [selectedTemplates, setSelectedTemplates] = useState<string[]>(loadPersistedTemplates)
+
+  useEffect(() => {
+    localStorage.setItem(SELECTED_TEMPLATES_STORAGE_KEY, JSON.stringify(selectedTemplates))
+  }, [selectedTemplates])
 
   const templates = useQuery({
     queryKey: ['ta-screener-templates'],
@@ -319,6 +330,8 @@ export function TechnicalWatchlistPage() {
     setSelectedTemplates((prev) => (prev.includes(name) ? prev.filter((t) => t !== name) : [...prev, name]))
   }
 
+  const allTemplates = templates.data?.templates ?? []
+
   return (
     <AppShell
       title="Technical — Weekly Watchlist"
@@ -328,42 +341,53 @@ export function TechnicalWatchlistPage() {
           : 'Weekly TA WatchList'
       }
       actions={
-        <div className="flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm">
-                Strategies{selectedTemplates.length ? ` (${selectedTemplates.length})` : ' (all)'}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="max-h-96 overflow-y-auto">
-              <DropdownMenuLabel>Show only these strategies</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {selectedTemplates.length > 0 && (
-                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSelectedTemplates([]) }}>
-                  Clear selection (show all)
-                </DropdownMenuItem>
-              )}
-              {(templates.data?.templates ?? []).map((t) => (
-                <DropdownMenuCheckboxItem
-                  key={t.name}
-                  checked={selectedTemplates.includes(t.name)}
-                  onSelect={(e) => e.preventDefault()}
-                  onCheckedChange={() => toggleTemplate(t.name)}
-                >
-                  <Badge className="mr-1">{t.category}</Badge>
-                  {t.name}
-                </DropdownMenuCheckboxItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button asChild variant="outline" size="sm">
-            <a href="/explain/backtest-guide.html#technical-strategies" target="_blank" rel="noreferrer">
-              📖 Strategy reference (all 42 templates)
-            </a>
-          </Button>
-        </div>
+        <Button asChild variant="outline" size="sm">
+          <a href="/explain/backtest-guide.html#technical-strategies" target="_blank" rel="noreferrer">
+            📖 Strategy reference (all 42 templates)
+          </a>
+        </Button>
       }
     >
+      <Card className="mb-4">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>Filter Strategies</CardTitle>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setSelectedTemplates(allTemplates.map((t) => t.name))}>
+                Select all
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setSelectedTemplates([])}>
+                Clear
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-2 text-xs text-muted-foreground">
+            {selectedTemplates.length === 0
+              ? 'No strategies checked — showing all strategies.'
+              : `Showing ${selectedTemplates.length} of ${allTemplates.length} strategies.`}
+          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-2">
+            {allTemplates.map((t) => (
+              <label
+                key={t.name}
+                title={t.description}
+                className="inline-flex cursor-pointer items-center gap-1.5 text-sm"
+              >
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-primary"
+                  checked={selectedTemplates.includes(t.name)}
+                  onChange={() => toggleTemplate(t.name)}
+                />
+                {t.name}
+              </label>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>Weekly WatchList</CardTitle>
