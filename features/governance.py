@@ -348,8 +348,11 @@ def compute_governance_features_panel_vectorized(
     latest = df.groupby("ticker", sort=False).tail(1).set_index("ticker")
 
     def _chg(col: str) -> np.ndarray:
-        cur = latest[col]
-        prior = latest[f"_prior_{col}"]
+        # Coerce for the same reason as fii/dii/mf below: these raw/shifted
+        # columns can be object-dtype with real `None`, and `cur - prior`
+        # is evaluated over the whole array before `both_present` masks it.
+        cur = pd.to_numeric(latest[col], errors="coerce")
+        prior = pd.to_numeric(latest[f"_prior_{col}"], errors="coerce")
         both_present = cur.notna() & prior.notna()
         return np.where(both_present, cur - prior, np.nan)
 
@@ -370,16 +373,28 @@ def compute_governance_features_panel_vectorized(
         any_present, fii.fillna(0.0) + dii.fillna(0.0) + mf.fillna(0.0), np.nan
     )
 
+    # The raw `_prior_*` columns (shift(1) of API-sourced dicts) can be
+    # object-dtype with real Python `None` rather than NaN — comparing that
+    # against the already-coerced `fii`/`dii`/`mf` float64 Series raises
+    # TypeError: '>' not supported between 'float' and 'NoneType' (found
+    # live 2026-07-30: every backfill date failed on this exact line).
+    # `.notna()` alone doesn't prevent it since `&` still evaluates the `>`
+    # over the whole array before masking — coerce first so NaN-vs-NaN
+    # comparisons are safe no-ops instead.
+    prior_fii = pd.to_numeric(latest["_prior_fii_pct"], errors="coerce")
+    prior_dii = pd.to_numeric(latest["_prior_dii_pct"], errors="coerce")
+    prior_mf = pd.to_numeric(latest["_prior_mf_pct"], errors="coerce")
+
     has_prior = latest["_has_prior"]
-    fii_up = fii.notna() & latest["_prior_fii_pct"].notna() & (fii > latest["_prior_fii_pct"])
-    dii_up = dii.notna() & latest["_prior_dii_pct"].notna() & (dii > latest["_prior_dii_pct"])
-    mf_up = mf.notna() & latest["_prior_mf_pct"].notna() & (mf > latest["_prior_mf_pct"])
+    fii_up = fii.notna() & prior_fii.notna() & (fii > prior_fii)
+    dii_up = dii.notna() & prior_dii.notna() & (dii > prior_dii)
+    mf_up = mf.notna() & prior_mf.notna() & (mf > prior_mf)
     result["institutional_conviction_flag"] = np.where(
         has_prior, (fii_up & dii_up & mf_up).astype(int), 0
     ).astype(int)
 
     # Point 4: promoter_pledge_spiral_flag.
-    pledge = latest["promoter_pledge"]
+    pledge = pd.to_numeric(latest["promoter_pledge"], errors="coerce")
     high_pledge = pledge.notna() & (pledge > PLEDGE_SPIRAL_THRESHOLD_PCT)
     spiral_flag = pd.Series(0, index=latest.index, dtype=int)
     candidates = list(latest.index[high_pledge])
