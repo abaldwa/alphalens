@@ -1126,6 +1126,52 @@ got a fair test (feature gap, above) and the top 2 are void
 (data-corruption artifact). Do not promote or act on `smile` /
 `story_numbers` as the best-performing strategies.
 
+**RESOLVED 2026-07-30 — root cause found and price data repaired.**
+Deep-dived the corrupted window with `backend-data-engineer` follow-up +
+direct DuckDB/Fyers comparison. Precise mechanism: BAJFINANCE, COFORGE,
+SHRIRAMFIN, and NAVA each have a real, correctly-registered SPLIT/BONUS
+corporate action with an ex_date in **2025** (BAJFINANCE 2025-06-16
+SPLIT 2:1 + BONUS 4:1; COFORGE 2025-06-04 SPLIT 5:1; SHRIRAMFIN
+2025-01-10 SPLIT 5:1; NAVA 2025-01-20 SPLIT 2:1) — `adj_factor` is
+legitimately ~0.0988/0.197/0.195/0.486 for *all* of 2024 because
+`price_adjuster.py`'s `row_date < ex_date` cumulative logic correctly
+back-applies a 2025 action to every earlier date. That part was never
+broken. The actual bug: for the ~3.5-week window 2024-07-08 to
+2024-07-31 only, `ohlcv_ca_audit.raw_close`/open/high/low/volume were
+ingested on the *already-adjusted* basis instead of the true as-traded
+2024 NSE value — confirmed exactly, since every flagged row's
+`ohlcv_adjusted.close / Fyers.close` ratio equaled the ticker's
+`adj_factor` to 6 decimal places (e.g. BAJFINANCE: 0.09878 on all 17
+bad rows) — i.e. the stored value had been divided by `adj_factor`
+*twice*. `corporate_actions` has no missing/unregistered 2024 action
+for any of the 4 tickers — this was purely an ingestion-side bug for
+that one window, not an adjustment-logic bug.
+
+**Fix applied:** obtained a fresh Fyers OAuth2 token (existing
+`ingestion/scrapers/fyers_backfill.py::FYERSBackfill`, credentials
+already in `.env`, token expires daily so needed one interactive
+browser login this session), pulled 2024-07-01 to 2024-08-08 (1 week
+buffer either side of the bad window) for all 4 tickers, and — per
+explicit instruction to avoid a future re-adjustment pass silently
+re-corrupting it — wrote the corrected values **directly into
+`ohlcv_adjusted`** (open/high/low/close/volume), not into
+`ohlcv_ca_audit.raw_close`/`adj_factor` (left untouched; it was already
+correct and `adjust_for_corporate_actions()`'s idempotency gate keys
+off `adj_factor` vs. registered `corporate_actions`, unchanged here —
+so this fix is not at risk from a future reprocessing run). Verified:
+compared all 4 tickers' `ohlcv_adjusted` against Fyers again post-fix —
+0/68 rows flagged (was 17/28 per ticker before). BAJFINANCE
+2024-07-29→08-01 now reads 681.25→668.90 (a normal ~1.8% 3-day move,
+was the fake +893.6%); COFORGE 1262.69→1235.84 (~2.1%, was +397.4%).
+
+**Still outstanding:** the 26-strategy queue has not been re-run against
+the corrected prices yet — `smile`/`story_numbers`'s real (now
+non-corrupted) total return, the `check_13_extreme_trade_pnl` integrity
+gate, the `check_09_benchmarks` real-data verification, and a
+universe-wide sweep for the same corruption signature in other tickers
+(only BAJFINANCE/COFORGE/SHRIRAMFIN/NAVA were checked and fixed here)
+are all still open per the action list above.
+
 **Not done / deferred (per user instruction, "revisit it later"):**
 Part B's integrity-check helper output already lands per-run in
 `datastore/backtest_store/backtest.duckdb::backtest_runs.integrity_detail_json`
