@@ -98,6 +98,7 @@ class MomentumBacktestResult:
     end_date: str = ""
     cash_flows: List[Dict] = field(default_factory=list)  # [{"date","amount"}], SIP contributions if sip_amount set
     total_contributed: float = 0.0  # starting_capital + every SIP contribution (== starting_capital if no SIP)
+    total_signals: int = 0  # sum of |target_set| across every rebalance — post-filter buy signals generated
 
 
 class MomentumBacktester:
@@ -606,6 +607,7 @@ class MomentumBacktester:
             # rebalance — the "Momentum Rank" surfaced per transaction
             # (FeatureBacklog.md ML38, 2026-07-14 drill-down request).
             rank_series = momentum.rank(ascending=False, method="min").astype(int) if not momentum.empty else pd.Series(dtype=int)
+            result.total_signals += len(target_set)
 
             prices = self._price_row(date)
             total_value = self._mark_to_market(date, prices)

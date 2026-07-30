@@ -3,17 +3,13 @@
 // surfaced as a browsable table instead of a raw JSON report file on disk
 // (2026-07-27 user request).
 import { useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable } from '@/lib/ui'
-import { apiGet, apiPost } from '@/shared/api/client'
-import type {
-  MomentumExperimentationReport,
-  MomentumExperimentationVariant,
-  MomentumTriggerResponse,
-  MomentumTriggerStatus,
-} from './types'
+import { AppShell, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable } from '@/lib/ui'
+import { apiGet } from '@/shared/api/client'
+import type { MomentumExperimentationReport, MomentumExperimentationVariant } from './types'
+import { SweepTriggerButton } from './SweepTriggerButton'
 
 function fmtPct(v: number | null | undefined) {
   return typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—'
@@ -37,65 +33,6 @@ function bestCagrByBand(rows: MomentumExperimentationVariant[]): Set<MomentumExp
     }
   }
   return new Set(Array.from(bestByBand.values()).map((v) => v.row))
-}
-
-/** Launches a named sweep script (POST .../trigger) and polls its status
- * endpoint every 5s while running — reused for both the rank-band sweep
- * and the filter-overlay sweep, which share the same trigger/status
- * response shape (datastore/api/routers/momentum.py's _launch_trigger /
- * _trigger_status). Calls onCompleted() once, when status flips to
- * "completed", so the caller can refetch the report it displays. */
-function SweepTriggerButton({
-  label,
-  triggerUrl,
-  statusUrlPrefix,
-  onCompleted,
-}: {
-  label: string
-  triggerUrl: string
-  statusUrlPrefix: string
-  onCompleted: () => void
-}) {
-  const [jobId, setJobId] = useState<string | null>(null)
-  const [notifiedDone, setNotifiedDone] = useState(false)
-
-  const trigger = useMutation({
-    mutationFn: () => apiPost<MomentumTriggerResponse>(triggerUrl),
-    onSuccess: (res) => {
-      setJobId(res.job_id)
-      setNotifiedDone(false)
-    },
-  })
-
-  const status = useQuery({
-    queryKey: ['momentum-sweep-status', statusUrlPrefix, jobId],
-    queryFn: () => apiGet<MomentumTriggerStatus>(`${statusUrlPrefix}/${jobId}`),
-    enabled: jobId != null,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 5000 : false),
-  })
-
-  const currentStatus = status.data?.status
-  if (currentStatus === 'completed' && !notifiedDone) {
-    setNotifiedDone(true)
-    onCompleted()
-  }
-
-  const isRunning = jobId != null && (currentStatus === 'running' || currentStatus === undefined)
-
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        disabled={trigger.isPending || isRunning}
-        onClick={() => trigger.mutate()}
-        className="h-9 rounded-[var(--radius-token)] border border-accent bg-transparent px-3 text-sm font-medium text-primary disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {isRunning ? `Running ${label}…` : `Run ${label}`}
-      </button>
-      {currentStatus === 'completed' ? <Badge variant="success">Done — table refreshed</Badge> : null}
-      {currentStatus === 'failed' ? <Badge variant="destructive">Failed — check server logs</Badge> : null}
-    </div>
-  )
 }
 
 export function MomentumExperimentationPage() {

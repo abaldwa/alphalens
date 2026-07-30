@@ -104,6 +104,70 @@ export interface MomentumExperimentationReport {
   variants: MomentumExperimentationVariant[]
 }
 
+// scripts/run_momentum_dynamic_report.py's consolidated All Risk/Balanced/
+// Risk-Managed/Max-Defensive strategy sweep across all 7 rank bands (1-50
+// through 501-800), surfaced via GET /api/v1/momentum/dynamic_report.
+export interface MomentumDynamicReportVariant {
+  variant_id: string
+  strategy: 'all_risk' | 'balanced' | 'risk_managed' | 'max_defensive'
+  band_id: number
+  rank_start: number
+  rank_end: number
+  lookback_months: number
+  rebalance_period: string
+  top_n: number
+  cagr: number | null
+  post_tax_cagr: number | null
+  sharpe: number | null
+  sortino: number | null
+  calmar: number | null
+  max_drawdown: number | null
+  churn_avg_transactions_per_year: number | null
+  win_rate: number | null
+  total_signals: number | null
+  n_closed_trades: number | null
+  n_open_trades: number | null
+  total_trades: number | null
+  avg_days_held: number | null
+  value_10L: number | null
+  value_10k_sip: number | null
+  sip_cagr: number | null
+  score: number | null
+  is_recommended: boolean | null
+  is_most_important: boolean | null
+  is_band_most_important: boolean | null
+  top_cagr_rank: number | null
+  trade_book_file: string | null
+}
+
+export interface MomentumDynamicReportYoyRow {
+  variant_id: string
+  band_id: number
+  rank_start: number
+  rank_end: number
+  lookback_months: number
+  rebalance_period: string
+  top_n: number
+  fy_label: string
+  fy_start: string
+  fy_end: string
+  starting_capital: number | null
+  ending_capital: number | null
+  return_pct: number | null
+  churn: number | null
+  avg_holding_days: number | null
+  nifty_midcap_150_return_pct: number | null
+  nifty_smallcap_250_return_pct: number | null
+}
+
+export interface MomentumDynamicReport {
+  generated_at: string | null
+  report_file: string
+  score_formula: string | null
+  variants: MomentumDynamicReportVariant[]
+  yoy: MomentumDynamicReportYoyRow[]
+}
+
 export interface MomentumTriggerResponse {
   job_id: string
   status: string

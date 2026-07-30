@@ -45,6 +45,15 @@ GET    /api/v1/momentum/experimentation/trigger/status/{job_id}
 POST   /api/v1/momentum/filter_overlays/trigger        — launch a fresh
                                                         filter-overlay sweep
 GET    /api/v1/momentum/filter_overlays/trigger/status/{job_id}
+GET    /api/v1/momentum/dynamic_report                — All Risk/Balanced/
+                                                        Risk-Managed/Max-
+                                                        Defensive sweep across
+                                                        all 7 rank bands + YoY
+POST   /api/v1/momentum/dynamic_report/trigger         — launch a fresh
+                                                        dynamic-report sweep
+GET    /api/v1/momentum/dynamic_report/trigger/status/{job_id}
+GET    /api/v1/momentum/dynamic_report/trades/{variant_id} — per-variant
+                                                        trade-book CSV download
 
 Table creation is idempotent (lazy, `_ensure_tables(conn)`), matching
 holdings.py's convention.
@@ -79,6 +88,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backtest.momentum_metrics import cagr as compute_cagr
@@ -791,3 +801,124 @@ async def trigger_filter_overlays() -> TriggerResponse:
 @router.get("/filter_overlays/trigger/status/{job_id}", response_model=TriggerStatusResponse)
 async def get_filter_overlays_trigger_status(job_id: str) -> TriggerStatusResponse:
     return _trigger_status(job_id, "momentum_filter_overlays_*.json")
+
+
+# --------------------------------------------- dynamic report (all-risk/balanced/risk-managed/max-defensive)
+
+_DYNAMIC_TRADES_DIR = _EXPERIMENTATION_REPORTS_DIR / "dynamic"
+
+
+class DynamicReportVariant(BaseModel):
+    variant_id: str
+    strategy: str
+    band_id: int
+    rank_start: int
+    rank_end: int
+    lookback_months: int
+    rebalance_period: str
+    top_n: int
+    cagr: Optional[float] = None
+    post_tax_cagr: Optional[float] = None
+    sharpe: Optional[float] = None
+    sortino: Optional[float] = None
+    calmar: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    churn_avg_transactions_per_year: Optional[float] = None
+    win_rate: Optional[float] = None
+    total_signals: Optional[int] = None
+    n_closed_trades: Optional[int] = None
+    n_open_trades: Optional[int] = None
+    total_trades: Optional[int] = None
+    avg_days_held: Optional[float] = None
+    value_10L: Optional[float] = None
+    value_10k_sip: Optional[float] = None
+    sip_cagr: Optional[float] = None
+    score: Optional[float] = None
+    is_recommended: Optional[bool] = None
+    is_most_important: Optional[bool] = None
+    is_band_most_important: Optional[bool] = None
+    top_cagr_rank: Optional[int] = None
+    trade_book_file: Optional[str] = None
+
+
+class DynamicReportYoyRow(BaseModel):
+    variant_id: str
+    band_id: int
+    rank_start: int
+    rank_end: int
+    lookback_months: int
+    rebalance_period: str
+    top_n: int
+    fy_label: str
+    fy_start: str
+    fy_end: str
+    starting_capital: Optional[float] = None
+    ending_capital: Optional[float] = None
+    return_pct: Optional[float] = None
+    churn: Optional[int] = None
+    avg_holding_days: Optional[float] = None
+    nifty_midcap_150_return_pct: Optional[float] = None
+    nifty_smallcap_250_return_pct: Optional[float] = None
+
+
+class DynamicReport(BaseModel):
+    generated_at: Optional[str] = None
+    report_file: str
+    score_formula: Optional[str] = None
+    variants: List[DynamicReportVariant]
+    yoy: List[DynamicReportYoyRow]
+
+
+@router.get("/dynamic_report", response_model=DynamicReport)
+async def get_dynamic_report() -> DynamicReport:
+    """Consolidated momentum strategy report — All Risk/Balanced/Risk-
+    Managed/Max-Defensive variants across all 7 rank bands (1-50 through
+    501-800), scripts/run_momentum_dynamic_report.py, each with Sharpe/
+    Sortino/Calmar/max-drawdown/win-rate, a per-(band,category) recommended
+    pick, and a year-on-year (Apr-Mar) breakdown. Reads the most recently
+    written momentum_dynamic_report_*.json report file directly; 404 until
+    that script has been run at least once."""
+    files = sorted(_EXPERIMENTATION_REPORTS_DIR.glob("momentum_dynamic_report_*.json"))
+    if not files:
+        raise HTTPException(status_code=404, detail="No momentum dynamic report found yet")
+    latest = files[-1]
+    data = json.loads(latest.read_text())
+    variant_fields = set(DynamicReportVariant.model_fields)
+    variants = [
+        DynamicReportVariant(**{k: v.get(k) for k in variant_fields if k in v})
+        for v in data.get("variants", [])
+    ]
+    yoy_fields = set(DynamicReportYoyRow.model_fields)
+    yoy = [
+        DynamicReportYoyRow(**{k: r.get(k) for k in yoy_fields if k in r})
+        for r in data.get("yoy", [])
+    ]
+    return DynamicReport(
+        generated_at=data.get("generated_at"), report_file=latest.name,
+        score_formula=data.get("score_formula"), variants=variants, yoy=yoy,
+    )
+
+
+@router.post("/dynamic_report/trigger", response_model=TriggerResponse)
+async def trigger_dynamic_report() -> TriggerResponse:
+    """Launches scripts/run_momentum_dynamic_report.py (All Risk/Balanced/
+    Risk-Managed/Max-Defensive strategies across all 7 bands) as a detached
+    subprocess; poll /dynamic_report/trigger/status/{job_id}."""
+    return _launch_trigger("scripts.run_momentum_dynamic_report", "momentum_dynamic_report")
+
+
+@router.get("/dynamic_report/trigger/status/{job_id}", response_model=TriggerStatusResponse)
+async def get_dynamic_report_trigger_status(job_id: str) -> TriggerStatusResponse:
+    return _trigger_status(job_id, "momentum_dynamic_report_*.json")
+
+
+@router.get("/dynamic_report/trades/{variant_id}")
+async def get_dynamic_report_trade_book(variant_id: str) -> FileResponse:
+    """Streams a variant's trade-book CSV (scripts/run_momentum_dynamic_
+    report.py's per-variant export). 404 if the variant_id doesn't match
+    any exported file (unknown id, or the report predates this endpoint)."""
+    safe_name = Path(variant_id).name  # strip any path components before touching disk
+    csv_path = _DYNAMIC_TRADES_DIR / f"{safe_name}.csv"
+    if not csv_path.is_file():
+        raise HTTPException(status_code=404, detail=f"No trade book found for variant_id={variant_id}")
+    return FileResponse(csv_path, media_type="text/csv", filename=csv_path.name)

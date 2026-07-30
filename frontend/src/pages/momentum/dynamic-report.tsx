@@ -1,0 +1,553 @@
+// Consolidated Momentum strategy report — scripts/run_momentum_dynamic_report.py's
+// All Risk / Balanced / Risk-Managed / Max-Defensive sweep across all 7 rank
+// bands (1-50 through 501-800), replacing the old Recommended Strategies page
+// plus the static Backtest Ledger / Year-on-Year Report / Rank-Band Sweep
+// links (2026-07-30 user request — one dynamic page instead of four).
+import { useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
+
+import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable } from '@/lib/ui'
+import { API_BASE_URL, apiGet } from '@/shared/api/client'
+import type {
+  MomentumDynamicReport,
+  MomentumDynamicReportVariant,
+  MomentumDynamicReportYoyRow,
+} from './types'
+import { SweepTriggerButton } from './SweepTriggerButton'
+
+function fmtPct(v: number | null | undefined) {
+  return typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—'
+}
+function fmtNum(v: number | null | undefined, digits = 1) {
+  return typeof v === 'number' ? v.toFixed(digits) : '—'
+}
+function fmtInr(v: number | null | undefined) {
+  return typeof v === 'number' ? `₹${Math.round(v).toLocaleString('en-IN')}` : '—'
+}
+function bandLabel(rankStart: number, rankEnd: number) {
+  return `${rankStart}-${rankEnd}`
+}
+
+const STRATEGY_LABELS: Record<MomentumDynamicReportVariant['strategy'], string> = {
+  all_risk: 'All Risk',
+  balanced: 'Balanced',
+  risk_managed: 'Risk-Managed',
+  max_defensive: 'Max-Defensive',
+}
+
+const TRADE_BOOK_BASE = '/api/v1/momentum/dynamic_report/trades'
+
+// The report JSON doesn't carry avg_days_held for the currently-loaded
+// sweep (generated before that field existed), but every variant's trade
+// book CSV already has a per-trade holding_days column — so for the
+// (small, ~40-row) Recommended & Most Important summary table, fetch each
+// variant's CSV directly and average holding_days across its closed
+// trades, instead of waiting on a full sweep re-run.
+async function fetchAvgHoldingDays(variantId: string): Promise<number | null> {
+  const resp = await fetch(`${API_BASE_URL}${TRADE_BOOK_BASE}/${variantId}`)
+  if (!resp.ok) return null
+  const text = await resp.text()
+  const lines = text.trim().split('\n')
+  if (lines.length < 2) return null
+  const header = lines[0].split(',')
+  const statusIdx = header.indexOf('status')
+  const holdingIdx = header.indexOf('holding_days')
+  if (statusIdx === -1 || holdingIdx === -1) return null
+  let sum = 0
+  let count = 0
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',')
+    if (cols[statusIdx] === 'closed') {
+      const days = Number(cols[holdingIdx])
+      if (Number.isFinite(days)) {
+        sum += days
+        count += 1
+      }
+    }
+  }
+  return count > 0 ? sum / count : null
+}
+
+export function MomentumDynamicReportPage() {
+  const [strategy, setStrategy] = useState<string>('')
+  const [yoyBandId, setYoyBandId] = useState<string>('')
+  const queryClient = useQueryClient()
+
+  const report = useQuery({
+    queryKey: ['momentum-dynamic-report'],
+    queryFn: () => apiGet<MomentumDynamicReport>('/api/v1/momentum/dynamic_report'),
+  })
+
+  const allRows = report.data?.variants ?? []
+  const allYoyRows = report.data?.yoy ?? []
+
+  const bands = useMemo(
+    () =>
+      Array.from(
+        new Map(allRows.map((r) => [r.band_id, { band_id: r.band_id, rank_start: r.rank_start, rank_end: r.rank_end }])).values(),
+      ).sort((a, b) => a.rank_start - b.rank_start),
+    [allRows],
+  )
+
+  const strategyOptions = useMemo(() => Array.from(new Set(allRows.map((r) => r.strategy))), [allRows])
+
+  const mostImportant = allRows.find((r) => r.is_most_important)
+
+  // Client-side fallback for top_cagr_rank: the currently-loaded report was
+  // generated before the backend computed this field, but every variant
+  // still carries a real `cagr` value, so the top-2-by-CAGR per universe can
+  // be derived here directly instead of waiting on a full sweep re-run.
+  // Once a fresh report populates the backend's own top_cagr_rank, that
+  // value wins (checked first in effectiveTopCagrRank below).
+  const clientTopCagrRank = useMemo(() => {
+    const byBand = new Map<number, MomentumDynamicReportVariant[]>()
+    for (const r of allRows) {
+      if (r.cagr == null) continue
+      const arr = byBand.get(r.band_id)
+      if (arr) arr.push(r)
+      else byBand.set(r.band_id, [r])
+    }
+    const map = new Map<string, number>()
+    for (const arr of byBand.values()) {
+      const top2 = [...arr].sort((a, b) => (b.cagr ?? -Infinity) - (a.cagr ?? -Infinity)).slice(0, 2)
+      top2.forEach((r, idx) => map.set(r.variant_id, idx + 1))
+    }
+    return map
+  }, [allRows])
+
+  function effectiveTopCagrRank(v: MomentumDynamicReportVariant): number | null {
+    return v.top_cagr_rank ?? clientTopCagrRank.get(v.variant_id) ?? null
+  }
+
+  const recommendedRows = useMemo(
+    () =>
+      allRows
+        .filter((r) => r.is_recommended || effectiveTopCagrRank(r) != null)
+        .sort((a, b) => {
+          const aRank = effectiveTopCagrRank(a)
+          const bRank = effectiveTopCagrRank(b)
+          return (
+            a.rank_start - b.rank_start ||
+            Number(aRank != null) - Number(bRank != null) ||
+            a.strategy.localeCompare(b.strategy) ||
+            (aRank ?? 0) - (bRank ?? 0)
+          )
+        }),
+    [allRows, clientTopCagrRank],
+  )
+
+  const recommendedVariantIds = useMemo(() => recommendedRows.map((r) => r.variant_id), [recommendedRows])
+
+  const avgHoldingQuery = useQuery({
+    queryKey: ['momentum-dynamic-report-avg-holding', recommendedVariantIds],
+    queryFn: async () => {
+      const entries = await Promise.all(
+        recommendedVariantIds.map(async (id) => [id, await fetchAvgHoldingDays(id)] as const),
+      )
+      return new Map(entries)
+    },
+    enabled: recommendedVariantIds.length > 0,
+    staleTime: Infinity,
+  })
+
+  function effectiveAvgDaysHeld(v: MomentumDynamicReportVariant): number | null {
+    return v.avg_days_held ?? avgHoldingQuery.data?.get(v.variant_id) ?? null
+  }
+
+  const yoyRows = useMemo(
+    () => allYoyRows.filter((r) => !yoyBandId || String(r.band_id) === yoyBandId),
+    [allYoyRows, yoyBandId],
+  )
+
+  function jumpToYoy(bandId: number) {
+    setYoyBandId(String(bandId))
+    document.getElementById('yoy-section')?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  const columns = useMemo<ColumnDef<MomentumDynamicReportVariant, unknown>[]>(
+    () => [
+      {
+        accessorKey: 'strategy',
+        header: 'Category',
+        size: 210,
+        cell: (i) => {
+          const v = i.row.original
+          const topCagrRank = effectiveTopCagrRank(v)
+          return (
+            <span className="flex flex-wrap items-center gap-1.5">
+              {STRATEGY_LABELS[v.strategy]}
+              {v.is_recommended ? <Badge variant="success">Recommended</Badge> : null}
+              {v.is_band_most_important ? <Badge variant="default">Most Important</Badge> : null}
+              {v.is_most_important ? <Badge variant="warning">Overall Best</Badge> : null}
+              {topCagrRank ? <Badge variant="outline">Top CAGR #{topCagrRank}</Badge> : null}
+            </span>
+          )
+        },
+      },
+      { accessorKey: 'top_n', header: 'Top N', size: 55, meta: { align: 'right' } },
+      {
+        accessorKey: 'lookback_months',
+        header: 'Lookback',
+        size: 70,
+        meta: { align: 'right' },
+        cell: (i) => `${i.getValue<number>()}mo`,
+      },
+      { accessorKey: 'rebalance_period', header: 'Rebalance', size: 85 },
+      {
+        accessorKey: 'cagr',
+        header: 'CAGR',
+        size: 65,
+        meta: { align: 'right' },
+        cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'post_tax_cagr',
+        header: 'Post-Tax CAGR',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'sip_cagr',
+        header: 'SIP CAGR',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'sharpe',
+        header: 'Sharpe',
+        size: 60,
+        meta: { align: 'right' },
+        cell: (i) => fmtNum(i.getValue<number | null>(), 2),
+      },
+      {
+        accessorKey: 'sortino',
+        header: 'Sortino',
+        size: 65,
+        meta: { align: 'right' },
+        cell: (i) => fmtNum(i.getValue<number | null>(), 2),
+      },
+      {
+        accessorKey: 'max_drawdown',
+        header: 'Max DD',
+        size: 65,
+        meta: { align: 'right' },
+        cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'win_rate',
+        header: 'Win Rate',
+        size: 70,
+        meta: { align: 'right' },
+        cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'total_trades',
+        header: 'Trades',
+        size: 65,
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => i.getValue<number | null>() ?? '—',
+      },
+      {
+        accessorKey: 'avg_days_held',
+        header: 'Avg Holding',
+        size: 85,
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => {
+          const v = i.getValue<number | null>()
+          return typeof v === 'number' ? `${v.toFixed(0)}d` : '—'
+        },
+      },
+      {
+        accessorKey: 'total_signals',
+        header: 'Signals',
+        meta: { align: 'right', priority: 'low' },
+        cell: (i) => i.getValue<number | null>() ?? '—',
+      },
+      {
+        accessorKey: 'value_10L',
+        header: 'Value of 10L',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtInr(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'value_10k_sip',
+        header: 'Value of 10K SIP',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtInr(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'score',
+        header: 'Score',
+        meta: { align: 'right', priority: 'low' },
+        cell: (i) => fmtNum(i.getValue<number | null>(), 2),
+      },
+      {
+        id: 'links',
+        header: 'Links',
+        cell: (i) => (
+          <span className="flex items-center gap-2 text-xs">
+            <a
+              href={`${API_BASE_URL}${TRADE_BOOK_BASE}/${i.row.original.variant_id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary underline"
+            >
+              Trades
+            </a>
+            <button
+              type="button"
+              onClick={() => jumpToYoy(i.row.original.band_id)}
+              className="text-primary underline"
+            >
+              YoY
+            </button>
+          </span>
+        ),
+      },
+    ],
+    [clientTopCagrRank],
+  )
+
+  // Same columns as the per-band tables, plus a leading "Universe" column —
+  // this summary table spans all 7 bands at once, so the band needs to be
+  // spelled out per row instead of being implied by a section header. The
+  // shared Avg Holding column's cell is overridden here to use the
+  // per-variant trade-book fetch (effectiveAvgDaysHeld) — this summary
+  // table only has ~40 rows, so fetching each variant's CSV client-side is
+  // cheap; the full 1,680-row per-band tables below intentionally do NOT
+  // get this treatment (that many CSV fetches would not be cheap).
+  const recommendedColumns = useMemo<ColumnDef<MomentumDynamicReportVariant, unknown>[]>(
+    () => [
+      {
+        id: 'universe',
+        // accessorFn (not just a display-only `cell`) is required for
+        // TanStack Table's getCanSort() to return true — sorts by
+        // rank_start numerically (1-50 before 51-100, etc.), independent
+        // of the arbitrary band_id ordering.
+        accessorFn: (row) => row.rank_start,
+        header: 'Universe (rank)',
+        size: 90,
+        cell: (i) => bandLabel(i.row.original.rank_start, i.row.original.rank_end),
+      },
+      ...columns.map((col) =>
+        'accessorKey' in col && col.accessorKey === 'avg_days_held'
+          ? {
+              ...col,
+              cell: (i: { row: { original: MomentumDynamicReportVariant } }) => {
+                const v = i.row.original
+                const days = effectiveAvgDaysHeld(v)
+                if (typeof days === 'number') return `${days.toFixed(0)}d`
+                return avgHoldingQuery.isLoading ? '…' : '—'
+              },
+            }
+          : col,
+      ),
+    ],
+    [columns, avgHoldingQuery.data, avgHoldingQuery.isLoading],
+  )
+
+  const yoyColumns = useMemo<ColumnDef<MomentumDynamicReportYoyRow, unknown>[]>(
+    () => [
+      {
+        id: 'band',
+        header: 'Universe (rank)',
+        cell: (i) => bandLabel(i.row.original.rank_start, i.row.original.rank_end),
+      },
+      { accessorKey: 'fy_label', header: 'FY' },
+      { accessorKey: 'top_n', header: 'Top N', meta: { align: 'right', priority: 'medium' } },
+      { accessorKey: 'rebalance_period', header: 'Rebalance', meta: { priority: 'medium' } },
+      {
+        accessorKey: 'return_pct',
+        header: 'Return',
+        meta: { align: 'right' },
+        cell: (i) => {
+          const v = i.getValue<number | null>()
+          return typeof v === 'number' ? `${v.toFixed(1)}%` : '—'
+        },
+      },
+      {
+        accessorKey: 'nifty_midcap_150_return_pct',
+        header: 'Midcap 150',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => {
+          const v = i.getValue<number | null>()
+          return typeof v === 'number' ? `${v.toFixed(1)}%` : '—'
+        },
+      },
+      {
+        accessorKey: 'nifty_smallcap_250_return_pct',
+        header: 'Smallcap 250',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => {
+          const v = i.getValue<number | null>()
+          return typeof v === 'number' ? `${v.toFixed(1)}%` : '—'
+        },
+      },
+      {
+        accessorKey: 'churn',
+        header: 'Churn',
+        meta: { align: 'right', priority: 'low' },
+        cell: (i) => i.getValue<number | null>() ?? '—',
+      },
+      {
+        accessorKey: 'avg_holding_days',
+        header: 'Avg Days Held',
+        meta: { align: 'right', priority: 'low' },
+        cell: (i) => fmtNum(i.getValue<number | null>(), 0),
+      },
+    ],
+    [],
+  )
+
+  return (
+    <AppShell
+      title="Momentum — Strategy Report"
+      description="All Risk / Balanced / Risk-Managed / Max-Defensive strategies across all 7 rank bands (1-50 through 501-800) — scripts/run_momentum_dynamic_report.py."
+    >
+      <div className="mb-4 rounded-[var(--radius-token)] border border-border bg-accent-soft px-3 py-2 text-xs text-muted-foreground">
+        <strong className="text-foreground">All Risk</strong> is the unfiltered baseline.{' '}
+        <strong className="text-foreground">Balanced</strong> adds liquidity floor, quality gating, ADTV-capped
+        sizing, and a circuit-lock proxy. <strong className="text-foreground">Risk-Managed</strong> adds
+        regime-conditional buy-disabling in high-volatility periods.{' '}
+        <strong className="text-foreground">Max-Defensive</strong> additionally neutralizes size/beta exposure.
+        Within each rank band, the highest-scoring variant per category is marked{' '}
+        <Badge variant="success">Recommended</Badge> — score ={' '}
+        {report.data?.score_formula ?? '0.30·z(Sharpe) + 0.25·z(Sortino) + 0.25·z(CAGR) − 0.20·z(|Max Drawdown|)'},
+        z-scored within each (band, category) group of 60 variants. Within each universe, the best-scoring
+        recommended pick is marked <Badge variant="default">Most Important</Badge>; the single best pick across
+        every universe is additionally marked <Badge variant="warning">Overall Best</Badge>. The top 2 variants by
+        raw CAGR in each universe (any category/config) are marked{' '}
+        <Badge variant="outline">Top CAGR #1/#2</Badge> for comparison against the risk-adjusted picks.
+      </div>
+
+      {mostImportant ? (
+        <Card className="mb-4 border-accent">
+          <CardHeader>
+            <CardTitle>Most Important Strategy</CardTitle>
+            <CardDescription>
+              {STRATEGY_LABELS[mostImportant.strategy]} · Universe {bandLabel(mostImportant.rank_start, mostImportant.rank_end)} ·
+              {' '}{mostImportant.lookback_months}mo lookback · {mostImportant.rebalance_period} rebalance · Top {mostImportant.top_n} ·
+              {' '}CAGR {fmtPct(mostImportant.cagr)} · Sharpe {fmtNum(mostImportant.sharpe, 2)} · Max DD {fmtPct(mostImportant.max_drawdown)}
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : null}
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Recommended & Most Important Strategies</CardTitle>
+          <CardDescription>
+            The highest-scoring variant per (universe, category), the per-universe{' '}
+            <Badge variant="default">Most Important</Badge> pick, the <Badge variant="warning">Overall Best</Badge>{' '}
+            pick, and the per-universe <Badge variant="outline">Top CAGR #1/#2</Badge> variants (any
+            category/config) for comparison — {recommendedRows.length} rows across all 7 universes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            columns={recommendedColumns}
+            data={recommendedRows}
+            isLoading={report.isLoading}
+            emptyMessage="No recommended picks yet — run the sweep above."
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Strategy Sweep</CardTitle>
+          <CardDescription>
+            {report.isLoading
+              ? 'Loading…'
+              : report.error
+                ? 'Failed to load'
+                : `${allRows.length} variants${
+                    report.data?.generated_at ? ` — generated ${new Date(report.data.generated_at).toLocaleString()}` : ''
+                  }`}
+          </CardDescription>
+          <div className="mt-2 flex flex-wrap gap-3">
+            <SweepTriggerButton
+              label="Strategy Report"
+              triggerUrl="/api/v1/momentum/dynamic_report/trigger"
+              statusUrlPrefix="/api/v1/momentum/dynamic_report/trigger/status"
+              onCompleted={() => queryClient.invalidateQueries({ queryKey: ['momentum-dynamic-report'] })}
+            />
+            <select
+              className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+              value={strategy}
+              onChange={(e) => setStrategy(e.target.value)}
+            >
+              <option value="">All categories</option>
+              {strategyOptions.map((s) => (
+                <option key={s} value={s}>
+                  {STRATEGY_LABELS[s as MomentumDynamicReportVariant['strategy']]}
+                </option>
+              ))}
+            </select>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {report.error ? (
+            <p className="text-sm text-red">
+              Could not reach GET /api/v1/momentum/dynamic_report — {(report.error as Error).message}
+            </p>
+          ) : (
+            bands.map((band) => {
+              const bandRows = allRows.filter(
+                (r) => r.band_id === band.band_id && (!strategy || r.strategy === strategy),
+              )
+              return (
+                <details key={band.band_id} className="mb-4 rounded-[var(--radius-token)] border border-border" open>
+                  <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">
+                    Universe (rank {bandLabel(band.rank_start, band.rank_end)}) — {bandRows.length} variants
+                  </summary>
+                  <div className="border-t border-border p-2">
+                    <DataTable
+                      columns={columns}
+                      data={bandRows}
+                      isLoading={report.isLoading}
+                      emptyMessage="No variants for this universe/category yet — run the sweep above."
+                    />
+                  </div>
+                </details>
+              )
+            })
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6" id="yoy-section">
+        <CardHeader>
+          <CardTitle>Year-on-Year (Apr&ndash;Mar)</CardTitle>
+          <CardDescription>
+            Per-FY return, churn, and Nifty Midcap 150 / Smallcap 250 comparison (benchmark data real from 2023-07
+            onward only). Click a row's "YoY" link above to filter this table to that universe.
+          </CardDescription>
+          <div className="mt-2 flex flex-wrap gap-3">
+            <select
+              className="h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm"
+              value={yoyBandId}
+              onChange={(e) => setYoyBandId(e.target.value)}
+            >
+              <option value="">All universes</option>
+              {bands.map((b) => (
+                <option key={b.band_id} value={b.band_id}>
+                  {bandLabel(b.rank_start, b.rank_end)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            columns={yoyColumns}
+            data={yoyRows}
+            isLoading={report.isLoading}
+            emptyMessage="No year-on-year rows yet."
+          />
+        </CardContent>
+      </Card>
+    </AppShell>
+  )
+}

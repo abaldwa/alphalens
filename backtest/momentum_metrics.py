@@ -177,4 +177,19 @@ def sharpe_sortino_calmar(equity_curve: List[Dict], cagr_value: Optional[float])
     mdd = float(drawdown.min()) if len(drawdown) else 0.0
     calmar = (cagr_value / abs(mdd)) if (cagr_value is not None and abs(mdd) > _NEAR_ZERO_STD) else None
 
-    return {"sharpe": sharpe, "sortino": sortino, "calmar": calmar}
+    return {"sharpe": sharpe, "sortino": sortino, "calmar": calmar, "max_drawdown": mdd}
+
+
+def win_rate(transactions: List[Dict]) -> Optional[float]:
+    """Fraction of CLOSED transactions that sold above their buy price.
+
+    transactions : MomentumBacktestResult.transactions — dicts with at
+        least {"status", "buy_price", "sell_price"}. Open positions
+        (status != "closed") are excluded, since they have no realized
+        outcome yet. None if there are no closed transactions to judge.
+    """
+    closed = [t for t in transactions if t["status"] == "closed"]
+    if not closed:
+        return None
+    wins = sum(1 for t in closed if t["sell_price"] is not None and t["sell_price"] > t["buy_price"])
+    return wins / len(closed)

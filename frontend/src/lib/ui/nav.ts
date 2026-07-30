@@ -124,29 +124,14 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'rebalance', label: 'Rebalance', href: '/momentum-rebalance' },
       { id: 'universe', label: 'Universe', href: '/momentum-universe' },
       { id: 'experimentation', label: 'Universe Sweep', href: '/momentum-experimentation' },
-      // Research artifacts (732-variant grid backtest ledger, year-on-year
-      // report, rank-band sweep) live outside this app as published Claude
-      // artifacts, not local screens — mirrors dashboard/static/js/shell.js's
-      // momentum app entry. These are STATIC snapshots: each was generated
-      // once from a backtest run and does not update when the underlying
-      // script is re-run — re-publishing the artifact is a manual step.
+      // 2026-07-30 user request: the old Recommended Strategies page and the
+      // static (never-auto-updating) Backtest Ledger / Year-on-Year Report /
+      // Rank-Band Sweep artifact links are discontinued in favor of this one
+      // dynamic report, generated fresh by scripts/run_momentum_dynamic_report.py.
       {
-        id: 'backtest_ledger',
-        label: 'Backtest Ledger ↗',
-        href: 'https://claude.ai/code/artifact/def4eadd-f11c-40d9-b491-ccc7f213c990',
-        external: true,
-      },
-      {
-        id: 'yoy_report',
-        label: 'Year-on-Year Report ↗',
-        href: 'https://claude.ai/code/artifact/3950a32a-23dc-4600-8d7f-6a4c48520858',
-        external: true,
-      },
-      {
-        id: 'rank_band_sweep',
-        label: 'Rank-Band Sweep ↗ (static)',
-        href: 'https://claude.ai/code/artifact/dd5e12a2-cd3c-4b4e-9dcf-21d201e64bd0',
-        external: true,
+        id: 'dynamic_report',
+        label: 'Strategy Report',
+        href: '/momentum-dynamic-report',
       },
     ],
   },
