@@ -234,6 +234,26 @@ def step_download_fno(run_date: date_type, db_path: Optional[Path] = None) -> No
     not block download_macro/adjust_prices/compute_features, which have no
     dependency on this step.
 
+    2026-07-30 (A56 follow-up, user-reported): promoting this to critical
+    (above) meant every live 18:00 attempt started failing routinely, not
+    exceptionally — NSE simply hasn't published that day's F&O bhavcopy
+    yet at 18:00 most days, so this was raising (and being logged as a
+    'failed' checkpoint) for a timing reason, not a real outage. Rather
+    than reverting to critical=False (which reintroduces the exact A34
+    silent-miss bug this step was promoted to fix) or leaving the noisy
+    same-day failure in place, a live (run_date == today) attempt before
+    config.settings.FNO_MIN_ATTEMPT_TIME now defers cleanly instead of
+    attempting the scrape at all — no raise, no rows written, nothing
+    misleading recorded as either success or failure at this point in the
+    day. The real attempt happens via
+    ingestion.scheduler.pipeline_scheduler.schedule_fno_late_catchup, a
+    dedicated job at FNO_LATE_CATCHUP_SCHEDULE_TIME (21:00 IST default) —
+    by then NSE has routinely published the day's bhavcopy, so a failure
+    there is a genuine one worth surfacing critically. A backfill/catch-up
+    call for a PAST date (run_date != today) is never deferred by this
+    check — only "attempting today, too early" is a no-op; everything
+    else behaves exactly as before.
+
     Parameters
     ----------
     run_date : date
@@ -258,12 +278,25 @@ def step_download_fno(run_date: date_type, db_path: Optional[Path] = None) -> No
         Propagated from fno.download_fno_bhavcopy() or the DB write on
         failure — this step is now critical (see docstring above) and the
         checkpoint is marked 'failed' so it gets retried on backfill.
+        Never raises for the "too early today" deferral case (see above).
     """
-    from config.settings import DUCKDB_PATH
+    from config.settings import DUCKDB_PATH, FNO_MIN_ATTEMPT_TIME
+    from config.timezone import now_ist
     from ingestion.scrapers import fno
 
     resolved_db_path = db_path or DUCKDB_PATH
     date_str = run_date.isoformat()
+
+    now = now_ist()
+    if run_date == now.date():
+        cutoff_hour, cutoff_minute = (int(p) for p in FNO_MIN_ATTEMPT_TIME.split(":"))
+        if (now.hour, now.minute) < (cutoff_hour, cutoff_minute):
+            logger.info(
+                f"download_fno: {date_str} is today and before {FNO_MIN_ATTEMPT_TIME} IST — "
+                "NSE's F&O bhavcopy is routinely not yet published this early; deferring to "
+                "schedule_fno_late_catchup instead of attempting (and routinely failing) now."
+            )
+            return
 
     df = fno.download_fno_bhavcopy(date_str)
 
@@ -591,6 +624,22 @@ def step_download_corporate_actions(run_date: date_type, db_path: Optional[Path]
     """
     Download NSE corporate actions for run_date and upsert into corporate_actions.
 
+    2026-07-30 (user decision): promoted from non-critical to critical,
+    mirroring step_download_fno's 2026-07-29 fix. A scrape failure here
+    used to be caught and swallowed so the checkpoint was always marked
+    'success' even when nothing was written — and since
+    download_corporate_actions is is_backfillable: True in checkpoint.py's
+    STEPS list, a checkpoint already marked 'success' is never retried, so
+    a missed day's corporate actions (SPLIT/BONUS ratios needed by
+    adjust_prices, and by data_integrity_check's own corporate-action
+    cross-check) would silently never be filled in. Now the scrape failure
+    propagates so the checkpoint is honestly marked 'failed', which the
+    existing gap-backfill mechanism (run_backfill/run_morning_catchup_sequence)
+    will automatically retry on a later run until NSE actually serves that
+    date's corporate actions. data_integrity_check now also depends_on this
+    step (checkpoint.py STEPS) so it never evaluates a day's data against a
+    corporate_actions table that's missing that same day's actions.
+
     Parameters
     ----------
     run_date : date
@@ -600,8 +649,6 @@ def step_download_corporate_actions(run_date: date_type, db_path: Optional[Path]
     Returns
     -------
     None
-        Always — failures are caught and logged, never raised (non-critical:
-        a CA API outage must not block macro/features/models).
 
     Spec References
     ----------------
@@ -613,7 +660,11 @@ def step_download_corporate_actions(run_date: date_type, db_path: Optional[Path]
 
     Raises
     ------
-    None
+    Exception
+        Propagated from corporate_actions.download_corporate_actions() or
+        the DB write on failure — this step is now critical (see docstring
+        above) and the checkpoint is marked 'failed' so it gets retried on
+        backfill.
     """
     from config.settings import DUCKDB_PATH
     from ingestion.scrapers.corporate_actions import (
@@ -623,19 +674,14 @@ def step_download_corporate_actions(run_date: date_type, db_path: Optional[Path]
 
     resolved_db_path = db_path or DUCKDB_PATH
     date_str = run_date.isoformat()
-    try:
-        df = download_corporate_actions(date_str)
-        if not df.empty:
-            with get_duckdb_connection(resolved_db_path, persist=False) as conn:
-                upsert_corporate_actions(conn, df)
-        logger.info(
-            f"download_corporate_actions: {len(df)} records processed for {date_str}"
-        )
-    except Exception as exc:
-        logger.warning(
-            f"download_corporate_actions: unavailable for {date_str} ({exc}) — "
-            "non-critical, continuing"
-        )
+
+    df = download_corporate_actions(date_str)
+    if not df.empty:
+        with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+            upsert_corporate_actions(conn, df)
+    logger.info(
+        f"download_corporate_actions: {len(df)} records processed for {date_str}"
+    )
 
 
 def step_download_large_deals(run_date: date_type, db_path: Optional[Path] = None) -> None:
@@ -824,6 +870,7 @@ def step_compute_features(
     data_cache=None,
     panel_workers: Optional[int] = None,
     staged_panel=None,
+    skip_slow_categories: bool = False,
 ) -> None:
     """
     Build today's two feature matrices and save both to Parquet (SPEC-DS-005):
@@ -848,6 +895,12 @@ def step_compute_features(
         (default: None, unchanged live-daily-path behavior). Only
         scripts/feature_backfill.py passes this — see
         features/panel_staging.py for what it is and why.
+    skip_slow_categories : bool
+        [2026-07-31] Forwarded to build_feature_matrix's
+        `skip_slow_categories` (default: False, unchanged behavior). Only
+        scripts/feature_backfill.py's --skip-slow-categories flag sets
+        this True — see that flag's help text / build_feature_matrix's
+        docstring for what it skips and why.
 
     Returns
     -------
@@ -902,7 +955,10 @@ def step_compute_features(
     # round-trips, ~27 min of a ~2h run against the full universe. Build the
     # same pre-loader the mass backfill scripts use, threaded (I/O-bound,
     # cheap) since this is only ONE date, not thousands.
-    if data_cache is None:
+    if data_cache is None and not skip_slow_categories:
+        # BackfillDataCache pre-loads fundamentals/shareholding/corp_actions
+        # for the categories skip_slow_categories disables entirely below —
+        # building it here would be pure wasted I/O when they're skipped.
         client_for_cache = DataStoreClient()
         to_dt = datetime.combine(run_date, datetime.min.time())
         data_cache = BackfillDataCache(
@@ -912,7 +968,7 @@ def step_compute_features(
     matrix = build_feature_matrix(
         date_str, tickers, compute_hmm=compute_hmm, data_cache=data_cache,
         hmm_workers=HMM_FEATURE_WORKERS, panel_workers=panel_workers,
-        staged_panel=staged_panel,
+        staged_panel=staged_panel, skip_slow_categories=skip_slow_categories,
     )
     logger.info(f"compute_features: built {len(matrix)}-row ALL_FEATURE_COLUMNS matrix for {date_str}")
 
@@ -1948,6 +2004,7 @@ def main() -> None:
         create_scheduler,
         schedule_daily_backup,
         schedule_daily_pipeline,
+        schedule_fno_late_catchup,
         schedule_forensic_scoring,
         schedule_job_health_check,
         schedule_mf_holdings_ingestion,
@@ -2010,6 +2067,14 @@ def main() -> None:
         )
     else:
         logger.info("morning_catchup: disabled via MORNING_CATCHUP_ENABLED=False — not scheduled.")
+    # A56 follow-up (2026-07-30, user-reported): download_fno was failing
+    # almost every day at 18:00 simply because NSE hadn't published that
+    # day's F&O bhavcopy yet — step_download_fno now defers any live
+    # (today) attempt before FNO_MIN_ATTEMPT_TIME instead of raising, and
+    # this dedicated job makes the one real attempt later, by which time
+    # NSE has routinely published it. See schedule_fno_late_catchup's
+    # docstring for the compute_features re-trigger it also does.
+    schedule_fno_late_catchup(scheduler, checkpoint_manager)
     schedule_mf_holdings_ingestion(scheduler)  # weekly (Sat 13:00 IST), primary source Groww
     # 2026-07-08: weekly scan for newly-published NSE Integrated Filing —
     # IndAS regulatory disclosures (real balance sheet + audit qualification

@@ -272,8 +272,64 @@ def _base_breakout_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray
 # ── Per-ticker computation ────────────────────────────────────────────────────
 
 
-def _compute_patterns_for_ticker(grp: pd.DataFrame) -> pd.DataFrame:
-    """Compute 6 pattern scores for a single ticker panel; returns today's row."""
+def _compute_row_pattern_scores(
+    op: np.ndarray, hi: np.ndarray, lo: np.ndarray, cl: np.ndarray, vol: np.ndarray, end: int,
+) -> dict:
+    """
+    Compute the 6 pattern scores "as of" bar index `end - 1`, using only
+    `[: end]` of each array — PITRule.NONE-safe for any `end`, not just
+    the final bar. Extracted from the old `_compute_patterns_for_ticker`
+    (which only ever called this logic once, for the final row).
+    """
+    n = end
+    w = min(40, n)
+    hi_w, lo_w, cl_w, vol_w = hi[end - w:end], lo[end - w:end], cl[end - w:end], vol[end - w:end]
+
+    hs = _head_shoulders_score(hi_w, lo_w, cl_w)
+    db = _double_bottom_score(lo_w, cl_w)
+    ch = _cup_handle_score(hi_w, lo_w, cl_w)
+    fp = _flag_pattern_score(hi_w, lo_w, cl_w, vol_w)
+    wg = _wedge_score(hi_w, lo_w, cl_w)
+    bb = _base_breakout_score(hi_w, lo_w, cl_w, vol_w)
+
+    op_e, hi_e, lo_e, cl_e = op[:end], hi[:end], lo[:end], cl[:end]
+    # Supplement HS score with TA-Lib evening star / bearish engulfing if signal present
+    try:
+        cdl_es = talib.CDLEVENINGSTAR(op_e, hi_e, lo_e, cl_e, penetration=0)
+        if cdl_es[-1] != 0:
+            hs = min(1.0, hs + 0.15)
+    except Exception:
+        pass
+
+    # Supplement double-bottom with TA-Lib morning star
+    try:
+        cdl_ms = talib.CDLMORNINGSTAR(op_e, hi_e, lo_e, cl_e, penetration=0)
+        if cdl_ms[-1] != 0:
+            db = min(1.0, db + 0.15)
+    except Exception:
+        pass
+
+    return {
+        "head_shoulders_score": hs, "double_bottom_score": db, "cup_handle_score": ch,
+        "flag_pattern_score": fp, "wedge_score": wg, "base_breakout_score": bb,
+    }
+
+
+def _compute_patterns_for_ticker(grp: pd.DataFrame, all_rows: bool = False) -> pd.DataFrame:
+    """
+    Compute 6 pattern scores for a single ticker panel.
+
+    all_rows : bool
+        [2026-08-01] False (default, live daily pipeline's only use):
+        fills only the last row — original behavior. True (only
+        `features/panel_staging.py`'s batch-backfill path): fills every
+        row with >= 20 bars of trailing history — see
+        `features/advanced_technical.py::_compute_for_ticker`'s `all_rows`
+        docstring for the identical bug this mirrors/fixes:
+        `compute_full_range_chunk_panels` calls this once per ticker over
+        a multi-year panel, and the old always-last-row-only behavior left
+        every date but the single most recent one NaN.
+    """
     grp = grp.sort_values("date").reset_index(drop=True)
     n = len(grp)
 
@@ -284,50 +340,17 @@ def _compute_patterns_for_ticker(grp: pd.DataFrame) -> pd.DataFrame:
     if n < 20:
         return result
 
-    # Use TA-Lib CDL functions as supplementary signals for scoring
     op = grp["open"].to_numpy(dtype=float)
     hi = grp["high"].to_numpy(dtype=float)
     lo = grp["low"].to_numpy(dtype=float)
     cl = grp["close"].to_numpy(dtype=float)
     vol = grp["volume"].to_numpy(dtype=float)
 
-    # Lookback window for pattern detection (last 40 bars max)
-    w = min(40, n)
-    hi_w = hi[-w:]
-    lo_w = lo[-w:]
-    cl_w = cl[-w:]
-    vol_w = vol[-w:]
-
-    hs = _head_shoulders_score(hi_w, lo_w, cl_w)
-    db = _double_bottom_score(lo_w, cl_w)
-    ch = _cup_handle_score(hi_w, lo_w, cl_w)
-    fp = _flag_pattern_score(hi_w, lo_w, cl_w, vol_w)
-    wg = _wedge_score(hi_w, lo_w, cl_w)
-    bb = _base_breakout_score(hi_w, lo_w, cl_w, vol_w)
-
-    # Supplement HS score with TA-Lib evening star / bearish engulfing if signal present
-    try:
-        cdl_es = talib.CDLEVENINGSTAR(op, hi, lo, cl, penetration=0)
-        if cdl_es[-1] != 0:
-            hs = min(1.0, hs + 0.15)
-    except Exception:
-        pass
-
-    # Supplement double-bottom with TA-Lib morning star
-    try:
-        cdl_ms = talib.CDLMORNINGSTAR(op, hi, lo, cl, penetration=0)
-        if cdl_ms[-1] != 0:
-            db = min(1.0, db + 0.15)
-    except Exception:
-        pass
-
-    idx = result.index[-1]
-    result.loc[idx, "head_shoulders_score"] = hs
-    result.loc[idx, "double_bottom_score"] = db
-    result.loc[idx, "cup_handle_score"] = ch
-    result.loc[idx, "flag_pattern_score"] = fp
-    result.loc[idx, "wedge_score"] = wg
-    result.loc[idx, "base_breakout_score"] = bb
+    row_positions = range(19, n) if all_rows else [n - 1]
+    for i in row_positions:
+        scores = _compute_row_pattern_scores(op, hi, lo, cl, vol, end=i + 1)
+        for col, val in scores.items():
+            result.loc[result.index[i], col] = val
 
     return result
 
@@ -335,7 +358,7 @@ def _compute_patterns_for_ticker(grp: pd.DataFrame) -> pd.DataFrame:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def compute_pattern_scores(ohlcv_panel: pd.DataFrame) -> pd.DataFrame:
+def compute_pattern_scores(ohlcv_panel: pd.DataFrame, all_rows: bool = False) -> pd.DataFrame:
     """
     Compute 6 chart-pattern probability scores for the full OHLCV panel.
 
@@ -343,12 +366,22 @@ def compute_pattern_scores(ohlcv_panel: pd.DataFrame) -> pd.DataFrame:
     ----------
     ohlcv_panel : pd.DataFrame
         Columns: date, ticker, open, high, low, close, volume.
+    all_rows : bool
+        [2026-08-01] Default False preserves the original, live-daily-
+        pipeline behavior: only the last row per ticker gets computed. Set
+        True ONLY for batch backfill staging (`features/panel_staging.py`)
+        — see `_compute_patterns_for_ticker`'s `all_rows` docstring for the
+        bug this fixes. Meaningfully more expensive with all_rows=True
+        (~n_rows/ticker calls instead of 1) — only pass True when you
+        actually need per-date historical values.
 
     Returns
     -------
     pd.DataFrame
         One row per (date, ticker); columns: date, ticker + PATTERN_FEATURES.
-        All scores in [0, 1].
+        All scores in [0, 1]. With all_rows=False (default), only the most
+        recent bar per ticker has non-NaN values; with all_rows=True,
+        every bar with >= 20 bars of trailing history does.
 
     Spec References
     ---------------
@@ -360,5 +393,7 @@ def compute_pattern_scores(ohlcv_panel: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"ohlcv_panel missing columns: {missing}")
 
-    result = ohlcv_panel.groupby("ticker", group_keys=False).apply(_compute_patterns_for_ticker)
+    result = ohlcv_panel.groupby("ticker", group_keys=False).apply(
+        lambda grp: _compute_patterns_for_ticker(grp, all_rows=all_rows)
+    )
     return result[["date", "ticker"] + PATTERN_FEATURES].reset_index(drop=True)

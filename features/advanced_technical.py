@@ -481,7 +481,61 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
 # ── Per-ticker computation ────────────────────────────────────────────────────
 
 
-def _compute_for_ticker(grp: pd.DataFrame) -> pd.DataFrame:
+def _compute_row_features(prices: np.ndarray, volumes: np.ndarray, log_prices: np.ndarray, end: int) -> dict:
+    """
+    Compute all 18 advanced technical features "as of" bar index `end - 1`
+    (i.e. using only `prices[:end]`/`volumes[:end]`, never a future bar —
+    PITRule.NONE-safe for any `end`, not just the last bar of the array).
+
+    Extracted from the old `_compute_for_ticker` (which only ever called
+    this logic once, for the final row) so both the single-row (live daily
+    pipeline) and all-rows (batch backfill staging — see `all_rows` param
+    on `compute_advanced_technical_features`) callers share one
+    implementation instead of two copies that could drift.
+    """
+    n = end
+    out: dict = {}
+
+    wavelet_window = min(64, n)
+    trend_v, noise_v, energy_r, regime_s = _wavelet_features_series(prices[end - wavelet_window:end])
+    out["wavelet_trend"], out["wavelet_noise"] = trend_v, noise_v
+    out["wavelet_energy_ratio"], out["wavelet_regime_signal"] = energy_r, regime_s
+
+    if n >= 21:
+        out["hurst_exp_21d"] = _hurst_rs(prices[end - 21:end])
+    if n >= 63:
+        out["hurst_exp_63d"] = _hurst_rs(prices[end - 63:end])
+
+    ent_window = min(21, n)
+    ret_21 = np.diff(log_prices[end - ent_window:end]) if ent_window >= 2 else np.array([])
+    if len(ret_21) >= 8:
+        out["approx_entropy_21d"] = _approx_entropy(ret_21)
+        out["sample_entropy_21d"] = _sample_entropy(ret_21)
+        out["permutation_entropy_21d"] = _permutation_entropy(ret_21)
+    if n >= 16:
+        out["spectral_entropy"] = _spectral_entropy(np.diff(log_prices[end - min(63, n):end]))
+        out["fractal_dimension"] = _fractal_dimension(prices[:end])
+
+    d_opt = _optimal_fracdiff_d(log_prices[:end])
+    out["fracdiff_d_optimal"] = d_opt
+    fd_price = _apply_fracdiff(log_prices[:end], d_opt)
+    out["fracdiff_price"] = fd_price[-1] if not np.isnan(fd_price[-1]) else np.nan
+
+    log_vol = np.log(np.maximum(volumes[:end], 1e-6))
+    fd_vol = _apply_fracdiff(log_vol, d_opt)
+    out["fracdiff_volume"] = fd_vol[-1] if not np.isnan(fd_vol[-1]) else np.nan
+
+    complexity_window = min(63, n)
+    recent_prices = prices[end - complexity_window:end]
+    out["lyapunov_exponent_proxy"] = _lyapunov_proxy(recent_prices)
+    out["rqa_rec_rate"] = _rqa_recurrence_rate(recent_prices)
+    out["time_series_complexity"] = _time_series_complexity(recent_prices)
+    out["nonlinear_trend_strength"] = _nonlinear_trend_strength(recent_prices)
+
+    return out
+
+
+def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False) -> pd.DataFrame:
     """
     Compute all 18 advanced technical features for a single ticker's panel.
 
@@ -490,6 +544,20 @@ def _compute_for_ticker(grp: pd.DataFrame) -> pd.DataFrame:
     grp : pd.DataFrame
         OHLCV rows for one ticker, sorted ascending by date. Must have
         columns: date, close, volume.
+    all_rows : bool
+        [2026-08-01] When False (default — the live daily pipeline's only
+        use), fills only the LAST row (the original, unchanged behavior:
+        callers pass a trailing window ending "today" and only want
+        today's snapshot). When True (only `features/panel_staging.py`'s
+        batch-backfill path sets this), fills EVERY row with enough
+        history using that row's own trailing window — needed because
+        `compute_full_range_chunk_panels` calls this ONCE per ticker over
+        a multi-YEAR panel, not once per date; the old always-last-row-only
+        behavior silently left every date but the single most recent one
+        NaN when called that way (found 2026-08-01: `advanced_technical`/
+        `pattern_scores` were the only 2 of panel_staging's 5 "batched"
+        categories with this bug — technical/intraday/pnd were already
+        genuinely vectorized across all rows).
 
     Returns
     -------
@@ -511,50 +579,11 @@ def _compute_for_ticker(grp: pd.DataFrame) -> pd.DataFrame:
     if n < 16:
         return result
 
-    # ── Wavelet (use last 64 bars for computational stability) ────────────────
-    wavelet_window = min(64, n)
-    trend_v, noise_v, energy_r, regime_s = _wavelet_features_series(prices[-wavelet_window:])
-    result.loc[result.index[-1], "wavelet_trend"] = trend_v
-    result.loc[result.index[-1], "wavelet_noise"] = noise_v
-    result.loc[result.index[-1], "wavelet_energy_ratio"] = energy_r
-    result.loc[result.index[-1], "wavelet_regime_signal"] = regime_s
-
-    # ── Hurst exponents ───────────────────────────────────────────────────────
-    if n >= 21:
-        result.loc[result.index[-1], "hurst_exp_21d"] = _hurst_rs(prices[-21:])
-    if n >= 63:
-        result.loc[result.index[-1], "hurst_exp_63d"] = _hurst_rs(prices[-63:])
-
-    # ── Entropy (21-day window for short-window metrics) ─────────────────────
-    ent_window = min(21, n)
-    ret_21 = np.diff(log_prices[-ent_window:]) if ent_window >= 2 else np.array([])
-    if len(ret_21) >= 8:
-        result.loc[result.index[-1], "approx_entropy_21d"] = _approx_entropy(ret_21)
-        result.loc[result.index[-1], "sample_entropy_21d"] = _sample_entropy(ret_21)
-        result.loc[result.index[-1], "permutation_entropy_21d"] = _permutation_entropy(ret_21)
-    if n >= 16:
-        result.loc[result.index[-1], "spectral_entropy"] = _spectral_entropy(
-            np.diff(log_prices[-min(63, n):])
-        )
-        result.loc[result.index[-1], "fractal_dimension"] = _fractal_dimension(prices)
-
-    # ── Fractional differentiation ────────────────────────────────────────────
-    d_opt = _optimal_fracdiff_d(log_prices)
-    result.loc[result.index[-1], "fracdiff_d_optimal"] = d_opt
-    fd_price = _apply_fracdiff(log_prices, d_opt)
-    result.loc[result.index[-1], "fracdiff_price"] = fd_price[-1] if not np.isnan(fd_price[-1]) else np.nan
-
-    log_vol = np.log(np.maximum(volumes, 1e-6))
-    fd_vol = _apply_fracdiff(log_vol, d_opt)
-    result.loc[result.index[-1], "fracdiff_volume"] = fd_vol[-1] if not np.isnan(fd_vol[-1]) else np.nan
-
-    # ── Complexity ────────────────────────────────────────────────────────────
-    complexity_window = min(63, n)
-    recent_prices = prices[-complexity_window:]
-    result.loc[result.index[-1], "lyapunov_exponent_proxy"] = _lyapunov_proxy(recent_prices)
-    result.loc[result.index[-1], "rqa_rec_rate"] = _rqa_recurrence_rate(recent_prices)
-    result.loc[result.index[-1], "time_series_complexity"] = _time_series_complexity(recent_prices)
-    result.loc[result.index[-1], "nonlinear_trend_strength"] = _nonlinear_trend_strength(recent_prices)
+    row_positions = range(15, n) if all_rows else [n - 1]
+    for i in row_positions:
+        feats = _compute_row_features(prices, volumes, log_prices, end=i + 1)
+        for col, val in feats.items():
+            result.loc[result.index[i], col] = val
 
     return result
 
@@ -562,7 +591,7 @@ def _compute_for_ticker(grp: pd.DataFrame) -> pd.DataFrame:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame) -> pd.DataFrame:
+def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame, all_rows: bool = False) -> pd.DataFrame:
     """
     Compute all 18 advanced technical features for the full universe OHLCV panel.
 
@@ -572,14 +601,25 @@ def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame) -> pd.DataFra
         Columns: date, ticker, open, high, low, close, volume.
         Must include at least 252 trading days of history per ticker
         (SPEC-FEAT-001) for meaningful results; shorter history yields NaN.
+    all_rows : bool
+        [2026-08-01] Default False preserves the original, live-daily-
+        pipeline behavior: only the last row per ticker gets computed
+        (cheap — callers pass a 760-day trailing window ending "today" and
+        only need today's snapshot). Set True ONLY for batch backfill
+        staging (`features/panel_staging.py`, which calls this once per
+        ticker over a multi-year panel and needs every date's own value —
+        see `_compute_for_ticker`'s `all_rows` docstring for the bug this
+        fixes). This is meaningfully more expensive (~n_rows/ticker calls
+        into the rolling-window math instead of 1) — only pass True when
+        you actually need per-date historical values, not "today only."
 
     Returns
     -------
     pd.DataFrame
         One row per (date, ticker); columns: date, ticker + ADVANCED_TECHNICAL_FEATURES.
-        Only the most recent bar per ticker has non-NaN values for most
-        features (rolling-window features require the full history for
-        stability but the daily pipeline only needs today's snapshot).
+        With all_rows=False (default), only the most recent bar per ticker
+        has non-NaN values. With all_rows=True, every bar with >= 16 bars
+        of trailing history does.
 
     Spec References
     ---------------
@@ -591,5 +631,7 @@ def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame) -> pd.DataFra
     if missing:
         raise ValueError(f"ohlcv_panel missing columns: {missing}")
 
-    result = ohlcv_panel.groupby("ticker", group_keys=False).apply(_compute_for_ticker)
+    result = ohlcv_panel.groupby("ticker", group_keys=False).apply(
+        lambda grp: _compute_for_ticker(grp, all_rows=all_rows)
+    )
     return result[["date", "ticker"] + ADVANCED_TECHNICAL_FEATURES].reset_index(drop=True)

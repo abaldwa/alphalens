@@ -103,6 +103,17 @@ def _parse_args() -> argparse.Namespace:
                    help="Skip HMM regime-feature fitting (HMM cols become NaN). "
                         "~14x faster per date — recommended for full historical backfill. "
                         "Deep-learning models handle NaN via masking.")
+    p.add_argument("--skip-slow-categories", action="store_true",
+                   help="[2026-07-31] Skip fundamental/governance/mf_holdings/corp_action/"
+                        "fno/multibagger/real_economy_macro/deep_forensic entirely (all-NaN "
+                        "columns) and skip this script's own per-ticker BackfillDataCache "
+                        "pre-load that only those categories use. Use when the goal is only "
+                        "repopulating technical/intraday/pnd/advanced_technical/pattern_scores "
+                        "(the panel_staging-covered categories) — e.g. backfilling the columns "
+                        "the TA screener templates depend on — without paying for categories "
+                        "that will be backfilled separately. Not used by the live daily "
+                        "pipeline; matrix_builder.py::build_feature_matrix's "
+                        "skip_slow_categories param docstring has the full column list.")
     p.add_argument("--panel-workers", type=int, default=1,
                    help="Parallelize the technical/intraday/pnd/advanced_technical/"
                         "pattern_scores chunk loop across N worker processes (default: 1, "
@@ -207,12 +218,19 @@ def main() -> None:
     # Pre-load all per-ticker data ONCE before the date loop.  For each
     # subsequent date the cache provides in-memory PIT-filtered slices,
     # replacing ~15 M per-date API calls with ~1 500 one-time calls.
+    # [2026-07-31] Skipped entirely under --skip-slow-categories: this cache
+    # only feeds fundamental/governance/mf_holdings/corp_action/deep_forensic,
+    # all of which build_feature_matrix skips in that mode — building it
+    # would be pure wasted I/O.
     from datastore.client import DataStoreClient
-    from features.backfill_cache import BackfillDataCache
 
     client = DataStoreClient()
     tickers_for_cache = get_tickers()
-    backfill_cache = BackfillDataCache(client, tickers_for_cache, to_date=datetime.combine(to_dt, datetime.min.time()))
+    backfill_cache = None
+    if not args.skip_slow_categories:
+        from features.backfill_cache import BackfillDataCache
+
+        backfill_cache = BackfillDataCache(client, tickers_for_cache, to_date=datetime.combine(to_dt, datetime.min.time()))
 
     # [BUG FIX, 2026-07-28 model-review item 6] A 20-80 hour unattended run
     # with only ERROR-level log lines and a final summary count has real
@@ -298,6 +316,7 @@ def main() -> None:
             step_compute_features(
                 d, compute_hmm=compute_hmm, data_cache=backfill_cache,
                 panel_workers=args.panel_workers, staged_panel=staged_panel,
+                skip_slow_categories=args.skip_slow_categories,
             )
             elapsed = time.monotonic() - t0
             elapsed_times.append(elapsed)

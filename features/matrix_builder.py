@@ -831,9 +831,36 @@ def compute_full_range_chunk_panels(
     technical = compute_technical_features(chunk_panel, benchmark_wide)
     intraday = compute_intraday_features(chunk_panel)
     pnd = compute_pnd_features(chunk_panel)
-    adv_tech = compute_advanced_technical_features(chunk_panel)
-    pat_scores = compute_pattern_scores(chunk_panel)
+    # [2026-08-01 bug fix] all_rows=True — this function is called ONCE per
+    # ticker chunk over the FULL multi-year backfill range (see docstring
+    # above), not once per date. Without all_rows, these two functions'
+    # default behavior ("fill only the last row" — correct for the live
+    # daily pipeline's single-date-window callers) silently left every
+    # date but the single most recent one NaN for the whole backfill
+    # range — found 2026-08-01 after a 1050-minute backfill run produced
+    # 100% NaN `flag_pattern_score`/`hurst_exp_21d` etc. for 2016-2026
+    # despite completing with 0 failures.
+    adv_tech = compute_advanced_technical_features(chunk_panel, all_rows=True)
+    pat_scores = compute_pattern_scores(chunk_panel, all_rows=True)
     return technical, intraday, pnd, adv_tech, pat_scores
+
+
+def _compute_full_range_chunk_panels_worker(args: "tuple") -> "tuple":
+    """
+    [2026-08-01] Picklable, module-level, single-tuple-arg wrapper around
+    `compute_full_range_chunk_panels` — the spawn-context multiprocessing
+    requirement (same rationale as `_compute_one_chunk_panels` above).
+    `features/panel_staging.py::stage_batch_panels`'s `panel_workers`
+    param dispatches this via `_run_pool_over_chunks` to parallelize the
+    now-genuinely-expensive all_rows=True advanced_technical/pattern_scores
+    computation across ticker chunks (found 2026-08-01: with the all_rows
+    bug fixed, this became real per-row CPU work — wavelet/Hurst/entropy/
+    TA-Lib pattern calls over every row of the chunk's full multi-year
+    panel — where the old always-last-row-only behavior had made it look
+    nearly free).
+    """
+    chunk_panel, benchmark_wide = args
+    return compute_full_range_chunk_panels(chunk_panel, benchmark_wide)
 
 
 def _save_feature_matrix(matrix: pd.DataFrame, target_date: pd.Timestamp) -> Path:
@@ -876,6 +903,7 @@ def build_feature_matrix(
     hmm_workers: int = 1,
     panel_workers: int = 1,
     staged_panel: Optional[pd.DataFrame] = None,
+    skip_slow_categories: bool = False,
 ) -> pd.DataFrame:
     """
     Build the full daily feature matrix for `tickers` on `date`.
@@ -927,6 +955,20 @@ def build_feature_matrix(
         `staged_panel` instead — HMM is still computed here as normal
         (out of batching scope; see 02_models.md M-01). None (default)
         preserves the original, unchanged per-date computation path.
+    skip_slow_categories : bool
+        [2026-07-31, TA-template-signal-backfill scoping] When True, skips
+        computing fundamental/governance/mf_holdings/corp_action/fno/
+        multibagger/real_economy_macro/deep_forensic entirely (all-NaN
+        placeholder columns instead) — these are the categories NOT
+        covered by `staged_panel`'s batch optimization above, and were
+        found to dominate per-date wall time (~2.5 of ~4 min/date) in a
+        run whose only goal was repopulating advanced_technical/
+        pattern_scores (the columns 12 of 42 TA screener templates
+        depend on — see backtest/diagnose_ta_signal_quality.py). Default
+        False preserves the original full-matrix behavior; the live daily
+        pipeline never sets this True. calendar/macro (date-keyed, cheap)
+        and technical/intraday/hmm/pnd/advanced_technical/pattern_scores
+        are unaffected.
 
     Returns
     -------
@@ -1084,73 +1126,83 @@ def build_feature_matrix(
     # pledge spiral check, corp-action windows, post-earnings drift) all hit
     # memory instead of making per-ticker API calls — the data is already in
     # the bulk panel fetched above.
-    raw_cache = _get_fundamental_raw_cache()
-    cache_misses: dict = {}
-    fundamental = compute_fundamental_features_panel(
-        client, active_tickers, target_date, sector_map,
-        data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
-        listing_date_map=listing_dates,
-        raw_cache=raw_cache, cache_misses_out=cache_misses,
-    )
-    # Persist only this date's new entries (typically a small fraction of
-    # the universe once warm), not the whole cache — see
-    # features/fundamental_cache.py's docstring for why.
-    save_fundamental_raw_cache_entries(cache_misses)
-    # [2026-07-29] governance/mf_holdings/corp_action switched from the
-    # per-ticker-loop-dispatched-across-a-process-pool (_chunked, commit
-    # 07d0122) path to single-pass pandas-groupby vectorization (model-review
-    # approved with mandatory fixes — see compute_governance_features_panel_vectorized's
-    # docstring for the quarter_end_date sort-key / dedup / shift-before-lookup
-    # details). No process pool needed here anymore; panel_workers no longer
-    # applies to these three panels. The _chunked/_panel functions remain in
-    # features/matrix_builder.py and the respective feature modules as the
-    # parity baseline (tests/unit/test_panel_vectorized_parity.py).
-    governance = compute_governance_features_panel_vectorized(
-        client, active_tickers, target_date,
-        data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
-    )
-    mf_holdings = compute_mf_holdings_features_panel_vectorized(
-        active_tickers, target_date, tier_map=tier_map,
-    )
-    corp_action = compute_corporate_action_features_panel_vectorized(
-        client, active_tickers, target_date, listing_dates=listing_dates,
-        data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
-    )
-    # [2026-07-26 perf fix] ~2,100 of ~2,300 universe tickers have never had
-    # F&O activity at all — compute_fno_features_panel used to call the F&O
-    # API for every one of them anyway, the dominant cost of a full-universe
-    # backfill (measured: 2,317 of ~2,423 HTTP calls for one day were this
-    # call). fno_eligible_tickers pre-filters those out with zero behavior
-    # change (see load_ever_fno_eligible_tickers's docstring).
-    fno = compute_fno_features_panel(
-        client, active_tickers, target_date, data_cache=data_cache,
-        fno_eligible_tickers=_get_ever_fno_eligible_tickers(),
-    )
-
-    # mf_holdings/governance are already ticker-keyed single-snapshot panels
-    # "as of" target_date — exactly the shape compute_multibagger_features'
-    # PIT-safe institutional merge expects (see that module's docstring).
-    # No fno_iv_panel: matrix_builder only has TODAY's fno panel, not a
-    # rolling IV history, so iv_compression_flag stays NaN here — a
-    # documented gap, not a silent omission.
-    if not universe_panel.empty:
-        multibagger = compute_multibagger_features(
-            universe_panel, benchmark_wide, sector_map, mf_snapshot=mf_holdings, governance_snapshot=governance
-        )
-        today_multibagger = multibagger[multibagger["date"] == target_date].drop(columns=["date"])
-    else:
+    if skip_slow_categories:
+        fundamental = pd.DataFrame(columns=["ticker"] + FUNDAMENTAL_FEATURES)
+        governance = pd.DataFrame(columns=["ticker"] + GOVERNANCE_FEATURES)
+        mf_holdings = pd.DataFrame(columns=["ticker"] + MF_HOLDINGS_FEATURES)
+        corp_action = pd.DataFrame(columns=["ticker"] + CORPORATE_ACTION_FEATURES)
+        fno = pd.DataFrame(columns=["ticker"] + FNO_FEATURES)
         today_multibagger = pd.DataFrame(columns=["ticker"] + MULTIBAGGER_FEATURES)
+        real_economy = pd.DataFrame(columns=["ticker"] + REAL_ECONOMY_MACRO_FEATURES)
+        deep_forensic = pd.DataFrame(columns=["ticker"] + DEEP_FORENSIC_FEATURES)
+    else:
+        raw_cache = _get_fundamental_raw_cache()
+        cache_misses: dict = {}
+        fundamental = compute_fundamental_features_panel(
+            client, active_tickers, target_date, sector_map,
+            data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+            listing_date_map=listing_dates,
+            raw_cache=raw_cache, cache_misses_out=cache_misses,
+        )
+        # Persist only this date's new entries (typically a small fraction of
+        # the universe once warm), not the whole cache — see
+        # features/fundamental_cache.py's docstring for why.
+        save_fundamental_raw_cache_entries(cache_misses)
+        # [2026-07-29] governance/mf_holdings/corp_action switched from the
+        # per-ticker-loop-dispatched-across-a-process-pool (_chunked, commit
+        # 07d0122) path to single-pass pandas-groupby vectorization (model-review
+        # approved with mandatory fixes — see compute_governance_features_panel_vectorized's
+        # docstring for the quarter_end_date sort-key / dedup / shift-before-lookup
+        # details). No process pool needed here anymore; panel_workers no longer
+        # applies to these three panels. The _chunked/_panel functions remain in
+        # features/matrix_builder.py and the respective feature modules as the
+        # parity baseline (tests/unit/test_panel_vectorized_parity.py).
+        governance = compute_governance_features_panel_vectorized(
+            client, active_tickers, target_date,
+            data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+        )
+        mf_holdings = compute_mf_holdings_features_panel_vectorized(
+            active_tickers, target_date, tier_map=tier_map,
+        )
+        corp_action = compute_corporate_action_features_panel_vectorized(
+            client, active_tickers, target_date, listing_dates=listing_dates,
+            data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,
+        )
+        # [2026-07-26 perf fix] ~2,100 of ~2,300 universe tickers have never had
+        # F&O activity at all — compute_fno_features_panel used to call the F&O
+        # API for every one of them anyway, the dominant cost of a full-universe
+        # backfill (measured: 2,317 of ~2,423 HTTP calls for one day were this
+        # call). fno_eligible_tickers pre-filters those out with zero behavior
+        # change (see load_ever_fno_eligible_tickers's docstring).
+        fno = compute_fno_features_panel(
+            client, active_tickers, target_date, data_cache=data_cache,
+            fno_eligible_tickers=_get_ever_fno_eligible_tickers(),
+        )
 
-    # ── Phase 3: real-economy macro + deep forensic ──
-    # (today_adv_tech/today_patterns already computed above, chunked
-    # alongside technical/intraday/hmm/pnd — A47.)
+        # mf_holdings/governance are already ticker-keyed single-snapshot panels
+        # "as of" target_date — exactly the shape compute_multibagger_features'
+        # PIT-safe institutional merge expects (see that module's docstring).
+        # No fno_iv_panel: matrix_builder only has TODAY's fno panel, not a
+        # rolling IV history, so iv_compression_flag stays NaN here — a
+        # documented gap, not a silent omission.
+        if not universe_panel.empty:
+            multibagger = compute_multibagger_features(
+                universe_panel, benchmark_wide, sector_map, mf_snapshot=mf_holdings, governance_snapshot=governance
+            )
+            today_multibagger = multibagger[multibagger["date"] == target_date].drop(columns=["date"])
+        else:
+            today_multibagger = pd.DataFrame(columns=["ticker"] + MULTIBAGGER_FEATURES)
 
-    real_economy = compute_real_economy_macro_panel(target_date, active_tickers)
-    deep_forensic = compute_deep_forensic_features_panel(
-        client, active_tickers, to_date, data_cache=data_cache,
-        ohlcv_panel=universe_panel if not universe_panel.empty else None,
-        sector_map=sector_map,
-    )
+        # ── Phase 3: real-economy macro + deep forensic ──
+        # (today_adv_tech/today_patterns already computed above, chunked
+        # alongside technical/intraday/hmm/pnd — A47.)
+
+        real_economy = compute_real_economy_macro_panel(target_date, active_tickers)
+        deep_forensic = compute_deep_forensic_features_panel(
+            client, active_tickers, to_date, data_cache=data_cache,
+            ohlcv_panel=universe_panel if not universe_panel.empty else None,
+            sector_map=sector_map,
+        )
 
     matrix = pd.DataFrame({"ticker": tickers})
     matrix = matrix.merge(today_technical, on="ticker", how="left")

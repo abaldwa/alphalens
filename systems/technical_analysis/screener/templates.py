@@ -796,20 +796,29 @@ STRATEGY_STYLES: List[str] = ["Momentum", "Trend Following", "Mean Reversion", "
 # template is, and exit discipline should follow the trade's *style*, not
 # its specific condition logic:
 #   - Momentum: signal decays fast once the move is already underway, so
-#     exits are tight and short-horizon (4% stop / 10% target / 15d).
+#     exits are tight (4% stop / 10% target). max_hold was 15d; a
+#     signal-quality diagnostic (backtest/diagnose_ta_signal_quality.py,
+#     2026-07-30, 40 sample dates 2016-2026) measuring forward returns on
+#     entry-condition fires showed the raw edge is measured/materializes on
+#     a 21-trading-day horizon for every style group, so 15d was clipping
+#     winners before the edge showed up — widened to 21d to match.
 #   - Trend Following: designed to ride a real trend once confirmed, so
-#     gets the most room to run (5% stop / 12% target / 25d).
-#   - Mean Reversion: the whole thesis is a fast snap-back; if it hasn't
-#     reverted quickly the thesis is wrong, so exits are the tightest and
-#     shortest of all four (3% stop / 6% target / 10d).
+#     gets the most room to run (5% stop / 12% target / 25d) — already
+#     exceeds the 21d measured signal horizon, left unchanged.
+#   - Mean Reversion: the whole thesis is a fast snap-back, but the same
+#     21d diagnostic showed A4 (RSI Oversold+Trend) and S003 (RSI Mean
+#     Reversion) both had real edge (+3.55pp / +1.60pp vs universe median,
+#     ~60% win rate) that the old 3%/6%/10d exits were clipping — A4's
+#     orchestrator backtest CAGR went from -0.1% to +0.5% (Sharpe -0.05 to
+#     0.20, win rate 27% to 38%) after widening to 5%/10%/21d.
 #   - Volatility (breakout/squeeze): a confirmed breakout needs slightly
 #     more room than a pure reversion trade but should still resolve
 #     faster than a trend-following thesis (4.5% stop / 9% target / 20d).
 # ---------------------------------------------------------------------------
 STYLE_EXIT_PARAMS: Dict[str, Dict[str, float]] = {
-    "Momentum": {"stop_pct": 0.04, "target_pct": 0.10, "max_hold_days": 15},
+    "Momentum": {"stop_pct": 0.04, "target_pct": 0.10, "max_hold_days": 21},
     "Trend Following": {"stop_pct": 0.05, "target_pct": 0.12, "max_hold_days": 25},
-    "Mean Reversion": {"stop_pct": 0.03, "target_pct": 0.06, "max_hold_days": 10},
+    "Mean Reversion": {"stop_pct": 0.05, "target_pct": 0.10, "max_hold_days": 21},
     "Volatility": {"stop_pct": 0.045, "target_pct": 0.09, "max_hold_days": 20},
 }
 

@@ -74,7 +74,9 @@ from features.matrix_builder import (
     LOOKBACK_CALENDAR_DAYS,
     BENCHMARK_TICKERS,
     _build_benchmark_wide,
+    _compute_full_range_chunk_panels_worker,
     _fetch_ohlcv_panel,
+    _run_pool_over_chunks,
     compute_full_range_chunk_panels,
 )
 from features.pattern_scores import PATTERN_FEATURES
@@ -166,6 +168,7 @@ def stage_batch_panels(
     run_id: str,
     db_path=None,
     force_restage: bool = False,
+    panel_workers: int = 1,
 ) -> int:
     """
     Compute technical/intraday/pnd/adv_tech/patterns ONCE per ticker chunk
@@ -208,6 +211,22 @@ def stage_batch_panels(
         after fixing a bug in the feature computation itself, where prior
         staged rows would be wrong) — this wipes ALL prior progress for
         `run_id` before staging anything.
+    panel_workers : int
+        [2026-08-01] 1 (default) keeps the original single-process
+        sequential-chunk-loop behavior. >1 computes chunks concurrently
+        via a spawn-context multiprocessing.Pool (features/matrix_builder.
+        py::_run_pool_over_chunks — same BLAS-thread-capping safeguard as
+        the old per-date path's own panel_workers). Added after the
+        all_rows fix (2026-08-01) made advanced_technical/pattern_scores'
+        per-chunk cost genuinely CPU-heavy (real per-row wavelet/Hurst/
+        entropy/TA-Lib work across the chunk's full multi-year panel,
+        where it used to be near-free). Recommended max on this project's
+        16GB laptop: 8, not 12 (see scripts/feature_backfill.py's
+        --panel-workers help text for the documented OOM-dip incident this
+        limit comes from). Only the CPU-bound compute step is pooled —
+        each chunk's DuckDB staging INSERT still happens sequentially in
+        the main process after its result returns, so concurrent writers
+        never contend for FEATURE_PANEL_STAGING_DB_PATH's lock.
 
     Returns
     -------
@@ -275,30 +294,10 @@ def stage_batch_panels(
             )
 
         total_staged = 0
-        i = 0
         n_chunks = 0
-        while i < len(tickers):
-            base_chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
-            chunk_size = max(_BATCH_CHUNK_SIZE_FLOOR, base_chunk_size // _BATCH_CHUNK_SIZE_DIVISOR)
-            candidate_tickers = tickers[i : i + chunk_size]
-            i += chunk_size
 
-            chunk_tickers = [t for t in candidate_tickers if t not in already_staged_tickers]
-            if not chunk_tickers:
-                continue
-
-            chunk_panel = universe_panel[universe_panel["ticker"].isin(set(chunk_tickers))]
-            if chunk_panel.empty:
-                continue
-            n_chunks += 1
-
-            technical, intraday, pnd, adv_tech, patterns = compute_full_range_chunk_panels(
-                chunk_panel, benchmark_wide
-            )
-
-            # Outer-merge the 5 category outputs into one wide (ticker, date)
-            # row set, restricted to the requested dates only (the lookback
-            # buffer's own rows are dropped here — never staged).
+        def _stage_one_result(chunk_tickers, technical, intraday, pnd, adv_tech, patterns):
+            nonlocal total_staged
             wide = None
             for df, cols in (
                 (technical, CORE_TECHNICAL_FEATURES),
@@ -313,14 +312,65 @@ def stage_batch_panels(
             if wide is not None and not wide.empty:
                 _stage_chunk(conn, run_id, wide)
                 total_staged += len(wide)
+            return 0 if wide is None else len(wide)
 
-            logger.info(
-                "panel_staging: chunk %d staged (%d tickers, %d rows) — %d/%d tickers done",
-                n_chunks, len(chunk_tickers), 0 if wide is None else len(wide), min(i, len(tickers)), len(tickers),
-            )
+        # Build the full list of non-empty chunk panels eagerly (rather than
+        # computing+staging one at a time) when panel_workers > 1, so the
+        # whole task list can be dispatched to the pool at once — mirrors
+        # features/matrix_builder.py::_compute_chunked_ticker_independent_
+        # panels' identical eager-list-then-dispatch restructuring for the
+        # old per-date path. Dispatched in POOL_BATCH-sized waves (not all
+        # at once) so peak memory stays bounded to ~panel_workers chunks'
+        # worth of results in flight, not every chunk in the whole backfill
+        # range simultaneously.
+        pending_chunks = []
+        i = 0
+        while i < len(tickers):
+            base_chunk_size = adaptive_chunk_size(SCREENER_BATCH_EXPORT_CHUNK_SIZE, ceiling_mb=PIPELINE_MEMORY_CEILING_MB)
+            chunk_size = max(_BATCH_CHUNK_SIZE_FLOOR, base_chunk_size // _BATCH_CHUNK_SIZE_DIVISOR)
+            candidate_tickers = tickers[i : i + chunk_size]
+            i += chunk_size
 
-            del chunk_panel, technical, intraday, pnd, adv_tech, patterns, wide
-            gc.collect()
+            chunk_tickers = [t for t in candidate_tickers if t not in already_staged_tickers]
+            if not chunk_tickers:
+                continue
+            chunk_panel = universe_panel[universe_panel["ticker"].isin(set(chunk_tickers))]
+            if chunk_panel.empty:
+                continue
+            pending_chunks.append((chunk_tickers, chunk_panel))
+
+        if panel_workers <= 1:
+            for chunk_tickers, chunk_panel in pending_chunks:
+                n_chunks += 1
+                technical, intraday, pnd, adv_tech, patterns = compute_full_range_chunk_panels(
+                    chunk_panel, benchmark_wide
+                )
+                n_rows = _stage_one_result(chunk_tickers, technical, intraday, pnd, adv_tech, patterns)
+                logger.info(
+                    "panel_staging: chunk %d staged (%d tickers, %d rows) — %d/%d tickers done",
+                    n_chunks, len(chunk_tickers), n_rows, min(i, len(tickers)), len(tickers),
+                )
+                del chunk_panel, technical, intraday, pnd, adv_tech, patterns
+                gc.collect()
+        else:
+            tickers_done = 0
+            pool_batch = panel_workers * 2  # a couple waves' worth in flight per dispatch
+            for batch_start in range(0, len(pending_chunks), pool_batch):
+                batch = pending_chunks[batch_start:batch_start + pool_batch]
+                worker_args = [(chunk_panel, benchmark_wide) for _, chunk_panel in batch]
+                results = _run_pool_over_chunks(
+                    _compute_full_range_chunk_panels_worker, worker_args, panel_workers
+                )
+                for (chunk_tickers, chunk_panel), (technical, intraday, pnd, adv_tech, patterns) in zip(batch, results):
+                    n_chunks += 1
+                    tickers_done += len(chunk_tickers)
+                    n_rows = _stage_one_result(chunk_tickers, technical, intraday, pnd, adv_tech, patterns)
+                    logger.info(
+                        "panel_staging: chunk %d staged (%d tickers, %d rows) — %d/%d tickers done",
+                        n_chunks, len(chunk_tickers), n_rows, tickers_done, len(tickers),
+                    )
+                del batch, worker_args, results
+                gc.collect()
 
     logger.info("panel_staging: run_id=%s staged %d total (ticker, date) rows across %d chunks", run_id, total_staged, n_chunks)
     return total_staged
