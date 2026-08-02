@@ -153,6 +153,64 @@ class ScreenerEngine:
     # Ops that aggregate across the universe (cross-sectional percentile filters)
     _UNIVERSE_OPS: frozenset = frozenset({"top_pct", "bottom_pct"})
 
+    def __init__(self) -> None:
+        # [PERF, 2026-08-02] _load_df previously re-read the full ~2,300-
+        # ticker feature Parquet from disk on every single screen()/
+        # screen_custom() call, even for the SAME date requested twice in
+        # a row — profiling a technical backtest job showed this as the
+        # single largest cost in BacktestOrchestrator's daily loop (~35%
+        # of run() time). Bounded to the single most-recently-loaded date,
+        # same locality argument backtest/run_orchestrator_backtest.py's
+        # build_technical_feature_lookup() already relies on: a backtest
+        # walks trading days strictly forward, and the live screener API
+        # only ever asks for "today" — a date once moved past is never
+        # re-requested, so evicting anything but the current date loses
+        # nothing while eliminating same-date re-reads (e.g. a rebalance
+        # date screened for entries AND checked for exits the same day).
+        self._cached_date: Optional[str] = None
+        self._cached_df: Optional[pd.DataFrame] = None
+        # [PERF, 2026-08-02] populated only by preload_dates() — a date
+        # present here (even if the value is None, a genuine missing-file
+        # result) short-circuits _load_df with zero disk I/O. Empty by
+        # default (preload_dates never called) — every existing caller is
+        # completely unaffected.
+        self._preloaded: Dict[str, Optional[pd.DataFrame]] = {}
+
+    def _read_parquet_for_date(self, date_str: str) -> Optional[pd.DataFrame]:
+        """The raw, uncached disk read for one date — extracted so
+        preload_dates() can call it from a thread pool without going
+        through _load_df's single-slot-cache bookkeeping (which isn't
+        thread-safe and isn't needed here; preload_dates owns its own
+        dict, one write per date, no concurrent writes to the same key)."""
+        day_path = FEATURES_DAILY_DIR / f"{date_str}.parquet"
+        if not day_path.exists():
+            logger.warning("Feature Parquet not found for date %s at %s", date_str, day_path)
+            return None
+        return pd.read_parquet(day_path)
+
+    def preload_dates(self, dates: List[str], max_workers: int = 8) -> None:
+        """[PERF, 2026-08-02] Eagerly reads every date in `dates` up front,
+        concurrently (ThreadPoolExecutor — pyarrow's read/decode releases
+        the GIL enough to give real parallelism: measured ~2.2x on 200
+        real feature Parquets at 8 workers vs sequential, plateauing past
+        8 on a 14-core machine), instead of the single-slot cache's
+        lazy one-at-a-time-as-the-backtest-walks-forward loading.
+
+        Opt-in only (backtest/run_orchestrator_backtest.py's
+        --prefetch-feature-parquets flag) — never called by default, so
+        _load_df's existing behavior for every other caller (the live
+        screener API, any test, any job not passing the flag) is
+        completely unaffected. Trades memory (every requested date's
+        DataFrame held simultaneously — measured ~0.6MB/date) for speed;
+        see that flag's docstring for the sizing rationale.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = executor.map(self._read_parquet_for_date, dates)
+            for date_str, df in zip(dates, results):
+                self._preloaded[date_str] = df
+
     def _load_df(self, date_str: str) -> Optional[pd.DataFrame]:
         """Load the full feature Parquet for one date.
 
@@ -171,11 +229,16 @@ class ScreenerEngine:
         ---------------
         SPEC-TA-005: read real Parquet — no synthetic fallback
         """
-        day_path = FEATURES_DAILY_DIR / f"{date_str}.parquet"
-        if not day_path.exists():
-            logger.warning("Feature Parquet not found for date %s at %s", date_str, day_path)
+        if date_str in self._preloaded:
+            return self._preloaded[date_str]
+        if date_str == self._cached_date:
+            return self._cached_df
+        df = self._read_parquet_for_date(date_str)
+        if df is None:
             return None
-        return pd.read_parquet(day_path)
+        self._cached_date = date_str
+        self._cached_df = df
+        return df
 
     def _apply_single_condition(
         self,

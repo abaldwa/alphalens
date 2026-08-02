@@ -285,6 +285,44 @@ class TestRunPostRunIntegrity:
         # in the persisted detail, not silently reported as a clean pass.
         assert detail["insufficient_subperiods_for_meaningful_check"] is True
 
+    def test_non_critical_check_failure_alone_does_not_fail_integrity(self):
+        """[BUG FIX, 2026-08-02] check_08_fold_stability/check_09_benchmarks
+        are non-critical (integrity_checker.py's CRITICAL_CHECKS comment:
+        a real, clean backtest can legitimately fail fold stability or
+        underperform a benchmark without that implying a data leak).
+        run_post_run_integrity used to compute integrity_passed =
+        all(passed_map.values()), re-coupling those two into the pass/fail
+        gate — with only 3 regime segments, check_09 requires beating the
+        benchmark in ALL 3 to pass, which a benchmark stacked to always win
+        (here) trivially defeats, while every CRITICAL check (05/06/12)
+        still passes cleanly. integrity_passed must reflect only the
+        critical checks."""
+        equity_curve = self._make_equity_curve(n=30)
+        trades = [
+            FakeTrade(entry_price=100.0, quantity=10, cost_inr=5.0, exit_date=date(2024, 1, 5), pnl_inr=50.0)
+            for _ in range(6)
+        ]
+        regime_segments = [
+            {"regime": "bull", "start_date": date(2024, 1, 1), "end_date": date(2024, 1, 10)},
+            {"regime": "bear", "start_date": date(2024, 1, 11), "end_date": date(2024, 1, 20)},
+            {"regime": "sideways", "start_date": date(2024, 1, 21), "end_date": date(2024, 1, 30)},
+        ]
+        conn = _FakeConn(row=(90.0, 91.0))
+        integrity_passed, detail = run_post_run_integrity(
+            channel="fundamental", trades=trades, data_gaps=[], equity_curve=equity_curve,
+            run_start=date(2024, 1, 1), run_end=date(2024, 1, 30),
+            regime_segments=regime_segments, regime_conn=conn,
+        )
+        assert detail["n_subperiods"] == 3
+        # short (10-day) regime segments annualize to wildly different
+        # per-fold Sharpes/CAGRs — real signal that check_08 is meant to
+        # catch, but it must stay non-critical.
+        assert detail["checks"]["check_08_fold_stability"] is False
+        assert detail["checks"]["check_05_costs"] is True
+        assert detail["checks"]["check_06_liquidity"] is True
+        assert detail["checks"]["check_12_flat_equity_curve"] is True
+        assert integrity_passed is True
+
     def test_check_12_floor_scales_with_run_duration_not_fixed_at_5(self):
         """[BUG FIX, 2026-07-28 third model-review, item 3] MIN_TRADES_FLOOR
         (5) alone is unrelated to the run's actual duration — a long,

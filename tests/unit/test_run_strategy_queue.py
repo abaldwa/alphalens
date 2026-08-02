@@ -6,6 +6,8 @@ job-dict -> subprocess-argv mapping (no subprocess actually launched).
 """
 
 import json
+import threading
+import time
 
 import pytest
 
@@ -62,6 +64,20 @@ class TestJobToCmd:
         cmd = _job_to_cmd(job, job_index=0, report_suffix="q1")
         assert "--min-dsr-threshold" not in cmd
         assert "0.5" not in cmd
+
+    def test_bool_true_field_emits_bare_flag(self):
+        """2026-08-02 (defer_db_writes): a bool-valued job field must map to
+        a bare store_true flag, not "--flag True" (which argparse would
+        reject as an unrecognized positional)."""
+        job = {"kind": "orchestrator", "channel": "technical", "template_name": "E2", "defer_db_writes": True}
+        cmd = _job_to_cmd(job, job_index=0, report_suffix="q1")
+        assert "--defer-db-writes" in cmd
+        assert "True" not in cmd
+
+    def test_bool_false_field_omitted(self):
+        job = {"kind": "orchestrator", "channel": "technical", "template_name": "E2", "defer_db_writes": False}
+        cmd = _job_to_cmd(job, job_index=0, report_suffix="q1")
+        assert "--defer-db-writes" not in cmd
 
 
 class TestDsrGate:
@@ -270,3 +286,108 @@ class TestWriteProgress:
         assert payload["jobs"][0]["label"] == "technical · E2"
         assert payload["jobs"][1]["label"] == "Iterative Retrain (MetaLabeler)"
         assert payload["jobs"][0]["job_index"] == 0
+
+
+class TestConcurrentQueue:
+    """max_workers>1 (2026-08-02, Technical sweep parallelization) —
+    _run_job is monkeypatched to a fast fake (no real subprocess), same
+    pattern TestDsrGate/TestIntegrityGate already use for the sequential
+    path. These pin: (1) max_workers=1 is fully unaffected (dispatches to
+    the untouched sequential branch), (2) all jobs still get processed and
+    the summary shape matches the sequential path's, (3) the configured
+    worker cap is actually respected (peak concurrency measured), (4)
+    stop_on_failure stops NEW submissions after a failure but lets
+    in-flight jobs finish rather than killing them."""
+
+    def _patch_common(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(run_strategy_queue_mod, "REPORTS_DIR", tmp_path)
+        monkeypatch.setattr(run_strategy_queue_mod, "wait_for_headroom", lambda *a, **k: None)
+        monkeypatch.setattr(run_strategy_queue_mod, "_compute_and_write_dsr", lambda job, i, suffix, n_trials: None)
+        monkeypatch.setattr(run_strategy_queue_mod, "_check_integrity_passed", lambda job, i, suffix: None)
+
+    def test_max_workers_1_dispatches_to_sequential_path(self, monkeypatch, tmp_path):
+        self._patch_common(monkeypatch, tmp_path)
+        calls = []
+
+        def fake_run_job(job, i, suffix):
+            calls.append(i)
+            return {"job_index": i, "kind": job.get("kind"), "job": job, "returncode": 0, "elapsed_s": 0.01}
+
+        monkeypatch.setattr(run_strategy_queue_mod, "_run_job", fake_run_job)
+        jobs = [{"kind": "orchestrator", "channel": "technical", "template_name": f"E{i}"} for i in range(3)]
+        summary = run_queue(jobs, report_suffix="seqtest", resume=False, max_workers=1)
+
+        assert calls == [0, 1, 2]  # strict launch order — the untouched sequential loop
+        assert summary["all_passed"] is True
+        assert summary["jobs_run"] == 3
+
+    def test_concurrent_all_jobs_complete(self, monkeypatch, tmp_path):
+        self._patch_common(monkeypatch, tmp_path)
+
+        def fake_run_job(job, i, suffix):
+            time.sleep(0.05)
+            return {"job_index": i, "kind": job.get("kind"), "job": job, "returncode": 0, "elapsed_s": 0.05}
+
+        monkeypatch.setattr(run_strategy_queue_mod, "_run_job", fake_run_job)
+        jobs = [{"kind": "orchestrator", "channel": "technical", "template_name": f"E{i}"} for i in range(6)]
+        summary = run_queue(jobs, report_suffix="concurrenttest", resume=False, max_workers=3)
+
+        assert summary["all_passed"] is True
+        assert summary["jobs_run"] == 6
+        assert [r["job_index"] for r in summary["results"]] == list(range(6))  # sorted back to job order
+
+    def test_concurrency_respects_max_workers_cap(self, monkeypatch, tmp_path):
+        self._patch_common(monkeypatch, tmp_path)
+        active = {"count": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def fake_run_job(job, i, suffix):
+            with lock:
+                active["count"] += 1
+                active["peak"] = max(active["peak"], active["count"])
+            time.sleep(0.05)
+            with lock:
+                active["count"] -= 1
+            return {"job_index": i, "kind": job.get("kind"), "job": job, "returncode": 0, "elapsed_s": 0.05}
+
+        monkeypatch.setattr(run_strategy_queue_mod, "_run_job", fake_run_job)
+        jobs = [{"kind": "orchestrator", "channel": "technical", "template_name": f"E{i}"} for i in range(8)]
+        run_queue(jobs, report_suffix="captest", resume=False, max_workers=3)
+
+        assert active["peak"] <= 3
+        assert active["peak"] > 1  # actually ran concurrently, not accidentally serialized
+
+    def test_stop_on_failure_skips_unsubmitted_jobs_but_finishes_in_flight(self, monkeypatch, tmp_path):
+        self._patch_common(monkeypatch, tmp_path)
+
+        def fake_run_job(job, i, suffix):
+            time.sleep(0.03)
+            returncode = 1 if i == 0 else 0
+            return {"job_index": i, "kind": job.get("kind"), "job": job, "returncode": returncode, "elapsed_s": 0.03}
+
+        monkeypatch.setattr(run_strategy_queue_mod, "_run_job", fake_run_job)
+        jobs = [{"kind": "orchestrator", "channel": "technical", "template_name": f"E{i}"} for i in range(5)]
+        summary = run_queue(jobs, report_suffix="failtest", resume=False, max_workers=1, stop_on_failure=True)
+
+        # max_workers=1 here to make the "stop after first failure" ordering
+        # deterministic to assert on — job 0 fails, jobs 1-4 must never run.
+        assert summary["all_passed"] is False
+        progress = json.loads((tmp_path / "strategy_queue_progress_failtest.json").read_text())
+        statuses = [j["status"] for j in progress["jobs"]]
+        assert statuses[0] == "failed"
+        assert all(s == "skipped" for s in statuses[1:])
+
+    def test_concurrent_continue_on_failure_runs_all_jobs(self, monkeypatch, tmp_path):
+        self._patch_common(monkeypatch, tmp_path)
+
+        def fake_run_job(job, i, suffix):
+            time.sleep(0.02)
+            returncode = 1 if i == 2 else 0
+            return {"job_index": i, "kind": job.get("kind"), "job": job, "returncode": returncode, "elapsed_s": 0.02}
+
+        monkeypatch.setattr(run_strategy_queue_mod, "_run_job", fake_run_job)
+        jobs = [{"kind": "orchestrator", "channel": "technical", "template_name": f"E{i}"} for i in range(5)]
+        summary = run_queue(jobs, report_suffix="contfailtest", resume=False, max_workers=3, stop_on_failure=False)
+
+        assert summary["all_passed"] is False
+        assert summary["jobs_run"] == 5  # every job still ran despite job 2 failing

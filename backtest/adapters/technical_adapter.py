@@ -29,9 +29,11 @@ NOT modified (consistent with the "wrap, don't refactor" principle
 applied elsewhere in this initiative).
 """
 
+import json
 import logging
 from datetime import date as date_type
-from typing import Any, Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Union
 
 import pandas as pd
 
@@ -39,7 +41,7 @@ from backtest.core.adtv import adtv_cr_for_ticker
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
 from features.momentum_signal import trailing_momentum_from_panel
-from systems.technical_analysis.screener.engine import ScreenerEngine
+from systems.technical_analysis.screener.engine import ScreenerEngine, ScreenerResult
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ class TechnicalAdapter:
         regime_index_name: str = "Nifty 500",
         regime_method: Optional[str] = None,
         disable_buys_in_regime: Optional[Set[str]] = None,
+        precomputed_matches_dir: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         template_name : one of the 42 pre-built screener templates
@@ -118,6 +121,29 @@ class TechnicalAdapter:
             disable_buys_in_regime, no NEW buys are generated this date
             (existing holdings that drop out of the target set still sell
             normally) — mirrors MomentumBacktester's disable_in_regimes.
+
+        precomputed_matches_dir : (2026-08-02, sweep-scale entry-signal
+            reuse) directory containing this template's
+            scripts/precompute_technical_screener_matches.py output —
+            {template_name}.parquet + {template_name}.manifest.json.
+            Entry-signal generation for a (template, date) is exit-policy-
+            agnostic (same fact screener_cache_conn already exploits
+            within one process/DB), so every one of a sweep's ~66 variant
+            jobs per template can share ONE precomputed pass instead of
+            each independently calling screener_engine.screen() for the
+            same dates. Unlike screener_cache_conn (a live DuckDB
+            connection — unsafe to hold open during the multi-worker
+            parallel compute phase, see run_orchestrator_backtest.py's
+            defer_db_writes docstring), this is a plain per-template
+            Parquet file — safe for many concurrent job processes to read,
+            same pattern already used for FEATURES_DAILY_DIR. Loaded ONCE
+            at construction into an in-memory per-date dict. A date inside
+            the manifest's covered range is served from this cache
+            (including a genuine zero-match day); a date OUTSIDE it falls
+            back to live screener_engine.screen()/screener_cache_conn
+            exactly as before. None (default) preserves today's
+            always-live behavior exactly — every existing caller is
+            unaffected.
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -151,6 +177,43 @@ class TechnicalAdapter:
         self._regime_segments_cache: Optional[List[dict]] = None
         self._currently_held: set = set()
         self._last_results: Dict[str, Any] = {}  # ticker -> ScreenerResult, from the most recent generate_signals() call
+        self._precomputed_by_date, self._precomputed_dates = self._load_precomputed_matches(precomputed_matches_dir)
+
+    def _load_precomputed_matches(
+        self, precomputed_matches_dir: Optional[Union[str, Path]],
+    ) -> tuple:
+        """Loads {template_name}.parquet + .manifest.json once (a few MB
+        for one template across 10 years, not the full universe panel) —
+        see the precomputed_matches_dir __init__ docstring for the design.
+        Missing files (template not yet precomputed) degrade to "nothing
+        cached, always fall back to live" rather than raising — a job
+        whose template wasn't included in a partial precompute run must
+        still work correctly, just without the speedup."""
+        if precomputed_matches_dir is None:
+            return {}, frozenset()
+        base = Path(precomputed_matches_dir)
+        parquet_path = base / f"{self.template_name}.parquet"
+        manifest_path = base / f"{self.template_name}.manifest.json"
+        if not parquet_path.exists() or not manifest_path.exists():
+            logger.warning(
+                "TechnicalAdapter: no precomputed matches for template %s at %s; "
+                "falling back to live screening for every date", self.template_name, base,
+            )
+            return {}, frozenset()
+        manifest = json.loads(manifest_path.read_text())
+        dates = frozenset(manifest["trading_days"])
+        df = pd.read_parquet(parquet_path)
+        by_date: Dict[str, List[Any]] = {d: [] for d in dates}
+        for row in df.itertuples(index=False):
+            row_date = str(row.date)  # defensive: pyarrow may round-trip a date-like column as Timestamp, not str
+            by_date.setdefault(row_date, []).append(
+                ScreenerResult(
+                    ticker=row.ticker, date=row_date, template_name=self.template_name,
+                    matched_conditions=row.matched_conditions, total_conditions=row.total_conditions,
+                    score=row.score, key_values=json.loads(row.key_values_json),
+                )
+            )
+        return by_date, dates
 
     def _adtv_cr(self, ticker: str, as_of_date: date_type) -> Optional[float]:
         return adtv_cr_for_ticker(
@@ -235,7 +298,14 @@ class TechnicalAdapter:
         several templates' candidate pools before a single combined ranking,
         without duplicating the fetch/filter logic."""
         date_str = str(as_of_date)
-        if self._screener_cache_conn is not None:
+        if date_str in self._precomputed_dates:
+            # Precomputed cache (2026-08-02) always wins over
+            # screener_cache_conn when both are present — it's the
+            # cheaper, already-in-memory path, and covers exactly the same
+            # (template, date) key space. A date outside the manifest's
+            # range falls through to the branches below unchanged.
+            results = self._precomputed_by_date.get(date_str, [])
+        elif self._screener_cache_conn is not None:
             from backtest.core.screener_cache import get_or_compute
 
             # get_or_compute always returns every real full match (never

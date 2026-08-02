@@ -35,6 +35,14 @@ class TestBuildJobs:
         assert job["start_date"] == "2016-01-01"
         assert "template_name" in job and "exit_variant" in job and "top_n" in job
 
+    def test_jobs_defer_db_writes_for_parallel_safety(self):
+        jobs = mod.build_jobs(date(2016, 1, 1), date(2026, 1, 1), quick=True)
+        assert all(job["defer_db_writes"] is True for job in jobs)
+
+    def test_jobs_carry_precomputed_matches_dir(self):
+        jobs = mod.build_jobs(date(2016, 1, 1), date(2026, 1, 1), quick=True)
+        assert all(job["precomputed_matches_dir"] == str(mod.SCREENER_CACHE_DIR) for job in jobs)
+
     def test_condition_and_unconstrained_omit_max_hold_days(self):
         jobs = mod.build_jobs(date(2016, 1, 1), date(2026, 1, 1), quick=False)
         for job in jobs:

@@ -75,28 +75,39 @@ class TestBuildTechnicalFeatureLookupCaching:
     both halves of that contract: same-day calls must not re-hit disk
     (the whole point of caching), and a date change must not leak/return
     stale data from a previous date (the bug a naive "just cache the last
-    N" fix could reintroduce if N were 0 instead of exactly 1)."""
+    N" fix could reintroduce if N were 0 instead of exactly 1).
+
+    [PERF, 2026-08-02] the size-1 cache now lives inside
+    ScreenerEngine._load_df itself (shared with TechnicalAdapter's entry
+    screening — see run_orchestrator_backtest.py's _shared_screener_engine
+    wiring), not in this closure's own state, so these tests patch
+    pd.read_parquet (what _load_df calls on a real cache miss) and
+    Path.exists (to avoid needing a real Parquet file on disk) instead of
+    replacing _load_df outright — mocking _load_df itself would bypass the
+    very cache logic under test."""
+
+    def _patched(self):
+        return patch(
+            "systems.technical_analysis.screener.engine.pd.read_parquet",
+            side_effect=lambda path: _feature_df(path.stem),
+        ), patch("pathlib.Path.exists", return_value=True)
 
     def test_repeated_lookups_on_the_same_date_load_once(self):
-        with patch(
-            "systems.technical_analysis.screener.engine.ScreenerEngine._load_df",
-            side_effect=lambda date_str: _feature_df(date_str),
-        ) as mock_load:
+        p_read, p_exists = self._patched()
+        with p_read as mock_read, p_exists:
             lookup = build_technical_feature_lookup()
             lookup("TICK", date(2023, 1, 3))
             lookup("TICK", date(2023, 1, 3))
             lookup("TICK", date(2023, 1, 3))
-        assert mock_load.call_count == 1
+        assert mock_read.call_count == 1
 
     def test_new_date_reloads_and_returns_that_dates_data_not_stale(self):
-        with patch(
-            "systems.technical_analysis.screener.engine.ScreenerEngine._load_df",
-            side_effect=lambda date_str: _feature_df(date_str),
-        ) as mock_load:
+        p_read, p_exists = self._patched()
+        with p_read as mock_read, p_exists:
             lookup = build_technical_feature_lookup()
             first = lookup("TICK", date(2023, 1, 3))
             second = lookup("TICK", date(2023, 1, 4))
-        assert mock_load.call_count == 2
+        assert mock_read.call_count == 2
         assert first["score"] == "2023-01-03"
         assert second["score"] == "2023-01-04"  # not the stale 01-03 value
 
@@ -104,34 +115,56 @@ class TestBuildTechnicalFeatureLookupCaching:
         # Not the real access pattern (dates are walked strictly forward in
         # practice), but the single-slot cache must degrade to "just reload
         # it" rather than ever return wrong data for an out-of-order call.
-        with patch(
-            "systems.technical_analysis.screener.engine.ScreenerEngine._load_df",
-            side_effect=lambda date_str: _feature_df(date_str),
-        ) as mock_load:
+        p_read, p_exists = self._patched()
+        with p_read as mock_read, p_exists:
             lookup = build_technical_feature_lookup()
             lookup("TICK", date(2023, 1, 3))
             lookup("TICK", date(2023, 1, 4))
             third = lookup("TICK", date(2023, 1, 3))
-        assert mock_load.call_count == 3
+        assert mock_read.call_count == 3
         assert third["score"] == "2023-01-03"
 
     def test_missing_ticker_on_a_date_returns_empty_dict(self):
-        with patch(
-            "systems.technical_analysis.screener.engine.ScreenerEngine._load_df",
-            side_effect=lambda date_str: _feature_df(date_str),
-        ):
+        p_read, p_exists = self._patched()
+        with p_read, p_exists:
             lookup = build_technical_feature_lookup()
             result = lookup("NOT_IN_SNAPSHOT", date(2023, 1, 3))
         assert result == {}
 
     def test_none_dataframe_for_a_date_returns_empty_dict(self):
-        with patch(
-            "systems.technical_analysis.screener.engine.ScreenerEngine._load_df",
-            return_value=None,
-        ):
+        with patch("pathlib.Path.exists", return_value=False):
             lookup = build_technical_feature_lookup()
             result = lookup("TICK", date(2023, 1, 3))
         assert result == {}
+
+
+class TestTradingDayStringsForPreload:
+    """[PERF, 2026-08-02] --prefetch-feature-parquets threads
+    [d.date().isoformat() for d in config.trading_days] into
+    ScreenerEngine.preload_dates() (see _run_immediate/_run_deferred).
+    _run_immediate/_run_deferred are heavy, full-pipeline functions this
+    file doesn't unit-test directly (consistent with its existing scope —
+    only extracted helpers like _build_config are tested here); this
+    instead pins the actual integration point: the date-string conversion
+    must produce exactly the sorted, deduplicated, YYYY-MM-DD-formatted
+    list ScreenerEngine.preload_dates()/_load_df expect (same format
+    TechnicalAdapter._filtered_candidates's `str(as_of_date)` and
+    scripts/precompute_technical_screener_matches.py's manifest both
+    use — a format mismatch here would silently make every preloaded
+    date a cache miss)."""
+
+    def test_trading_days_convert_to_sorted_deduplicated_iso_strings(self):
+        rows = [_ohlcv_row("A", d) for d in pd.bdate_range("2023-01-01", "2023-01-10")]
+        rows += [_ohlcv_row("B", d) for d in pd.bdate_range("2023-01-03", "2023-01-08")]  # overlapping dates
+        ohlcv = pd.DataFrame(rows)
+        config = _build_config(ohlcv, sector_map={})
+
+        date_strings = [d.date().isoformat() for d in config.trading_days]
+
+        assert date_strings == sorted(date_strings)
+        assert len(date_strings) == len(set(date_strings))  # no duplicates despite 2 tickers' overlapping dates
+        assert date_strings[0] == "2023-01-02"  # bdate_range starts on a Monday
+        assert all(len(s) == 10 and s[4] == "-" and s[7] == "-" for s in date_strings)  # YYYY-MM-DD
 
 
 class TestFetchRealOhlcvKeepsColumnsPivotNeeds:

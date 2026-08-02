@@ -222,6 +222,98 @@ class TestAdtvWiring:
         assert buy.adtv_cr is None
 
 
+class TestPrecomputedMatchesIntegration:
+    """[PERF, 2026-08-02] precomputed_matches_dir (scripts/
+    precompute_technical_screener_matches.py's output) must produce
+    IDENTICAL signals to the live-screening path for a date inside its
+    manifest, fall back to live screening for a date outside it, and
+    precomputed_matches_dir=None (default) must remain byte-for-byte
+    identical to today's always-live behavior — every test above already
+    covers that last guarantee unchanged."""
+
+    def _write_cache(self, tmp_path, template_name, date_str, rows, covered_dates):
+        import json
+
+        cache_dir = tmp_path / "screener_cache"
+        cache_dir.mkdir()
+        df = pd.DataFrame(
+            [
+                {
+                    "date": date_str, "ticker": r.ticker, "matched_conditions": r.matched_conditions,
+                    "total_conditions": r.total_conditions, "score": r.score,
+                    "key_values_json": json.dumps(r.key_values),
+                }
+                for r in rows
+            ],
+            columns=["date", "ticker", "matched_conditions", "total_conditions", "score", "key_values_json"],
+        )
+        df.to_parquet(cache_dir / f"{template_name}.parquet", index=False)
+        manifest = {
+            "template_name": template_name, "start_date": min(covered_dates), "end_date": max(covered_dates),
+            "trading_days": covered_dates,
+        }
+        (cache_dir / f"{template_name}.manifest.json").write_text(json.dumps(manifest))
+        return cache_dir
+
+    def test_precomputed_hit_matches_live_screening_for_the_same_date(self, tmp_path):
+        rows = [_FakeResult("A", 0.9), _FakeResult("B", 0.7), _FakeResult("C", 0.5)]
+        results_by_date = {"2020-01-01": rows}
+        cache_dir = self._write_cache(tmp_path, "A1", "2020-01-01", rows, ["2020-01-01"])
+
+        live_adapter = TechnicalAdapter(template_name="A1", top_n=2, screener_engine=_FakeScreenerEngine(results_by_date))
+        live_signals = live_adapter.generate_signals(["A", "B", "C"], date(2020, 1, 1), HorizonBucket.D21)
+
+        precomputed_adapter = TechnicalAdapter(
+            template_name="A1", top_n=2, screener_engine=_FakeScreenerEngine({}),  # would return [] if hit
+            precomputed_matches_dir=cache_dir,
+        )
+        precomputed_signals = precomputed_adapter.generate_signals(["A", "B", "C"], date(2020, 1, 1), HorizonBucket.D21)
+
+        assert {s.ticker for s in precomputed_signals if s.action == "buy"} \
+            == {s.ticker for s in live_signals if s.action == "buy"} == {"A", "B"}
+
+    def test_date_outside_manifest_falls_back_to_live_screening(self, tmp_path):
+        rows = [_FakeResult("A", 0.9)]
+        cache_dir = self._write_cache(tmp_path, "A1", "2020-01-01", rows, ["2020-01-01"])
+        # 2020-02-01 is outside the manifest's covered range — must fall
+        # back to the live engine, not silently return nothing.
+        engine = _FakeScreenerEngine({"2020-02-01": [_FakeResult("Z", 0.8)]})
+        adapter = TechnicalAdapter(
+            template_name="A1", top_n=1, screener_engine=engine, precomputed_matches_dir=cache_dir,
+        )
+        signals = adapter.generate_signals(["Z"], date(2020, 2, 1), HorizonBucket.D21)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"Z"}
+
+    def test_precomputed_zero_match_day_is_a_real_empty_result_not_a_fallback(self, tmp_path):
+        # A date INSIDE the manifest with genuinely zero matches must NOT
+        # fall back to live screening — that would defeat the whole point
+        # of the manifest's covered-range signal.
+        cache_dir = self._write_cache(tmp_path, "A1", "2020-01-01", [], ["2020-01-01"])
+        engine = _FakeScreenerEngine({"2020-01-01": [_FakeResult("SHOULD_NOT_APPEAR", 0.9)]})
+        adapter = TechnicalAdapter(
+            template_name="A1", top_n=1, screener_engine=engine, precomputed_matches_dir=cache_dir,
+        )
+        signals = adapter.generate_signals(["SHOULD_NOT_APPEAR"], date(2020, 1, 1), HorizonBucket.D21)
+        assert signals == []
+
+    def test_missing_cache_files_degrade_to_always_live(self, tmp_path):
+        engine = _FakeScreenerEngine({"2020-01-01": [_FakeResult("A", 0.9)]})
+        adapter = TechnicalAdapter(
+            template_name="A1", top_n=1, screener_engine=engine,
+            precomputed_matches_dir=tmp_path / "nonexistent",
+        )
+        signals = adapter.generate_signals(["A"], date(2020, 1, 1), HorizonBucket.D21)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"A"}
+
+    def test_none_precomputed_matches_dir_is_unaffected(self):
+        # Regression guard: the new attribute wiring must not change
+        # behavior for the (overwhelmingly common) default-None caller.
+        engine = _FakeScreenerEngine({"2020-01-01": [_FakeResult("A", 0.9)]})
+        adapter = TechnicalAdapter(template_name="A1", top_n=1, screener_engine=engine)
+        signals = adapter.generate_signals(["A"], date(2020, 1, 1), HorizonBucket.D21)
+        assert {s.ticker for s in signals if s.action == "buy"} == {"A"}
+
+
 class TestRealScreenerIntegration:
     """No-Mock-Data Policy: exercises the adapter against the real
     ScreenerEngine + real daily feature Parquet store."""

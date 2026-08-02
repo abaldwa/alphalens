@@ -14,6 +14,8 @@ paths.  No real feature Parquets are required for these tests to pass.
 """
 
 
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 
@@ -693,3 +695,124 @@ def test_all_template_feature_references_are_real_columns():
         f"PATTERN_FEATURES: {sorted(missing)}. This would make the affected "
         "template(s) silently return zero results (SPEC-TA-005)."
     )
+
+
+class TestLoadDfSizeOneCache:
+    """[PERF, 2026-08-02] ScreenerEngine._load_df previously re-read the
+    daily feature Parquet from disk on every call, even for a date it had
+    just loaded — profiling a technical backtest job showed this as the
+    single largest cost in the daily exit-policy loop (~35% of
+    BacktestOrchestrator.run() time), compounded further by entry
+    screening and exit-condition checks each holding their own separate
+    ScreenerEngine instance (backtest/run_orchestrator_backtest.py now
+    shares one). Bounded to the single most-recently-loaded date, same
+    forward-only-date-walk justification as
+    build_technical_feature_lookup()'s pre-existing cache."""
+
+    def _engine_with_patched_disk(self):
+        engine = ScreenerEngine()
+        read_calls = []
+
+        def _fake_read_parquet(path):
+            read_calls.append(path)
+            return pd.DataFrame([{"ticker": "TICK", "score": path.stem}])
+
+        return engine, read_calls, _fake_read_parquet
+
+    def test_same_date_loaded_once(self):
+        engine, read_calls, fake_read = self._engine_with_patched_disk()
+        with patch("systems.technical_analysis.screener.engine.pd.read_parquet", side_effect=fake_read), \
+             patch("pathlib.Path.exists", return_value=True):
+            engine._load_df("2023-01-03")
+            engine._load_df("2023-01-03")
+            engine._load_df("2023-01-03")
+        assert len(read_calls) == 1
+
+    def test_different_date_reloads_and_is_not_stale(self):
+        engine, read_calls, fake_read = self._engine_with_patched_disk()
+        with patch("systems.technical_analysis.screener.engine.pd.read_parquet", side_effect=fake_read), \
+             patch("pathlib.Path.exists", return_value=True):
+            first = engine._load_df("2023-01-03")
+            second = engine._load_df("2023-01-04")
+        assert len(read_calls) == 2
+        assert first["score"].iloc[0] == "2023-01-03"
+        assert second["score"].iloc[0] == "2023-01-04"
+
+    def test_two_screen_calls_same_date_share_the_cache(self):
+        # The actual production benefit: entry screening (screen()) and a
+        # second screen()/screen_custom() call for the SAME date and same
+        # engine instance must not double-read the Parquet.
+        engine, read_calls, fake_read = self._engine_with_patched_disk()
+        with patch("systems.technical_analysis.screener.engine.pd.read_parquet", side_effect=fake_read), \
+             patch("pathlib.Path.exists", return_value=True):
+            engine.screen("A1", date="2023-01-03", limit=10)
+            engine.screen("A1", date="2023-01-03", limit=10)
+        assert len(read_calls) == 1
+
+
+class TestPreloadDates:
+    """[PERF, 2026-08-02] ScreenerEngine.preload_dates() — the actual
+    dominant per-job cost fix (confirmed via profiling: BacktestOrchestrator's
+    daily exit-condition check, not entry screening, ~72% of a job's
+    runtime), eagerly reads a whole date range concurrently instead of the
+    size-1 cache's lazy one-at-a-time loading. Opt-in only — a
+    ScreenerEngine that never calls preload_dates() must behave exactly
+    like today (every test above already covers that unchanged path)."""
+
+    def _engine_with_patched_disk(self):
+        engine = ScreenerEngine()
+        read_calls = []
+
+        def _fake_read_parquet(path):
+            read_calls.append(path)
+            return pd.DataFrame([{"ticker": "TICK", "score": path.stem}])
+
+        return engine, read_calls, _fake_read_parquet
+
+    def test_preloaded_dates_serve_from_memory_with_zero_disk_reads(self):
+        engine, read_calls, fake_read = self._engine_with_patched_disk()
+        with patch("systems.technical_analysis.screener.engine.pd.read_parquet", side_effect=fake_read), \
+             patch("pathlib.Path.exists", return_value=True):
+            engine.preload_dates(["2023-01-03", "2023-01-04", "2023-01-05"])
+            assert len(read_calls) == 3  # the preload itself is the only real disk work
+
+            read_calls.clear()
+            for _ in range(5):
+                engine._load_df("2023-01-03")
+                engine._load_df("2023-01-04")
+                engine._load_df("2023-01-05")
+        assert read_calls == []  # every subsequent _load_df call is a pure in-memory hit
+
+    def test_preloaded_data_is_correct_per_date_not_stale(self):
+        engine, _, fake_read = self._engine_with_patched_disk()
+        with patch("systems.technical_analysis.screener.engine.pd.read_parquet", side_effect=fake_read), \
+             patch("pathlib.Path.exists", return_value=True):
+            engine.preload_dates(["2023-01-03", "2023-01-04"])
+        assert engine._load_df("2023-01-03")["score"].iloc[0] == "2023-01-03"
+        assert engine._load_df("2023-01-04")["score"].iloc[0] == "2023-01-04"
+
+    def test_date_outside_preload_set_still_falls_through_to_disk(self):
+        engine, read_calls, fake_read = self._engine_with_patched_disk()
+        with patch("systems.technical_analysis.screener.engine.pd.read_parquet", side_effect=fake_read), \
+             patch("pathlib.Path.exists", return_value=True):
+            engine.preload_dates(["2023-01-03"])
+            read_calls.clear()
+            result = engine._load_df("2023-06-01")  # never preloaded
+        assert len(read_calls) == 1
+        assert result["score"].iloc[0] == "2023-06-01"
+
+    def test_missing_file_during_preload_caches_none_not_a_crash(self):
+        engine = ScreenerEngine()
+        with patch("pathlib.Path.exists", return_value=False):
+            engine.preload_dates(["2023-01-03"])
+        assert engine._load_df("2023-01-03") is None
+
+    def test_preload_never_called_is_completely_unaffected(self):
+        # Regression guard: an engine that never calls preload_dates()
+        # must behave byte-for-byte like before this feature existed.
+        engine, read_calls, fake_read = self._engine_with_patched_disk()
+        with patch("systems.technical_analysis.screener.engine.pd.read_parquet", side_effect=fake_read), \
+             patch("pathlib.Path.exists", return_value=True):
+            engine._load_df("2023-01-03")
+            engine._load_df("2023-01-03")
+        assert len(read_calls) == 1

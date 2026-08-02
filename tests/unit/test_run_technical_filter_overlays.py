@@ -38,6 +38,14 @@ class TestBuildJobs:
         assert all(j["exit_variant"] == mod.FIXED_EXIT_VARIANT for j in jobs)
         assert all(j["max_hold_days"] == mod.FIXED_MAX_HOLD_DAYS for j in jobs)
 
+    def test_jobs_defer_db_writes_for_parallel_safety(self):
+        jobs = mod.build_jobs(date(2016, 1, 1), date(2026, 1, 1), quick=True)
+        assert all(j["defer_db_writes"] is True for j in jobs)
+
+    def test_jobs_carry_precomputed_matches_dir(self):
+        jobs = mod.build_jobs(date(2016, 1, 1), date(2026, 1, 1), quick=True)
+        assert all(j["precomputed_matches_dir"] == str(mod.SCREENER_CACHE_DIR) for j in jobs)
+
 
 class TestStripBookkeeping:
     def test_removes_underscore_prefixed_keys(self):

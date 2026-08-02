@@ -47,6 +47,14 @@ class TestBuildJobs:
         assert "downtrend_filter_pct" not in balanced
         assert "disable_buys_in_regime" not in balanced
 
+    def test_jobs_defer_db_writes_for_parallel_safety(self):
+        jobs = mod.build_jobs(date(2016, 1, 1), date(2026, 1, 1), quick=True)
+        assert all(j["defer_db_writes"] is True for j in jobs)
+
+    def test_jobs_carry_precomputed_matches_dir(self):
+        jobs = mod.build_jobs(date(2016, 1, 1), date(2026, 1, 1), quick=True)
+        assert all(j["precomputed_matches_dir"] == str(base_mod.SCREENER_CACHE_DIR) for j in jobs)
+
 
 class TestStripBookkeeping:
     def test_removes_underscore_keys(self):

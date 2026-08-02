@@ -35,8 +35,10 @@ from typing import Dict, List, Optional
 from backtest.run_strategy_queue import run_queue
 from config.timezone import now_ist
 from scripts.run_technical_experimentation import (
+    DEFAULT_MAX_WORKERS,
     QUEUE_DEFS_DIR,
     REPORTS_DIR,
+    SCREENER_CACHE_DIR,
     TECHNICAL_INITIAL_CAPITAL,
     _load_job_report,
 )
@@ -88,6 +90,8 @@ def build_jobs(start_date: date, end_date: date, quick: bool = False) -> List[Di
             "universe_spec": "curated", "max_tickers": 800, "min_history_days": 60,
             "top_n": top_n, "exit_variant": FIXED_EXIT_VARIANT, "max_hold_days": FIXED_MAX_HOLD_DAYS,
             "initial_capital": TECHNICAL_INITIAL_CAPITAL,
+            "defer_db_writes": True,
+            "precomputed_matches_dir": str(SCREENER_CACHE_DIR),
         }
 
     for template_name in template_names:
@@ -215,7 +219,7 @@ def aggregate_report(jobs: List[Dict], report_suffix: str, include_signal_failur
 
 def run_recommended_strategies(
     years_back: int = 10, quick: bool = False, end_date: Optional[date] = None,
-    report_suffix: Optional[str] = None,
+    report_suffix: Optional[str] = None, max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> Dict:
     end = end_date or now_ist().date()
     start = end - timedelta(days=365 * years_back)
@@ -228,7 +232,10 @@ def run_recommended_strategies(
         json.dump({"jobs": [_strip_bookkeeping(j) for j in jobs]}, fh, indent=2)
     logger.info(f"run_technical_recommended_strategies: wrote {len(jobs)}-job queue def to {queue_def_path}")
 
-    run_queue([_strip_bookkeeping(j) for j in jobs], report_suffix=suffix, stop_on_failure=False)
+    run_queue(
+        [_strip_bookkeeping(j) for j in jobs], report_suffix=suffix, stop_on_failure=False,
+        max_workers=max_workers,
+    )
 
     report = aggregate_report(jobs, suffix)
     report_path = REPORTS_DIR / "technical" / f"technical_recommended_strategies_{now_ist().strftime('%Y%m%d_%H%M%S')}.json"
@@ -244,8 +251,12 @@ def main() -> None:
     parser.add_argument("--years-back", type=int, default=10)
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--report-suffix", default=None)
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     args = parser.parse_args()
-    run_recommended_strategies(years_back=args.years_back, quick=args.quick, report_suffix=args.report_suffix)
+    run_recommended_strategies(
+        years_back=args.years_back, quick=args.quick, report_suffix=args.report_suffix,
+        max_workers=args.max_workers,
+    )
 
 
 if __name__ == "__main__":

@@ -178,7 +178,7 @@ def _build_config(ohlcv: pd.DataFrame, sector_map: Dict[str, str]) -> Orchestrat
     )
 
 
-def build_technical_feature_lookup():
+def build_technical_feature_lookup(engine=None):
     """Callable[[ticker, as_of_date], Dict[str, float]] returning that
     ticker's real technical indicator snapshot (sma_200_ratio, rsi_14,
     adx_14, etc. — the full daily feature Parquet row) as of a date —
@@ -206,20 +206,23 @@ def build_technical_feature_lookup():
     surfaced this one by making a run run long enough to observe it).
     Bounding the cache to size 1 is correct (not just a size limit that
     happens to work): a date once passed is never looked up again within a
-    single run, so evicting anything but the current date loses nothing."""
+    single run, so evicting anything but the current date loses nothing.
+
+    [PERF, 2026-08-02] `engine` is now an optional shared ScreenerEngine —
+    when the caller passes the SAME instance it also gives TechnicalAdapter
+    for entry screening (see _run_immediate/_run_deferred below),
+    ScreenerEngine._load_df's own size-1 cache (added this session) is
+    shared too, so a rebalance date's feature Parquet — read once for
+    entry screening AND checked again here for exit conditions — is read
+    from disk exactly once instead of twice. None (default) preserves
+    prior behavior exactly (a fresh, unshared engine)."""
     from systems.technical_analysis.screener.engine import ScreenerEngine
 
-    engine = ScreenerEngine()
-    cached_date: Optional[str] = None
-    cached_df: Optional[pd.DataFrame] = None
+    engine = engine or ScreenerEngine()
 
     def lookup(ticker: str, as_of: date_type) -> Dict[str, float]:
-        nonlocal cached_date, cached_df
         date_str = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
-        if date_str != cached_date:
-            cached_date = date_str
-            cached_df = engine._load_df(date_str)
-        df = cached_df
+        df = engine._load_df(date_str)
         if df is None or "ticker" not in df.columns:
             return {}
         row = df.loc[df["ticker"] == ticker]
@@ -275,60 +278,77 @@ def _no_regime_conn():
     yield None
 
 
-def run_orchestrator_backtest(
-    channel: str, start_date: date_type, end_date: date_type, strategy_id: Optional[str] = None,
-    horizon_bucket: Optional[str] = None,
-    capital_mode: str = "lump", initial_capital: float = 1_000_000.0, sip_amount: Optional[float] = None,
-    universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
-    template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
-    lookback_months: int = 6, run_id: Optional[str] = None, report_suffix: Optional[str] = None,
-    regime_index_name: Optional[str] = "Nifty 500",
-    exit_policy_variant: str = "baseline",
-    regime_method: Optional[str] = None,
-    max_hold_days: Optional[int] = None,
-    min_adtv_cr: Optional[float] = None,
-    quality_gate_min_f_score: Optional[float] = None,
-    quality_gate_max_m_score: Optional[float] = None,
-    downtrend_filter_pct: Optional[float] = None,
-    circuit_band_pct: Optional[float] = None,
-    disable_buys_in_regime: Optional[List[str]] = None,
-    combo_templates: Optional[List[str]] = None,
-) -> dict:
-    if combo_templates and len(combo_templates) < 2:
-        raise ValueError("combo_templates needs at least 2 templates — use --template-name for a single one")
-    horizon = _resolve_horizon_bucket(
-        channel, horizon_bucket, combo_templates[0] if combo_templates else template_name, preset, lookback_months,
+def _persist_run_result(
+    conn, run_id: str, channel: str, descriptor: str, run_date, result,
+    template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
+    saved_exit_policy_variant: str, regime_method: Optional[str], report_suffix: Optional[str],
+) -> None:
+    """The DB-writing tail shared by both run_orchestrator_backtest() code
+    paths (immediate and defer_db_writes) — save_run_result + strategy_catalog
+    upsert + enriched trade-book export. Extracted (2026-08-02, Technical
+    sweep parallelization) so this write-sensitive logic is written and
+    tested exactly once rather than risking the two paths drifting apart.
+    """
+    queue_id = re.sub(r"_job\d+$", "", report_suffix) if report_suffix else None
+    save_run_result(conn, result, queue_id=queue_id)
+
+    # strategy_catalog upsert (2026-07-24 addition, additive only — does
+    # not affect run/simulation logic): one row per distinct strategy
+    # CONFIGURATION, keyed on channel+descriptor+params so re-running the
+    # same config updates the existing row instead of duplicating.
+    create_strategy_catalog_schema(
+        BACKTEST_DUCKDB_PATH,
+        retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+        retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+        retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
     )
-
-    run_started = time.monotonic()
-    run_date = now_ist()
-    run_id = run_id or f"orch_{channel}_{run_date.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
-    # descriptor is the channel-specific "what strategy is this" bit: the
-    # template name, the preset name, or a top-N/lookback summary for
-    # momentum (which has no single named descriptor of its own). Computed
-    # unconditionally (not just when strategy_id is auto-built) since
-    # strategy_catalog needs it regardless of whether the caller passed an
-    # explicit strategy_id.
-    descriptor = {
-        "technical": ("+".join(combo_templates) if combo_templates else template_name),
-        "fundamental": preset,
-        "momentum": f"top{top_n}_{lookback_months}m",
-    }[channel]
-    if not strategy_id:
-        # Codified strategy_id (backtest/strategy_id.py)
-        strategy_id = build_strategy_id(channel, descriptor, horizon, as_of=run_date.date())
-
-    logger.info(
-        f"orchestrator backtest starting: channel={channel} strategy_id={strategy_id} "
-        f"run_id={run_id} horizon_bucket={horizon.value}"
+    catalog_params = {
+        "template_name": template_name, "preset": preset, "top_n": top_n,
+        "lookback_months": lookback_months, "exit_policy_variant": saved_exit_policy_variant,
+        "regime_method": regime_method,
+    }
+    catalog_params_json = json.dumps(catalog_params, default=str)
+    strategy_key = hashlib.sha1(f"{channel}|{descriptor}|{catalog_params_json}".encode()).hexdigest()
+    conn.execute(
+        """
+        INSERT INTO strategy_catalog
+            (strategy_key, channel, descriptor, params_json, latest_run_id, first_run_at, last_run_at, n_runs)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT (strategy_key) DO UPDATE SET
+            latest_run_id = excluded.latest_run_id,
+            last_run_at = excluded.last_run_at,
+            n_runs = strategy_catalog.n_runs + 1
+        """,
+        [strategy_key, channel, descriptor, catalog_params_json, run_id, run_date, run_date],
     )
-    # Held across the entire real-work window (data fetch through DB write)
-    # — user-confirmed requirement: backtests run strictly sequentially,
-    # never concurrently, even across independently-triggered queues/direct
-    # triggers (see batch_common.exclusive_backtest_lock's docstring: two
-    # concurrently-running queues previously starved each other on DB-lock
-    # contention and started failing outright).
+    conn.commit()
+
+    # Enriched trade-book CSV (entry/exit reason + indicator values) — pure
+    # post-processing over data already written above. Reuses `conn`
+    # (still open here) rather than opening a second connection to the
+    # same file, which DuckDB rejects while a read-write connection is
+    # already held.
+    if result.trade_log_path:
+        # write_html=True only for the technical channel (2026-08-01 user
+        # request, scoped to Technical — Momentum's own separate
+        # trade-book writer in scripts/run_momentum_*.py is intentionally
+        # left CSV-only).
+        export_trade_book(run_id, Path(result.trade_log_path), conn=conn, write_html=channel == "technical")
+
+
+def _run_immediate(
+    channel, start_date, end_date, run_id, strategy_id, horizon, descriptor, run_date,
+    capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
+    template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
+    exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
+    quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
+    combo_templates, precomputed_matches_dir, prefetch_feature_parquets,
+):
+    """defer_db_writes=False path — today's existing, unmodified behavior:
+    the whole run (OHLCV fetch through the final DB save) holds
+    exclusive_backtest_lock and one live BACKTEST_DUCKDB_PATH connection
+    throughout. Extracted verbatim from run_orchestrator_backtest() only to
+    make room for _run_deferred() as a sibling — no logic changed."""
     with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
         ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
         sector_map = _real_sector_map()
@@ -350,8 +370,23 @@ def run_orchestrator_backtest(
                 quality_gate["min_f_score"] = quality_gate_min_f_score
             if quality_gate_max_m_score is not None:
                 quality_gate["max_m_score"] = quality_gate_max_m_score
+            # [PERF, 2026-08-02] ONE ScreenerEngine shared across every
+            # TechnicalAdapter/sub-adapter this job constructs AND the
+            # exit-check lookup built below — ScreenerEngine._load_df's
+            # own size-1 cache is keyed only by date (a Parquet snapshot is
+            # per-DATE, not per-template), so sharing it means a given
+            # date's feature Parquet is read from disk at most once per
+            # job total, instead of once per (template, purpose) pairing —
+            # previously every sub-adapter in a combo AND the separate
+            # exit-lookup engine each maintained their own unshared cache
+            # (or, for entry screening, no cache at all).
+            from systems.technical_analysis.screener.engine import ScreenerEngine
+
+            _shared_screener_engine = ScreenerEngine()
+            if prefetch_feature_parquets:
+                _shared_screener_engine.preload_dates([d.date().isoformat() for d in config.trading_days])
             _shared_adapter_kwargs = dict(
-                top_n=top_n, sector_lookup=sector_map,
+                top_n=top_n, sector_lookup=sector_map, screener_engine=_shared_screener_engine,
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
                 min_adtv_cr=min_adtv_cr,
                 quality_gate=quality_gate or None,
@@ -360,6 +395,7 @@ def run_orchestrator_backtest(
                 disable_buys_in_regime=set(disable_buys_in_regime) if disable_buys_in_regime else None,
                 regime_index_name=regime_index_name or "Nifty 500",
                 regime_method=regime_method,
+                precomputed_matches_dir=precomputed_matches_dir,
                 # regime_conn wired post-construction below, same deferred
                 # pattern as _screener_cache_conn — the connection doesn't
                 # exist yet at this point in the function.
@@ -492,7 +528,9 @@ def run_orchestrator_backtest(
             # screener-template `template` to re-check); other channels'
             # exit_ctx rows simply won't carry these columns, which
             # ConditionBasedExitPolicy already treats as "never triggers".
-            technical_feature_lookup = build_technical_feature_lookup() if channel == "technical" else None
+            technical_feature_lookup = (
+                build_technical_feature_lookup(engine=_shared_screener_engine) if channel == "technical" else None
+            )
             # Tag the saved exit_policy_variant with a non-default regime
             # method so experiments comparing 5/10/15/20% thresholds against
             # the SAME strategy+variant stay distinguishable in backtest_runs
@@ -519,52 +557,291 @@ def run_orchestrator_backtest(
             # used as its own queue_id unchanged (a queue_id of 1 doesn't
             # break anything downstream — DSR with n_trials=1 is simply
             # uncorrected, the mathematically correct answer for a lone run).
-            queue_id = re.sub(r"_job\d+$", "", report_suffix) if report_suffix else None
-            save_run_result(conn, result, queue_id=queue_id)
-
-            # strategy_catalog upsert (2026-07-24 addition, additive only —
-            # does not affect run/simulation logic): one row per distinct
-            # strategy CONFIGURATION, keyed on channel+descriptor+params so
-            # re-running the same config updates the existing row instead
-            # of duplicating.
-            create_strategy_catalog_schema(
-                BACKTEST_DUCKDB_PATH,
-                retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
-                retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
-                retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+            _persist_run_result(
+                conn, run_id, channel, descriptor, run_date, result,
+                template_name, preset, top_n, lookback_months,
+                saved_exit_policy_variant, regime_method, report_suffix,
             )
-            catalog_params = {
-                "template_name": template_name, "preset": preset, "top_n": top_n,
-                "lookback_months": lookback_months, "exit_policy_variant": saved_exit_policy_variant,
-                "regime_method": regime_method,
-            }
-            catalog_params_json = json.dumps(catalog_params, default=str)
-            strategy_key = hashlib.sha1(f"{channel}|{descriptor}|{catalog_params_json}".encode()).hexdigest()
-            conn.execute(
-                """
-                INSERT INTO strategy_catalog
-                    (strategy_key, channel, descriptor, params_json, latest_run_id, first_run_at, last_run_at, n_runs)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT (strategy_key) DO UPDATE SET
-                    latest_run_id = excluded.latest_run_id,
-                    last_run_at = excluded.last_run_at,
-                    n_runs = strategy_catalog.n_runs + 1
-                """,
-                [strategy_key, channel, descriptor, catalog_params_json, run_id, run_date, run_date],
-            )
-            conn.commit()
+    return result
 
-            # Enriched trade-book CSV (entry/exit reason + indicator
-            # values) — pure post-processing over data already written
-            # above. Reuses `conn` (still open here) rather than opening a
-            # second connection to the same file, which DuckDB rejects
-            # while a read-write connection is already held.
-            if result.trade_log_path:
-                # write_html=True only for the technical channel (2026-08-01
-                # user request, scoped to Technical — Momentum's own
-                # separate trade-book writer in scripts/run_momentum_*.py
-                # is intentionally left CSV-only).
-                export_trade_book(run_id, Path(result.trade_log_path), conn=conn, write_html=channel == "technical")
+
+def _run_deferred(
+    channel, start_date, end_date, run_id, strategy_id, horizon, descriptor, run_date,
+    capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
+    template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
+    exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
+    quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
+    combo_templates, precomputed_matches_dir, prefetch_feature_parquets,
+):
+    """defer_db_writes=True path (2026-08-02, Technical sweep
+    parallelization) — see run_orchestrator_backtest's docstring for the
+    full rationale. OHLCV fetch through simulation runs with NO
+    exclusive_backtest_lock and NO live BACKTEST_DUCKDB_PATH connection;
+    FeatureLogWriter spills to a local temp file and TechnicalAdapter's
+    screener_cache is skipped. Only the short tail (schema + spill-load +
+    save + catalog + trade-book) reacquires the lock."""
+    import tempfile
+
+    from backtest.core.feature_log import load_spill_file
+
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+    sector_map = _real_sector_map()
+    config = _build_config(ohlcv, sector_map)
+    _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
+    _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
+
+    if channel == "technical":
+        if not template_name and not combo_templates:
+            raise ValueError("channel=technical requires --template-name or --combo-templates")
+        quality_gate = {}
+        if quality_gate_min_f_score is not None:
+            quality_gate["min_f_score"] = quality_gate_min_f_score
+        if quality_gate_max_m_score is not None:
+            quality_gate["max_m_score"] = quality_gate_max_m_score
+        # [PERF, 2026-08-02] see the matching comment in _run_immediate —
+        # one ScreenerEngine shared across every sub-adapter and the
+        # exit-check lookup built below, so a given date's feature Parquet
+        # is read from disk at most once per job.
+        from systems.technical_analysis.screener.engine import ScreenerEngine
+
+        _shared_screener_engine = ScreenerEngine()
+        if prefetch_feature_parquets:
+            _shared_screener_engine.preload_dates([d.date().isoformat() for d in config.trading_days])
+        _shared_adapter_kwargs = dict(
+            top_n=top_n, sector_lookup=sector_map, screener_engine=_shared_screener_engine,
+            price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+            min_adtv_cr=min_adtv_cr,
+            quality_gate=quality_gate or None,
+            downtrend_filter_pct=downtrend_filter_pct,
+            circuit_band_pct=circuit_band_pct,
+            disable_buys_in_regime=set(disable_buys_in_regime) if disable_buys_in_regime else None,
+            regime_index_name=regime_index_name or "Nifty 500",
+            regime_method=regime_method,
+            precomputed_matches_dir=precomputed_matches_dir,
+        )
+        if combo_templates:
+            sub_kwargs = {**_shared_adapter_kwargs, "top_n": top_n * 5}
+            sub_adapters = [TechnicalAdapter(template_name=name, **sub_kwargs) for name in combo_templates]
+            adapter = TechnicalComboAdapter(sub_adapters, top_n=top_n)
+        else:
+            adapter = TechnicalAdapter(template_name=template_name, **_shared_adapter_kwargs)
+    elif channel == "fundamental":
+        if not preset:
+            raise ValueError("channel=fundamental requires --preset")
+        adapter = FundamentalAdapter(
+            preset=preset, top_n=top_n, sector_lookup=sector_map,
+            market_cap_lookup=_real_market_cap_map(),
+            price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+        )
+    elif channel == "momentum":
+        adapter = MomentumAdapter(
+            price_panel=_price_panel_for_adtv, top_n=top_n, lookback_months=lookback_months,
+            sector_lookup=sector_map,
+        )
+    else:
+        raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
+
+    run = BacktestRun(
+        run_id=run_id, channel=channel, strategy_id=strategy_id, horizon_bucket=horizon,
+        mode="backtest", universe_spec=universe_spec, start_date=start_date, end_date=end_date,
+        capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
+        config={
+            "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
+            "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
+            "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
+            "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
+            "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
+            "disable_buys_in_regime": disable_buys_in_regime,
+            "combo_templates": combo_templates,
+        },
+    )
+
+    spill_path = Path(tempfile.gettempdir()) / f"backtest_feature_log_spill_{run_id}.jsonl"
+    feature_log_writer = FeatureLogWriter(spill_path=spill_path)
+
+    # regime_conn/fundamentals_conn are READ-ONLY connections to DUCKDB_PATH
+    # (the normalised-schema DB — a different file from BACKTEST_DUCKDB_PATH),
+    # opened unguarded here: multiple concurrent read-only connections to
+    # the same DuckDB file don't conflict with each other, only a writer
+    # conflicts with anything else — this app already relies on that
+    # elsewhere (e.g. the API server's own read-only connections) without
+    # needing exclusive_backtest_lock.
+    regime_cm = (
+        get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False)
+        if regime_index_name else _no_regime_conn()
+    )
+    fundamentals_cm = (
+        get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False)
+        if channel == "fundamental" and preset in BESPOKE_PRESETS
+        else _no_regime_conn()
+    )
+    with regime_cm as regime_conn, fundamentals_cm as fundamentals_conn:
+        if channel == "technical":
+            # _screener_cache_conn intentionally left unset (None) — no
+            # live BACKTEST_DUCKDB_PATH connection during this compute
+            # phase, so each parallel job re-screens live via ScreenerEngine
+            # instead of sharing the cross-exit-variant cache. regime_conn
+            # (read-only) is still wired since disable_buys_in_regime needs it.
+            for _sub in (adapter.adapters if combo_templates else [adapter]):
+                _sub._regime_conn = regime_conn
+        elif channel == "fundamental" and preset in BESPOKE_PRESETS:
+            adapter._db_conn = fundamentals_conn
+
+        exit_model = build_exit_model_for_variant(
+            exit_policy_variant, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500",
+            max_hold_days=max_hold_days,
+        )
+        technical_feature_lookup = (
+            build_technical_feature_lookup(engine=_shared_screener_engine) if channel == "technical" else None
+        )
+
+        from systems.regime.market_regime import METHOD_NAME as _DEFAULT_REGIME_METHOD
+        saved_exit_policy_variant = exit_policy_variant
+        if regime_method and regime_method != _DEFAULT_REGIME_METHOD:
+            saved_exit_policy_variant = f"{exit_policy_variant}__{regime_method}"
+
+        result = BacktestOrchestrator(
+            feature_log_writer=feature_log_writer, regime_conn=regime_conn,
+            regime_index_name=regime_index_name or "Nifty 500", exit_model=exit_model,
+            technical_feature_lookup=technical_feature_lookup, exit_policy_variant=saved_exit_policy_variant,
+            regime_method=regime_method,
+        ).run(run, adapter, config)
+        feature_log_writer.flush()
+
+    # Short, serialized tail — the only part of this run touching
+    # BACKTEST_DUCKDB_PATH's single read-write connection.
+    with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
+        create_backtest_schema(
+            BACKTEST_DUCKDB_PATH,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        )
+        with get_duckdb_connection(
+            BACKTEST_DUCKDB_PATH, read_only=False, persist=False,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        ) as conn:
+            load_spill_file(conn, spill_path)
+            _persist_run_result(
+                conn, run_id, channel, descriptor, run_date, result,
+                template_name, preset, top_n, lookback_months,
+                saved_exit_policy_variant, regime_method, report_suffix,
+            )
+    return result
+
+
+def run_orchestrator_backtest(
+    channel: str, start_date: date_type, end_date: date_type, strategy_id: Optional[str] = None,
+    horizon_bucket: Optional[str] = None,
+    capital_mode: str = "lump", initial_capital: float = 1_000_000.0, sip_amount: Optional[float] = None,
+    universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
+    template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
+    lookback_months: int = 6, run_id: Optional[str] = None, report_suffix: Optional[str] = None,
+    regime_index_name: Optional[str] = "Nifty 500",
+    exit_policy_variant: str = "baseline",
+    regime_method: Optional[str] = None,
+    max_hold_days: Optional[int] = None,
+    min_adtv_cr: Optional[float] = None,
+    quality_gate_min_f_score: Optional[float] = None,
+    quality_gate_max_m_score: Optional[float] = None,
+    downtrend_filter_pct: Optional[float] = None,
+    circuit_band_pct: Optional[float] = None,
+    disable_buys_in_regime: Optional[List[str]] = None,
+    combo_templates: Optional[List[str]] = None,
+    defer_db_writes: bool = False,
+    precomputed_matches_dir: Optional[str] = None,
+    prefetch_feature_parquets: bool = False,
+) -> dict:
+    """
+    precomputed_matches_dir : (2026-08-02, sweep-scale entry-signal reuse)
+        directory of scripts/precompute_technical_screener_matches.py
+        output — see TechnicalAdapter's precomputed_matches_dir docstring.
+        None (default) preserves today's always-live screening exactly.
+
+    prefetch_feature_parquets : (2026-08-02, per-job exit-check speedup —
+        technical channel only) — eagerly reads every trading day's
+        feature Parquet up front via ScreenerEngine.preload_dates()
+        (ThreadPoolExecutor, ~2.2x faster than the lazy one-at-a-time
+        reads _apply_exit_policy's daily feature lookup otherwise does —
+        confirmed the actual dominant per-job cost via profiling, unlike
+        precomputed_matches_dir above which targets entry-signal
+        generation, a much smaller cost). Trades memory (every requested
+        date's DataFrame held simultaneously — measured ~0.6MB/date, so
+        ~1.5GB for a full 10-year/~2,500-day window) for speed. Default
+        False preserves today's lazy single-slot-cache behavior exactly.
+
+    defer_db_writes : (2026-08-02, Technical sweep parallelization) —
+        default False preserves today's behavior EXACTLY: the whole run
+        (OHLCV fetch through the final DB save) holds
+        batch_common.exclusive_backtest_lock, a system-wide mutex added
+        after a real incident (two concurrently-running queues starved
+        each other on DuckDB single-writer lock contention and started
+        failing outright — see that lock's docstring). Every existing
+        caller omits this param and is completely unaffected.
+
+        True runs the OHLCV-fetch-through-simulation phase with NO
+        exclusive_backtest_lock and NO live BACKTEST_DUCKDB_PATH
+        connection at all: FeatureLogWriter spills its rows to a local
+        temp file instead of writing to DuckDB as it goes (bounded
+        memory — see backtest/core/feature_log.py's 2026-08-02 addition),
+        and TechnicalAdapter's screener_cache is skipped (each candidate
+        template is screened live instead of sharing the cross-exit-
+        variant cache — a small recomputation cost, not a correctness
+        change). Only the short tail — schema creation, loading the spill
+        file, save_run_result, strategy_catalog upsert, trade-book export
+        — reacquires the lock and opens the real connection. This is what
+        makes it safe for multiple such jobs to run truly concurrently:
+        the only genuinely-exclusive resource (BACKTEST_DUCKDB_PATH's
+        single read-write connection) is now held for seconds, not the
+        job's full multi-minute runtime.
+    """
+    if combo_templates and len(combo_templates) < 2:
+        raise ValueError("combo_templates needs at least 2 templates — use --template-name for a single one")
+    horizon = _resolve_horizon_bucket(
+        channel, horizon_bucket, combo_templates[0] if combo_templates else template_name, preset, lookback_months,
+    )
+
+    run_started = time.monotonic()
+    run_date = now_ist()
+    run_id = run_id or f"orch_{channel}_{run_date.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+    # descriptor is the channel-specific "what strategy is this" bit: the
+    # template name, the preset name, or a top-N/lookback summary for
+    # momentum (which has no single named descriptor of its own). Computed
+    # unconditionally (not just when strategy_id is auto-built) since
+    # strategy_catalog needs it regardless of whether the caller passed an
+    # explicit strategy_id.
+    descriptor = {
+        "technical": ("+".join(combo_templates) if combo_templates else template_name),
+        "fundamental": preset,
+        "momentum": f"top{top_n}_{lookback_months}m",
+    }[channel]
+    if not strategy_id:
+        # Codified strategy_id (backtest/strategy_id.py)
+        strategy_id = build_strategy_id(channel, descriptor, horizon, as_of=run_date.date())
+
+    logger.info(
+        f"orchestrator backtest starting: channel={channel} strategy_id={strategy_id} "
+        f"run_id={run_id} horizon_bucket={horizon.value}"
+    )
+    # exclusive_backtest_lock (user-confirmed requirement: backtests run
+    # strictly sequentially, never concurrently — see that lock's
+    # docstring) is held either across the WHOLE run (_run_immediate,
+    # defer_db_writes=False, today's default/unchanged behavior) or only
+    # across the short final save (_run_deferred, defer_db_writes=True —
+    # 2026-08-02 Technical sweep parallelization, see this function's
+    # docstring above).
+    run_fn = _run_deferred if defer_db_writes else _run_immediate
+    result = run_fn(
+        channel, start_date, end_date, run_id, strategy_id, horizon, descriptor, run_date,
+        capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
+        template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
+        exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
+        quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
+        combo_templates, precomputed_matches_dir, prefetch_feature_parquets,
+    )
 
     runtime_seconds = time.monotonic() - run_started
     logger.info(f"orchestrator backtest finished in {runtime_seconds:.1f}s: {json.dumps(result.metrics, default=str)}")
@@ -686,6 +963,36 @@ def main() -> None:
             "Mutually exclusive with --template-name."
         ),
     )
+    parser.add_argument(
+        "--defer-db-writes", action="store_true",
+        help=(
+            "2026-08-02 Technical sweep parallelization: run OHLCV-fetch-through-simulation with NO "
+            "exclusive_backtest_lock and no live BACKTEST_DUCKDB_PATH connection (FeatureLogWriter spills "
+            "to a local temp file, screener_cache is skipped) — only the short final save reacquires the "
+            "lock. Makes this job safe to run concurrently with other such jobs. Default (omit) is today's "
+            "unchanged fully-serialized behavior."
+        ),
+    )
+    parser.add_argument(
+        "--precomputed-matches-dir", default=None,
+        help=(
+            "2026-08-02 sweep-scale entry-signal reuse: directory of "
+            "scripts/precompute_technical_screener_matches.py output. A date "
+            "inside the manifest's covered range skips live screener_engine.screen() "
+            "entirely; a date outside it falls back to live screening. Default (omit) "
+            "is today's unchanged always-live behavior."
+        ),
+    )
+    parser.add_argument(
+        "--prefetch-feature-parquets", action="store_true",
+        help=(
+            "2026-08-02 per-job exit-check speedup (technical channel only): eagerly reads every "
+            "trading day's feature Parquet up front via a thread pool (~2.2x faster than the lazy "
+            "single-slot cache for this — the ACTUAL dominant per-job cost, unlike --precomputed-matches-dir "
+            "above). Trades memory (~0.6MB/day held simultaneously, ~1.5GB for a full 10-year window) for "
+            "speed. Default (omit) is today's unchanged lazy-loading behavior."
+        ),
+    )
     args = parser.parse_args()
 
     run_orchestrator_backtest(
@@ -702,6 +1009,9 @@ def main() -> None:
         downtrend_filter_pct=args.downtrend_filter_pct, circuit_band_pct=args.circuit_band_pct,
         disable_buys_in_regime=args.disable_buys_in_regime.split(",") if args.disable_buys_in_regime else None,
         combo_templates=args.combo_templates.split(",") if args.combo_templates else None,
+        defer_db_writes=args.defer_db_writes,
+        precomputed_matches_dir=args.precomputed_matches_dir,
+        prefetch_feature_parquets=args.prefetch_feature_parquets,
     )
 
 

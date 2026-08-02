@@ -49,7 +49,9 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date as date_type, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -77,6 +79,7 @@ _ORCHESTRATOR_FLAGS = {
     # --max-hold-days/--min-adtv-cr/etc.) — see that script's argparse block.
     "max_hold_days", "min_adtv_cr", "quality_gate_min_f_score", "quality_gate_max_m_score",
     "downtrend_filter_pct", "circuit_band_pct", "disable_buys_in_regime", "combo_templates",
+    "defer_db_writes", "precomputed_matches_dir", "prefetch_feature_parquets",
 } | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",
@@ -106,7 +109,16 @@ def _job_to_cmd(job: Dict[str, Any], job_index: int, report_suffix: str) -> List
     for key, value in job.items():
         if key == "kind" or key in queue_only or value is None:
             continue
-        cmd += [f"--{key.replace('_', '-')}", str(value)]
+        flag = f"--{key.replace('_', '-')}"
+        if isinstance(value, bool):
+            # 2026-08-02 (defer_db_writes): a plain store_true CLI flag
+            # takes no value — emitting "--flag True" would be rejected by
+            # argparse as an unrecognized positional. False is simply
+            # omitted (the flag's absence already means "off").
+            if value:
+                cmd.append(flag)
+        else:
+            cmd += [flag, str(value)]
     cmd += ["--report-suffix", f"{report_suffix}_job{job_index}"]
     return cmd
 
@@ -310,12 +322,188 @@ def _load_prior_resolved(progress_path: Path, n_jobs: int) -> Dict[int, str]:
     return resolved
 
 
+def _process_job_completion(
+    job: Dict[str, Any], i: int, suffix: str, result: Dict[str, Any],
+    statuses: List[str], progress_path: Path, jobs: List[Dict[str, Any]], lock: threading.Lock,
+) -> Dict[str, Any]:
+    """Same per-job post-processing the sequential run_queue() loop does
+    right after a job's subprocess exits (status update, DSR gate,
+    integrity check, progress write) — extracted so _run_queue_concurrent
+    can call it under a lock from whichever worker thread's job finished,
+    in COMPLETION order rather than launch order. n_trials_so_far (for
+    DSR) is a total-completed-count snapshot at the moment this job
+    finished, which is what a Deflated Sharpe Ratio correction actually
+    needs — it doesn't require strict launch-order completion, only an
+    honest count of how many trials have concluded so far."""
+    with lock:
+        statuses[i] = "completed" if result["returncode"] == 0 else "failed"
+        _write_progress(progress_path, jobs, statuses)
+        job_dsr_gate_failed = False
+        job_integrity_failed = False
+        if statuses[i] == "completed":
+            n_trials_so_far = sum(1 for s in statuses if s == "completed")
+            dsr = _compute_and_write_dsr(job, i, suffix, n_trials_so_far)
+            min_dsr_threshold = job.get("min_dsr_threshold")
+            if min_dsr_threshold is not None and (dsr is None or dsr < min_dsr_threshold):
+                job_dsr_gate_failed = True
+                statuses[i] = "dsr_gate_failed"
+                result["dsr"] = dsr
+                result["min_dsr_threshold"] = min_dsr_threshold
+                logger.error(
+                    f"run_strategy_queue: job[{i}] failed the DSR gate "
+                    f"(dsr={dsr!r} < min_dsr_threshold={min_dsr_threshold!r})"
+                )
+                _write_progress(progress_path, jobs, statuses)
+
+            if not job_dsr_gate_failed:
+                integrity_passed = _check_integrity_passed(job, i, suffix)
+                if integrity_passed is False:
+                    job_integrity_failed = True
+                    statuses[i] = "integrity_check_failed"
+                    result["integrity_passed"] = integrity_passed
+                    logger.error(
+                        f"run_strategy_queue: job[{i}] failed post-run integrity checks "
+                        "(integrity_passed=False)"
+                    )
+                    _write_progress(progress_path, jobs, statuses)
+        result["_dsr_gate_failed"] = job_dsr_gate_failed
+        result["_integrity_failed"] = job_integrity_failed
+        if result["returncode"] != 0 or job_dsr_gate_failed or job_integrity_failed:
+            if not job_dsr_gate_failed and not job_integrity_failed:
+                logger.error(f"run_strategy_queue: job[{i}] failed (exit {result['returncode']})")
+        return result
+
+
+def _run_queue_concurrent(
+    jobs: List[Dict[str, Any]], min_free_mb: float, wait_timeout_s: float,
+    stop_on_failure: bool, report_suffix: Optional[str], resume: bool, max_workers: int,
+) -> Dict[str, Any]:
+    """max_workers>1 path — see run_queue()'s docstring. Jobs are submitted
+    to a bounded ThreadPoolExecutor (each job is its own OS subprocess —
+    the thread only blocks waiting on it, so this is real process-level
+    concurrency); shared mutable state (statuses, progress file) is
+    guarded by a lock, same invariants the sequential loop maintains one
+    job at a time. stop_on_failure here means "stop SUBMITTING new jobs
+    once a failure is observed" — already-in-flight jobs are allowed to
+    finish rather than killed."""
+    run_started = time.monotonic()
+    suffix = report_suffix or datetime.now().strftime("%Y%m%d_%H%M%S")
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    progress_path = REPORTS_DIR / f"strategy_queue_progress_{suffix}.json"
+
+    prior_resolved = _load_prior_resolved(progress_path, len(jobs)) if resume else {}
+    statuses = [prior_resolved.get(i, "queued") for i in range(len(jobs))]
+    if prior_resolved:
+        n_completed = sum(1 for s in prior_resolved.values() if s == "completed")
+        n_excluded = sum(1 for s in prior_resolved.values() if s == "excluded")
+        logger.info(
+            f"run_strategy_queue: resuming {suffix} — skipping {n_completed} already-completed "
+            f"and {n_excluded} manually-excluded job(s) of {len(jobs)} (concurrent, max_workers={max_workers})"
+        )
+    _write_progress(progress_path, jobs, statuses)
+
+    lock = threading.Lock()
+    stop_submitting = threading.Event()
+    results: List[Dict[str, Any]] = []
+    pending_indices = [i for i in range(len(jobs)) if i not in prior_resolved]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        next_idx = 0
+
+        def _submit_next() -> bool:
+            nonlocal next_idx
+            if next_idx >= len(pending_indices) or stop_submitting.is_set():
+                return False
+            i = pending_indices[next_idx]
+            next_idx += 1
+            wait_for_headroom(min_free_mb, wait_timeout_s, label="run_strategy_queue")
+            with lock:
+                statuses[i] = "running"
+                _write_progress(progress_path, jobs, statuses)
+            futures[executor.submit(_run_job, jobs[i], i, suffix)] = i
+            return True
+
+        for _ in range(min(max_workers, len(pending_indices))):
+            _submit_next()
+
+        while futures:
+            for future in as_completed(list(futures)):
+                i = futures.pop(future)
+                job_result = future.result()
+                job_result = _process_job_completion(jobs[i], i, suffix, job_result, statuses, progress_path, jobs, lock)
+                results.append(job_result)
+                if job_result["returncode"] != 0 or job_result["_dsr_gate_failed"] or job_result["_integrity_failed"]:
+                    if stop_on_failure:
+                        stop_submitting.set()
+                if not stop_submitting.is_set():
+                    _submit_next()
+                break  # re-enter as_completed() with the current (mutated) futures dict
+
+    with lock:
+        if stop_submitting.is_set():
+            unresolved = [i for i in pending_indices if statuses[i] in ("queued", "running")]
+            for j in unresolved:
+                statuses[j] = "skipped"
+            if unresolved:
+                logger.error("run_strategy_queue: stopping — skipping remaining unsubmitted job(s) after a failure")
+            _write_progress(progress_path, jobs, statuses)
+
+    n_skipped_prior = len(prior_resolved)
+    results.sort(key=lambda r: r["job_index"])
+    summary = {
+        "generated_at": datetime.now().isoformat(),
+        "total_jobs": len(jobs),
+        "jobs_run": len(results),
+        "jobs_skipped_already_completed": n_skipped_prior,
+        "results": results,
+        "all_passed": (
+            all(r["returncode"] == 0 for r in results)
+            and not any(statuses[r["job_index"]] == "dsr_gate_failed" for r in results)
+            and not any(statuses[r["job_index"]] == "integrity_check_failed" for r in results)
+            and len(results) + n_skipped_prior == len(jobs)
+        ),
+        "runtime_seconds": time.monotonic() - run_started,
+    }
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    summary_path = REPORTS_DIR / f"strategy_queue_{suffix}.json"
+    with open(summary_path, "w") as fh:
+        json.dump(summary, fh, indent=2, default=str)
+    logger.info(f"run_strategy_queue: summary written to {summary_path}")
+    return summary
+
+
 def run_queue(
     jobs: List[Dict[str, Any]], min_free_mb: float = 3072.0, wait_timeout_s: float = 600.0,
     stop_on_failure: bool = True, report_suffix: Optional[str] = None, resume: bool = True,
+    max_workers: int = 1,
 ) -> Dict[str, Any]:
+    """
+    max_workers : (2026-08-02, Technical sweep parallelization) — default 1
+        preserves today's behavior EXACTLY: jobs run one at a time, in
+        order, in this same thread. Every existing caller omitting this
+        param is completely unaffected. >1 dispatches jobs to a bounded
+        ThreadPoolExecutor instead (each job is still its own OS
+        subprocess — the thread just waits on it — so this is real
+        process-level parallelism, not GIL-limited). Each job should pass
+        {"defer_db_writes": true} (backtest/run_orchestrator_backtest.py)
+        so concurrent jobs don't fight over BACKTEST_DUCKDB_PATH's single
+        writer connection — max_workers>1 without defer_db_writes will
+        still "work" but jobs will mostly serialize on
+        exclusive_backtest_lock anyway, gaining nothing.
+        wait_for_headroom() is still checked before each new job is
+        admitted into the pool (not just at the very start), so a memory
+        squeeze mid-sweep still throttles new admissions the same way the
+        serial path always has.
+    """
     if not jobs:
         raise ValueError("jobs is empty — nothing to schedule")
+    if max_workers > 1:
+        return _run_queue_concurrent(
+            jobs, min_free_mb=min_free_mb, wait_timeout_s=wait_timeout_s,
+            stop_on_failure=stop_on_failure, report_suffix=report_suffix, resume=resume,
+            max_workers=max_workers,
+        )
 
     run_started = time.monotonic()
     suffix = report_suffix or datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -28,6 +28,15 @@ TECHNICAL_INITIAL_CAPITAL (Rs 1 Lakh per strategy, 2026-08-01 user
 decision) — a script constant, not touching config/settings.py's global
 default.
 
+2026-08-02 (Technical sweep parallelization): every job carries
+defer_db_writes=True (run_orchestrator_backtest.py) so concurrent jobs
+never fight over BACKTEST_DUCKDB_PATH's single writer connection — see
+that flag's docstring for the full rationale. --max-workers (default
+DEFAULT_MAX_WORKERS, a conservative value — raise it once you've confirmed
+your system has memory headroom for that many concurrent real backtest
+jobs) controls how many run concurrently via
+backtest/run_strategy_queue.py's bounded thread pool.
+
 2026-08-01 user instruction: do NOT run the backtest yet — this script is
 written and unit-testable (job-list construction, report aggregation) but
 not invoked as part of this change.
@@ -50,6 +59,13 @@ logger = logging.getLogger(__name__)
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "backtest" / "reports"
 QUEUE_DEFS_DIR = REPORTS_DIR / "queue_defs"
+# [PERF, 2026-08-02] same directory scripts/precompute_technical_screener_matches.py
+# writes to by default — every job in this sweep points at it so entry
+# signals are read from the one-time precompute pass (if it exists;
+# TechnicalAdapter falls back to live screening for any uncovered date)
+# instead of every job independently re-screening the same (template,
+# date) pairs.
+SCREENER_CACHE_DIR = REPORTS_DIR / "technical" / "screener_cache"
 
 TECHNICAL_INITIAL_CAPITAL = 100_000.0  # Rs 1 Lakh — 2026-08-01 user decision, script-local only
 
@@ -64,6 +80,13 @@ TOP_N_OPTIONS = [10, 15, 20]
 # once each (max_hold_days omitted) rather than once per hold-days value,
 # to avoid 4 literally-identical duplicate runs per template.
 _VARIANTS_IGNORING_HOLD_DAYS = {"condition", "unconstrained"}
+
+# Conservative default — this session recovered from a real OOM incident
+# (systemd-oomd killing VS Code) caused partly by an unrelated heavy
+# background job; 3 concurrent real backtest jobs is a deliberately modest
+# starting point, not a ceiling derived from actual headroom testing.
+# Raise via --max-workers once you've confirmed your system handles it.
+DEFAULT_MAX_WORKERS = 3
 
 
 def _quick_templates() -> List[str]:
@@ -92,6 +115,8 @@ def build_jobs(
                         "template_name": template_name, "top_n": top_n,
                         "exit_variant": variant,
                         "initial_capital": TECHNICAL_INITIAL_CAPITAL,
+                        "defer_db_writes": True,
+                        "precomputed_matches_dir": str(SCREENER_CACHE_DIR),
                     }
                     if max_hold_days is not None:
                         job["max_hold_days"] = max_hold_days
@@ -161,7 +186,7 @@ def aggregate_report(jobs: List[Dict], report_suffix: str) -> Dict:
 
 def run_experimentation(
     years_back: int = 10, quick: bool = False, end_date: Optional[date] = None,
-    report_suffix: Optional[str] = None,
+    report_suffix: Optional[str] = None, max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> Dict:
     end = end_date or now_ist().date()
     start = end - timedelta(days=365 * years_back)
@@ -174,7 +199,7 @@ def run_experimentation(
         json.dump({"jobs": jobs}, fh, indent=2)
     logger.info(f"run_technical_experimentation: wrote {len(jobs)}-job queue def to {queue_def_path}")
 
-    run_queue(jobs, report_suffix=suffix, stop_on_failure=False)
+    run_queue(jobs, report_suffix=suffix, stop_on_failure=False, max_workers=max_workers)
 
     report = aggregate_report(jobs, suffix)
     report_path = REPORTS_DIR / "technical" / f"technical_experimentation_{now_ist().strftime('%Y%m%d_%H%M%S')}.json"
@@ -190,8 +215,15 @@ def main() -> None:
     parser.add_argument("--years-back", type=int, default=10)
     parser.add_argument("--quick", action="store_true", help="Reduced grid (5 templates, 1 max_hold_days, 1 top_n) for iteration")
     parser.add_argument("--report-suffix", default=None)
+    parser.add_argument(
+        "--max-workers", type=int, default=DEFAULT_MAX_WORKERS,
+        help=f"Concurrent backtest jobs (default {DEFAULT_MAX_WORKERS} — see this module's docstring)",
+    )
     args = parser.parse_args()
-    run_experimentation(years_back=args.years_back, quick=args.quick, report_suffix=args.report_suffix)
+    run_experimentation(
+        years_back=args.years_back, quick=args.quick, report_suffix=args.report_suffix,
+        max_workers=args.max_workers,
+    )
 
 
 if __name__ == "__main__":
