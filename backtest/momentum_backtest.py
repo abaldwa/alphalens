@@ -87,7 +87,14 @@ def trade_cagr(buy_price: float, sell_price: Optional[float], holding_days: Opti
     """
     if sell_price is None or holding_days is None or holding_days <= 0 or buy_price <= 0:
         return None
-    return (sell_price / buy_price) ** (365.25 / holding_days) - 1
+    try:
+        return (sell_price / buy_price) ** (365.25 / holding_days) - 1
+    except OverflowError:
+        # A short holding period compounded to an annualized rate can exceed
+        # float range (e.g. a 1-day trade with an extreme price ratio from a
+        # circuit-limit move or corrupted OHLCV bar) — not a meaningful
+        # annualized figure either way, so treat it the same as "unknown".
+        return None
 
 
 @dataclass

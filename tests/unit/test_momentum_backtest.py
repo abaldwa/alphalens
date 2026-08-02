@@ -19,6 +19,28 @@ def _flat_price_panel(tickers, n_days, price=100.0):
     return pd.DataFrame({t: [price] * n_days for t in tickers}, index=dates)
 
 
+class TestTradeCagr:
+    """Regression for the OverflowError that crashed 66/311 jobs in the
+    2026-08-02 Technical sweep: a short holding period (e.g. a 1-day
+    circuit-limit move or a corrupted OHLCV bar) annualizes to an exponent
+    large enough to overflow a float, which used to propagate up through
+    export_trade_book and fail the whole orchestrator job even though the
+    backtest run itself had already saved successfully."""
+
+    def test_extreme_short_holding_ratio_returns_none_not_overflow(self):
+        assert mb.trade_cagr(100.0, 5000.0, 1) is None
+
+    def test_normal_case_unaffected(self):
+        result = mb.trade_cagr(100.0, 110.0, 30)
+        assert result == pytest.approx(2.19121409718457)
+
+    def test_same_day_round_trip_returns_none(self):
+        assert mb.trade_cagr(100.0, 110.0, 0) is None
+
+    def test_open_position_returns_none(self):
+        assert mb.trade_cagr(100.0, None, None) is None
+
+
 class TestSIP:
     def test_monthly_contributions_applied_and_tracked(self, monkeypatch):
         # 5 calendar months of daily trading days -> 4 SIP injections
