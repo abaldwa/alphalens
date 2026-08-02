@@ -1,0 +1,4 @@
+run_id,ticker,market_cap_tier_at_buy,buy_date,buy_price,entry_reason,entry_indicator_values,sell_date,sell_price,exit_reason,exit_indicator_values,days_held,pnl_inr,pnl_pct
+orch_fundamental_20260729_231120_eafb1aca,BIRLANU,Nifty50,2026-05-13,1455.5,buy,"{""preset"": ""contrarian_recovery"", ""matched"": true, ""ratio__score"": 71.9162146318483}",2026-05-18,1345.0,exit_model_urgent,,5,-3141.562182462003,-0.07994102020336662
+orch_fundamental_20260729_231120_eafb1aca,GOCLCORP,Nifty50,2026-05-13,305.5,buy,"{""preset"": ""contrarian_recovery"", ""matched"": true, ""ratio__score"": 72.41804728018346}",2026-06-03,418.1,exit_model_urgent,,21,14478.262616220003,0.3645540127463176
+orch_fundamental_20260729_231120_eafb1aca,DCXINDIA,Nifty50,2026-05-13,204.04,buy,"{""preset"": ""contrarian_recovery"", ""matched"": true, ""ratio__score"": 77.21518884979645}",2026-06-08,183.51,exit_model_urgent,,26,-4184.7308597292795,-0.10463961797529896

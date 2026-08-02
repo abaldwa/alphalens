@@ -34,23 +34,13 @@ class ExceptionCatalogEntry:
 
 
 CATALOG: list[ExceptionCatalogEntry] = [
-    ExceptionCatalogEntry(
-        step_name="download_fno",
-        location="ingestion/scheduler/daily_pipeline.py:281",
-        caught="F&O bhavcopy fetch or fno_data DuckDB write failure "
-        "(scraper outage or cross-process DuckDB lock conflict, A34).",
-        impact="fno_data has no new rows for the date. No downstream step "
-        "hard-depends on download_fno, so features/models/signals are "
-        "unaffected; only F&O-derived analytics for this date are missing.",
-        remediation="Non-critical by design — no action required unless "
-        "fno_data has been missing for the ticker/date for multiple "
-        "consecutive days, in which case rerun via "
-        "POST /api/v1/ops/steps/download_fno/force for the affected date.",
-        severity="warning",
-    ),
+    # 2026-07-29: download_fno was promoted to critical (its scrape/write
+    # failure now propagates instead of being caught here) — removed from
+    # this catalog since it's no longer a swallowed exception. See
+    # step_download_fno's docstring in daily_pipeline.py.
     ExceptionCatalogEntry(
         step_name="download_index_ohlcv",
-        location="ingestion/scheduler/daily_pipeline.py:344",
+        location="ingestion/scheduler/daily_pipeline.py:382",
         caught="NSE indices-close archive fetch or index_ohlcv write "
         "failure (A31).",
         impact="index_ohlcv missing for the date — sector-rotation report "
@@ -61,24 +51,14 @@ CATALOG: list[ExceptionCatalogEntry] = [
         "a specific historical date.",
         severity="info",
     ),
-    ExceptionCatalogEntry(
-        step_name="download_corporate_actions",
-        location="ingestion/scheduler/daily_pipeline.py:621",
-        caught="NSE corporate-action filings fetch or upsert failure.",
-        impact="corporate_actions has no new rows for the date. "
-        "step_adjust_prices sees a stale ledger — a corporate action "
-        "effective this date won't be applied until this step succeeds "
-        "on a later run (adjust_prices re-processes full history each "
-        "time it runs, so this self-heals once the source recovers).",
-        remediation="Non-critical short-term. If missing for the same "
-        "ticker across multiple days near a known ex-date, rerun via "
-        "POST /api/v1/ops/steps/download_corporate_actions/force, then "
-        "re-run adjust_prices for the affected dates.",
-        severity="warning",
-    ),
+    # 2026-07-30: download_corporate_actions was promoted to critical (its
+    # scrape/write failure now propagates instead of being caught here,
+    # mirroring download_fno's 2026-07-29 fix) — removed from this catalog
+    # since it's no longer a swallowed exception. See
+    # step_download_corporate_actions's docstring in daily_pipeline.py.
     ExceptionCatalogEntry(
         step_name="download_large_deals",
-        location="ingestion/scheduler/daily_pipeline.py:671",
+        location="ingestion/scheduler/daily_pipeline.py:730",
         caught="Combined NSE+BSE bulk/block deal fetch or persist "
         "failure (each of the 4 underlying sources is independently "
         "caught inside download_large_deals() itself; this is the "
@@ -95,7 +75,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="attribute_bulk_deals",
-        location="ingestion/scheduler/daily_pipeline.py:711",
+        location="ingestion/scheduler/daily_pipeline.py:770",
         caught="Wash-trade netting / investor_family attribution failure "
         "over that date's own large_deals rows.",
         impact="bulk_deal_positions missing for the date. Purely a "
@@ -108,7 +88,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="publish_and_snapshot",
-        location="ingestion/scheduler/daily_pipeline.py:1568",
+        location="ingestion/scheduler/daily_pipeline.py:1649",
         caught="N=7 rollback snapshot (fno_data, ohlcv_adjusted) write or "
         "prune failure. Runs last, after every other writer for the date.",
         impact="No new rollback snapshot exists for this date — "
@@ -124,7 +104,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="main (scheduler startup)",
-        location="ingestion/scheduler/daily_pipeline.py:2045",
+        location="ingestion/scheduler/daily_pipeline.py:2134",
         caught="scheduler.remove_job('backfill_catchup') raising "
         "JobLookupError when the stale persisted job doesn't exist (the "
         "common case after the first cleanup run).",

@@ -1,0 +1,3 @@
+ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank,pnl_inr,pnl_pct,exit_reason
+FMGOETZE,65,2020-01-28,612.75,2020-02-03,562.85,,-3403.6948967450007,-0.08545824051081193,exit_model_urgent
+CRISIL,24,2020-01-28,1650.3549795962,2020-02-10,1564.8946935857,,-2210.3559737062606,-0.05580506418905602,exit_model_urgent

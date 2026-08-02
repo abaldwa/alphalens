@@ -114,7 +114,14 @@ STEPS = [
     # like check_ta_alerts. Hard-depends on adjust_prices (needs that
     # day's OHLCV settled). Only fails the checkpoint on a 'critical'
     # finding — 'warning'/'info' findings are recorded but don't block.
-    {"name": "data_integrity_check", "is_backfillable": True, "depends_on": ["adjust_prices"]},
+    # 2026-07-30 (user decision): also depends_on download_corporate_actions
+    # (now critical, see step_download_corporate_actions's docstring) so
+    # this check never runs against a corporate_actions table that's
+    # missing that same day's actions — both steps are backfillable, so a
+    # failed CA download blocks and later retries this check together
+    # rather than evaluating stale/incomplete data now and never
+    # re-checking once the CA data actually lands.
+    {"name": "data_integrity_check", "is_backfillable": True, "depends_on": ["adjust_prices", "download_corporate_actions"]},
     # compute_features needs adjusted OHLCV. macro/fno data is consumed as
     # NaN-tolerant soft inputs — features compute fine without them.
     {"name": "compute_features", "is_backfillable": True, "depends_on": ["adjust_prices", "data_integrity_check"]},

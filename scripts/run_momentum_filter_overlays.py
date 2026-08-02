@@ -66,7 +66,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar
+from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, trade_quality_metrics
 from backtest.momentum_tax import post_tax_ending_value
 from config.settings import DUCKDB_PATH, MAX_ORDER_VS_ADTV, MIN_ADTV_CR
 from config.timezone import now_ist
@@ -79,7 +79,8 @@ from scripts.download_damodaran_datasets import SECTOR_UNLEVERED_BETAS
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-WIDE_BANDS = [(6, 251, 500), (7, 501, 800)]  # matches run_momentum_experimentation.py
+# 2026-07-29: 201-250 band added to match run_momentum_experimentation.py
+WIDE_BANDS = [(8, 201, 250), (6, 251, 500), (7, 501, 800)]
 
 STARTING_CAPITAL = 1_000_000.0
 INVESTABLE_PCT = 0.8
@@ -274,6 +275,7 @@ def run_overlays(years_back: int = 10) -> Dict:
                         avg_days_held = (
                             sum(t["holding_days"] for t in closed) / len(closed) if closed else None
                         )
+                        trade_quality = trade_quality_metrics(result.transactions)
                         variant_cagr = cagr(
                             result.starting_capital, result.ending_value, result.start_date, result.end_date
                         )
@@ -294,6 +296,10 @@ def run_overlays(years_back: int = 10) -> Dict:
                             "n_closed_trades": len(closed),
                             "n_open_trades": len(result.transactions) - len(closed),
                             "avg_days_held": avg_days_held,
+                            "total_trades": trade_quality["total_trades"],
+                            "avg_trade_duration_days": trade_quality["avg_trade_duration_days"],
+                            "n_outlier_trades": trade_quality["n_outlier_trades"],
+                            "max_abs_return_zscore": trade_quality["max_abs_return_zscore"],
                         })
 
     return {

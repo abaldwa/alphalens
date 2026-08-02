@@ -51,6 +51,7 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 | A51 | Flip A25 staging's default `--publish-mode` from `direct` to `staged` for the remaining writers (kaggle/trendlyne/nse_xbrl fundamentals, amfi holdings, corporate actions, screener `write_batch`) | Data Layer / Ingestion | ✅ 2026-07-10 | trendlyne/nse_xbrl backfill CLI flags + `amfi_holdings.sync_duckdb_table` flipped to default `staged`, pinned by a new fitness test — see writeup below. `load_kaggle_fundamentals.py` portion is now N/A (removed entirely, see A62). **2026-07-10 follow-up investigation — the remaining two items are correctly closed, not gaps**: `corporate_actions.py`'s daily-step call site intentionally stays `direct` per its own docstring — `upsert_corporate_actions_staged`'s full-table `CREATE OR REPLACE` swap is designed for `backfill_corporate_actions.py`'s large accumulated batches, and would be wasteful/add lock contention if applied daily to a handful of same-day rows; flipping it would work against A25's own design, not complete it. Screener's `write_batch` already achieves A25's actual goal (one write-lock acquisition per chunk instead of per-ticker) via `write_fundamentals_batch`'s batched `executemany` in `datastore/api/routers/fundamentals.py` — a live/incremental API endpoint has no bulk-backfill CLI to add a `--publish-mode` flag to in the first place; the staging/publish full-table-swap mechanism doesn't fit this call pattern. Marked ✅ — both design intents already correctly served by different, better-fitting mechanisms |
 | A52 | Model training schedule: spread `_MODEL_TRAINING_SCRIPT_MAP`'s scripts across nightly 11pm-6am windows through the week instead of one big Saturday job | Scheduler / ML Signal Engine | ✅ 2026-07-10 | `_MODEL_TRAINING_GROUPS` + `schedule_model_training_nightly` land Mon-Thu 23:00 IST per-group jobs, wired into `daily_pipeline.py::main()` (takes effect on next scheduler restart); old `schedule_model_training` kept intact, unused — see writeup below |
 | A53 | "Trained but unused" detector: diff `registry.json` model entries against what `daily_inference.py` actually calls, alerting on a gap (the class of bug behind A38/A40/T5) | Ops / ML Signal Engine | ✅ 2026-07-10 | `ingestion/scheduler/model_usage_audit.py` built (curated `CONSUMERS` map + `find_trained_but_unused_models`), tft/bilstm premarked unused so it has real positives once A38 trains them. 2026-07-10 (Group 1 backlog sweep): verified this row's "not yet wired into an Ops dashboard panel" note was stale — `GET /api/v1/ops/unused-models` (`datastore/api/routers/ops.py`) already calls `find_trained_but_unused_models` and the "Trained-But-Unused Models" panel already renders it in `dashboard/static/ops/index.html`/`js/index.js` (`unused-models-table` / `loadUnusedModels`), landed in the same 2026-07-10 session as this audit module under the A45 writeup. No further code needed; corrected the status here to match reality |
+| A56 | Daily scheduler holds the DB lock for the whole run, not just while writing | Scheduler | ✅ 2026-07-30 | `run_steps_for_date`'s single `pipeline_run_lock()` acquisition around the entire STEPS cascade replaced with a per-step acquire/release — see writeup below |
 | A57 | Live Ops Monitor showed 880 pending `null_sweep` findings, none reviewed — root cause turned out to be a real, unresolved fundamentals-ratio null collapse since 2026-07-03, not just alert-fatigue noise | Data Layer / Ingestion / Ops | ✅ 2026-07-10 | Root cause: `features/fundamental.py::compute_fundamental_features_panel` and `features/forensic_classical.py::compute_forensic_classical_features_panel` swallowed `httpx.RequestError` in a blanket `except Exception`, silently writing all-NaN fundamentals/forensic-classical features for every ticker whenever the DataStore API had a transient outage (e.g. the 2026-07-03 manual-migration restart) — the NaN was then permanent since nothing re-ran those dates. Fixed: both panels now catch `httpx.RequestError` separately and `raise` (fail loud), matching A44's precedent on the OHLCV path; `step_compute_features` in `ingestion/scheduler/daily_pipeline.py` now calls `_wait_for_datastore_api()` before building either matrix. **2026-07-10 follow-up**: bulk-rejected the 4 pending findings that matched the (now-corrected) allowlist (`benford_mad` — the only allowlisted column that actually had pending findings; a full cross-check confirmed zero other allowlisted columns remain in the pending backlog). The other 876 pending findings are legitimately left open — 220 distinct columns × 4 dates, none matching `_SANITY_KNOWN_SPARSE_COLUMNS` — until the regression itself is verified fixed. Force-regenerating the corrupted 2026-07-03→07-08 daily feature files explicitly deferred per user instruction ("keeping this for a later time") — until that runs, most of the 876 remain pending on purpose, not stale |
 | A58 | ~40 of the 880 findings' columns looked like already-documented structurally-sparse forensic gaps (FeatureBacklog FO8/A26), but only about half actually are | Data Layer / Ingestion | ✅ 2026-07-10 | Column-by-column investigation split them three ways. (1) Real bugs, now fixed: `intangibles_growth` in `features/deep_forensic.py` read the wrong dict key (`"intangibles"` instead of the real schema/NSE-XBRL column `"intangible_assets"`, populated on 5,760/36,346 rows) — fixed the lookup key only, left the schema column and the existing YoY-diff calculation untouched per explicit instruction. `audit_qualification_flag`/`goodwill_ratio`/`capex_to_assets`/`noncash_assets_ratio` were already correctly wired to real, populated NSE XBRL columns — the FO8-era "unavailable" docstring claim was stale (predated `ingestion/scrapers/nse_xbrl_financials.py`'s structured parser); docstring corrected, all 5 columns removed from `daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS` so a future regression in their computation is still caught by `step_sanity_check`. (2) Real-but-unscheduled scrapers, now scheduled: `scripts/backfill_promoter_pledge_nse.py` and `scripts/backfill_balance_sheet_from_screener.py` were both live-verified 2026-07-07 but never invoked by any scheduler — added `schedule_promoter_pledge_backfill`/`schedule_balance_sheet_backfill` (Saturday 11:00/11:30 IST, after `weekend_fundamentals`) to `ingestion/scheduler/pipeline_scheduler.py`, wired into `daily_pipeline.py::main()`. (3) Genuinely unfixable today (no schema column, or freeform-text-only NSE disclosures — `contingent_liability_ratio`, `subsidiary_count`, `loans_to_related`, `off_balance_sheet_proxy`, and Group E's remaining 7 governance columns): left in the allowlist. `benford_mad` added to the allowlist after fixing forensic_classical.py's matching A52-class bug (see A57) — its residual nulls are legitimate new-listing warmup, not breakage |
 | A62 | Kaggle confirmed dead code — `scripts/load_kaggle_fundamentals.py` never invoked by any scheduler/job registry/pipeline; operator decision: remove entirely | Data Layer / Ingestion | ✅ 2026-07-10 | Deleted `scripts/load_kaggle_fundamentals.py` (no test file existed for it). Removed `"kaggle": 1` from `SOURCE_PRIORITY` in `features/fundamental_source_priority.py`; real precedence is now NSE XBRL (4) > Trendlyne (3) > Screener (2) — confirmed correct via existing `build_priority_update_clause` logic, no change needed there beyond dropping the dict entry. Updated docstrings/comments in `datastore/schema/create_normalised.py` and `features/fundamental_quality_gate.py` that referenced the removed script. Updated `tests/unit/test_fundamental_source_priority.py`'s 6 tests to use `screener` instead of `kaggle` as the lowest-ranked source in the priority-ordering assertions — all pass. Remaining `kaggle` mentions in the codebase are historical-incident-narrative comments (BuildLog-style "what was true when this was fixed" notes), left as-is per this project's existing convention for such comments |
@@ -1406,6 +1407,65 @@ policy question, A70 for the menu-slider fix). One genuine gap found and
 logged as A73: resizable/expandable table columns (item 1c of the
 source doc), distinct from A66/A67/A68/A69, not covered by any existing
 entry or infra.
+
+---
+
+### A56 — Daily scheduler holds the DB lock for the whole run, not just while writing
+
+**2026-07-30, user-reported and fixed same session.** Root cause found:
+`ingestion/scheduler/pipeline_scheduler.py::run_steps_for_date` wrapped
+its *entire* STEPS loop — every step in the day's cascade, bhavcopy
+through `publish_and_snapshot`, often hours including ML training steps
+— in a single `with pipeline_run_lock() as acquired:` block, held
+continuously from the first step to the last. Distinct from A50 (which
+investigated and confirmed the lock *primitives* themselves release
+correctly in `finally` on every path) — the bug here was the *caller*
+wrapping far more work than necessary in one critical section, not a
+leak in the lock itself. Anything else that also needs
+`pipeline_run_lock()` — most notably `datastore/api/routers/ops.py`'s
+`force_run_step`, which acquires the same lock — was blocked for the
+whole cascade, including well after backfill's early steps had
+completed, exactly matching the user's report.
+
+**Fix:** the lock is now re-acquired per-step, scoped to just that one
+step's running/execute/success-or-failed checkpoint sequence (the actual
+critical section the 2026-07-05 race fix needs protected — see
+`pipeline_run_lock`'s docstring), and released again before evaluating
+the next step's dependencies. A concurrent caller (Ops force-run, a
+second scheduler invocation) can now interleave between steps instead of
+being locked out for the entire run. Dependency-skip checkpoint writes
+(a step whose prerequisite didn't succeed) don't touch the lock at all —
+that's a local decision not to run something, not a DB write racing
+against another invocation's real step execution.
+
+Return-value semantics preserved carefully for the one behavior that
+actually changes: if this invocation loses the lock partway through
+(another process grabs it between two of its steps) after already having
+completed some steps itself, it now returns `False` (incomplete) instead
+of the old blanket `True` — returning `True` here would have wrongly
+told callers like `run_backfill` that the date was fully done. If the
+lock was never acquired at all (contention from the very first step,
+same as before this change), it still returns `True` — this invocation
+attempted nothing, so the in-progress run elsewhere is the one that will
+report the real outcome; nothing to mark as failed. Already-written
+per-step checkpoints mean a `False` return costs nothing beyond a
+retry — the next call resumes from exactly where this one stopped
+(SPEC-SCHED-002), no step is ever re-executed.
+
+`datastore/api/routers/ops.py::force_run_step` and
+`_execute_queued_feature_backfill_job`'s lock-polling wait needed no
+changes — both benefit automatically from the lock now being free far
+more often during a run.
+
+New tests in `tests/unit/test_scheduler.py::TestPipelineRunLockPerStepScope`:
+confirms the lock is acquired/released once per attempted step (not once
+for the whole run), and both return-value branches (lost lock with vs.
+without prior progress in this invocation). Full regression sweep of
+every test touching this lock/checkpoint machinery
+(`test_scheduler.py`, `test_scheduler_resume.py`,
+`test_pipeline_scheduler_utils.py`, `test_ops_router.py`,
+`test_ops_lock_status.py`, `test_lock_monitor.py`,
+`test_checkpoint_backfill_flag.py` — 88 tests) green.
 
 ---
 

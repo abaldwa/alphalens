@@ -65,6 +65,23 @@ def main() -> None:
             ).fetchall()
             all_tickers = [r[0] for r in rows]
 
+        # scripts/fyers_correct_split_bonus_windows.py (2026-07-30) writes
+        # Fyers' own already-adjusted OHLCV directly for these tickers —
+        # never layer our own multiplicative adj_factor on top of that.
+        try:
+            fyers_corrected = {
+                r[0] for r in conn.execute("SELECT DISTINCT ticker FROM fyers_ca_corrected").fetchall()
+            }
+        except Exception:
+            fyers_corrected = set()
+        if fyers_corrected:
+            before = len(all_tickers)
+            all_tickers = [t for t in all_tickers if t not in fyers_corrected]
+            logger.info(
+                "Excluding %d ticker(s) already Fyers-corrected (fyers_ca_corrected): %d -> %d",
+                len(fyers_corrected), before, len(all_tickers),
+            )
+
         if args.skip_adjusted:
             already = {r[0] for r in conn.execute(
                 "SELECT DISTINCT ticker FROM ohlcv_ca_audit"

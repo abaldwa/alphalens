@@ -246,3 +246,78 @@ export interface TASummaryResponse {
   avg_delivery_pct_21d: number | null
   delivery_pct_zscore_21d: number | null
 }
+
+// --- Backtest (Momentum-parity sweep reports, 2026-08-01) ---
+// Mirrors datastore/api/routers/technical_backtest.py's read endpoints —
+// those return the report JSON file's raw dict rather than a strict
+// per-field schema (variant shapes differ meaningfully across the three
+// sweep types), so these interfaces are deliberately loose (optional
+// fields) rather than exhaustive.
+
+export interface TABacktestVariant {
+  template_name?: string
+  template?: string
+  strategy?: string
+  variant_kind?: 'single' | 'combo'
+  filter?: string
+  top_n: number
+  exit_variant?: string
+  max_hold_days?: number | null
+  run_id?: string | null
+  cagr: number | null
+  sharpe: number | null
+  sortino: number | null
+  calmar: number | null
+  win_rate: number | null
+  n_trades?: number | null
+  total_trades: number | null
+  avg_trade_duration_days: number | null
+  n_outlier_trades: number | null
+  max_abs_return_zscore: number | null
+  signal_failures?: TASignalFailureBreakdown
+}
+
+export interface TASignalFailureBreakdown {
+  n_losing_trades: number
+  n_winning_trades: number
+  losing_trades: {
+    ticker: string
+    buy_date: string
+    sell_date: string
+    pnl_pct: number
+    entry_signal_score?: string | number | null
+  }[]
+  mean_matched_conditions_ratio_losers: number | null
+  mean_matched_conditions_ratio_winners: number | null
+}
+
+export interface TAExperimentationReport {
+  generated_at: string | null
+  report_file: string
+  initial_capital?: number
+  n_jobs_total?: number
+  n_jobs_reported?: number
+  variants: TABacktestVariant[]
+}
+
+export interface TAFilterOverlaysReport extends TAExperimentationReport {
+  filters?: string[]
+  filter_params?: Record<string, Record<string, unknown>>
+}
+
+export interface TARecommendedStrategiesReport extends TAExperimentationReport {
+  strategies?: Record<string, unknown>
+  combo_templates?: string[][]
+}
+
+export interface TATriggerResponse {
+  job_id: string
+  status: string
+}
+
+export interface TATriggerStatus {
+  job_id: string
+  status: 'running' | 'completed' | 'failed' | 'unknown'
+  log_tail: string | null
+  report_file: string | null
+}

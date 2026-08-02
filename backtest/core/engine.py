@@ -65,10 +65,13 @@ logger = logging.getLogger(__name__)
 _NO_MAX_HOLD_DAYS_SENTINEL = 10**9
 
 
-def _build_default_exit_model():
+def _build_default_exit_model(max_hold_days: int = _NO_MAX_HOLD_DAYS_SENTINEL):
     """PerTemplateExitPolicy(build_default_template_params()), with every
     template's (and the untagged-position default's) max_hold_days
-    replaced by _NO_MAX_HOLD_DAYS_SENTINEL — see that constant's docstring.
+    replaced by `max_hold_days` (default _NO_MAX_HOLD_DAYS_SENTINEL — see
+    that constant's docstring; 2026-08-01: now overridable so
+    build_exit_model_for_variant's own max_hold_days param can sweep real
+    day-count exit horizons instead of always disabling the barrier).
     Local imports: keeps engine.py's module-level import graph free of a
     hard dependency on systems/ml_signal_engine for callers (e.g. plain
     orchestration tests) that never touch exit_model."""
@@ -79,12 +82,12 @@ def _build_default_exit_model():
     from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy
 
     template_params = {
-        name: {**params, "max_hold_days": _NO_MAX_HOLD_DAYS_SENTINEL}
+        name: {**params, "max_hold_days": max_hold_days}
         for name, params in build_default_template_params().items()
     }
     return PerTemplateExitPolicy(
         template_params,
-        default_policy=RuleBasedExitPolicy(max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL),
+        default_policy=RuleBasedExitPolicy(max_hold_days=max_hold_days),
     )
 
 
@@ -103,12 +106,28 @@ _UNCONSTRAINED_TARGET_PCT = 10.0
 _UNCONSTRAINED_STOP_PCT = -0.99
 
 
-def build_exit_model_for_variant(variant: str, regime_conn=None, regime_index_name: str = "Nifty 500"):
+def build_exit_model_for_variant(
+    variant: str, regime_conn=None, regime_index_name: str = "Nifty 500",
+    max_hold_days: Optional[int] = None,
+):
     """Constructs the exit_model for one of EXIT_POLICY_VARIANTS — the
     factory backtest/run_orchestrator_backtest.py's --exit-variant CLI flag
     calls into. "baseline" (the default) reproduces today's
     _build_default_exit_model() exactly, so omitting --exit-variant is a
     no-op for every existing caller.
+
+    max_hold_days : optional (2026-08-01, Technical-strategy timeframe
+        sweep request) — overrides the day-count exit barrier for every
+        variant that has one (baseline/condition-combined's default
+        component/trailing/atr_adaptive/regime_conditional). None (the
+        default) preserves exactly today's behavior: every one of those
+        variants uses _NO_MAX_HOLD_DAYS_SENTINEL (i.e. the day-count
+        barrier is effectively off, stop/target/PnD are the only day-to-day
+        triggers) — this param was previously not exposed at all, so every
+        existing caller omitting it is unaffected. Deliberately NOT applied
+        to "unconstrained" (a fixed control variant whose whole point is no
+        engine-imposed barrier of any kind) or "condition"
+        (ConditionBasedExitPolicy has no day-count concept).
 
     Local imports: same rationale as _build_default_exit_model() above —
     keeps this module's import graph free of a hard systems.ml_signal_engine
@@ -123,28 +142,30 @@ def build_exit_model_for_variant(variant: str, regime_conn=None, regime_index_na
     from systems.ml_signal_engine.models.exit.regime_conditional_exit_policy import RegimeConditionalExitPolicy
     from systems.ml_signal_engine.models.exit.trailing_stop_exit_policy import TrailingStopExitPolicy
 
+    hold_days = max_hold_days if max_hold_days is not None else _NO_MAX_HOLD_DAYS_SENTINEL
+
     if variant == "baseline":
-        return _build_default_exit_model()
+        return _build_default_exit_model(hold_days)
 
     if variant == "condition":
         return ConditionBasedExitPolicy()
 
     if variant == "combined":
-        return CompositeExitPolicy([_build_default_exit_model(), ConditionBasedExitPolicy()])
+        return CompositeExitPolicy([_build_default_exit_model(hold_days), ConditionBasedExitPolicy()])
 
     if variant == "trailing":
         # TrailingStopExitPolicy has no per-template router of its own yet
         # (unlike PerTemplateExitPolicy) — a single global TrailingStopExitPolicy
         # (bootstrap flat target/stop numbers) is used here; a per-template
         # trailing-stop router is a documented follow-up, not built today.
-        return TrailingStopExitPolicy(max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL)
+        return TrailingStopExitPolicy(max_hold_days=hold_days)
 
     if variant == "atr_adaptive":
-        return ATRAdaptiveExitPolicy(max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL)
+        return ATRAdaptiveExitPolicy(max_hold_days=hold_days)
 
     if variant == "regime_conditional":
         template_params = {
-            name: {**params, "max_hold_days": _NO_MAX_HOLD_DAYS_SENTINEL}
+            name: {**params, "max_hold_days": hold_days}
             for name, params in build_default_template_params().items()
         }
         return RegimeConditionalExitPolicy(template_params)
@@ -155,7 +176,10 @@ def build_exit_model_for_variant(variant: str, regime_conn=None, regime_index_na
         # _UNCONSTRAINED_TARGET_PCT/_UNCONSTRAINED_STOP_PCT above), to test
         # whether the pre-per-template-exit-policy runs' higher CAGRs were
         # simply a strategy riding out drawdowns to a natural signal-based
-        # exit rather than being stopped/target-capped early.
+        # exit rather than being stopped/target-capped early. max_hold_days
+        # is intentionally NOT threaded in here — this variant's contract
+        # is "no barrier of any kind", overriding that would defeat its
+        # purpose as a fixed control.
         from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy as _RBEP
 
         return _RBEP(
@@ -608,6 +632,14 @@ class BacktestOrchestrator:
                     market_cap_rank=self._get_market_cap_rank_for_date(
                         signal.ticker, execution_date, buy_tickers_this_execution_date,
                     ),
+                    # 2026-08-01 (Technical signal-failure analysis): snapshot
+                    # the adapter's own entry-time feature_vector (screener
+                    # match score/matched_conditions for Technical; other
+                    # channels' feature_vector() may return less/nothing —
+                    # never fabricated, just whatever the adapter itself
+                    # already returns) onto the position so a losing trade
+                    # can be inspected against its actual entry signal later.
+                    entry_feature_vector=adapter.feature_vector(signal.ticker, execution_date),
                 )
 
             # Daily exit-policy pass (task requirement: checked EVERY trading
@@ -816,6 +848,10 @@ class BacktestOrchestrator:
         ]
         start_date = trading_days[0].date() if hasattr(trading_days[0], "date") else trading_days[0]
         end_date = trading_days[-1].date() if hasattr(trading_days[-1], "date") else trading_days[-1]
+        run_end_ts = pd.Timestamp(trading_days[-1])
+        open_holding_days = [
+            (run_end_ts - pd.Timestamp(pos.entry_date)).days for pos in portfolio.positions.values()
+        ]
 
         metrics = compute_metrics(
             equity_curve=equity_curve, cash_flows=cash_flows, trade_pnls=trade_pnls,
@@ -823,6 +859,11 @@ class BacktestOrchestrator:
             start_date=start_date, end_date=end_date, total_contributed=portfolio.total_contributed,
             cash_position_series=portfolio.cash_position_series,
             holding_days=holding_days,
+            # 2026-08-01 Momentum-parity additions — see compute_metrics'
+            # docstring. pnl_pct is already net-of-cost (fraction -> %).
+            trade_returns_pct=[t.pnl_pct * 100 for t in portfolio.trades],
+            n_open_positions=len(portfolio.positions),
+            holding_days_all=holding_days + open_holding_days,
         )
 
         from systems.regime.market_regime import METHOD_NAME

@@ -1,0 +1,2 @@
+ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank,pnl_inr,pnl_pct,exit_reason
+BALMLAWRIE,204,2026-05-13,195.44,2026-05-22,180.85,1,-3136.719842737919,-0.07867415913057713,exit_model_urgent

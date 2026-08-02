@@ -58,6 +58,7 @@ import pandas as pd
 from backtest.adapters.fundamental_adapter import BESPOKE_PRESETS, FundamentalAdapter
 from backtest.adapters.momentum_adapter import MomentumAdapter
 from backtest.adapters.technical_adapter import TechnicalAdapter
+from backtest.adapters.technical_combo_adapter import TechnicalComboAdapter
 from backtest.batch_common import exclusive_backtest_lock
 from backtest.core.engine import EXIT_POLICY_VARIANTS, BacktestOrchestrator, OrchestratorConfig, build_exit_model_for_variant
 from backtest.core.feature_log import FeatureLogWriter
@@ -238,7 +239,14 @@ def _resolve_horizon_bucket(
     omitted, it defaults per channel — Technical from the template's real
     TEMPLATE_STYLE via the Explainer's published style->horizon table,
     Fundamental from its preset, Momentum from its lookback_months (see
-    backtest/strategy_id.py's default_horizon_for_* docstrings)."""
+    backtest/strategy_id.py's default_horizon_for_* docstrings).
+
+    For a combo run (--combo-templates), template_name is the caller's
+    already-resolved "first template in the combo" convenience value (see
+    run_orchestrator_backtest's combo branch) — same TEMPLATE_STYLE lookup,
+    just resolved off one representative template rather than requiring an
+    explicit --horizon-bucket for every combo.
+    """
     if horizon_bucket:
         if horizon_bucket in HORIZON_BUCKET_MAP:
             return HORIZON_BUCKET_MAP[horizon_bucket]
@@ -277,8 +285,20 @@ def run_orchestrator_backtest(
     regime_index_name: Optional[str] = "Nifty 500",
     exit_policy_variant: str = "baseline",
     regime_method: Optional[str] = None,
+    max_hold_days: Optional[int] = None,
+    min_adtv_cr: Optional[float] = None,
+    quality_gate_min_f_score: Optional[float] = None,
+    quality_gate_max_m_score: Optional[float] = None,
+    downtrend_filter_pct: Optional[float] = None,
+    circuit_band_pct: Optional[float] = None,
+    disable_buys_in_regime: Optional[List[str]] = None,
+    combo_templates: Optional[List[str]] = None,
 ) -> dict:
-    horizon = _resolve_horizon_bucket(channel, horizon_bucket, template_name, preset, lookback_months)
+    if combo_templates and len(combo_templates) < 2:
+        raise ValueError("combo_templates needs at least 2 templates — use --template-name for a single one")
+    horizon = _resolve_horizon_bucket(
+        channel, horizon_bucket, combo_templates[0] if combo_templates else template_name, preset, lookback_months,
+    )
 
     run_started = time.monotonic()
     run_date = now_ist()
@@ -291,7 +311,8 @@ def run_orchestrator_backtest(
     # strategy_catalog needs it regardless of whether the caller passed an
     # explicit strategy_id.
     descriptor = {
-        "technical": template_name, "fundamental": preset,
+        "technical": ("+".join(combo_templates) if combo_templates else template_name),
+        "fundamental": preset,
         "momentum": f"top{top_n}_{lookback_months}m",
     }[channel]
     if not strategy_id:
@@ -322,12 +343,42 @@ def run_orchestrator_backtest(
         _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
 
         if channel == "technical":
-            if not template_name:
-                raise ValueError("channel=technical requires --template-name")
-            adapter = TechnicalAdapter(
-                template_name=template_name, top_n=top_n, sector_lookup=sector_map,
+            if not template_name and not combo_templates:
+                raise ValueError("channel=technical requires --template-name or --combo-templates")
+            quality_gate = {}
+            if quality_gate_min_f_score is not None:
+                quality_gate["min_f_score"] = quality_gate_min_f_score
+            if quality_gate_max_m_score is not None:
+                quality_gate["max_m_score"] = quality_gate_max_m_score
+            _shared_adapter_kwargs = dict(
+                top_n=top_n, sector_lookup=sector_map,
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+                min_adtv_cr=min_adtv_cr,
+                quality_gate=quality_gate or None,
+                downtrend_filter_pct=downtrend_filter_pct,
+                circuit_band_pct=circuit_band_pct,
+                disable_buys_in_regime=set(disable_buys_in_regime) if disable_buys_in_regime else None,
+                regime_index_name=regime_index_name or "Nifty 500",
+                regime_method=regime_method,
+                # regime_conn wired post-construction below, same deferred
+                # pattern as _screener_cache_conn — the connection doesn't
+                # exist yet at this point in the function.
             )
+            if combo_templates:
+                # 2026-08-01 (Momentum-parity "combination of strategies")
+                # — one TechnicalAdapter per combo template, same filter
+                # kwargs on each, pooled by TechnicalComboAdapter. Each
+                # sub-adapter's top_n is generous (5x the combo's own
+                # top_n) since the COMBO applies the real top_n cut after
+                # pooling — an individual sub-adapter must not silently
+                # truncate a candidate away before pooling gets to see it.
+                sub_kwargs = {**_shared_adapter_kwargs, "top_n": top_n * 5}
+                sub_adapters = [
+                    TechnicalAdapter(template_name=name, **sub_kwargs) for name in combo_templates
+                ]
+                adapter = TechnicalComboAdapter(sub_adapters, top_n=top_n)
+            else:
+                adapter = TechnicalAdapter(template_name=template_name, **_shared_adapter_kwargs)
         elif channel == "fundamental":
             if not preset:
                 raise ValueError("channel=fundamental requires --preset")
@@ -363,6 +414,11 @@ def run_orchestrator_backtest(
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
                 "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
+                "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
+                "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
+                "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
+                "disable_buys_in_regime": disable_buys_in_regime,
+                "combo_templates": combo_templates,
             },
         )
 
@@ -410,14 +466,25 @@ def run_orchestrator_backtest(
                 # `adapter` is built above) — shares entry-signal candidates
                 # across every exit-variant job for the same template via
                 # technical_screener_cache (backtest/core/screener_cache.py,
-                # 2026-07-25 fix — see FeatureBacklog.md).
-                adapter._screener_cache_conn = conn
+                # 2026-07-25 fix — see FeatureBacklog.md). For a combo run,
+                # every underlying sub-adapter needs this wired individually
+                # (TechnicalComboAdapter itself has no screener/regime state
+                # of its own — it only pools its sub-adapters' output).
+                _technical_sub_adapters = adapter.adapters if combo_templates else [adapter]
+                for _sub in _technical_sub_adapters:
+                    _sub._screener_cache_conn = conn
+                    # Same deferred-wiring reason as _screener_cache_conn
+                    # above — only meaningful when disable_buys_in_regime
+                    # was actually requested; regime_conn is always a real
+                    # (possibly no-op _no_regime_conn()) context manager either way.
+                    _sub._regime_conn = regime_conn
             elif channel == "fundamental" and preset in BESPOKE_PRESETS:
                 # Same deferred-wiring pattern as the technical branch above.
                 adapter._db_conn = fundamentals_conn
             feature_log_writer = FeatureLogWriter(conn)
             exit_model = build_exit_model_for_variant(
                 exit_policy_variant, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500",
+                max_hold_days=max_hold_days,
             )
             # ConditionBasedExitPolicy (and CompositeExitPolicy wrapping it)
             # need live technical indicator values per ticker/day — only
@@ -493,7 +560,11 @@ def run_orchestrator_backtest(
             # second connection to the same file, which DuckDB rejects
             # while a read-write connection is already held.
             if result.trade_log_path:
-                export_trade_book(run_id, Path(result.trade_log_path), conn=conn)
+                # write_html=True only for the technical channel (2026-08-01
+                # user request, scoped to Technical — Momentum's own
+                # separate trade-book writer in scripts/run_momentum_*.py
+                # is intentionally left CSV-only).
+                export_trade_book(run_id, Path(result.trade_log_path), conn=conn, write_html=channel == "technical")
 
     runtime_seconds = time.monotonic() - run_started
     logger.info(f"orchestrator backtest finished in {runtime_seconds:.1f}s: {json.dumps(result.metrics, default=str)}")
@@ -568,6 +639,53 @@ def main() -> None:
             "per-regime performance breakdown; other variants ignore it."
         ),
     )
+    # 2026-08-01 Momentum-parity additions — all default to None/off, no
+    # behavior change for any existing caller that omits them.
+    parser.add_argument(
+        "--max-hold-days", type=int, default=None,
+        help=(
+            "Override the exit policy's day-count barrier (backtest/core/engine.py::"
+            "build_exit_model_for_variant) for --exit-variant baseline/combined/trailing/"
+            "atr_adaptive/regime_conditional. Default (omit) preserves today's behavior — "
+            "day-count barrier effectively off. Ignored for condition/unconstrained."
+        ),
+    )
+    parser.add_argument(
+        "--min-adtv-cr", type=float, default=None,
+        help="technical channel: liquidity floor (crores trailing ADTV) — a candidate below this is dropped before ranking.",
+    )
+    parser.add_argument(
+        "--quality-gate-min-f-score", type=float, default=None,
+        help="technical channel: drop a candidate whose Piotroski F-score is below this (only affects tickers with a real score on record).",
+    )
+    parser.add_argument(
+        "--quality-gate-max-m-score", type=float, default=None,
+        help="technical channel: drop a candidate whose Beneish M-score exceeds this (only affects tickers with a real score on record).",
+    )
+    parser.add_argument(
+        "--downtrend-filter-pct", type=float, default=None,
+        help="technical channel: drop a candidate whose trailing 20-day price return is <= -this fraction.",
+    )
+    parser.add_argument(
+        "--circuit-band-pct", type=float, default=None,
+        help="technical channel: drop a candidate whose latest 1-day return meets/exceeds this magnitude (circuit-lock proxy).",
+    )
+    parser.add_argument(
+        "--disable-buys-in-regime", default=None,
+        help=(
+            "technical channel: comma-separated regime label(s) (bull/bear/sideways) to disable NEW "
+            "buys in, e.g. 'bear' or 'bear,sideways' — a single string (not repeatable) so this also "
+            "serializes cleanly as one job-dict field for run_strategy_queue.py."
+        ),
+    )
+    parser.add_argument(
+        "--combo-templates", default=None,
+        help=(
+            "technical channel: comma-separated template names (2+) to pool into ONE combined "
+            "TechnicalComboAdapter strategy instead of a single --template-name, e.g. 'A1,D4'. "
+            "Mutually exclusive with --template-name."
+        ),
+    )
     args = parser.parse_args()
 
     run_orchestrator_backtest(
@@ -578,6 +696,12 @@ def main() -> None:
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months, run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
+        max_hold_days=args.max_hold_days, min_adtv_cr=args.min_adtv_cr,
+        quality_gate_min_f_score=args.quality_gate_min_f_score,
+        quality_gate_max_m_score=args.quality_gate_max_m_score,
+        downtrend_filter_pct=args.downtrend_filter_pct, circuit_band_pct=args.circuit_band_pct,
+        disable_buys_in_regime=args.disable_buys_in_regime.split(",") if args.disable_buys_in_regime else None,
+        combo_templates=args.combo_templates.split(",") if args.combo_templates else None,
     )
 
 

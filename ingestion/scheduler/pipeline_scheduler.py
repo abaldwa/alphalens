@@ -272,69 +272,107 @@ def run_steps_for_date(
     ------
     None — step_runner exceptions are caught and recorded as a failed
     checkpoint, not propagated.
+
+    Lock scope (A56, 2026-07-30)
+    -----------------------------
+    Earlier, a single pipeline_run_lock() acquisition wrapped this
+    function's *entire* STEPS loop — every step, for the whole cascade
+    (bhavcopy through publish_and_snapshot), often hours. That held the
+    lock long after any actual table write had finished (e.g. through the
+    whole of a slow but lock-irrelevant step, or after backfill's early
+    steps had long since completed), starving out anything else that
+    needed it — notably datastore/api/routers/ops.py's force_run_step,
+    which also acquires this same lock and would be blocked for the
+    entire cascade even to force a single unrelated step. The lock is now
+    re-acquired per-step, held only around that one step's
+    running/execute/success-or-failed checkpoint sequence — the actual
+    critical section the 2026-07-05 race fix (see pipeline_run_lock's
+    docstring) needs protected — and released again before the next
+    step's dependency check. A concurrent invocation can now interleave
+    between steps instead of being locked out for the whole run.
+
+    Losing the lock mid-loop (another process grabs it between two of
+    this invocation's steps) is handled differently depending on whether
+    this invocation had already made progress: if nothing has been
+    attempted yet, defer entirely (return True — same "the in-progress
+    run will report the real outcome" reasoning as before). If some
+    steps already succeeded in this call, returning True would wrongly
+    tell the caller (e.g. run_backfill) that this date is fully done —
+    return False instead, so it's correctly retried; already-written
+    checkpoints make that retry resume from exactly where this call
+    stopped (SPEC-SCHED-002), nothing is redone.
     """
-    # 2026-07-05: cross-process guard (see pipeline_run_lock's docstring)
-    # — if another process (the scheduler's other recurring job, or the
-    # Ops API's force_run_step) is already executing steps for any date,
-    # skip this call entirely rather than racing on pipeline_checkpoints.
-    # Returning True (not False) here is deliberate: this invocation did
-    # not attempt anything, so it must never be recorded as a failed run
-    # — the in-progress invocation is the one that will record the real
-    # outcome.
-    with pipeline_run_lock() as acquired:
-        if not acquired:
-            logger.warning(
-                f"run_steps_for_date({run_date}): another run is already in progress "
-                "(cross-process lock held) — skipping this call to avoid racing "
-                "checkpoints; the in-progress run will complete normally"
+    resume_step = checkpoint_manager.get_resume_step(run_date)
+    if resume_step is None:
+        logger.info(f"All steps already succeeded for {run_date} — nothing to do")
+        return True
+
+    resume_index = STEP_NAMES.index(resume_step)
+
+    # Pre-seed with steps that already succeeded (from prior runs of this
+    # date). SPEC-SCHED-011: dependency checks must honour cross-run state
+    # so a fixed prerequisite unlocks its dependents on resume.
+    succeeded_this_run: set = checkpoint_manager.get_succeeded_steps(run_date)
+
+    any_step_failed = False
+    any_step_attempted = False
+
+    for index, step in enumerate(STEPS):
+        step_name = step["name"]
+
+        if index < resume_index:
+            # SPEC-SCHED-002: already succeeded in a previous run; treat as
+            # succeeded for dependency resolution.
+            succeeded_this_run.add(step_name)
+            continue
+
+        if is_backfill and not step["is_backfillable"]:
+            logger.info(
+                f"Skipping non-backfillable step '{step_name}' for {run_date} (backfill)"
             )
-            return True
+            continue
 
-        resume_step = checkpoint_manager.get_resume_step(run_date)
-        if resume_step is None:
-            logger.info(f"All steps already succeeded for {run_date} — nothing to do")
-            return True
+        # SPEC-SCHED-011: dependency check. If any required predecessor did
+        # not succeed (failed, was skipped, or never ran), skip this step and
+        # record it as 'skipped' with the blocking dependency named. No
+        # pipeline_run_lock needed here — this is a local decision not to
+        # call step_runner, not a DB write racing against another
+        # invocation's real step execution.
+        deps = _STEP_DEPS.get(step_name, [])
+        unmet = [d for d in deps if d not in succeeded_this_run]
+        if unmet:
+            reason = f"dependency not met: {unmet}"
+            checkpoint_manager.save_checkpoint(
+                run_date, step_name, status="skipped", error_message=reason, is_backfill=is_backfill
+            )
+            logger.warning(
+                f"Skipping '{step_name}' for {run_date} — {reason}"
+            )
+            continue
 
-        resume_index = STEP_NAMES.index(resume_step)
-
-        # Pre-seed with steps that already succeeded (from prior runs of this
-        # date). SPEC-SCHED-011: dependency checks must honour cross-run state
-        # so a fixed prerequisite unlocks its dependents on resume.
-        succeeded_this_run: set = checkpoint_manager.get_succeeded_steps(run_date)
-
-        any_step_failed = False
-
-        for index, step in enumerate(STEPS):
-            step_name = step["name"]
-
-            if index < resume_index:
-                # SPEC-SCHED-002: already succeeded in a previous run; treat as
-                # succeeded for dependency resolution.
-                succeeded_this_run.add(step_name)
-                continue
-
-            if is_backfill and not step["is_backfillable"]:
-                logger.info(
-                    f"Skipping non-backfillable step '{step_name}' for {run_date} (backfill)"
-                )
-                continue
-
-            # SPEC-SCHED-011: dependency check. If any required predecessor did
-            # not succeed (failed, was skipped, or never ran), skip this step and
-            # record it as 'skipped' with the blocking dependency named.
-            deps = _STEP_DEPS.get(step_name, [])
-            unmet = [d for d in deps if d not in succeeded_this_run]
-            if unmet:
-                reason = f"dependency not met: {unmet}"
-                checkpoint_manager.save_checkpoint(
-                    run_date, step_name, status="skipped", error_message=reason, is_backfill=is_backfill
-                )
+        # 2026-07-05 cross-process guard (see pipeline_run_lock's docstring),
+        # now scoped to just this one step (A56, see docstring above) rather
+        # than the whole cascade.
+        with pipeline_run_lock() as acquired:
+            if not acquired:
+                if any_step_attempted:
+                    logger.warning(
+                        f"run_steps_for_date({run_date}): lock acquired by another "
+                        f"run before '{step_name}' could start, after this invocation "
+                        "already completed earlier steps — stopping here; already-"
+                        "written checkpoints let the next run resume exactly from "
+                        "this point (SPEC-SCHED-002)"
+                    )
+                    return False
                 logger.warning(
-                    f"Skipping '{step_name}' for {run_date} — {reason}"
+                    f"run_steps_for_date({run_date}): another run is already in progress "
+                    "(cross-process lock held) — skipping this call to avoid racing "
+                    "checkpoints; the in-progress run will complete normally"
                 )
-                continue
+                return True
 
             checkpoint_manager.save_checkpoint(run_date, step_name, status="running", is_backfill=is_backfill)
+            any_step_attempted = True
             try:
                 step_runner(run_date, step_name)
             except Exception as exc:
@@ -351,7 +389,7 @@ def run_steps_for_date(
                 )
                 succeeded_this_run.add(step_name)
 
-        return not any_step_failed
+    return not any_step_failed
 
 
 def run_backfill(
@@ -897,6 +935,162 @@ def _execute_morning_catchup_job(
         )
 
 
+def _execute_fno_late_catchup_job(
+    checkpoint_manager: CheckpointManager, job_id: str = "fno_late_catchup"
+) -> None:
+    """
+    Module-level job target for schedule_fno_late_catchup (A56 follow-up,
+    2026-07-30, user-reported). Top-level and picklable, same
+    SQLAlchemyJobStore constraint as _execute_daily_job.
+
+    Attempts download_fno for "today" at a time (default 21:00 IST) by
+    which NSE has routinely published that day's F&O bhavcopy —
+    step_download_fno itself now defers (no-op, not a failure) any live
+    attempt before config.settings.FNO_MIN_ATTEMPT_TIME, so the 18:00
+    daily_pipeline run never actually tries this and this job is the one
+    real attempt each day.
+
+    If download_fno succeeds here AND compute_features already ran
+    'success' for today (it always does — compute_features has no
+    dependency on download_fno, by design, since F&O is a NaN-tolerant
+    soft input; see features/fno_features.py's module docstring), that
+    means compute_features computed its 16 F&O-derived features from
+    whatever stale data was available within the 35-day lookback window
+    (features/fno_features.py::compute_fno_features), not today's real
+    chain. This job then re-runs compute_features for today in place so
+    those features get recomputed against the now-available real data.
+    Deliberately does NOT touch anything downstream of compute_features
+    (run_models/write_signals/sanity_check/paper_trade) — those already
+    ran off the stale-F&O feature set and are left alone; re-cascading a
+    full re-inference/re-signal/re-trade sequence every evening F&O data
+    happens to arrive late is a much bigger, unrequested change, and
+    paper_trade specifically must never re-fire for a date whose live
+    window already passed (SPEC-SCHED-006).
+
+    Parameters
+    ----------
+    checkpoint_manager : CheckpointManager
+    job_id : str
+        Recorded to scheduler_heartbeats under its own id, same reasoning
+        as _execute_daily_job's job_id parameter.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    None — wrapped in try/except (SPEC-SCHED-013), same reasoning as
+    _execute_daily_job.
+    """
+    from ingestion.scheduler.daily_pipeline import step_compute_features, step_download_fno
+
+    today = now_ist().date()
+    _t0 = _job_timer_start()
+
+    try:
+        if not is_trading_day(today):
+            duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+            _record_heartbeat(
+                job_id, "skipped", "not a trading day",
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+            return
+
+        checkpoint_manager.save_checkpoint(today, "download_fno", status="running", is_backfill=True)
+        try:
+            step_download_fno(today)
+        except Exception as exc:
+            checkpoint_manager.save_checkpoint(
+                today, "download_fno", status="failed", error_message=str(exc), is_backfill=True
+            )
+            duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+            logger.error(f"{job_id}: download_fno failed for {today}: {exc}")
+            _record_heartbeat(
+                job_id, "failed", str(exc),
+                duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+            )
+            return
+
+        checkpoint_manager.save_checkpoint(today, "download_fno", status="success", is_backfill=True)
+
+        recomputed_features = False
+        if "compute_features" in checkpoint_manager.get_succeeded_steps(today):
+            logger.info(
+                f"{job_id}: compute_features already ran for {today} off stale/fallback F&O "
+                "data — recomputing now that today's real F&O bhavcopy has landed"
+            )
+            try:
+                step_compute_features(today)
+                checkpoint_manager.save_checkpoint(today, "compute_features", status="success", is_backfill=True)
+                recomputed_features = True
+            except Exception as exc:
+                # Non-critical: today's features already exist (from the
+                # stale-fallback run) — a failure here just means they
+                # stay stale, not that anything is newly broken. Leave
+                # compute_features's checkpoint as its prior 'success' so
+                # nothing downstream gets wrongly marked failed over this.
+                logger.warning(f"{job_id}: compute_features re-run failed for {today}: {exc}")
+
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        _record_heartbeat(
+            job_id, "success",
+            f"features recomputed: {recomputed_features}",
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+    except Exception as exc:
+        logger.error(f"{job_id} job raised an unexpected exception: {exc}", exc_info=True)
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        _record_heartbeat(
+            job_id, "failed", str(exc),
+            duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb,
+        )
+
+
+def schedule_fno_late_catchup(
+    scheduler: BackgroundScheduler,
+    checkpoint_manager: CheckpointManager,
+    schedule_time: Optional[str] = None,
+) -> None:
+    """
+    Register the recurring late F&O catch-up job (A56 follow-up,
+    2026-07-30). See _execute_fno_late_catchup_job's docstring for what
+    it does and why.
+
+    Parameters
+    ----------
+    scheduler : BackgroundScheduler
+    checkpoint_manager : CheckpointManager
+    schedule_time : str, optional
+        Defaults to config.settings.FNO_LATE_CATCHUP_SCHEDULE_TIME
+        (21:00 IST).
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    None
+    """
+    if schedule_time is None:
+        from config.settings import FNO_LATE_CATCHUP_SCHEDULE_TIME
+        schedule_time = FNO_LATE_CATCHUP_SCHEDULE_TIME
+
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+
+    scheduler.add_job(
+        _execute_fno_late_catchup_job,
+        CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri", timezone="Asia/Kolkata"),
+        args=[checkpoint_manager],
+        id="fno_late_catchup",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+    logger.info(f"F&O late catch-up scheduled: time={schedule_time} IST")
+
+
 def _execute_daily_job(
     step_runner: StepRunner, checkpoint_manager: CheckpointManager, job_id: str = "daily_pipeline"
 ) -> None:
@@ -1021,7 +1215,14 @@ def _execute_backfill_catchup() -> None:
 
     _t0 = _job_timer_start()
     try:
-        fb = FYERSBackfill()
+        # non_interactive=True so a mid-run token re-derivation can never
+        # fall through to input()-based OAuth2 and hang forever (2026-07-30
+        # — same class of bug as datastore/integrity/checks.py's guards).
+        # fb is also now passed to run_backfill() below as `client=fb` —
+        # previously this pre-check validated a token that run_backfill()
+        # never actually used, since it defaults to a *separate*
+        # freshly-constructed FYERSBackfill() when no client is passed.
+        fb = FYERSBackfill(non_interactive=True)
         cached_token = fb._load_cached_token()
         if not cached_token or not fb._validate_token(cached_token):
             skip_reason = "no valid (same-day) FYERS token cached"
@@ -1042,7 +1243,7 @@ def _execute_backfill_catchup() -> None:
         from_date = to_date - timedelta(days=365 * BACKFILL_YEARS)
         tickers = get_tickers()
         logger.info(f"Backfill catch-up starting: {len(tickers)} universe tickers, {from_date}..{to_date}")
-        run_backfill(tickers, from_date.isoformat(), to_date.isoformat())
+        run_backfill(tickers, from_date.isoformat(), to_date.isoformat(), client=fb)
         duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
         _record_heartbeat(
             "backfill_catchup", "success",
@@ -1929,7 +2130,7 @@ def _execute_weekend_feature_backfill_job() -> None:
         logger.info("weekend_feature_backfill: starting feature Parquet gap scan")
         result = subprocess.run(
             [sys.executable, "scripts/feature_backfill_hybrid.py",
-             "--stage2-chunk-size", "400"],
+             "--stage2-chunk-size", "150"],
             capture_output=False,
             timeout=3600 * 6,  # 6-hour cap (stage 2 is the slow part)
         )

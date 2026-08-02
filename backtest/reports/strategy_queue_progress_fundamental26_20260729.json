@@ -1,0 +1,161 @@
+{
+  "generated_at": "2026-07-30T00:03:17.814522",
+  "jobs": [
+    {
+      "job_index": 0,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 capital_allocation",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 1,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 capital_efficiency",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 2,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 cash_flow_backed_earnings",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 3,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 contrarian_recovery",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 4,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 deep_value_solvency",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 5,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 earnings_rerating",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 6,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 fcf_low_debt",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 7,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 garp",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 8,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 governance_quality_growth",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 9,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 longevity",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 10,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 magic_formula",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 11,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 margin_of_safety",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 12,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 moat",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 13,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 net_net",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 14,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 normalization_value",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 15,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 owner_earnings",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 16,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 piotroski_on_value",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 17,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 promoter_aligned",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 18,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 qglp",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 19,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 quality_value",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 20,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 sector_leader",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 21,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 small_cap_compounders",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 22,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 smile",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 23,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 story_numbers",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 24,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 turnaround_recovery",
+      "status": "integrity_check_failed"
+    },
+    {
+      "job_index": 25,
+      "kind": "orchestrator",
+      "label": "fundamental \u00b7 under_followed",
+      "status": "integrity_check_failed"
+    }
+  ]
+}

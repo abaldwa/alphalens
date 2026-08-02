@@ -76,6 +76,83 @@ class _FixedConn:
 
 
 class TestStepDownloadFno:
+    def test_defers_without_raising_when_today_before_cutoff(self, monkeypatch):
+        """A56 follow-up (2026-07-30): a live attempt for today, before
+        FNO_MIN_ATTEMPT_TIME, must be a clean no-op — no scrape attempted,
+        no raise, nothing written — not a 'failed' checkpoint. NSE simply
+        hasn't published the bhavcopy yet at this hour most days; that's
+        not a real outage."""
+        from datetime import datetime as dt_cls
+
+        import config.timezone as timezone_mod
+        from ingestion.scrapers import fno
+
+        today = date(2026, 7, 30)
+        monkeypatch.setattr(timezone_mod, "now_ist", lambda: dt_cls(2026, 7, 30, 18, 0))
+
+        called = []
+        monkeypatch.setattr(fno, "download_fno_bhavcopy", lambda date_str: called.append(date_str))
+
+        daily_pipeline.step_download_fno(today)  # must not raise
+
+        assert called == []
+
+    def test_attempts_for_real_when_today_after_cutoff(self, monkeypatch):
+        """Past FNO_MIN_ATTEMPT_TIME (default 21:00), a live attempt for
+        today proceeds normally — this is the one real attempt each day,
+        made by schedule_fno_late_catchup."""
+        from datetime import datetime as dt_cls
+
+        import config.timezone as timezone_mod
+        from ingestion.scrapers import fno
+
+        today = date(2026, 7, 30)
+        monkeypatch.setattr(timezone_mod, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
+
+        def _raise(date_str):
+            raise ConnectionError("F&O bhavcopy unavailable")
+
+        monkeypatch.setattr(fno, "download_fno_bhavcopy", _raise)
+
+        with pytest.raises(ConnectionError):
+            daily_pipeline.step_download_fno(today)
+
+    def test_backfill_for_a_past_date_is_never_deferred(self, monkeypatch):
+        """The cutoff only applies to a live attempt for TODAY — a
+        backfill/catch-up call for a past date must always attempt for
+        real, regardless of current wall-clock time."""
+        from datetime import datetime as dt_cls
+
+        import config.timezone as timezone_mod
+        from ingestion.scrapers import fno
+
+        create_normalised.create_schema(in_memory=True)
+        past_date = date(2026, 7, 20)
+        monkeypatch.setattr(timezone_mod, "now_ist", lambda: dt_cls(2026, 7, 30, 9, 0))
+
+        one_row_df = pd.DataFrame(
+            {
+                "ticker": ["AAA"], "instrument": ["STF"], "expiry": pd.to_datetime(["2026-07-29"]),
+                "strike": [None], "option_type": [None], "oi": [1000], "oi_change": [50],
+                "volume": [200], "settle_price": [102.0], "close_price": [102.0], "underlying_price": [101.5],
+            }
+        )
+        called = []
+
+        def _fake(date_str):
+            called.append(date_str)
+            return one_row_df
+
+        monkeypatch.setattr(fno, "download_fno_bhavcopy", _fake)
+
+        with get_duckdb_connection(None) as conn:
+            monkeypatch.setattr(
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
+            )
+            daily_pipeline.step_download_fno(past_date)
+
+        assert called == ["2026-07-20"]
+
     def test_scraper_failure_propagates(self, monkeypatch):
         """2026-07-29: promoted to critical — a scrape failure must now
         raise so the checkpoint is honestly marked 'failed' and picked up
@@ -173,6 +250,74 @@ class TestStepDownloadFno:
 
             count = conn.execute("SELECT COUNT(*) FROM fno_data WHERE trade_date = '2026-01-05'").fetchone()[0]
             assert count == 1
+
+
+class TestStepDownloadCorporateActions:
+    def test_scraper_failure_propagates(self, monkeypatch):
+        """2026-07-30: promoted to critical, same fix as step_download_fno
+        (2026-07-29) — a scrape failure must now raise so the checkpoint is
+        honestly marked 'failed' and picked up by gap-backfill retry,
+        instead of always recording 'success' with zero rows written."""
+        from ingestion.scrapers import corporate_actions
+
+        def _raise(date_str):
+            raise ConnectionError("NSE corporate actions API unavailable")
+
+        monkeypatch.setattr(corporate_actions, "download_corporate_actions", _raise)
+
+        with pytest.raises(ConnectionError):
+            daily_pipeline.step_download_corporate_actions(date(2026, 1, 5))
+
+    def test_success_is_persisted(self, monkeypatch):
+        create_normalised.create_schema(in_memory=True)
+        from ingestion.scrapers import corporate_actions
+
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA"],
+                "ex_date": [date(2026, 1, 5)],
+                "action_type": ["DIVIDEND"],
+                "ratio": [2.0],
+                "announcement_date": [None],
+                "record_date": [date(2026, 1, 6)],
+                "details": ["Dividend - Rs 2 Per Share"],
+            }
+        )
+        monkeypatch.setattr(corporate_actions, "download_corporate_actions", lambda date_str: df)
+
+        with get_duckdb_connection(None) as conn:
+            monkeypatch.setattr(
+                daily_pipeline, "get_duckdb_connection", lambda path, persist=True: _FixedConn(conn)
+            )
+            daily_pipeline.step_download_corporate_actions(date(2026, 1, 5))
+
+            rows = conn.execute(
+                "SELECT ticker, action_type FROM corporate_actions WHERE ex_date = '2026-01-05'"
+            ).fetchall()
+            assert rows == [("AAA", "DIVIDEND")]
+
+    def test_db_write_failure_propagates(self, monkeypatch):
+        """2026-07-30: a cross-process DuckDB lock conflict on the write
+        must raise same as a scraper failure, so the checkpoint is marked
+        'failed' and retried rather than silently recorded as 'success'."""
+        from ingestion.scrapers import corporate_actions
+
+        df = pd.DataFrame(
+            {
+                "ticker": ["AAA"], "ex_date": [date(2026, 1, 5)], "action_type": ["DIVIDEND"],
+                "ratio": [2.0], "announcement_date": [None], "record_date": [date(2026, 1, 6)],
+                "details": ["Dividend - Rs 2 Per Share"],
+            }
+        )
+        monkeypatch.setattr(corporate_actions, "download_corporate_actions", lambda date_str: df)
+
+        def _raise_lock_conflict(path, persist=True):
+            raise RuntimeError('IO Error: Could not set lock on file "alphalens.duckdb"')
+
+        monkeypatch.setattr(daily_pipeline, "get_duckdb_connection", _raise_lock_conflict)
+
+        with pytest.raises(RuntimeError):
+            daily_pipeline.step_download_corporate_actions(date(2026, 1, 5))
 
 
 class TestStepDownloadIndexOhlcv:

@@ -36,6 +36,9 @@ HEARTBEAT_STALE_AFTER = {
     # 2026-07: earlier second trigger of the same catch-up logic (see
     # schedule_morning_catchup) — same mon-fri cadence as daily_pipeline.
     "morning_catchup": timedelta(days=4),
+    # A56 follow-up (2026-07-30): mon-fri, 21:00 IST — same cadence/margin
+    # as morning_catchup/daily_pipeline.
+    "fno_late_catchup": timedelta(days=4),
     # [AS BUILT, P2.2] monthly job (5th of each month) — 33 days absorbs a
     # run landing a few days late without a false-positive staleness flag
     # right before the next month's scheduled fire.
@@ -79,6 +82,7 @@ def get_next_run_times() -> Dict[str, Optional[datetime]]:
     from config.settings import (
         AMFI_SCHEDULE_TIME,
         DAILY_PIPELINE_SCHEDULE_TIME,
+        FNO_LATE_CATCHUP_SCHEDULE_TIME,
         MF_HOLDINGS_SCHEDULE_DAY_OF_WEEK,
         MODEL_TRAINING_SCHEDULE_TIME,
         MORNING_CATCHUP_SCHEDULE_TIME,
@@ -89,6 +93,7 @@ def get_next_run_times() -> Dict[str, Optional[datetime]]:
     now = now_ist()
     daily_hour, daily_minute = (int(p) for p in DAILY_PIPELINE_SCHEDULE_TIME.split(":"))
     morning_hour, morning_minute = (int(p) for p in MORNING_CATCHUP_SCHEDULE_TIME.split(":"))
+    fno_hour, fno_minute = (int(p) for p in FNO_LATE_CATCHUP_SCHEDULE_TIME.split(":"))
     mf_hour, mf_minute = (int(p) for p in AMFI_SCHEDULE_TIME.split(":"))
     train_hour, train_minute = (int(p) for p in MODEL_TRAINING_SCHEDULE_TIME.split(":"))
     wfb_hour, wfb_minute = (int(p) for p in WEEKEND_FEATURE_BACKFILL_TIME.split(":"))
@@ -100,6 +105,9 @@ def get_next_run_times() -> Dict[str, Optional[datetime]]:
         ),
         "morning_catchup": CronTrigger(
             hour=morning_hour, minute=morning_minute, day_of_week="mon-fri", timezone="Asia/Kolkata"
+        ),
+        "fno_late_catchup": CronTrigger(
+            hour=fno_hour, minute=fno_minute, day_of_week="mon-fri", timezone="Asia/Kolkata"
         ),
         "mf_holdings_ingestion": CronTrigger(
             day_of_week=MF_HOLDINGS_SCHEDULE_DAY_OF_WEEK, hour=mf_hour, minute=mf_minute, timezone="Asia/Kolkata"

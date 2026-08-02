@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from backtest.momentum_metrics import churn_factor, xirr
+from backtest.momentum_metrics import churn_factor, return_population_zscores, xirr
 
 TRADING_DAYS_PER_YEAR = 252
 
@@ -55,6 +55,14 @@ class BacktestMetrics:
     benchmark_status: str  # "ok" | "insufficient_benchmark_history"
     cash_position_series: List[Dict] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
     avg_days_held: Optional[float] = None  # mean (exit_date - entry_date).days across closed trades; None if n_trades == 0
+    # 2026-08-01 (Technical-strategy Momentum-parity reporting) — n_trades
+    # above is closed-only (len(trade_pnls)); total_trades additionally
+    # counts still-open positions, matching Momentum's n_closed_trades vs.
+    # total_trades distinction (backtest/momentum_metrics.py::trade_quality_metrics).
+    total_trades: Optional[int] = None
+    avg_trade_duration_days: Optional[float] = None  # mean holding-period across ALL trades (open + closed)
+    n_outlier_trades: Optional[int] = None  # count with |return z-score| > 3 among this run's own closed trades
+    max_abs_return_zscore: Optional[float] = None
 
 
 def calendar_cagr(starting_capital: float, ending_value: float, start_date, end_date) -> Optional[float]:
@@ -209,6 +217,9 @@ def compute_metrics(
     benchmark_equity_curve: Optional[pd.Series] = None,
     cash_position_series: Optional[List[Dict]] = None,
     holding_days: Optional[List[float]] = None,
+    trade_returns_pct: Optional[List[float]] = None,
+    n_open_positions: int = 0,
+    holding_days_all: Optional[List[float]] = None,
 ) -> BacktestMetrics:
     """
     Single entry point every adapter's backtest/walk-forward run calls once
@@ -216,6 +227,26 @@ def compute_metrics(
     XIRR, final capital, churn, win rate, max drawdown, cash position —
     the exact set the user specified, plus Sortino/Calmar per Truthful
     Review #8).
+
+    trade_returns_pct : optional (2026-08-01) — per-closed-trade % return
+        (e.g. [t.pnl_pct * 100 for t in portfolio.trades], net-of-cost —
+        deliberately NOT recomputed from raw buy/sell prices the way
+        Momentum's trade_quality_metrics does, since Trade.pnl_pct already
+        reflects real transaction costs). Feeds n_outlier_trades/
+        max_abs_return_zscore via the same population-z-score math
+        Momentum's trade-quality outlier detection uses
+        (backtest.momentum_metrics.return_population_zscores) — a second,
+        independent defense against fabricated/stale-price trades, same
+        motivation as the Momentum fix. None (omit) leaves those fields
+        None, unaffected for any caller not yet passing it.
+    n_open_positions : still-open position count at run end — added to
+        len(trade_pnls) for total_trades (open + closed), since n_trades
+        itself stays closed-only for backward compatibility.
+    holding_days_all : optional — holding-period days across BOTH closed
+        trades and still-open positions (as-of-run-end for the latter),
+        feeding avg_trade_duration_days. Falls back to `holding_days`
+        (closed-only, same value as avg_days_held) when omitted — no
+        behavior change for any existing caller.
     """
     starting_capital = equity_curve.iloc[0] if len(equity_curve) else 0.0
     ending_value = equity_curve.iloc[-1] if len(equity_curve) else 0.0
@@ -231,6 +262,14 @@ def compute_metrics(
     sharpe_value = sharpe_ratio(returns)
     sortino_value, sortino_reason = sortino_ratio(returns)
     calmar_value, calmar_reason = calmar_ratio(cagr_value, mdd)
+
+    if trade_returns_pct:
+        z_result = return_population_zscores(trade_returns_pct)
+        n_outlier_trades = z_result["n_outliers"]
+        max_abs_return_zscore = z_result["max_abs_zscore"]
+    else:
+        n_outlier_trades = None
+        max_abs_return_zscore = None
 
     return BacktestMetrics(
         cagr=cagr_value,
@@ -254,6 +293,13 @@ def compute_metrics(
         benchmark_status=bench_status,
         cash_position_series=cash_position_series or [],
         avg_days_held=(float(np.mean(holding_days)) if holding_days else None),
+        total_trades=len(trade_pnls) + n_open_positions,
+        avg_trade_duration_days=(
+            float(np.mean(holding_days_all)) if holding_days_all
+            else (float(np.mean(holding_days)) if holding_days else None)
+        ),
+        n_outlier_trades=n_outlier_trades,
+        max_abs_return_zscore=max_abs_return_zscore,
     )
 
 

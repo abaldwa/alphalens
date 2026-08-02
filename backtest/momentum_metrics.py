@@ -193,3 +193,97 @@ def win_rate(transactions: List[Dict]) -> Optional[float]:
         return None
     wins = sum(1 for t in closed if t["sell_price"] is not None and t["sell_price"] > t["buy_price"])
     return wins / len(closed)
+
+
+def return_population_zscores(
+    returns_pct: List[Optional[float]], outlier_threshold: float = 3.0,
+) -> Dict:
+    """Channel-agnostic core of the outlier-detection math: given a list of
+    per-trade % returns (None entries pass through as None, e.g. a trade
+    with no realized/unrealized return yet), returns each entry's z-score
+    plus population summary stats. Extracted from trade_quality_metrics()
+    (2026-08-01) so backtest/core/metrics.py::compute_metrics can reuse the
+    exact same statistics against backtest.portfolio.Trade's own pnl_pct
+    (Technical/Fundamental/Momentum-via-orchestrator channels) instead of
+    reimplementing it against a differently-shaped transaction dict.
+
+    Returns
+    -------
+    dict with:
+      zscores               — list, same length/order as returns_pct; None
+          where the input was None or the population (<3 non-None values)
+          is too small for a meaningful std.
+      n_outliers             — count with |zscore| > outlier_threshold.
+      max_abs_zscore         — the single most extreme |zscore|, or None.
+    """
+    valid = [r for r in returns_pct if r is not None]
+    mean = float(np.mean(valid)) if len(valid) >= 3 else None
+    std = float(np.std(valid)) if len(valid) >= 3 else None
+
+    zscores: List[Optional[float]] = []
+    n_outliers = 0
+    max_abs_z = None
+    for r in returns_pct:
+        if r is None or mean is None or std is None or std == 0:
+            zscores.append(None)
+            continue
+        z = (r - mean) / std
+        zscores.append(z)
+        if max_abs_z is None or abs(z) > max_abs_z:
+            max_abs_z = abs(z)
+        if abs(z) > outlier_threshold:
+            n_outliers += 1
+
+    return {"zscores": zscores, "n_outliers": n_outliers, "max_abs_zscore": max_abs_z}
+
+
+def trade_quality_metrics(transactions: List[Dict], zscore_outlier_threshold: float = 3.0) -> Dict:
+    """Data-quality / summary stats across the FULL transaction ledger
+    (open + closed — 2026-08-01 user request: "Total Trades. not just the
+    Open Trades"), plus a per-trade return z-score used to auto-flag
+    price artifacts like the 2024-07-08..07-31 OHLCV gap that fabricated
+    up to +418% "returns" via a stale forward-filled price (see
+    backtest/momentum_backtest.py's MAX_FORWARD_FILL_TRADING_DAYS fix —
+    this z-score is a second, independent line of defense: even a
+    legitimate-looking gap the fill-cap doesn't catch will surface here
+    as a statistical outlier for a human to review).
+
+    Mutates each transaction dict in place, adding "return_pct" (realized
+    for closed, unrealized mark-to-market for open — None if no sell_price
+    yet at all) and "return_zscore" (None if the population is too small
+    to compute a meaningful std, i.e. <3 trades with a return).
+
+    Returns
+    -------
+    dict with:
+      total_trades          — len(transactions), open + closed.
+      avg_trade_duration_days — mean holding_days across ALL trades (open
+          positions use their as-of-run-end holding_days, same convention
+          MomentumBacktester already records them with).
+      n_outlier_trades       — count with |return_zscore| > zscore_outlier_threshold.
+      max_abs_return_zscore  — the single most extreme |return_zscore|, or
+          None if it couldn't be computed.
+    """
+    total_trades = len(transactions)
+    durations = [t["holding_days"] for t in transactions if t.get("holding_days") is not None]
+    avg_trade_duration_days = (sum(durations) / len(durations)) if durations else None
+
+    returns: List[Optional[float]] = []
+    for t in transactions:
+        if t.get("sell_price") is not None and t.get("buy_price"):
+            r = (t["sell_price"] / t["buy_price"] - 1) * 100
+        else:
+            r = None
+        t["return_pct"] = r
+        returns.append(r)
+
+    z_result = return_population_zscores(returns, zscore_outlier_threshold)
+    for t, z in zip(transactions, z_result["zscores"]):
+        t["return_zscore"] = z
+
+    return {
+        "total_trades": total_trades,
+        "avg_trade_duration_days": avg_trade_duration_days,
+        "n_outlier_trades": z_result["n_outliers"],
+        "max_abs_return_zscore": z_result["max_abs_zscore"],
+    }

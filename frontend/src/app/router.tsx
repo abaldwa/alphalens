@@ -10,6 +10,8 @@ import { TechnicalComparePage } from '@/pages/technical/compare'
 import { TechnicalChartPage } from '@/pages/technical/chart'
 import { TechnicalDeepDivePage } from '@/pages/technical/deep_dive'
 import { TechnicalPortfolioPage } from '@/pages/technical/portfolio'
+import { TechnicalExperimentationPage } from '@/pages/technical/experimentation'
+import { TechnicalRecommendedStrategiesPage } from '@/pages/technical/recommended-strategies'
 
 import { FundamentalPage } from '@/pages/fundamental/FundamentalPage'
 import { FundamentalScreenerPage } from '@/pages/fundamental/screener'
@@ -82,6 +84,8 @@ export const router = createBrowserRouter([
   { path: '/technical-chart', element: <TechnicalChartPage /> },
   { path: '/technical-deep_dive', element: <TechnicalDeepDivePage /> },
   { path: '/technical-portfolio', element: <TechnicalPortfolioPage /> },
+  { path: '/technical-experimentation', element: <TechnicalExperimentationPage /> },
+  { path: '/technical-recommended-strategies', element: <TechnicalRecommendedStrategiesPage /> },
 
   { path: '/fundamental', element: <FundamentalPage /> },
   { path: '/fundamental-screener', element: <FundamentalScreenerPage /> },

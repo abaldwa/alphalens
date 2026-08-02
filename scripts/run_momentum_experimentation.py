@@ -33,7 +33,7 @@ import hashlib
 
 from backtest.core.horizon import HorizonBucket
 from backtest.momentum_backtest import MomentumBacktester, MomentumBacktestResult
-from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, total_return, xirr
+from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, total_return, trade_quality_metrics, xirr
 from backtest.momentum_tax import compute_total_tax, post_tax_ending_value
 from backtest.strategy_id import build_strategy_id
 from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
@@ -55,7 +55,10 @@ from features.momentum_universe import (
 # rank_band_tickers()/full_rank_universe() already support rank_end > 200
 # via their own max(rank_end, MAX_TRACKED_RANK) — no new ranking logic
 # needed, only wider (band_id, rank_start, rank_end) tuples.
-WIDE_BANDS = [(6, 251, 500), (7, 501, 800)]
+# 2026-07-29 user request: fill the 201-250 gap between RANK_BANDS' 150-200
+# and this script's own 251-500 — same rationale, kept local for the same
+# reason (not part of the 5 live strategies).
+WIDE_BANDS = [(8, 201, 250), (6, 251, 500), (7, 501, 800)]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -101,6 +104,7 @@ def _summarize(result: MomentumBacktestResult, top_n: int, min_momentum: Optiona
     closed = [t for t in txns if t["status"] == "closed"]
     win_rate = (sum(1 for t in closed if t["sell_price"] > t["buy_price"]) / len(closed)) if closed else None
     avg_days_held = (sum(t["holding_days"] for t in closed) / len(closed)) if closed else None
+    trade_quality = trade_quality_metrics(txns)
 
     total_tax = compute_total_tax(txns)
     post_tax_value = post_tax_ending_value(result.ending_value, txns)
@@ -129,6 +133,10 @@ def _summarize(result: MomentumBacktestResult, top_n: int, min_momentum: Optiona
         "n_closed_trades": len(closed),
         "n_open_trades": len(txns) - len(closed),
         "avg_days_held": avg_days_held,
+        "total_trades": trade_quality["total_trades"],
+        "avg_trade_duration_days": trade_quality["avg_trade_duration_days"],
+        "n_outlier_trades": trade_quality["n_outlier_trades"],
+        "max_abs_return_zscore": trade_quality["max_abs_return_zscore"],
         "total_tax": total_tax,
         "post_tax_ending_value": post_tax_value,
         "post_tax_cagr": post_tax_cagr,
@@ -183,12 +191,15 @@ def _write_trade_book_csv(descriptor: str, txns: List[Dict]) -> Path:
     csv_path = REPORTS_DIR / f"trade_book_{descriptor}.csv"
     with open(csv_path, "w", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["ticker", "buy_date", "buy_price", "sell_date", "sell_price", "days_held", "pnl", "status"])
+        writer.writerow([
+            "ticker", "buy_date", "buy_price", "sell_date", "sell_price", "days_held", "pnl",
+            "trade_cagr", "return_zscore", "status",
+        ])
         for t in txns:
             pnl = (t["sell_price"] - t["buy_price"]) * t["qty"] if t["sell_price"] is not None else None
             writer.writerow([
                 t["ticker"], t["buy_date"], t["buy_price"], t.get("sell_date"), t.get("sell_price"),
-                t.get("holding_days"), pnl, t["status"],
+                t.get("holding_days"), pnl, t.get("trade_cagr"), t.get("return_zscore"), t["status"],
             ])
     return csv_path
 

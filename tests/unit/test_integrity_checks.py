@@ -17,6 +17,7 @@ import pytest
 from datastore.api.db import get_duckdb_connection
 from datastore.integrity.checks import (
     check_corporate_actions,
+    check_corporate_actions_coverage,
     check_holiday_leakage,
     check_null_sweep,
     check_spot_check,
@@ -188,3 +189,64 @@ class TestCheckSpotCheck:
             conn, date(2026, 6, 5), sample_size=10, seed=1, fyers_client=fake_fy, yahoo_fetch=fake_yahoo
         )
         assert findings == []
+
+
+class TestCheckCorporateActionsCoverage:
+    def _insert_days(self, conn, ticker, start, n_days):
+        for i in range(n_days):
+            d = start + timedelta(days=i)
+            conn.execute(
+                "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume) "
+                "VALUES (?, ?, 100, 100, 100, 100, 1000)",
+                [d, ticker],
+            )
+
+    def test_flags_ticker_with_no_corporate_actions(self, conn):
+        as_of = date(2026, 6, 1)
+        self._insert_days(conn, "NOACTIONS", date(2026, 1, 1), 5)
+
+        findings = check_corporate_actions_coverage(conn, as_of, min_trading_days=3, lookback_years=10)
+
+        assert len(findings) == 1
+        assert findings[0].ticker == "NOACTIONS"
+        assert findings[0].severity == "warning"
+
+    def test_no_finding_when_ticker_has_a_corporate_action(self, conn):
+        as_of = date(2026, 6, 1)
+        self._insert_days(conn, "HASACTIONS", date(2026, 1, 1), 5)
+        conn.execute(
+            "INSERT INTO corporate_actions (ticker, ex_date, action_type, ratio) VALUES (?, ?, 'DIVIDEND', 2.0)",
+            ["HASACTIONS", date(2026, 3, 1)],
+        )
+
+        findings = check_corporate_actions_coverage(conn, as_of, min_trading_days=3, lookback_years=10)
+
+        assert findings == []
+
+    def test_no_finding_below_min_trading_days(self, conn):
+        as_of = date(2026, 6, 1)
+        self._insert_days(conn, "TOOFEWDAYS", date(2026, 1, 1), 2)
+
+        findings = check_corporate_actions_coverage(conn, as_of, min_trading_days=3, lookback_years=10)
+
+        assert findings == []
+
+    def test_known_action_free_ticker_exempted(self, conn):
+        as_of = date(2026, 6, 1)
+        self._insert_days(conn, "NIFTYBEES", date(2026, 1, 1), 5)
+
+        findings = check_corporate_actions_coverage(conn, as_of, min_trading_days=3, lookback_years=10)
+
+        assert findings == []
+
+    def test_flags_likely_rename_when_another_ticker_starts_right_after(self, conn):
+        as_of = date(2026, 6, 1)
+        self._insert_days(conn, "OLDNAME", date(2026, 1, 1), 5)
+        # OLDNAME's last row is 2026-01-05; NEWNAME starts 2 days later —
+        # the same signature TATAMOTORS -> TMPV showed.
+        self._insert_days(conn, "NEWNAME", date(2026, 1, 7), 5)
+
+        findings = check_corporate_actions_coverage(conn, as_of, min_trading_days=3, lookback_years=10)
+
+        oldname_finding = next(f for f in findings if f.ticker == "OLDNAME")
+        assert oldname_finding.evidence["likely_renamed_to"] == "NEWNAME"

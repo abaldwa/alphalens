@@ -56,6 +56,12 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'overview', label: 'Market Overview', href: '/technical-overview' },
       { id: 'alerts', label: 'Alerts', href: '/technical-alerts' },
       { id: 'compare', label: 'Compare', href: '/technical-compare' },
+      { id: 'experimentation', label: 'Backtest Sweep', href: '/technical-experimentation' },
+      {
+        id: 'recommended_strategies',
+        label: 'Recommended Strategies',
+        href: '/technical-recommended-strategies',
+      },
     ],
   },
   {

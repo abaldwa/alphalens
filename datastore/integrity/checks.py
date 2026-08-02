@@ -68,12 +68,31 @@ def check_corporate_actions(
     it means the CA row is wrong, or was never applied by adjust_prices.
 
     `fyers_client` is injectable for tests; defaults to a real
-    FYERSBackfill() instance.
+    FYERSBackfill() instance — but only if a valid same-day token is
+    already cached. This runs unattended from the daily pipeline's
+    sanity_check step (no connected stdin), so it must never fall
+    through to FYERSBackfill.get_access_token()'s interactive OAuth2
+    flow — same guard as pipeline_scheduler.py's backfill_catchup job.
+    2026-07-30: the cached-token pre-check below is not sufficient on its
+    own — get_access_token() re-derives the token from scratch on every
+    call (its own cache lookup + validation), so a transient validation
+    blip after this pre-check passed could still fall through to the
+    interactive input()-based flow and hang forever. non_interactive=True
+    is the hard backstop: it makes get_access_token() raise instead of
+    blocking, on every call, not just the first.
     """
     if fyers_client is None:
         from ingestion.scrapers.fyers_backfill import FYERSBackfill
 
-        fyers_client = FYERSBackfill()
+        fb = FYERSBackfill(non_interactive=True)
+        cached_token = fb._load_cached_token()
+        if not cached_token or not fb._validate_token(cached_token):
+            logger.warning(
+                "check_corporate_actions: no valid (same-day) FYERS token cached — "
+                "skipping Fyers cross-check for this run."
+            )
+            return []
+        fyers_client = fb
 
     window_start = as_of_date - timedelta(days=lookback_days)
     actions = conn.execute(
@@ -326,11 +345,27 @@ def check_spot_check(
     `fyers_client`/`yahoo_fetch` are injectable for tests.
     `yahoo_fetch(ticker, date) -> Optional[float]` defaults to a thin
     yfinance-based lookup.
+
+    Same unattended-safety guard as check_corporate_actions: only
+    constructs a live FYERSBackfill() if a valid same-day token is
+    already cached, otherwise this check runs Yahoo-only (never falls
+    through to the interactive OAuth2 flow). non_interactive=True is the
+    hard backstop against a re-derivation mid-run falling through to
+    input() — see check_corporate_actions's docstring for why the
+    pre-check alone isn't sufficient.
     """
     if fyers_client is None:
         from ingestion.scrapers.fyers_backfill import FYERSBackfill
 
-        fyers_client = FYERSBackfill()
+        fb = FYERSBackfill(non_interactive=True)
+        cached_token = fb._load_cached_token()
+        if cached_token and fb._validate_token(cached_token):
+            fyers_client = fb
+        else:
+            logger.warning(
+                "check_spot_check: no valid (same-day) FYERS token cached — "
+                "running Yahoo-only cross-check for this run."
+            )
     if yahoo_fetch is None:
         yahoo_fetch = _yahoo_close
 
@@ -349,11 +384,14 @@ def check_spot_check(
         ticker, d, our_close = row.ticker, pd.Timestamp(row.date).date(), row.close
         date_str = d.isoformat()
 
-        try:
-            fy_hist = fyers_client.download_history(ticker, date_str, date_str)
-            fy_close = float(fy_hist["close"].iloc[0]) if fy_hist is not None and not fy_hist.empty else None
-        except Exception:  # noqa: BLE001
+        if fyers_client is None:
             fy_close = None
+        else:
+            try:
+                fy_hist = fyers_client.download_history(ticker, date_str, date_str)
+                fy_close = float(fy_hist["close"].iloc[0]) if fy_hist is not None and not fy_hist.empty else None
+            except Exception:  # noqa: BLE001
+                fy_close = None
 
         try:
             yahoo_close = yahoo_fetch(ticker, d)
@@ -386,6 +424,113 @@ def check_spot_check(
                     },
                 )
             )
+
+    return findings
+
+
+# ETFs and similar instruments legitimately never have SPLIT/BONUS/
+# DIVIDEND/AGM/RIGHTS rows the way an operating company does — exempted
+# so check_corporate_actions_coverage doesn't re-flag them every day,
+# same idea as check_null_sweep's _SANITY_KNOWN_SPARSE_COLUMNS exemption.
+_KNOWN_ACTION_FREE_TICKERS = {
+    "NIFTYBEES", "NIF100BEES", "GOLDSHARE", "UTINIFTETF", "UTISENSETF",
+}
+
+
+def check_corporate_actions_coverage(
+    conn,
+    as_of_date: date_type,
+    min_trading_days: int = 500,
+    lookback_years: int = 10,
+) -> List[Finding]:
+    """
+    For every ticker with >= `min_trading_days` rows in ohlcv_adjusted
+    within the trailing `lookback_years`, flag it if it has zero
+    corporate_actions rows in that same window — a real operating company
+    traded for that long should have at least one AGM/DIVIDEND on record;
+    zero is a strong signal of either a genuine ingestion gap or a
+    ticker-identity split (see evidence["likely_renamed_to"] below).
+
+    2026-07-30 (A20 follow-up): found via a manual audit that 279
+    actively-traded tickers had zero corporate_actions rows despite a
+    full 10-year backfill — including major names like TATAMOTORS, whose
+    actions turned out to be filed entirely under a different ticker
+    (TMPV) after a 2025 demerger NSE's API retroactively relabels the
+    whole history under. This check makes that class of gap visible daily
+    instead of requiring another one-off audit.
+
+    Always severity='warning' — a zero-coverage ticker needs human
+    classification (rename vs. genuine API gap vs. legitimately
+    action-free instrument) that this check cannot make on its own, so it
+    must never fail the pipeline step, only surface for review.
+
+    evidence["likely_renamed_to"] is populated when another ticker's
+    first ohlcv_adjusted date falls within 5 days of this ticker's last
+    date — the same signature TATAMOTORS->TMPV showed (TATAMOTORS's last
+    row 2025-10-23, TMPV's series continuing through today).
+    """
+    window_start = as_of_date - timedelta(days=365 * lookback_years)
+
+    rows = conn.execute(
+        """
+        WITH active AS (
+            SELECT ticker, count(*) AS n_days, min(date) AS first_date, max(date) AS last_date
+            FROM ohlcv_adjusted
+            WHERE date BETWEEN ? AND ?
+            GROUP BY ticker
+            HAVING count(*) >= ?
+        ),
+        has_ca AS (
+            SELECT DISTINCT ticker FROM corporate_actions WHERE ex_date BETWEEN ? AND ?
+        ),
+        missing AS (
+            SELECT a.ticker, a.n_days, a.first_date, a.last_date
+            FROM active a
+            LEFT JOIN has_ca c ON a.ticker = c.ticker
+            WHERE c.ticker IS NULL
+        )
+        SELECT
+            m.ticker, m.n_days, m.first_date, m.last_date,
+            (
+                SELECT b.ticker FROM active b
+                WHERE b.ticker != m.ticker
+                  AND b.first_date BETWEEN m.last_date AND m.last_date + INTERVAL 5 DAY
+                ORDER BY b.first_date
+                LIMIT 1
+            ) AS likely_renamed_to
+        FROM missing m
+        ORDER BY m.ticker
+        """,
+        [window_start, as_of_date, min_trading_days, window_start, as_of_date],
+    ).fetchall()
+
+    findings: List[Finding] = []
+    for ticker, n_days, first_date, last_date, likely_renamed_to in rows:
+        if ticker in _KNOWN_ACTION_FREE_TICKERS:
+            continue
+        evidence = {
+            "trading_days": int(n_days),
+            "first_date": str(first_date),
+            "last_date": str(last_date),
+        }
+        rename_note = ""
+        if likely_renamed_to:
+            evidence["likely_renamed_to"] = likely_renamed_to
+            rename_note = f" — possible rename to {likely_renamed_to}"
+        findings.append(
+            Finding(
+                check_name="corporate_actions_coverage",
+                finding_date=as_of_date,
+                severity="warning",
+                description=(
+                    f"{ticker}: {n_days} trading days in the trailing {lookback_years}y "
+                    f"({first_date}..{last_date}) but zero corporate_actions rows in that window"
+                    f"{rename_note}"
+                ),
+                ticker=ticker,
+                evidence=evidence,
+            )
+        )
 
     return findings
 

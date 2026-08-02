@@ -1,0 +1,4 @@
+run_id,ticker,market_cap_tier_at_buy,buy_date,buy_price,entry_reason,entry_indicator_values,sell_date,sell_price,exit_reason,exit_indicator_values,days_held,pnl_inr,pnl_pct
+orch_fundamental_20260729_232750_11d21ad6,ADVENTHTL,Nifty50,2026-05-13,150.71,buy,"{""preset"": ""normalization_value"", ""matched"": true, ""ratio__score"": 58.00285164923487}",2026-05-29,136.64,exit_model_urgent,,16,-3889.1849136098026,-0.09738019696980962
+orch_fundamental_20260729_232750_11d21ad6,AEROENTER,Nifty50,2026-05-13,102.21,buy,"{""preset"": ""normalization_value"", ""matched"": true, ""ratio__score"": 60.30003297918867}",2026-06-01,94.07,exit_model_urgent,,19,-3343.479327118126,-0.08366204895137477
+orch_fundamental_20260729_232750_11d21ad6,ACI,Nifty50,2026-05-13,560.0,buy,"{""preset"": ""normalization_value"", ""matched"": true, ""ratio__score"": 54.99818366391261}",2026-06-05,518.3,exit_model_urgent,,23,-3120.6183779200073,-0.0784863777142859

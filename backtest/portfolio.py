@@ -16,7 +16,7 @@ on every trade, never assumed away.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -67,6 +67,14 @@ class Position:
     # populated adtv_cr (same "uncapped" case check_06_liquidity's
     # no_adtv_data_position_sized_uncapped data_gap already flags).
     entry_adtv_cr: Optional[float] = None
+    # 2026-08-01 (Technical signal-failure analysis): the adapter's own
+    # feature_vector(ticker, as_of) snapshot at buy time — screener match
+    # score/matched_conditions/indicator values for the Technical channel,
+    # None for adapters whose feature_vector doesn't return anything
+    # meaningful or wasn't wired at the call site. Carried over to Trade at
+    # close so a losing trade can be inspected against what its entry
+    # signal actually looked like ("did the buy signal fail, and why").
+    entry_feature_vector: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.peak_price is None:
@@ -91,6 +99,9 @@ class Trade:
     # Carried over from Position.entry_adtv_cr at close time — see that
     # field's docstring ([BUG FIX, 5th fundamental-strategies review, item 4]).
     adtv_cr: Optional[float] = None
+    # Carried over from Position.entry_feature_vector at close time — see
+    # that field's docstring.
+    entry_feature_vector: Optional[Dict[str, Any]] = None
 
 
 class PortfolioSimulator:

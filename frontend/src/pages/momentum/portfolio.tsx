@@ -12,11 +12,43 @@ function fmtPct(v: number | null | undefined): string {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
 
-const positionColumns: ColumnDef<MomentumTrade, unknown>[] = [
+// Per-trade annualized price gain over its holding period — same formula
+// as backtest/momentum_backtest.py's trade_cagr(): (sell/buy)^(365.25/days)-1.
+// Only computable for closed trades (a known sale_date/sell_price); open
+// positions show '—' here rather than a live mark-to-market estimate,
+// since this table has no live-price feed of its own.
+function tradeCagr(t: MomentumTrade): number | null {
+  if (t.sale_date == null || t.sell_price == null || t.purchase_price == null || t.purchase_price <= 0) return null
+  const days = (new Date(t.sale_date).getTime() - new Date(t.purchase_date).getTime()) / 86_400_000
+  if (days <= 0) return null
+  return Math.pow(t.sell_price / t.purchase_price, 365.25 / days) - 1
+}
+
+// 2026-08-01 user request: this table previously only ever fetched
+// open_only=true trades — closed trades (with their sale date/price) were
+// invisible here entirely, even though the backend already stores and
+// serves them. Now shows the full ledger with a Status column instead.
+const tradeColumns: ColumnDef<MomentumTrade, unknown>[] = [
   tickerColumn<MomentumTrade>('momentum'),
-  { accessorKey: 'purchase_date', header: 'Purchase Date' },
+  { accessorKey: 'purchase_date', header: 'Buy Date' },
   { accessorKey: 'qty', header: 'Qty', meta: { align: 'right' } },
-  { accessorKey: 'purchase_price', header: 'Purchase Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'purchase_price', header: 'Buy Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  { accessorKey: 'sale_date', header: 'Sale Date', cell: (i) => i.getValue<string | null>() ?? '—' },
+  { accessorKey: 'sell_price', header: 'Sale Price', meta: { align: 'right' }, cell: (i) => fmtMoney(i.getValue<number | null>()) },
+  {
+    id: 'trade_cagr',
+    header: () => (
+      <span className="inline-flex items-center gap-1">
+        CAGR
+        <InfoTooltip>
+          Annualized price gain over this trade's actual holding period: (Sale Price / Buy Price)^(365.25/days held)
+          - 1. Only shown for closed trades — open positions have no realized exit yet.
+        </InfoTooltip>
+      </span>
+    ),
+    meta: { align: 'right' },
+    cell: (i) => fmtPct(tradeCagr(i.row.original)),
+  },
   {
     accessorKey: 'grace_remaining',
     header: () => (
@@ -30,6 +62,11 @@ const positionColumns: ColumnDef<MomentumTrade, unknown>[] = [
     ),
     meta: { align: 'right' },
     cell: (i) => i.getValue<number | null>() ?? '—',
+  },
+  {
+    id: 'status',
+    header: 'Status',
+    cell: (i) => (i.row.original.sale_date == null ? 'Open' : 'Closed'),
   },
 ]
 
@@ -52,8 +89,7 @@ export function MomentumPortfolioPage() {
 
   const positions = useQuery({
     queryKey: ['momentum-trades', activeStrategyId],
-    queryFn: () =>
-      apiGet<MomentumTrade[]>('/api/v1/momentum/trades/', { strategy_id: activeStrategyId!, open_only: true }),
+    queryFn: () => apiGet<MomentumTrade[]>('/api/v1/momentum/trades/', { strategy_id: activeStrategyId! }),
     enabled: !!activeStrategyId,
   })
 
@@ -109,7 +145,7 @@ export function MomentumPortfolioPage() {
   const inputClass = 'h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm'
 
   return (
-    <AppShell title="Momentum — Portfolio" description="ML38 Holding Dashboard: open positions, contributions, and manually-logged trades for the selected rank-band strategy.">
+    <AppShell title="Momentum — Portfolio" description="ML38 Holding Dashboard: all trades (open and closed), contributions, and manually-logged trades for the selected rank-band strategy.">
       <div className="mb-4">
         <StrategyPicker strategies={strategies.data ?? []} value={activeStrategyId} onChange={setStrategyId} />
       </div>
@@ -187,17 +223,19 @@ export function MomentumPortfolioPage() {
       <div className="mt-4">
         <Card>
           <CardHeader>
-            <CardTitle>Open Positions</CardTitle>
+            <CardTitle>
+              Trades{positions.data ? ` (${positions.data.length} total)` : ''}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {positions.error ? (
               <p className="text-sm text-red">Could not reach GET /api/v1/momentum/trades/ — {(positions.error as Error).message}</p>
             ) : (
               <DataTable
-                columns={positionColumns}
+                columns={tradeColumns}
                 data={positions.data ?? []}
                 isLoading={positions.isLoading}
-                emptyMessage="No open positions for this strategy — record a buy above."
+                emptyMessage="No trades recorded yet for this strategy — record a buy above."
               />
             )}
           </CardContent>

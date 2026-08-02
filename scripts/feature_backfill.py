@@ -288,7 +288,10 @@ def main() -> None:
         from features import panel_staging as _panel_staging
 
         panel_staging = _panel_staging
-        panel_staging.stage_batch_panels(client, tickers_for_cache, pending_timestamps, run_id=staging_run_id)
+        panel_staging.stage_batch_panels(
+            client, tickers_for_cache, pending_timestamps, run_id=staging_run_id,
+            panel_workers=args.panel_workers,
+        )
         logger.info("panel_staging: staging complete in %.1f min", (time.monotonic() - t_stage0) / 60)
     except Exception as exc:  # noqa: BLE001
         logger.error(

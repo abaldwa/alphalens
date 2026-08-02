@@ -335,6 +335,14 @@ class TestQueueStatusAndDiscovery:
         (logs_dir / "queue_finished.log").write_text("done\n")
         (reports_dir / "strategy_queue_queue_finished.json").write_text(json.dumps({"all_passed": True}))
 
+        # 2026-07-22: list_active_queues() also requires the
+        # run_strategy_queue OS process to actually still be alive
+        # (_queue_runner_is_alive), to avoid phantom "running" entries for
+        # a queue whose process died without writing a final summary. This
+        # test only writes log files, no real process, so without mocking
+        # this a "running" queue would never be reported as active.
+        monkeypatch.setattr(backtest_runs_router, "_queue_runner_is_alive", lambda queue_id: queue_id == "queue_running")
+
         resp = client.get("/api/v1/backtest/queue/active")
         assert resp.status_code == 200
         assert resp.json()["queue_ids"] == ["queue_running"]

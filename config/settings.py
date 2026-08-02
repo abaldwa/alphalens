@@ -229,6 +229,14 @@ DAILY_PIPELINE_SCHEDULE_TIME = "18:00"  # HH:MM, Asia/Kolkata, mon-fri
 # that day's own market close, not before) -- the real value is the
 # gap-backfill portion. See schedule_morning_catchup's docstring.
 MORNING_CATCHUP_SCHEDULE_TIME = "07:30"  # HH:MM, Asia/Kolkata, mon-fri
+# 2026-07-30 (A56 follow-up, user-reported): NSE's F&O bhavcopy is
+# routinely not yet published at DAILY_PIPELINE_SCHEDULE_TIME (18:00) --
+# download_fno was failing most days simply from being attempted too
+# early, not from a real outage. step_download_fno now defers (no-op,
+# not a failure) any live (run_date == today) attempt before this time;
+# the actual attempt happens via schedule_fno_late_catchup below.
+FNO_MIN_ATTEMPT_TIME = "21:00"  # HH:MM, Asia/Kolkata
+FNO_LATE_CATCHUP_SCHEDULE_TIME = "21:00"  # HH:MM, Asia/Kolkata, mon-fri
 DEFAULT_RETRY_DELAY_SECONDS = 60
 # Pipeline & Monitoring Remediation Phase 1 (2026-07-10): a pipeline_runs
 # row inserted with status='running' (at the start of
@@ -248,7 +256,13 @@ PIPELINE_STALE_RUN_THRESHOLD_MINUTES = 180
 # (chunk sizes, worker counts) that don't share a common basis. Sized
 # conservatively below this machine's typical available RAM; adjust if
 # the laptop's real headroom is measured to be meaningfully different.
-PIPELINE_MEMORY_CEILING_MB = 6144
+# [2026-08-02] Temporarily raised 6144->8192 to speed up the TA-priority
+# feature backfill (ta_priority_20260802) — confirmed no other heavy
+# process competing for memory at the time (5.6GB free, single job at
+# ~4.4GB RSS). Revert to 6144 once that backfill (and the resumed A74
+# corp_action run behind it) completes — this ceiling also governs the
+# daily scheduler's own jobs, which weren't sized against 8192.
+PIPELINE_MEMORY_CEILING_MB = 8192
 RETRAIN_OVERDUE_MULTIPLIER = 1.5  # days_since_retrain > interval * this => overdue
 # 2026-07-07: retrain cadence for all registry-tracked models (hmm_market,
 # pnd_detector, signal_5d/21d/63d, meta_labeler, conformal_signal5d,

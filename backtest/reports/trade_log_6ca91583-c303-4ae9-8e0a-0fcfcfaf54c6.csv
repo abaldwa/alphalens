@@ -1,0 +1,2 @@
+ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank,pnl_inr,pnl_pct,exit_reason
+TARGETCO,400,2020-01-01,50.0,2020-01-08,100.0,,19919.55816,0.9959779080000001,merger_swap

@@ -1,0 +1,46 @@
+{
+  "generated_at": "2026-07-29T18:28:04.792406",
+  "total_jobs": 3,
+  "jobs_run": 3,
+  "jobs_skipped_already_completed": 0,
+  "results": [
+    {
+      "job_index": 0,
+      "kind": "iterative_retrain",
+      "job": {
+        "kind": "iterative_retrain",
+        "horizon_days": 5,
+        "folds": 4,
+        "seed": 42
+      },
+      "returncode": 1,
+      "elapsed_s": 2.4541841780000055
+    },
+    {
+      "job_index": 1,
+      "kind": "iterative_retrain",
+      "job": {
+        "kind": "iterative_retrain",
+        "horizon_days": 21,
+        "folds": 4,
+        "seed": 42
+      },
+      "returncode": 1,
+      "elapsed_s": 268.48692982
+    },
+    {
+      "job_index": 2,
+      "kind": "iterative_retrain",
+      "job": {
+        "kind": "iterative_retrain",
+        "horizon_days": 63,
+        "folds": 4,
+        "seed": 42
+      },
+      "returncode": 1,
+      "elapsed_s": 357.05857438699996
+    }
+  ],
+  "all_passed": false,
+  "runtime_seconds": 628.017775456
+}

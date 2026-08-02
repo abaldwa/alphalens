@@ -1,0 +1,4 @@
+ticker,status,buy_date,buy_price,buy_momentum_rank,sell_date,sell_price,sell_momentum_rank,holding_days
+POONAWALLA,open,2026-02-02,394.25,1,,476.9,,178
+CRISIL,open,2026-02-02,4768.1955246316065,2,,4406.8,,178
+GLAXO,open,2026-02-02,2347.2098570127305,3,,2610.7,,178

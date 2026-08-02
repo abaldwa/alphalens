@@ -10,6 +10,7 @@ Unit tests for gap_detector.py, checkpoint.py, and pipeline_scheduler.py's
 backfill ordering.
 """
 
+import contextlib
 from datetime import date
 
 import pytest
@@ -372,12 +373,19 @@ class TestBackfillCatchupScheduling:
         run_backfill_calls = []
         monkeypatch.setattr(
             "ingestion.backfill_runner.run_backfill",
-            lambda tickers, frm, to: run_backfill_calls.append((tickers, frm, to)),
+            lambda tickers, frm, to, client=None: run_backfill_calls.append((tickers, frm, to, client)),
         )
 
         ps._execute_backfill_catchup()
 
         assert len(run_backfill_calls) == 1
+        # 2026-07-30: the already-validated, non_interactive=True client
+        # must actually be passed through to run_backfill(), not just
+        # validated and discarded — see step's docstring for why (a
+        # freshly-constructed default client would re-derive its own
+        # token and could fall through to the hanging interactive flow).
+        assert run_backfill_calls[0][3] is not None
+        assert run_backfill_calls[0][3]._non_interactive is True
         assert len(heartbeat_calls) == 1
         args, kwargs = heartbeat_calls[0]
         assert args == ("backfill_catchup", "success")
@@ -386,6 +394,116 @@ class TestBackfillCatchupScheduling:
         assert kwargs["duration_seconds"] >= 0
         assert kwargs["peak_rss_mb"] > 0
         assert run_backfill_calls[0][0] == ["AAA", "BBB"]
+
+
+class TestFnoLateCatchupScheduling:
+    """A56 follow-up (2026-07-30): download_fno was failing almost every
+    day at 18:00 simply because NSE hadn't published that day's F&O
+    bhavcopy yet. schedule_fno_late_catchup makes the one real attempt
+    later, and re-triggers compute_features if it already ran off stale
+    F&O data."""
+
+    def test_schedule_registers_mon_fri_cron_job(self):
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        from ingestion.scheduler.pipeline_scheduler import schedule_fno_late_catchup
+
+        scheduler = BackgroundScheduler()
+        schedule_fno_late_catchup(scheduler, CheckpointManager(in_memory=True), schedule_time="21:00")
+
+        jobs = scheduler.get_jobs()
+        assert len(jobs) == 1
+        job = jobs[0]
+        assert job.id == "fno_late_catchup"
+        trigger_str = str(job.trigger)
+        assert "hour='21'" in trigger_str
+        assert "minute='0'" in trigger_str
+        assert "mon-fri" in trigger_str
+
+    def test_skips_on_non_trading_day(self, monkeypatch):
+        import ingestion.scheduler.pipeline_scheduler as ps
+        from datetime import datetime as dt_cls
+
+        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 8, 1))  # a Saturday
+        monkeypatch.setattr(ps, "is_trading_day", lambda d: False)
+
+        heartbeat_calls = []
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        cm = CheckpointManager(in_memory=True)
+        ps._execute_fno_late_catchup_job(cm)
+
+        assert heartbeat_calls[0][0] == ("fno_late_catchup", "skipped", "not a trading day")
+
+    def test_success_recomputes_features_when_already_ran_off_stale_data(self, monkeypatch):
+        import ingestion.scheduler.pipeline_scheduler as ps
+        from datetime import datetime as dt_cls
+
+        today = date(2026, 7, 30)
+        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
+        monkeypatch.setattr(ps, "is_trading_day", lambda d: True)
+
+        heartbeat_calls = []
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        recompute_calls = []
+        import ingestion.scheduler.daily_pipeline as dp
+        monkeypatch.setattr(dp, "step_download_fno", lambda d: None)
+        monkeypatch.setattr(dp, "step_compute_features", lambda d: recompute_calls.append(d))
+
+        cm = CheckpointManager(in_memory=True)
+        # compute_features already ran (as it always does — no dependency
+        # on download_fno) off whatever stale F&O data was available.
+        cm.save_checkpoint(today, "compute_features", status="success")
+
+        ps._execute_fno_late_catchup_job(cm)
+
+        assert recompute_calls == [today]
+        assert heartbeat_calls[0][0][:2] == ("fno_late_catchup", "success")
+        assert "features recomputed: True" in heartbeat_calls[0][0][2]
+
+    def test_does_not_recompute_features_when_compute_features_has_not_run_yet(self, monkeypatch):
+        """If compute_features hasn't run for today at all, there's
+        nothing stale to fix — it'll naturally pick up today's now-
+        available F&O data whenever it does run."""
+        import ingestion.scheduler.pipeline_scheduler as ps
+        from datetime import datetime as dt_cls
+
+        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
+        monkeypatch.setattr(ps, "is_trading_day", lambda d: True)
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: None)
+
+        recompute_calls = []
+        import ingestion.scheduler.daily_pipeline as dp
+        monkeypatch.setattr(dp, "step_download_fno", lambda d: None)
+        monkeypatch.setattr(dp, "step_compute_features", lambda d: recompute_calls.append(d))
+
+        cm = CheckpointManager(in_memory=True)
+        ps._execute_fno_late_catchup_job(cm)
+
+        assert recompute_calls == []
+
+    def test_download_fno_failure_records_failed_heartbeat(self, monkeypatch):
+        import ingestion.scheduler.pipeline_scheduler as ps
+        from datetime import datetime as dt_cls
+
+        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
+        monkeypatch.setattr(ps, "is_trading_day", lambda d: True)
+
+        heartbeat_calls = []
+        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        import ingestion.scheduler.daily_pipeline as dp
+
+        def _raise(d):
+            raise ConnectionError("NSE still hasn't published it")
+
+        monkeypatch.setattr(dp, "step_download_fno", _raise)
+
+        cm = CheckpointManager(in_memory=True)
+        ps._execute_fno_late_catchup_job(cm)
+
+        assert heartbeat_calls[0][0][:2] == ("fno_late_catchup", "failed")
 
 
 class TestMFHoldingsScheduling:
@@ -646,6 +764,112 @@ def _acquire_lock_in_subprocess(lock_path_str, hold_seconds, result_queue):
     with pipeline_run_lock() as acquired:
         result_queue.put(acquired)
         _time.sleep(hold_seconds)
+
+
+class TestPipelineRunLockPerStepScope:
+    """A56 (2026-07-30): pipeline_run_lock is now re-acquired per-step
+    inside run_steps_for_date's loop, instead of held once for the whole
+    cascade — so it's released between steps, not just after every step
+    for this date has been attempted."""
+
+    def test_lock_is_acquired_once_per_step_not_once_for_the_whole_run(self, tmp_path, monkeypatch):
+        """The core A56 guarantee, proven directly: pipeline_run_lock()
+        must be called (acquire + release) once per attempted step, not
+        once for the entire STEPS cascade — otherwise it's still held
+        continuously end-to-end and nothing else could ever interleave."""
+        import config.settings as settings_mod
+        import ingestion.scheduler.pipeline_scheduler as ps_mod
+
+        monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
+
+        real_lock = ps_mod.pipeline_run_lock
+        acquisitions = []
+
+        @contextlib.contextmanager
+        def counting_lock():
+            with real_lock() as acquired:
+                acquisitions.append(acquired)
+                yield acquired
+
+        monkeypatch.setattr(ps_mod, "pipeline_run_lock", counting_lock)
+
+        executed = []
+
+        def step_runner(run_date, step_name):
+            executed.append(step_name)
+
+        cm = CheckpointManager(in_memory=True)
+        result = run_steps_for_date(date(2026, 7, 2), step_runner, cm, is_backfill=False)
+
+        assert result is True
+        # One acquire/release cycle per step actually attempted (not per
+        # STEPS entry — dependency-skipped steps don't touch the lock at
+        # all, see run_steps_for_date's docstring) — and NOT a single
+        # acquisition covering the whole run.
+        assert len(acquisitions) == len(executed) > 1
+        assert all(acquisitions)
+
+    def test_losing_lock_after_partial_progress_returns_false_not_true(self, tmp_path, monkeypatch):
+        """If this invocation already completed some steps before losing
+        the lock to another process, it must report False (incomplete) —
+        not True — so callers like run_backfill correctly retry the date
+        instead of wrongly marking it done."""
+        import config.settings as settings_mod
+        import ingestion.scheduler.pipeline_scheduler as ps_mod
+
+        monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
+
+        real_lock = ps_mod.pipeline_run_lock
+        call_count = {"n": 0}
+
+        @contextlib.contextmanager
+        def fake_lock():
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                with real_lock() as acquired:
+                    yield acquired
+            else:
+                yield False  # a "competing process" holds it from the 3rd acquisition onward
+
+        monkeypatch.setattr(ps_mod, "pipeline_run_lock", fake_lock)
+
+        executed = []
+
+        def step_runner(run_date, step_name):
+            executed.append(step_name)
+
+        cm = CheckpointManager(in_memory=True)
+        result = run_steps_for_date(date(2026, 7, 2), step_runner, cm, is_backfill=False)
+
+        assert result is False
+        assert len(executed) >= 1, "at least one step should have run before the lock was lost"
+        assert len(executed) < len(STEPS), "the run must have stopped early, not completed everything"
+
+    def test_losing_lock_before_any_progress_returns_true(self, tmp_path, monkeypatch):
+        """If the lock is already held by someone else from the very
+        first step, this invocation attempted nothing — must return True
+        (defer entirely) exactly as before this change, not False."""
+        import config.settings as settings_mod
+        import ingestion.scheduler.pipeline_scheduler as ps_mod
+
+        monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
+
+        @contextlib.contextmanager
+        def fake_lock():
+            yield False
+
+        monkeypatch.setattr(ps_mod, "pipeline_run_lock", fake_lock)
+
+        executed = []
+
+        def step_runner(run_date, step_name):
+            executed.append(step_name)
+
+        cm = CheckpointManager(in_memory=True)
+        result = run_steps_for_date(date(2026, 7, 2), step_runner, cm, is_backfill=False)
+
+        assert result is True
+        assert executed == []
 
 
 class TestPipelineRunLock:

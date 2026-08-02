@@ -21,11 +21,11 @@ Ingestion is explicitly not a consumer in SPEC-DS-002's own consumer list —
 it is the writer — so this module (and backfill_runner.py) write to DuckDB
 directly, consistent with every other ingestion module in this codebase.
 
-Rate limiting: FYERS allows generous per-second throughput but this module
-follows the task's explicit budget of <= FYERS_MAX_CALLS_PER_DAY API calls/
-day with a FYERS_RATE_LIMIT_SLEEP_SECONDS throttle between calls, tracked
-per-process (a fresh process restarts the daily counter; acceptable since a
-single backfill run is one long-lived process, not many short ones).
+Rate limiting: FYERS allows generous per-second throughput; this module
+paces calls with a FYERS_RATE_LIMIT_SLEEP_SECONDS sleep between them.
+[2026-08-01] There is deliberately no daily call-count cap — an earlier
+FYERS_MAX_CALLS_PER_DAY budget was removed at explicit user request; it
+was a project-chosen planning number, not a FYERS-documented rate limit.
 
 OAuth2 login: get_access_token() drives an *interactive* input()-based flow
 by default (SPEC-PIPE-001). That blocks forever in any environment where
@@ -55,7 +55,6 @@ from fyers_apiv3 import fyersModel
 from config.settings import (
     FYERS_APP_ID,
     FYERS_HISTORY_MAX_DAYS_PER_CALL,
-    FYERS_MAX_CALLS_PER_DAY,
     FYERS_RATE_LIMIT_SLEEP_SECONDS,
     FYERS_RAW_DIR,
     FYERS_REDIRECT_URI,
@@ -92,6 +91,7 @@ class FYERSBackfill:
         redirect_uri: Optional[str] = None,
         access_token: Optional[str] = None,
         token_cache_path: Optional[Path] = None,
+        non_interactive: bool = False,
     ) -> None:
         """
         Parameters
@@ -107,6 +107,22 @@ class FYERSBackfill:
             used by tests and by callers that already hold a valid token.
         token_cache_path : Path, optional
             Defaults to config.settings.FYERS_TOKEN_CACHE_PATH.
+        non_interactive : bool, optional
+            2026-07-30: if True, get_access_token() raises RuntimeError
+            instead of falling through to _run_oauth_flow() when no valid
+            token is available from any non-interactive source (explicit
+            access_token, cache, or FYERS_ACCESS_TOKEN env var). Every
+            unattended caller (daily pipeline, A20 checks, cron scripts)
+            must set this — _run_oauth_flow() calls input() and hangs
+            forever with no connected stdin. A pre-check like "is there a
+            cached token" is not sufficient on its own:
+            get_access_token() re-derives the token from scratch on every
+            call (its own cache lookup + validation, independent of any
+            caller-side guard), so a transient validation blip or a token
+            expiring mid-run can still fall through to the interactive
+            flow even when a caller checked first. This flag is the only
+            thing that closes that hole for every call site, not just the
+            ones that remember to guard.
 
         Spec References
         ----------------
@@ -122,9 +138,8 @@ class FYERSBackfill:
         self._redirect_uri = redirect_uri or FYERS_REDIRECT_URI
         self._token_cache_path = token_cache_path or FYERS_TOKEN_CACHE_PATH
         self._access_token: Optional[str] = access_token
+        self._non_interactive = non_interactive
         self._client: Optional[fyersModel.FyersModel] = None
-        self._call_count = 0
-        self._call_count_date: Optional[date_type] = None
 
     @staticmethod
     def _extract_auth_code(raw_input_value: str) -> str:
@@ -211,6 +226,16 @@ class FYERSBackfill:
             logger.warning(
                 "FYERS_ACCESS_TOKEN in .env is invalid, expired, or still the "
                 "placeholder value — falling back to interactive OAuth2 login"
+            )
+
+        if self._non_interactive:
+            raise RuntimeError(
+                "FYERS: no valid token available from access_token/cache/env "
+                "and non_interactive=True — refusing to fall through to the "
+                "interactive OAuth2 flow (_run_oauth_flow() hangs forever on "
+                "input() with no connected stdin). Run "
+                "`python3 -m ingestion.scrapers.fyers_backfill login` / "
+                "`... exchange <code_or_url>` to refresh the cached token."
             )
 
         if not self._app_id or not self._secret_id:
@@ -385,30 +410,17 @@ class FYERSBackfill:
 
     def _throttle(self) -> None:
         """
-        Enforce the FYERS_MAX_CALLS_PER_DAY budget and inter-call sleep.
+        Inter-call pacing sleep.
 
-        Spec References
-        ----------------
-        SPEC-PIPE-001: "Rate limiting: max 1000 API calls/day; built-in
-        throttle with 0.5s sleep."
-
-        Raises
-        ------
-        RuntimeError
-            If the daily call budget is exhausted.
+        [2026-08-01] The FYERS_MAX_CALLS_PER_DAY daily-call-count cap was
+        removed at explicit user request — it was a project-chosen planning
+        number (documented in config/settings.py as "the task's explicit
+        budget"), not a limit sourced from FYERS' own published API rate
+        limits, and was blocking same-day resumption of an in-progress
+        backfill for no confirmed real-world reason. The per-call pacing
+        sleep (FYERS_RATE_LIMIT_SLEEP_SECONDS) is kept — that one is a
+        genuine inter-request throttle, not a daily budget.
         """
-        today = now_ist().date()
-        if self._call_count_date != today:
-            self._call_count_date = today
-            self._call_count = 0
-
-        if self._call_count >= FYERS_MAX_CALLS_PER_DAY:
-            raise RuntimeError(
-                f"FYERS daily call budget exhausted ({FYERS_MAX_CALLS_PER_DAY} "
-                "calls); resume tomorrow."
-            )
-
-        self._call_count += 1
         time.sleep(FYERS_RATE_LIMIT_SLEEP_SECONDS)
 
     def download_history(

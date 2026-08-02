@@ -1,0 +1,5 @@
+run_id,ticker,market_cap_tier_at_buy,buy_date,buy_price,entry_reason,entry_indicator_values,sell_date,sell_price,exit_reason,exit_indicator_values,days_held,pnl_inr,pnl_pct
+orch_fundamental_20260729_235849_63c21d7b,BALAJITELE,Nifty50,2026-05-13,106.45,buy,"{""preset"": ""under_followed"", ""matched"": true, ""ratio__score"": 72.17974462045669}",2026-05-18,90.48,exit_model_urgent,,5,-6149.306885024998,-0.15404557720432124
+orch_fundamental_20260729_235849_63c21d7b,AVONMORE,,2026-05-13,11.47,buy,"{""preset"": ""under_followed"", ""matched"": true, ""ratio__score"": 73.61633968735404}",2026-06-02,10.32,exit_model_urgent,,20,-4170.917149201872,-0.1042836438744549
+orch_fundamental_20260729_235849_63c21d7b,GOCLCORP,Nifty50,2026-05-13,305.5,buy,"{""preset"": ""under_followed"", ""matched"": true, ""ratio__score"": 70.56627961489646}",2026-06-03,418.1,exit_model_urgent,,21,14478.262616220003,0.3645540127463176
+orch_fundamental_20260729_235849_63c21d7b,ASIANTILES,Nifty50,2026-05-13,60.99,buy,"{""preset"": ""under_followed"", ""matched"": true, ""ratio__score"": 70.82238044402048}",2026-06-22,55.31,exit_model_urgent,,40,-3881.0763411574007,-0.09715211331496967

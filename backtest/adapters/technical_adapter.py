@@ -31,13 +31,14 @@ applied elsewhere in this initiative).
 
 import logging
 from datetime import date as date_type
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
 from backtest.core.adtv import adtv_cr_for_ticker
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
+from features.momentum_signal import trailing_momentum_from_panel
 from systems.technical_analysis.screener.engine import ScreenerEngine
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,16 @@ class TechnicalAdapter:
         screener_cache_conn=None,
         price_panel: Optional[pd.DataFrame] = None, volume_panel: Optional[pd.DataFrame] = None,
         adtv_lookback_days: int = 20,
+        min_adtv_cr: Optional[float] = None,
+        quality_scores: Optional[Dict[str, Dict[str, float]]] = None,
+        quality_gate: Optional[Dict[str, float]] = None,
+        downtrend_filter_pct: Optional[float] = None,
+        downtrend_lookback_days: int = 20,
+        circuit_band_pct: Optional[float] = None,
+        regime_conn=None,
+        regime_index_name: str = "Nifty 500",
+        regime_method: Optional[str] = None,
+        disable_buys_in_regime: Optional[Set[str]] = None,
     ) -> None:
         """
         template_name : one of the 42 pre-built screener templates
@@ -73,6 +84,40 @@ class TechnicalAdapter:
             None (the default) preserves the original always-live behavior
             exactly — every existing caller (tests, any adapter constructed
             without this param) is unaffected.
+
+        2026-08-01 (Momentum-parity entry filters, all None/off by default —
+        every existing caller is unaffected): the five kwargs below mirror
+        backtest/momentum_backtest.py::MomentumBacktester's optional filter
+        set (liquidity_floor, quality_gated, circuit_lock_proxy,
+        downtrend_filter, regime_conditional) applied here to `in_universe`
+        before ranking, instead of to MomentumBacktester's selection_pool —
+        same semantics, same "never exclude on missing data" convention.
+
+        min_adtv_cr : optional liquidity floor (crores) — a candidate below
+            this trailing average daily traded value (or with no volume
+            data) is dropped before ranking.
+        quality_scores / quality_gate : same shape as MomentumBacktester's
+            (ticker -> {"f_score":..., "m_score":...}, and
+            {"min_f_score":..., "max_m_score":...}) — a candidate present in
+            quality_scores that fails an explicit threshold is dropped;
+            missing-from-quality_scores or no quality_gate set never excludes.
+        downtrend_filter_pct / downtrend_lookback_days : a candidate whose
+            trailing price return over downtrend_lookback_days is <=
+            -downtrend_filter_pct is dropped (reuses
+            features.momentum_signal.trailing_momentum_from_panel against
+            `price_panel`, same helper MomentumBacktester itself uses).
+        circuit_band_pct : a candidate whose latest 1-day return (from
+            price_panel) meets/exceeds this magnitude is dropped as a proxy
+            for "likely circuit-locked, don't trust this close as fillable".
+        regime_conn / regime_index_name / regime_method / disable_buys_in_regime :
+            when a date's confirmed regime (systems.regime.regime_store,
+            same source backtest/core/engine.py's own
+            BacktestOrchestrator._regime_for_date reads — this adapter
+            self-fetches rather than requiring a StrategyAdapter protocol
+            change to thread regime through generate_signals) is in
+            disable_buys_in_regime, no NEW buys are generated this date
+            (existing holdings that drop out of the target set still sell
+            normally) — mirrors MomentumBacktester's disable_in_regimes.
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -93,6 +138,17 @@ class TechnicalAdapter:
         self.price_panel = price_panel.sort_index() if price_panel is not None else None
         self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
         self.adtv_lookback_days = adtv_lookback_days
+        self.min_adtv_cr = min_adtv_cr
+        self.quality_scores = quality_scores or {}
+        self.quality_gate = quality_gate or {}
+        self.downtrend_filter_pct = downtrend_filter_pct
+        self.downtrend_lookback_days = downtrend_lookback_days
+        self.circuit_band_pct = circuit_band_pct
+        self._regime_conn = regime_conn
+        self._regime_index_name = regime_index_name
+        self._regime_method = regime_method
+        self.disable_buys_in_regime = disable_buys_in_regime or set()
+        self._regime_segments_cache: Optional[List[dict]] = None
         self._currently_held: set = set()
         self._last_results: Dict[str, Any] = {}  # ticker -> ScreenerResult, from the most recent generate_signals() call
 
@@ -101,8 +157,83 @@ class TechnicalAdapter:
             ticker, as_of_date, self.price_panel, self.volume_panel, self.adtv_lookback_days,
         )
 
-    def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
-        universe_set = set(universe)
+    def _passes_quality_gate(self, ticker: str) -> bool:
+        """Same logic/convention as MomentumBacktester._passes_quality_gate —
+        False only if `ticker` has quality_scores AND fails an explicitly-set
+        threshold; never excludes on missing data or an empty quality_gate."""
+        if not self.quality_gate:
+            return True
+        scores = self.quality_scores.get(ticker)
+        if scores is None:
+            return True
+        min_f = self.quality_gate.get("min_f_score")
+        if min_f is not None:
+            f_score = scores.get("f_score")
+            if f_score is not None and f_score < min_f:
+                return False
+        max_m = self.quality_gate.get("max_m_score")
+        if max_m is not None:
+            m_score = scores.get("m_score")
+            if m_score is not None and m_score > max_m:
+                return False
+        return True
+
+    def _is_circuit_locked(self, as_of_date: date_type, ticker: str) -> bool:
+        """Same proxy as MomentumBacktester._is_circuit_locked, against
+        this adapter's own price_panel (not forward-filled here — a missing
+        price on either side just means "can't tell", never locked)."""
+        if self.circuit_band_pct is None or self.price_panel is None or ticker not in self.price_panel.columns:
+            return False
+        idx = self.price_panel.index
+        ts = pd.Timestamp(as_of_date)
+        pos = idx.searchsorted(ts)
+        if pos <= 0 or pos >= len(idx) or idx[pos] != ts:
+            return False
+        prev_price = self.price_panel[ticker].iloc[pos - 1]
+        cur_price = self.price_panel[ticker].iloc[pos]
+        if pd.isna(prev_price) or pd.isna(cur_price) or prev_price <= 0:
+            return False
+        ret = (cur_price - prev_price) / prev_price
+        return abs(ret) >= self.circuit_band_pct
+
+    def _regime_for_date(self, as_of: date_type) -> Optional[str]:
+        """Self-fetched regime lookup, same source/segments shape as
+        BacktestOrchestrator._regime_for_date (backtest/core/engine.py) —
+        duplicated rather than shared because StrategyAdapter has no
+        reference back to the orchestrator instance; both read the same
+        systems.regime.regime_store segments so they can never disagree."""
+        if self._regime_conn is None:
+            return None
+        if self._regime_segments_cache is None:
+            from systems.regime.market_regime import METHOD_NAME
+            from systems.regime.regime_store import list_regime_segments
+
+            try:
+                self._regime_segments_cache = list_regime_segments(
+                    self._regime_conn, self._regime_index_name,
+                    method=self._regime_method or METHOD_NAME,
+                )
+            except Exception:
+                logger.warning("TechnicalAdapter: regime segments unavailable; disable_buys_in_regime inert", exc_info=True)
+                self._regime_segments_cache = []
+        for seg in self._regime_segments_cache:
+            if seg["start_date"] <= as_of <= seg["end_date"]:
+                return seg["regime"]
+        return None
+
+    def _is_buys_disabled(self, as_of_date: date_type) -> bool:
+        if not self.disable_buys_in_regime:
+            return False
+        regime = self._regime_for_date(as_of_date)
+        return regime is not None and regime in self.disable_buys_in_regime
+
+    def _filtered_candidates(self, universe_set: set, as_of_date: date_type) -> List[Any]:
+        """Every real screener match for this template/date, restricted to
+        `universe_set` and passing this adapter's own entry-side filters —
+        i.e. everything generate_signals does UP TO (not including) top_n
+        ranking. Extracted (2026-08-01) so TechnicalComboAdapter can pool
+        several templates' candidate pools before a single combined ranking,
+        without duplicating the fetch/filter logic."""
         date_str = str(as_of_date)
         if self._screener_cache_conn is not None:
             from backtest.core.screener_cache import get_or_compute
@@ -117,6 +248,32 @@ class TechnicalAdapter:
             # (ScreenerEngine screens its whole feature snapshot) — trimmed below.
             results = self._engine.screen(self.template_name, date=date_str, limit=self.top_n * 5)
         in_universe = [r for r in results if r.ticker in universe_set]
+
+        # Entry-side filters (2026-08-01, Momentum-parity), applied in the
+        # same order MomentumBacktester applies its analogues: liquidity ->
+        # circuit-lock proxy -> downtrend -> quality gate -> regime gate.
+        if self.min_adtv_cr is not None and in_universe:
+            in_universe = [
+                r for r in in_universe
+                if (adtv := self._adtv_cr(r.ticker, as_of_date)) is not None and adtv >= self.min_adtv_cr
+            ]
+        if self.circuit_band_pct is not None and in_universe:
+            in_universe = [r for r in in_universe if not self._is_circuit_locked(as_of_date, r.ticker)]
+        if self.downtrend_filter_pct is not None and in_universe and self.price_panel is not None:
+            short_term = trailing_momentum_from_panel(
+                self.price_panel, [r.ticker for r in in_universe], date_str, self.downtrend_lookback_days,
+            )
+            in_universe = [
+                r for r in in_universe
+                if r.ticker not in short_term.index or short_term[r.ticker] > -self.downtrend_filter_pct
+            ]
+        if self.quality_gate and in_universe:
+            in_universe = [r for r in in_universe if self._passes_quality_gate(r.ticker)]
+        return in_universe
+
+    def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
+        universe_set = set(universe)
+        in_universe = self._filtered_candidates(universe_set, as_of_date)
         self._last_results = {r.ticker: r for r in in_universe}
 
         if not in_universe:
@@ -127,6 +284,15 @@ class TechnicalAdapter:
         else:
             ranked = sorted(in_universe, key=lambda r: -r.score)[: self.top_n]
             target = {r.ticker for r in ranked}
+            if self._is_buys_disabled(as_of_date):
+                # Regime-disabled: strip any ticker that would be a NEW buy
+                # (not already held) out of target — a currently-held name
+                # that fell out of the ranked top_n is still dropped from
+                # target (and so still sold normally) exactly as it would
+                # be with buys enabled; only new entries are blocked. Same
+                # convention as MomentumBacktester's _is_regime_disabled
+                # (filters new_entrants, doesn't touch target_set itself).
+                target &= self._currently_held
 
         signals: List[Signal] = []
         for ticker in sorted(self._currently_held - target):

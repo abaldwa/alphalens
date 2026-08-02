@@ -55,6 +55,14 @@ def _parse_args() -> argparse.Namespace:
                         "chunks via features/panel_staging.py's panel_workers param. "
                         "Recommended max on this project's 16GB laptop: 8, not 12 "
                         "(documented OOM-dip incident — see that param's docstring).")
+    p.add_argument("--skip-staging", action="store_true",
+                   help="[2026-08-01] Resume mode: skip stage_batch_panels entirely and "
+                        "go straight to the merge/write pass, reusing an existing "
+                        "--run-id's already-staged rows (e.g. after a crash/OOM-kill "
+                        "mid-merge — drop_staging_run only runs at the very end, so "
+                        "staged rows survive a merge-phase death). Requires --run-id to "
+                        "point at a run whose staging actually completed; dates with no "
+                        "staged rows are skipped with a warning, same as any other gap.")
     return p.parse_args()
 
 
@@ -86,47 +94,60 @@ def main() -> None:
 
     dates = [pd.Timestamp(d) for d in existing]
     tickers = get_tickers()
-    client = DataStoreClient()
     run_id = args.run_id or f"patch_advtech_patterns_{int(time.time())}"
 
-    logger.info("Staging (fixed all_rows=True) advanced_technical/pattern_scores for %d dates ...", len(dates))
-    t0 = time.monotonic()
-    panel_staging.stage_batch_panels(client, tickers, dates, run_id=run_id, panel_workers=args.panel_workers)
-    logger.info("Staging complete in %.1f min", (time.monotonic() - t0) / 60)
+    if args.skip_staging:
+        if not args.run_id:
+            raise SystemExit("--skip-staging requires an explicit --run-id pointing at a completed staging run")
+        logger.info("--skip-staging: reusing existing staged rows for run_id=%s (no restage)", run_id)
+    else:
+        client = DataStoreClient()
+        logger.info("Staging (fixed all_rows=True) advanced_technical/pattern_scores for %d dates ...", len(dates))
+        t0 = time.monotonic()
+        panel_staging.stage_batch_panels(client, tickers, dates, run_id=run_id, panel_workers=args.panel_workers)
+        logger.info("Staging complete in %.1f min", (time.monotonic() - t0) / 60)
+
+    from config.settings import FEATURE_PANEL_STAGING_DB_PATH
+    from datastore.api.db import get_duckdb_connection
 
     ok = err = 0
     t0 = time.monotonic()
-    for i, d in enumerate(dates, start=1):
-        date_str = d.date().isoformat()
-        path = FEATURES_DAILY_DIR / f"{date_str}.parquet"
-        try:
-            staged = panel_staging.load_staged_panel_for_date(run_id, d)
-            if staged is None:
-                logger.warning("[%d/%d] %s: no staged rows — skipping", i, len(dates), date_str)
-                continue
+    # [2026-08-01 perf fix] One connection reused across all `dates` instead
+    # of load_staged_panel_for_date's default open-close-per-call — that
+    # was measured at ~13.5s/date (almost entirely connection overhead) in
+    # this exact merge-only loop, which makes zero API calls otherwise.
+    with get_duckdb_connection(FEATURE_PANEL_STAGING_DB_PATH, read_only=False, persist=False) as staging_conn:
+        for i, d in enumerate(dates, start=1):
+            date_str = d.date().isoformat()
+            path = FEATURES_DAILY_DIR / f"{date_str}.parquet"
+            try:
+                staged = panel_staging.load_staged_panel_for_date(run_id, d, conn=staging_conn)
+                if staged is None:
+                    logger.warning("[%d/%d] %s: no staged rows — skipping", i, len(dates), date_str)
+                    continue
 
-            matrix = pd.read_parquet(path)
-            original_columns = list(matrix.columns)
-            missing_cols = [c for c in patch_cols if c not in staged.columns]
-            if missing_cols:
-                raise RuntimeError(f"staged panel missing columns: {missing_cols}")
+                matrix = pd.read_parquet(path)
+                original_columns = list(matrix.columns)
+                missing_cols = [c for c in patch_cols if c not in staged.columns]
+                if missing_cols:
+                    raise RuntimeError(f"staged panel missing columns: {missing_cols}")
 
-            patch = staged[["ticker"] + patch_cols].set_index("ticker")
-            matrix = matrix.set_index("ticker")
-            matrix.update(patch)
-            matrix = matrix.reset_index()[original_columns]
+                patch = staged[["ticker"] + patch_cols].set_index("ticker")
+                matrix = matrix.set_index("ticker")
+                matrix.update(patch)
+                matrix = matrix.reset_index()[original_columns]
 
-            matrix.to_parquet(path, index=False)
-            ok += 1
-            if i % 200 == 0 or i == len(dates):
-                elapsed = time.monotonic() - t0
-                logger.info(
-                    "[%d/%d] patched through %s — %.1fs elapsed, %.2fs/date avg",
-                    i, len(dates), date_str, elapsed, elapsed / i,
-                )
-        except Exception as exc:  # noqa: BLE001
-            err += 1
-            logger.error("[%d/%d] %s FAILED: %s", i, len(dates), date_str, exc)
+                matrix.to_parquet(path, index=False)
+                ok += 1
+                if i % 200 == 0 or i == len(dates):
+                    elapsed = time.monotonic() - t0
+                    logger.info(
+                        "[%d/%d] patched through %s — %.1fs elapsed, %.2fs/date avg",
+                        i, len(dates), date_str, elapsed, elapsed / i,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                err += 1
+                logger.error("[%d/%d] %s FAILED: %s", i, len(dates), date_str, exc)
 
     panel_staging.drop_staging_run(run_id)
     logger.info("Patch complete: %d succeeded, %d failed", ok, err)

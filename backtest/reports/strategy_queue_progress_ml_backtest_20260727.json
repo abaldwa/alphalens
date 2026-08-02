@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-27T23:43:23.402292",
+  "generated_at": "2026-07-29T18:28:04.790903",
   "jobs": [
     {
       "job_index": 0,
@@ -11,13 +11,13 @@
       "job_index": 1,
       "kind": "iterative_retrain",
       "label": "Iterative Retrain (MetaLabeler)",
-      "status": "running"
+      "status": "failed"
     },
     {
       "job_index": 2,
       "kind": "iterative_retrain",
       "label": "Iterative Retrain (MetaLabeler)",
-      "status": "queued"
+      "status": "failed"
     }
   ]
 }

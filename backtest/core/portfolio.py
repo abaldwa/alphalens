@@ -42,7 +42,7 @@ imported) and backtest.costs.IndianTransactionCosts unchanged.
 import logging
 from dataclasses import dataclass
 from datetime import date as date_type
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -216,6 +216,7 @@ class StrategyPortfolio:
         adtv_cr: Optional[float] = None, entry_atr_pct: Optional[float] = None,
         template: Optional[str] = None, pillar: Optional[str] = None,
         market_cap_rank: Optional[int] = None,
+        entry_feature_vector: Optional[Dict[str, Any]] = None,
     ) -> Optional[Position]:
         if not self.can_buy(ticker, sector, price, prices, adtv_cr):
             return None
@@ -227,6 +228,7 @@ class StrategyPortfolio:
             ticker=ticker, sector=sector, entry_date=date, entry_price=price, quantity=qty,
             entry_atr_pct=entry_atr_pct, template=template, pillar=pillar,
             entry_market_cap_rank=market_cap_rank, entry_adtv_cr=adtv_cr,
+            entry_feature_vector=entry_feature_vector,
         )
         self.positions[ticker] = position
         return position
@@ -273,6 +275,7 @@ class StrategyPortfolio:
             pnl_inr=pnl_inr, pnl_pct=pnl_pct, cost_inr=cost, exit_reason=reason,
             entry_market_cap_rank=position.entry_market_cap_rank,
             adtv_cr=position.entry_adtv_cr,
+            entry_feature_vector=position.entry_feature_vector,
         )
         self.trades.append(trade)
         return trade

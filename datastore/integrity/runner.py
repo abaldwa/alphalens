@@ -26,6 +26,10 @@ _CHECKS = {
     "null_sweep": check_fns.check_null_sweep,
     "holiday_leakage": check_fns.check_holiday_leakage,
     "spot_check": check_fns.check_spot_check,
+    # 2026-07-30: A20 follow-up — daily completeness sweep for tickers
+    # with zero corporate_actions rows despite substantial trading
+    # history (see check_corporate_actions_coverage's docstring).
+    "corporate_actions_coverage": check_fns.check_corporate_actions_coverage,
 }
 
 

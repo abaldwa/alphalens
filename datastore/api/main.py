@@ -77,6 +77,7 @@ from .routers import (
     signals,
     system,
     technical,
+    technical_backtest,
     valuation,
     watchlist,
 )
@@ -203,6 +204,7 @@ app.include_router(backtest_runs.router)
 # already-computed features/{technical,advanced_technical,pattern_scores}.py
 # output — see plan: squishy-frolicking-whisper.md.
 app.include_router(technical.router)
+app.include_router(technical_backtest.router)
 # [AS BUILT, SPEC-SCHED-014] Job Autoruns / Ops page — API scaffolding over
 # the pre-existing scheduler infrastructure (ingestion/scheduler/checkpoint.py,
 # pipeline_checkpoints/scheduler_heartbeats tables).

@@ -78,6 +78,18 @@ def decide_grace_transitions(
     return updated
 
 
+def trade_cagr(buy_price: float, sell_price: Optional[float], holding_days: Optional[int]) -> Optional[float]:
+    """Per-trade annualized price gain: (sell/buy)^(365.25/holding_days) - 1.
+
+    None for a still-open position (sell_price/holding_days not yet known)
+    or a same-day round-trip (holding_days <= 0 makes annualizing
+    meaningless — division by a near-zero exponent denominator blows up).
+    """
+    if sell_price is None or holding_days is None or holding_days <= 0 or buy_price <= 0:
+        return None
+    return (sell_price / buy_price) ** (365.25 / holding_days) - 1
+
+
 @dataclass
 class Position:
     qty: int
@@ -102,6 +114,19 @@ class MomentumBacktestResult:
 
 
 class MomentumBacktester:
+    # 2026-08-01 root-cause fix: an OHLCV ingestion outage from 2024-07-08 to
+    # 2024-07-31 (17 trading days, coverage collapsed from ~1,750 tickers/day
+    # to ~90) was being silently papered over by an unbounded price_panel.ffill()
+    # below — every trade whose nominal exit date fell inside the gap got
+    # priced at the frozen pre-gap close, fabricating returns up to +418% for
+    # names like COCHINSHIP/IRCON/POWERINDIA that happened to be near a local
+    # high right before the gap. A short gap (a holiday, a single-day halt)
+    # should still be bridged, but a multi-week outage must surface as a
+    # missing price (NaN) — every call site already skips/defers on NaN
+    # (buys at line ~659, mark-to-market at ~472, grace force-sells at ~634)
+    # rather than crashing, so capping the fill is safe.
+    MAX_FORWARD_FILL_TRADING_DAYS = 5
+
     def __init__(
         self,
         price_panel: pd.DataFrame,
@@ -315,7 +340,7 @@ class MomentumBacktester:
         if price_panel.empty:
             raise ValueError("price_panel must not be empty")
         self.price_panel = price_panel.sort_index()
-        self.price_panel_ffilled = self.price_panel.ffill()
+        self.price_panel_ffilled = self.price_panel.ffill(limit=self.MAX_FORWARD_FILL_TRADING_DAYS)
         self.yearly_universes = {pd.Timestamp(k): v for k, v in yearly_universes.items()}
         self.lookback_days = lookback_days
         self.rebalance_every_n_trading_days = rebalance_every_n_trading_days
@@ -497,6 +522,7 @@ class MomentumBacktester:
             "sell_price": sell_price,
             "qty": pos.qty,
             "holding_days": holding_days,
+            "trade_cagr": trade_cagr(pos.entry_price, sell_price, holding_days),
             "buy_momentum_rank": pos.entry_rank,
             "sell_momentum_rank": sell_rank,
             "status": "closed",
@@ -631,11 +657,19 @@ class MomentumBacktester:
                     if self._is_circuit_locked(date, ticker):
                         continue
                     price = prices.get(ticker)
-                    if price is not None and pd.notna(price):
-                        proceeds = pos.qty * price
-                        self.cash += proceeds - self._one_leg_cost(price, pos.qty)
-                        sell_rank = int(rank_series[ticker]) if ticker in rank_series.index else None
-                        self._record_sell(result, ticker, date_str, price, sell_rank)
+                    if price is None or pd.isna(price):
+                        # No real (or fill-bridged) price available — e.g. a
+                        # multi-week OHLCV gap past MAX_FORWARD_FILL_TRADING_DAYS.
+                        # Previously this fell through to del/n_sold below
+                        # anyway, silently dropping the position with no sell
+                        # record at all (neither open nor closed) — a trade
+                        # just vanished. Leave it open and re-evaluate next
+                        # rebalance instead, same as the circuit-lock branch.
+                        continue
+                    proceeds = pos.qty * price
+                    self.cash += proceeds - self._one_leg_cost(price, pos.qty)
+                    sell_rank = int(rank_series[ticker]) if ticker in rank_series.index else None
+                    self._record_sell(result, ticker, date_str, price, sell_rank)
                     del self.positions[ticker]
                     n_sold += 1
 
@@ -734,15 +768,19 @@ class MomentumBacktester:
         final_prices = self._price_row(trading_days[-1])
         for ticker, pos in self.positions.items():
             price = final_prices.get(ticker)
+            mark_price = float(price) if price is not None and pd.notna(price) else None
             holding_days = (pd.Timestamp(final_date) - pd.Timestamp(pos.entry_date)).days
             result.transactions.append({
                 "ticker": ticker,
                 "buy_date": pos.entry_date,
                 "sell_date": None,
                 "buy_price": pos.entry_price,
-                "sell_price": float(price) if price is not None and pd.notna(price) else None,
+                "sell_price": mark_price,
                 "qty": pos.qty,
                 "holding_days": holding_days,
+                # Unrealized annualized gain to date (mark-to-market, not a
+                # realized exit) — same formula as a closed trade's trade_cagr.
+                "trade_cagr": trade_cagr(pos.entry_price, mark_price, holding_days),
                 "buy_momentum_rank": pos.entry_rank,
                 "sell_momentum_rank": None,
                 "status": "open",

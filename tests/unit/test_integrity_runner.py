@@ -43,6 +43,7 @@ def test_run_integrity_checks_writes_findings_and_counts_critical(conn, monkeypa
     monkeypatch.setitem(runner_mod._CHECKS, "null_sweep", fake_check_warns)
     monkeypatch.setitem(runner_mod._CHECKS, "holiday_leakage", fake_check_critical)
     monkeypatch.setitem(runner_mod._CHECKS, "spot_check", fake_check_ok)
+    monkeypatch.setitem(runner_mod._CHECKS, "corporate_actions_coverage", fake_check_ok)
 
     as_of = date(2026, 6, 1)
     result = run_integrity_checks(conn, as_of)
@@ -52,6 +53,7 @@ def test_run_integrity_checks_writes_findings_and_counts_critical(conn, monkeypa
         "null_sweep": 1,
         "holiday_leakage": 1,
         "spot_check": 0,
+        "corporate_actions_coverage": 0,
     }
     assert result.total_findings == 2
     assert result.critical_count == 1

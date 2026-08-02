@@ -1178,6 +1178,13 @@ _SANITY_KNOWN_SPARSE_COLUMNS = {
     "board_independence", "director_resignation_count_4q",
     "whistle_blower_policy", "gst_revenue_divergence", "peer_outlier_score",
     "tax_rate_anomaly", "benford_mad",
+    # [2026-08-01] receivable_days/inventory_days (base columns) were already
+    # exempted above, but these derived _change columns were missed when
+    # added — same root cause (ingestion/scrapers/screener.py hardcodes the
+    # base fields to None at scrape time, so any delta computed from them is
+    # structurally NaN too). dilution_3y shares the same "source doesn't
+    # reliably provide this" character. See DataModelAudit.md priority #1.
+    "receivable_days_change", "inventory_days_change", "dilution_3y",
 }
 
 

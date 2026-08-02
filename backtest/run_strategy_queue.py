@@ -73,6 +73,10 @@ _ORCHESTRATOR_FLAGS = {
     "channel", "strategy_id", "horizon_bucket", "start_date", "end_date", "capital_mode", "initial_capital",
     "sip_amount", "universe_spec", "max_tickers", "min_history_days", "template_name", "preset", "top_n",
     "lookback_months", "exit_variant", "regime_method",
+    # 2026-08-01 Momentum-parity Technical filters (backtest/run_orchestrator_backtest.py
+    # --max-hold-days/--min-adtv-cr/etc.) — see that script's argparse block.
+    "max_hold_days", "min_adtv_cr", "quality_gate_min_f_score", "quality_gate_max_m_score",
+    "downtrend_filter_pct", "circuit_band_pct", "disable_buys_in_regime", "combo_templates",
 } | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",

@@ -1,0 +1,120 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Momentum Backtest — Data Quality Root Cause Investigation (2026-08-01)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 2rem;
+         max-width: 900px; background: #fff; color: #1a1a1a; line-height: 1.55; }
+  @media (prefers-color-scheme: dark) { body { background: #16181d; color: #e6e6e6; } }
+  h1 { font-size: 1.4rem; margin-bottom: 0.2rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #8884; padding-bottom: 0.3rem; }
+  .meta { font-size: 0.85rem; opacity: 0.65; margin-bottom: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin: 0.75rem 0; }
+  th, td { padding: 0.4rem 0.6rem; text-align: left; border-bottom: 1px solid #8882; }
+  th { background: #8881; }
+  code { background: #8882; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
+  .sev-high { color: #d9534f; font-weight: 600; }
+  .sev-med { color: #d99a3f; font-weight: 600; }
+  .sev-low { color: #5b9e5b; font-weight: 600; }
+  .status { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.78rem;
+            font-weight: 600; background: #2e9e5b22; color: #2e9e5b; }
+  ul { padding-left: 1.3rem; }
+  .callout { background: #8881; border-left: 3px solid #d99a3f; padding: 0.75rem 1rem; margin: 1rem 0;
+             border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+<h1>Momentum Backtest — Data Quality Root Cause Investigation</h1>
+<div class="meta">2026-08-01 &middot; scope: 481 trade-book CSVs, 2005-01-03 to 2026-07-31 (5,353 trading days)</div>
+
+<div class="callout">
+<strong>Status:</strong> Code fixes implemented and unit-tested. <span class="status">Backtest NOT re-run</span> —
+per explicit instruction, no re-run until upstream OHLCV data for the affected window is corrected.
+Everything below reflects the investigation and the engine/frontend changes now in place, not a fresh backtest.
+</div>
+
+<h2>1. Trigger</h2>
+<p>The live Momentum "Trades" view was found to only ever show open positions, and FY2023-24 showed abnormally
+high returns on manual review. Investigation traced every FY23-24 trade with an outsized return back to its
+buy/sell dates and underlying OHLCV data.</p>
+
+<h2>2. Root cause: OHLCV ingestion gap, 2024-07-08 to 2024-07-31</h2>
+<p>Daily ticker coverage in <code>ohlcv_adjusted</code> collapsed from ~1,750 tickers/day to ~88-94 tickers/day for
+17 consecutive trading days, then fully recovered on 2024-08-01. <code>MomentumBacktester</code>'s
+<code>price_panel.ffill()</code> had no <code>limit=</code>, so it silently forward-filled the last real price
+(2024-07-05's close) for every trade whose nominal exit fell inside the gap — for weeks. Verified to 6 decimal
+places against three of the outlier trades:</p>
+<table>
+<tr><th>Ticker</th><th>Nominal sell_date</th><th>sell_price used</th><th>2024-07-05 close (frozen source)</th></tr>
+<tr><td>COCHINSHIP</td><td>2024-07-10 / 07-18 / 07-24</td><td>2807.480096</td><td>2807.480096 (exact match)</td></tr>
+<tr><td>IRCON</td><td>2024-07-24</td><td>300.398536</td><td>300.398536 (exact match)</td></tr>
+<tr><td>POWERINDIA</td><td>2024-07-25</td><td>14015.485381</td><td>14015.485381 (exact match)</td></tr>
+</table>
+<p><strong>Impact:</strong> 1,954 trades across 198 tickers used a frozen stale price; affected-trade returns
+averaged +43% vs. a normal population, with a max of +418% (COCHINSHIP) — fabricated, not real.</p>
+
+<h2>3. Full-dataset scan results</h2>
+<table>
+<tr><th>Window</th><th>Severity</th><th>Pattern</th><th>Trade impact</th></tr>
+<tr><td>2024-07-08 &rarr; 2024-07-31</td><td class="sev-high">High</td>
+    <td>18 contiguous trading days, coverage &darr; to ~5%</td>
+    <td>1,954 trades frozen, up to +418% fabricated</td></tr>
+<tr><td>2026-01-13 &rarr; 2026-02-06</td><td class="sev-med">Medium (root cause), Low (realized impact)</td>
+    <td>Same signature (same ~67-90 ticker fallback subset) but <em>intermittent</em> — normal
+    coverage returns on interleaved days, so ffill self-corrected within 1-2 days</td>
+    <td>0 exact stale-price matches found; return distribution in line with population</td></tr>
+<tr><td>2025-07-28</td><td class="sev-low">Low</td><td>Isolated single-day dip (516 vs ~1,810 normal)</td>
+    <td>334 trades frozen, mean +9%, max +133%</td></tr>
+<tr><td>~58 other flagged days (2006-2025)</td><td class="sev-low">None</td>
+    <td>Legitimate NSE special sessions (Diwali Muhurat, Budget-day Saturday sessions)</td>
+    <td>Real low-volume sessions, not data loss</td></tr>
+</table>
+<p>FY2019-20 and FY2020-21 were separately checked in full: no coverage gaps found. Their large trade returns
+(TANLA +1,274%, ADANIGREEN +542%, COFORGE +600%, CGPOWER +610%, etc.) match well-documented real COVID-recovery-era
+multi-bagger rallies — confirmed via smoothly-varying daily price series with normal ~1,500+ ticker coverage
+around each exit date, not a frozen-price signature.</p>
+
+<h2>4. Fixes implemented</h2>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><code>backtest/momentum_backtest.py</code></td>
+    <td>Capped <code>price_panel.ffill(limit=5)</code> (was unbounded) — a short gap (holiday, single-day halt)
+    still bridges; a multi-week outage now surfaces as <code>NaN</code> instead of a fabricated price.</td></tr>
+<tr><td><code>backtest/momentum_backtest.py</code></td>
+    <td>Fixed a latent bug the cap exposed: a grace-period forced-sell with a <code>NaN</code> price used to
+    delete the position with <em>no sell record at all</em> — the trade just vanished (neither open nor closed).
+    Now left open and re-evaluated next rebalance, same as the existing circuit-lock handling.</td></tr>
+<tr><td><code>backtest/momentum_backtest.py</code></td>
+    <td>Added <code>trade_cagr</code> to every transaction (closed: realized; open: mark-to-market unrealized) —
+    annualized price gain over the trade's actual holding period.</td></tr>
+<tr><td><code>backtest/momentum_metrics.py</code></td>
+    <td>New <code>trade_quality_metrics()</code>: <code>total_trades</code> (open + closed, not closed-only),
+    <code>avg_trade_duration_days</code> across all trades, and a per-trade <code>return_zscore</code> that
+    auto-flags statistical outliers (<code>n_outlier_trades</code>, <code>max_abs_return_zscore</code>) as a
+    second, independent line of defense against future undetected data artifacts.</td></tr>
+<tr><td><code>scripts/run_momentum_experimentation.py</code>,<br><code>run_momentum_filter_overlays.py</code>,<br>
+    <code>run_momentum_recommended_strategies.py</code></td>
+    <td>Wired <code>trade_quality_metrics()</code> into every variant summary; trade-book CSVs now also write
+    <code>trade_cagr</code> and <code>return_zscore</code> columns.</td></tr>
+<tr><td><code>frontend/src/pages/momentum/portfolio.tsx</code></td>
+    <td>Removed the hardcoded <code>open_only: true</code> that made the live "Trades" view show only open
+    positions. Now shows the full ledger (open + closed) with Sale Date, Sale Price, per-trade CAGR, and a
+    Status column.</td></tr>
+</table>
+<p>Verified: 136/136 momentum unit tests pass; frontend TypeScript build clean.</p>
+
+<h2>5. Not yet done (deliberately)</h2>
+<ul>
+<li>The 2024-07-08&ndash;07-31 OHLCV data itself has not been backfilled — the engine now refuses to fabricate a
+price for that window rather than silently continuing to use the stale one.</li>
+<li>No backtest re-run has been triggered. All 481 trade-book CSVs / reports currently on disk (and their HTML
+conversions) still reflect the <em>pre-fix</em> numbers, including the fabricated July 2024 returns.</li>
+<li>The recurring bulk-ingestion fragility behind both the July 2024 and Jan-Feb 2026 gaps (falls back to the
+same small ~70-90-ticker subset) has not been root-caused at the ingestion-pipeline level — only the
+backtest engine's response to it has been hardened.</li>
+</ul>
+
+</body>
+</html>

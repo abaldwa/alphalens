@@ -376,10 +376,24 @@ def stage_batch_panels(
     return total_staged
 
 
-def load_staged_panel_for_date(run_id: str, target_date: pd.Timestamp, db_path=None) -> Optional[pd.DataFrame]:
+def load_staged_panel_for_date(run_id: str, target_date: pd.Timestamp, db_path=None, conn=None) -> Optional[pd.DataFrame]:
     """
     Fast indexed lookup of one date's already-staged rows, for the per-date
     write pass to hand to build_feature_matrix(..., staged_panel=...).
+
+    Parameters
+    ----------
+    conn : optional
+        [2026-08-01 perf fix] An already-open DuckDB connection to reuse
+        (e.g. from `get_duckdb_connection`). Default None preserves the
+        original behavior: opens and closes a fresh connection for this
+        one call. Found 2026-08-01: a per-date write-pass loop calling this
+        once per date (its only real usage pattern — scripts/feature_backfill.py
+        and scripts/patch_advanced_technical_pattern_scores.py) was paying
+        full connection-open/close overhead hundreds/thousands of times
+        over — measured ~13.5s/date in a merge-only pass with zero API
+        calls, almost entirely this. Callers doing a per-date loop should
+        open one connection ONCE outside the loop and pass it here.
 
     Returns
     -------
@@ -389,15 +403,18 @@ def load_staged_panel_for_date(run_id: str, target_date: pd.Timestamp, db_path=N
         this as "batch staging wasn't run for this date" and fall back to
         the original per-date computation path.
     """
-    path = db_path or FEATURE_PANEL_STAGING_DB_PATH
     date_str = pd.Timestamp(target_date).date().isoformat()
     col_list = ", ".join(f'"{c}"' for c in _STAGED_FEATURE_COLUMNS)
-    with get_duckdb_connection(path, read_only=False, persist=False) as conn:
-        _ensure_staging_table(conn)
-        df = conn.execute(
-            f'SELECT ticker, {col_list} FROM {_TABLE_NAME} WHERE run_id = ? AND date = ?',
-            [run_id, date_str],
-        ).fetchdf()
+    query = f'SELECT ticker, {col_list} FROM {_TABLE_NAME} WHERE run_id = ? AND date = ?'
+    params = [run_id, date_str]
+
+    if conn is not None:
+        df = conn.execute(query, params).fetchdf()
+    else:
+        path = db_path or FEATURE_PANEL_STAGING_DB_PATH
+        with get_duckdb_connection(path, read_only=False, persist=False) as c:
+            _ensure_staging_table(c)
+            df = c.execute(query, params).fetchdf()
     if df.empty:
         return None
     return df
