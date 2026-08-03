@@ -175,6 +175,37 @@ def test_get_tickers_empty_when_nothing_passes(monkeypatch, tmp_path):
     assert universe_mod.get_tickers() == []
 
 
+# ===== get_tickers_for_feature_engineering =====
+# [2026-08-04] ~500/2300 universe rows are ETFs (trade under NSE's EQ
+# series so they pass tier/adtv/mcap filters, but have no fundamentals/
+# shareholding/corp-actions to compute features from) — excluded from the
+# feature-engineering entry points (daily_pipeline.py's
+# step_compute_features, scripts/feature_backfill*.py) but NOT from
+# get_tickers() itself, since backtest/screener/ML-scoring callers are
+# out of scope for this change.
+
+
+def test_excludes_known_etf_tickers(monkeypatch, tmp_path):
+    csv_path = tmp_path / "universe.csv"
+    _write_csv(
+        csv_path,
+        [_row("REALSTOCK", tier=1), _row("SOMEETF", tier=1)],
+    )
+    monkeypatch.setattr(universe_mod, "UNIVERSE_CSV_PATH", csv_path)
+    monkeypatch.setattr("config.etf_exclusions.ETF_TICKERS", frozenset({"SOMEETF"}))
+
+    assert universe_mod.get_tickers_for_feature_engineering() == ["REALSTOCK"]
+
+
+def test_no_etfs_in_universe_returns_everything(monkeypatch, tmp_path):
+    csv_path = tmp_path / "universe.csv"
+    _write_csv(csv_path, [_row("AAA", tier=1), _row("BBB", tier=1)])
+    monkeypatch.setattr(universe_mod, "UNIVERSE_CSV_PATH", csv_path)
+    monkeypatch.setattr("config.etf_exclusions.ETF_TICKERS", frozenset())
+
+    assert universe_mod.get_tickers_for_feature_engineering() == ["AAA", "BBB"]
+
+
 # ===== get_market_cap_rank_map_as_of =====
 #
 # Real seeded DuckDB schema (create_normalised.create_schema), no mocks over

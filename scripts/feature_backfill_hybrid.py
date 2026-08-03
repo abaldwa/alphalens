@@ -963,7 +963,7 @@ def main() -> None:
     args = _parse_args()
 
     from config.settings import DUCKDB_PATH, FEATURES_DAILY_DIR
-    from config.universe import get_tickers, load_universe
+    from config.universe import get_tickers_for_feature_engineering, load_universe
     from datastore.client import DataStoreClient
     from features.backfill_cache import BackfillDataCache
     from datetime import datetime
@@ -1062,7 +1062,7 @@ def main() -> None:
             len(tickers) - already_done,
         )
     else:
-        tickers = get_tickers()
+        tickers = get_tickers_for_feature_engineering()
         listing_dates: Dict[str, Optional[object]] = {}
         if "listing_date" in universe_meta.columns:
             listing_dates = {

@@ -34,7 +34,7 @@ def patched_backfill_env(monkeypatch, tmp_path):
     )
     monkeypatch.setitem(sys.modules, "config.settings", fake_settings)
 
-    fake_universe = SimpleNamespace(get_tickers=lambda: ["AAA", "BBB"])
+    fake_universe = SimpleNamespace(get_tickers_for_feature_engineering=lambda: ["AAA", "BBB"])
     monkeypatch.setitem(sys.modules, "config.universe", fake_universe)
 
     class _FakeConn:

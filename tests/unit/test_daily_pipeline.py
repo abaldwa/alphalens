@@ -614,7 +614,7 @@ class TestStepComputeFeatures:
         from config import universe as universe_mod
         from features.pnd_features import PND_FEATURES
 
-        monkeypatch.setattr(universe_mod, "get_tickers", lambda: ["AAA", "BBB"])
+        monkeypatch.setattr(universe_mod, "get_tickers_for_feature_engineering", lambda: ["AAA", "BBB"])
 
         # build_feature_matrix now includes PND columns; step_compute_features
         # extracts them from the matrix instead of making a second bulk call.

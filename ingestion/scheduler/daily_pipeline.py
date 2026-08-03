@@ -933,7 +933,7 @@ def step_compute_features(
 
     if panel_workers is None:
         panel_workers = PANEL_COMPUTE_WORKERS
-    from config.universe import get_tickers
+    from config.universe import get_tickers_for_feature_engineering
     from datastore.client import DataStoreClient
     from features.backfill_cache import BackfillDataCache
     from features.matrix_builder import build_feature_matrix
@@ -947,7 +947,7 @@ def step_compute_features(
     _wait_for_datastore_api()
 
     date_str = run_date.isoformat()
-    tickers = get_tickers()
+    tickers = get_tickers_for_feature_engineering()
 
     # 2026-07 perf fix: the live/daily path never wired up a data_cache, so
     # every panel needing fundamentals/shareholding (deep_forensic etc.) hit

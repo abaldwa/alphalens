@@ -138,7 +138,7 @@ def main() -> None:
     args = _parse_args()
 
     from config.settings import DUCKDB_PATH, FEATURES_DAILY_DIR, LOGS_DIR
-    from config.universe import get_tickers
+    from config.universe import get_tickers_for_feature_engineering
     from datastore.api.db import get_duckdb_connection
     from ingestion.scheduler.daily_pipeline import step_compute_features
 
@@ -225,7 +225,7 @@ def main() -> None:
     from datastore.client import DataStoreClient
 
     client = DataStoreClient()
-    tickers_for_cache = get_tickers()
+    tickers_for_cache = get_tickers_for_feature_engineering()
     backfill_cache = None
     if not args.skip_slow_categories:
         from features.backfill_cache import BackfillDataCache

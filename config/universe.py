@@ -193,6 +193,25 @@ def get_tickers() -> list[str]:
     return load_universe()["ticker"].tolist()
 
 
+def get_tickers_for_feature_engineering() -> list[str]:
+    """get_tickers() minus config.etf_exclusions.ETF_TICKERS.
+
+    [2026-08-04] ~500 of the ~2300 rows in the filtered universe are ETFs
+    (they trade under NSE's EQ series alongside genuine stocks, hence
+    passing tier/adtv/mcap filters, but have no fundamentals/shareholding/
+    corporate actions — see config/etf_exclusions.py's module docstring).
+    ingestion/bhavcopy.py already excludes them from OHLCV download; this
+    does the same for the feature-engineering entry points
+    (ingestion/scheduler/daily_pipeline.py::step_compute_features,
+    scripts/feature_backfill.py, scripts/feature_backfill_hybrid.py) so
+    ~22% of feature-matrix compute isn't spent on tickers with nothing to
+    compute. Backtest/screener/ML-scoring callers still use plain
+    get_tickers() — deliberately unchanged, out of scope for this fix.
+    """
+    from config.etf_exclusions import ETF_TICKERS
+    return [t for t in get_tickers() if t not in ETF_TICKERS]
+
+
 def get_top_adtv_tickers(n: int) -> list[str]:
     """
     Top `n` tickers from the filtered universe ranked by ADTV (avg daily
