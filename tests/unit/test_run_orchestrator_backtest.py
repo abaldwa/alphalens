@@ -215,3 +215,59 @@ class TestFetchRealOhlcvKeepsColumnsPivotNeeds:
         volume_panel = ohlcv.pivot(index="date", columns="ticker", values="volume")
         assert not price_panel.empty
         assert not volume_panel.empty
+
+
+class TestFetchRealOhlcvMaxTickersUsesAdtvOrdering:
+    """[2026-08-04] --max-tickers used to slice get_tickers()'s CSV-row-order
+    list, which carries no liquidity meaning — a user reviewing partial
+    sweep results (e.g. after --max-tickers 800 jobs finish) expects that
+    800 to be the most-liquid names, not an arbitrary alphabetical/CSV-order
+    slice. Fixed to use get_top_adtv_tickers (the same helper
+    run_phase1_backtest.py already uses) whenever max_tickers is set."""
+
+    def _bulk_df(self, tickers):
+        rows = []
+        for ticker in tickers:
+            for d in pd.bdate_range("2023-01-01", "2023-01-10"):
+                rows.append({
+                    "date": d, "ticker": ticker,
+                    "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+                    "volume": 12345.0, "delivery_pct": 40.0, "adj_factor": 1.0,
+                })
+        return pd.DataFrame(rows)
+
+    def test_max_tickers_set_calls_get_top_adtv_tickers_not_get_tickers(self):
+        with patch(
+            "backtest.run_orchestrator_backtest.DataStoreClient.get_ohlcv_bulk",
+            return_value=self._bulk_df(["HIGH_ADTV"]),
+        ), patch(
+            "backtest.run_orchestrator_backtest.get_top_adtv_tickers",
+            return_value=["HIGH_ADTV"],
+        ) as mock_top_adtv, patch(
+            "backtest.run_orchestrator_backtest.get_tickers",
+        ) as mock_plain:
+            _fetch_real_ohlcv(
+                max_tickers=800, min_history_days=1,
+                start_date=date(2023, 1, 1), end_date=date(2023, 1, 10),
+            )
+
+        mock_top_adtv.assert_called_once_with(800)
+        mock_plain.assert_not_called()
+
+    def test_max_tickers_none_falls_back_to_plain_get_tickers(self):
+        with patch(
+            "backtest.run_orchestrator_backtest.DataStoreClient.get_ohlcv_bulk",
+            return_value=self._bulk_df(["ANY"]),
+        ), patch(
+            "backtest.run_orchestrator_backtest.get_tickers",
+            return_value=["ANY"],
+        ) as mock_plain, patch(
+            "backtest.run_orchestrator_backtest.get_top_adtv_tickers",
+        ) as mock_top_adtv:
+            _fetch_real_ohlcv(
+                max_tickers=None, min_history_days=1,
+                start_date=date(2023, 1, 1), end_date=date(2023, 1, 10),
+            )
+
+        mock_plain.assert_called_once()
+        mock_top_adtv.assert_not_called()

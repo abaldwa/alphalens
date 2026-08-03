@@ -140,7 +140,10 @@ def _write(conn, run_id: str, trades, out_path: Path, write_html: bool = False) 
             "exit_indicator_values": json.dumps(exit_["feature_vector"]) if exit_ else "",
             "days_held": days_held,
             "pnl_inr": t.get("pnl_inr"), "pnl_pct": pnl_pct,
-            "trade_cagr": _trade_cagr(buy_price, sell_price, days_held) if buy_price else None,
+            "trade_cagr": _trade_cagr(
+                buy_price, sell_price, days_held,
+                ticker=t["ticker"], buy_date=buy_date, sell_date=sale_date, run_id=run_id,
+            ) if buy_price else None,
             "_return_pct": return_pct,
             "_entry_score": float(entry_score) if entry_score is not None else None,
         })

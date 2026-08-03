@@ -78,7 +78,7 @@ from config.settings import (
     DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
 )
 from config.timezone import now_ist
-from config.universe import get_tickers
+from config.universe import get_tickers, get_top_adtv_tickers
 from datastore.api.db import get_duckdb_connection
 from backtest.export_trade_book import export_trade_book
 from datastore.client import DataStoreClient
@@ -95,8 +95,8 @@ HORIZON_BUCKET_MAP = {b.value: b for b in HorizonBucket}
 
 
 def _fetch_real_ohlcv(max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type) -> pd.DataFrame:
-    """Real OHLCV (config.universe.get_tickers()'s curated universe) over
-    exactly [start_date, end_date] — the run's own requested window, not
+    """Real OHLCV (config.universe's curated universe) over exactly
+    [start_date, end_date] — the run's own requested window, not
     run_phase1_backtest.py's fixed 5-year lookback.
 
     2026-07-26 fix (backtest-reviewer sign-off): was a per-ticker
@@ -108,11 +108,15 @@ def _fetch_real_ohlcv(max_tickers: Optional[int], min_history_days: int, start_d
     client-side. Row order becomes (ticker, date) alphabetical rather than
     get_tickers()'s list order — confirmed harmless, nothing downstream
     indexes into this DataFrame positionally.
+
+    [2026-08-04] max_tickers now truncates via get_top_adtv_tickers (same
+    ADTV-descending helper run_phase1_backtest.py already uses) instead of
+    plain get_tickers()[:max_tickers] — the CSV's row order carries no
+    liquidity meaning, so --max-tickers 800 used to be an arbitrary 800,
+    not the top-800-by-ADTV a user reviewing partial sweep results expects.
     """
     client = DataStoreClient()
-    tickers = get_tickers()
-    if max_tickers:
-        tickers = tickers[:max_tickers]
+    tickers = get_top_adtv_tickers(max_tickers) if max_tickers else get_tickers()
     ticker_set = set(tickers)
 
     # DataStoreClient.get_ohlcv_bulk calls .date() on its from_date/to_date

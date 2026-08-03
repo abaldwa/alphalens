@@ -36,6 +36,7 @@ Strategy, per FeatureBacklog.md ML38's confirmed scope (2026-07-13/14):
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 import pandas as pd
@@ -44,6 +45,23 @@ from backtest.costs import IndianTransactionCosts
 from features.momentum_signal import orthogonalize_momentum_vs_factors, trailing_momentum_from_panel
 
 logger = logging.getLogger(__name__)
+
+# [DATA QUALITY, 2026-08-02] Dedicated log for trade_cagr's OverflowError guard
+# (see trade_cagr's docstring) — these trades' extreme price ratios are a
+# real-data-corruption signal (see
+# backtest/reports/technical/screener_cache/../ANMOL root-cause investigation:
+# an un-smoothed adj_factor discontinuity at a corporate action), not just a
+# numeric edge case, so every occurrence is recorded here for later data-quality
+# triage rather than silently dropped alongside the None return value.
+DATA_QUALITY_ANOMALY_LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "data_quality_anomalies.log"
+_anomaly_logger = logging.getLogger("backtest.data_quality_anomalies")
+if not _anomaly_logger.handlers:
+    DATA_QUALITY_ANOMALY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _handler = logging.FileHandler(DATA_QUALITY_ANOMALY_LOG_PATH, mode="a")
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _anomaly_logger.addHandler(_handler)
+    _anomaly_logger.setLevel(logging.WARNING)
+    _anomaly_logger.propagate = False
 
 
 def decide_grace_transitions(
@@ -78,12 +96,21 @@ def decide_grace_transitions(
     return updated
 
 
-def trade_cagr(buy_price: float, sell_price: Optional[float], holding_days: Optional[int]) -> Optional[float]:
+def trade_cagr(
+    buy_price: float, sell_price: Optional[float], holding_days: Optional[int],
+    *, ticker: Optional[str] = None, buy_date: Optional[str] = None,
+    sell_date: Optional[str] = None, run_id: Optional[str] = None,
+) -> Optional[float]:
     """Per-trade annualized price gain: (sell/buy)^(365.25/holding_days) - 1.
 
     None for a still-open position (sell_price/holding_days not yet known)
     or a same-day round-trip (holding_days <= 0 makes annualizing
     meaningless — division by a near-zero exponent denominator blows up).
+
+    ticker/buy_date/sell_date/run_id are optional, log-only context (not
+    used in the calculation) so an OverflowError anomaly can be traced back
+    to the actual trade without changing this function's return contract
+    for existing positional callers.
     """
     if sell_price is None or holding_days is None or holding_days <= 0 or buy_price <= 0:
         return None
@@ -92,8 +119,17 @@ def trade_cagr(buy_price: float, sell_price: Optional[float], holding_days: Opti
     except OverflowError:
         # A short holding period compounded to an annualized rate can exceed
         # float range (e.g. a 1-day trade with an extreme price ratio from a
-        # circuit-limit move or corrupted OHLCV bar) — not a meaningful
-        # annualized figure either way, so treat it the same as "unknown".
+        # circuit-limit move or corrupted OHLCV bar — see
+        # project_ohlcv_adjfactor_discontinuities_20260802 memory: 960 such
+        # discontinuities found across ohlcv_adjusted) — not a meaningful
+        # annualized figure either way, so treat it the same as "unknown",
+        # but record it for data-quality triage rather than dropping it.
+        _anomaly_logger.warning(
+            "trade_cagr_overflow ticker=%s run_id=%s buy_date=%s sell_date=%s "
+            "buy_price=%s sell_price=%s ratio=%s holding_days=%s",
+            ticker, run_id, buy_date, sell_date, buy_price, sell_price,
+            (sell_price / buy_price) if buy_price else None, holding_days,
+        )
         return None
 
 
@@ -529,7 +565,10 @@ class MomentumBacktester:
             "sell_price": sell_price,
             "qty": pos.qty,
             "holding_days": holding_days,
-            "trade_cagr": trade_cagr(pos.entry_price, sell_price, holding_days),
+            "trade_cagr": trade_cagr(
+                pos.entry_price, sell_price, holding_days,
+                ticker=ticker, buy_date=pos.entry_date, sell_date=sell_date,
+            ),
             "buy_momentum_rank": pos.entry_rank,
             "sell_momentum_rank": sell_rank,
             "status": "closed",
@@ -787,7 +826,10 @@ class MomentumBacktester:
                 "holding_days": holding_days,
                 # Unrealized annualized gain to date (mark-to-market, not a
                 # realized exit) — same formula as a closed trade's trade_cagr.
-                "trade_cagr": trade_cagr(pos.entry_price, mark_price, holding_days),
+                "trade_cagr": trade_cagr(
+                    pos.entry_price, mark_price, holding_days,
+                    ticker=ticker, buy_date=pos.entry_date, sell_date=final_date,
+                ),
                 "buy_momentum_rank": pos.entry_rank,
                 "sell_momentum_rank": None,
                 "status": "open",

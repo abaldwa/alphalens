@@ -8,6 +8,8 @@ momentum-computation correctness (already covered by
 test_momentum_signal.py).
 """
 
+import logging
+
 import pandas as pd
 import pytest
 
@@ -39,6 +41,26 @@ class TestTradeCagr:
 
     def test_open_position_returns_none(self):
         assert mb.trade_cagr(100.0, None, None) is None
+
+    def test_overflow_is_logged_to_data_quality_anomaly_log(self, tmp_path, monkeypatch):
+        # Redirect the module's anomaly file handler to an isolated tmp file
+        # so this test doesn't append to the real logs/data_quality_anomalies.log.
+        log_path = tmp_path / "anomalies.log"
+        handler = logging.FileHandler(log_path, mode="a")
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        monkeypatch.setattr(mb._anomaly_logger, "handlers", [handler])
+
+        result = mb.trade_cagr(
+            1.7616, 52.85, 1,
+            ticker="ANMOL", buy_date="2023-07-17", sell_date="2023-07-18", run_id="orch_test_123",
+        )
+        handler.close()
+
+        assert result is None
+        logged = log_path.read_text()
+        assert "ANMOL" in logged
+        assert "orch_test_123" in logged
+        assert "2023-07-17" in logged and "2023-07-18" in logged
 
 
 class TestSIP:
