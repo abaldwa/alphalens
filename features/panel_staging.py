@@ -169,6 +169,7 @@ def stage_batch_panels(
     db_path=None,
     force_restage: bool = False,
     panel_workers: int = 1,
+    advanced_technical_used_only: bool = False,
 ) -> int:
     """
     Compute technical/intraday/pnd/adv_tech/patterns ONCE per ticker chunk
@@ -343,7 +344,7 @@ def stage_batch_panels(
             for chunk_tickers, chunk_panel in pending_chunks:
                 n_chunks += 1
                 technical, intraday, pnd, adv_tech, patterns = compute_full_range_chunk_panels(
-                    chunk_panel, benchmark_wide
+                    chunk_panel, benchmark_wide, advanced_technical_used_only,
                 )
                 n_rows = _stage_one_result(chunk_tickers, technical, intraday, pnd, adv_tech, patterns)
                 logger.info(
@@ -357,7 +358,9 @@ def stage_batch_panels(
             pool_batch = panel_workers * 2  # a couple waves' worth in flight per dispatch
             for batch_start in range(0, len(pending_chunks), pool_batch):
                 batch = pending_chunks[batch_start:batch_start + pool_batch]
-                worker_args = [(chunk_panel, benchmark_wide) for _, chunk_panel in batch]
+                worker_args = [
+                    (chunk_panel, benchmark_wide, advanced_technical_used_only) for _, chunk_panel in batch
+                ]
                 results = _run_pool_over_chunks(
                     _compute_full_range_chunk_panels_worker, worker_args, panel_workers
                 )

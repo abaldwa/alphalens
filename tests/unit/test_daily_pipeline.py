@@ -635,6 +635,59 @@ class TestStepComputeFeatures:
         saved = pd.read_parquet(pnd_dir / "2026-01-05.parquet")
         assert sorted(saved["ticker"].to_list()) == ["AAA", "BBB"]
 
+    def test_advanced_technical_used_only_defaults_true_on_live_daily_path(self, monkeypatch, tmp_path):
+        """[2026-08-04] Of advanced_technical's 18 features, only
+        hurst_exp_21d is used downstream — the live daily pipeline
+        defaults advanced_technical_used_only=True (unlike every other
+        skip flag on this function, which default False/full) so the
+        other 17's expensive per-row computations aren't paid for daily.
+        scripts/backfill_deferred_advanced_technical.py fills them back in
+        asynchronously."""
+        import features.matrix_builder as matrix_builder_mod
+        from config import settings
+        from config import universe as universe_mod
+        from features.pnd_features import PND_FEATURES
+
+        monkeypatch.setattr(universe_mod, "get_tickers_for_feature_engineering", lambda: ["AAA"])
+
+        captured_kwargs = {}
+        pnd_row = {col: None for col in PND_FEATURES}
+        mock_matrix = pd.DataFrame([{"date": pd.Timestamp("2026-01-05"), "ticker": "AAA", **pnd_row}])
+
+        def _fake_build_feature_matrix(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_matrix
+
+        monkeypatch.setattr(matrix_builder_mod, "build_feature_matrix", _fake_build_feature_matrix)
+        monkeypatch.setattr(settings, "FEATURES_PND_DAILY_DIR", tmp_path / "daily_pnd")
+
+        daily_pipeline.step_compute_features(date(2026, 1, 5))
+
+        assert captured_kwargs["advanced_technical_used_only"] is True
+
+    def test_advanced_technical_used_only_can_be_overridden_false(self, monkeypatch, tmp_path):
+        import features.matrix_builder as matrix_builder_mod
+        from config import settings
+        from config import universe as universe_mod
+        from features.pnd_features import PND_FEATURES
+
+        monkeypatch.setattr(universe_mod, "get_tickers_for_feature_engineering", lambda: ["AAA"])
+
+        captured_kwargs = {}
+        pnd_row = {col: None for col in PND_FEATURES}
+        mock_matrix = pd.DataFrame([{"date": pd.Timestamp("2026-01-05"), "ticker": "AAA", **pnd_row}])
+
+        def _fake_build_feature_matrix(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_matrix
+
+        monkeypatch.setattr(matrix_builder_mod, "build_feature_matrix", _fake_build_feature_matrix)
+        monkeypatch.setattr(settings, "FEATURES_PND_DAILY_DIR", tmp_path / "daily_pnd")
+
+        daily_pipeline.step_compute_features(date(2026, 1, 5), advanced_technical_used_only=False)
+
+        assert captured_kwargs["advanced_technical_used_only"] is False
+
 
 class TestStepRunModels:
     """[AS BUILT, P1.7] step_run_models wired to systems/ml_signal_engine/inference/daily_inference.py."""

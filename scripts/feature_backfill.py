@@ -114,6 +114,15 @@ def _parse_args() -> argparse.Namespace:
                         "that will be backfilled separately. Not used by the live daily "
                         "pipeline; matrix_builder.py::build_feature_matrix's "
                         "skip_slow_categories param docstring has the full column list.")
+    p.add_argument("--advanced-technical-used-only", action="store_true",
+                   help="[2026-08-04] Compute only hurst_exp_21d of the 18 advanced_technical "
+                        "features (skip the other 17's expensive per-row wavelet/entropy/"
+                        "fractal/fracdiff/Lyapunov/RQA computations, leaving them NaN) — those "
+                        "17 are never referenced downstream by name, only as bulk ML-model "
+                        "inputs. Default False (this backfill script stays comprehensive unless "
+                        "explicitly requested fast) — unlike the live daily pipeline, which "
+                        "defaults this True. Use scripts/backfill_deferred_advanced_technical.py "
+                        "to fill the skipped 17 back in later.")
     p.add_argument("--panel-workers", type=int, default=1,
                    help="Parallelize the technical/intraday/pnd/advanced_technical/"
                         "pattern_scores chunk loop across N worker processes (default: 1, "
@@ -291,6 +300,7 @@ def main() -> None:
         panel_staging.stage_batch_panels(
             client, tickers_for_cache, pending_timestamps, run_id=staging_run_id,
             panel_workers=args.panel_workers,
+            advanced_technical_used_only=args.advanced_technical_used_only,
         )
         logger.info("panel_staging: staging complete in %.1f min", (time.monotonic() - t_stage0) / 60)
     except Exception as exc:  # noqa: BLE001
@@ -320,6 +330,7 @@ def main() -> None:
                 d, compute_hmm=compute_hmm, data_cache=backfill_cache,
                 panel_workers=args.panel_workers, staged_panel=staged_panel,
                 skip_slow_categories=args.skip_slow_categories,
+                advanced_technical_used_only=args.advanced_technical_used_only,
             )
             elapsed = time.monotonic() - t0
             elapsed_times.append(elapsed)

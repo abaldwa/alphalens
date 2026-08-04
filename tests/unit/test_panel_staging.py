@@ -237,7 +237,7 @@ class TestResumeSkipsAlreadyStagedTickers:
         real_compute = mb.compute_full_range_chunk_panels
         calls = []
 
-        def _guarded_compute(chunk_panel, benchmark_wide):
+        def _guarded_compute(chunk_panel, benchmark_wide, advanced_technical_used_only=False):
             chunk_tickers = set(chunk_panel["ticker"].unique())
             calls.append(chunk_tickers)
             if chunk_tickers & set(first_attempt_tickers):
@@ -246,7 +246,7 @@ class TestResumeSkipsAlreadyStagedTickers:
                     f"ticker(s) {chunk_tickers & set(first_attempt_tickers)} — resume "
                     f"did not skip them"
                 )
-            return real_compute(chunk_panel, benchmark_wide)
+            return real_compute(chunk_panel, benchmark_wide, advanced_technical_used_only)
 
         monkeypatch.setattr(panel_staging, "compute_full_range_chunk_panels", _guarded_compute)
 

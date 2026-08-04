@@ -405,6 +405,66 @@ class TestChunkedComputationMatchesUnchunked:
         pd.testing.assert_frame_equal(mat_unchunked, mat_chunked)
 
 
+class TestAdvancedTechnicalUsedOnlyThreading:
+    """[2026-08-04] advanced_technical_used_only threads from
+    build_feature_matrix down through _compute_chunked_ticker_independent_
+    panels/_compute_one_chunk_panels to compute_advanced_technical_features.
+    Real end-to-end (no mocks) using the same fixtures
+    TestChunkedComputationMatchesUnchunked relies on."""
+
+    @pytest.fixture
+    def multi_ticker_client(self):
+        rows = {
+            t: _make_ohlcv_rows(300, seed=i)
+            for i, t in enumerate(["AAA", "BBB"])
+        }
+        bm_rows = {name: _make_ohlcv_rows(300, seed=hash(name) % 1000) for name in BENCHMARK_TICKERS.values()}
+        return _FakeDataStoreClient({**rows, **bm_rows})
+
+    def test_used_only_true_leaves_other_17_nan_but_hurst_populated(self, multi_ticker_client):
+        from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
+
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        matrix = build_feature_matrix(
+            target_date, ["AAA", "BBB"], client=multi_ticker_client, save=False, compute_hmm=False,
+            advanced_technical_used_only=True,
+        )
+        assert matrix["hurst_exp_21d"].notna().any()
+        for col in ADVANCED_TECHNICAL_FEATURES:
+            if col == "hurst_exp_21d":
+                continue
+            assert matrix[col].isna().all(), f"{col} should be all-NaN under advanced_technical_used_only=True"
+
+    def test_used_only_false_default_computes_all_18(self, multi_ticker_client):
+        from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
+
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        matrix = build_feature_matrix(
+            target_date, ["AAA", "BBB"], client=multi_ticker_client, save=False, compute_hmm=False,
+        )
+        for col in ADVANCED_TECHNICAL_FEATURES:
+            assert matrix[col].notna().any(), f"{col} should have real values under default (used_only=False)"
+
+    def test_used_only_true_with_panel_workers_gt_1(self, multi_ticker_client, monkeypatch):
+        """Confirms the flag also threads correctly through the
+        multiprocessing.Pool path (worker_args tuple), not just the
+        sequential panel_workers<=1 path."""
+        import config.settings as settings
+        from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
+
+        monkeypatch.setattr(settings, "SCREENER_BATCH_EXPORT_CHUNK_SIZE", 1)
+        target_date = pd.bdate_range(start="2024-01-01", periods=300)[-1].strftime("%Y-%m-%d")
+        matrix = build_feature_matrix(
+            target_date, ["AAA", "BBB"], client=multi_ticker_client, save=False, compute_hmm=False,
+            panel_workers=2, advanced_technical_used_only=True,
+        )
+        assert matrix["hurst_exp_21d"].notna().any()
+        for col in ADVANCED_TECHNICAL_FEATURES:
+            if col == "hurst_exp_21d":
+                continue
+            assert matrix[col].isna().all()
+
+
 class TestPanelWorkersParallelization:
     """2026-07-29 perf fix: parallelizing
     _compute_chunked_ticker_independent_panels across ticker chunks via a

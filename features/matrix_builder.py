@@ -599,7 +599,10 @@ def _compute_one_chunk_panels(
     computed here; the other 5 return empty placeholders that the caller
     (build_feature_matrix) ignores in favor of its own `staged_panel` arg.
     """
-    chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories = args
+    (
+        chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories,
+        advanced_technical_used_only,
+    ) = args
 
     if skip_batch_categories:
         technical = pd.DataFrame(columns=["date", "ticker"] + CORE_TECHNICAL_FEATURES)
@@ -611,7 +614,7 @@ def _compute_one_chunk_panels(
         technical = compute_technical_features(chunk_panel, benchmark_wide)
         intraday = compute_intraday_features(chunk_panel)
         pnd = compute_pnd_features(chunk_panel)
-        adv_tech = compute_advanced_technical_features(chunk_panel)
+        adv_tech = compute_advanced_technical_features(chunk_panel, used_only=advanced_technical_used_only)
         pat_scores = compute_pattern_scores(chunk_panel)
 
     hmm = (
@@ -641,6 +644,7 @@ def _compute_chunked_ticker_independent_panels(
     hmm_workers: int,
     panel_workers: int = 1,
     skip_batch_categories: bool = False,
+    advanced_technical_used_only: bool = False,
 ) -> "tuple":
     """
     A47 (2026-07-10): computes technical/intraday/hmm/pnd/adv_tech/patterns
@@ -689,6 +693,10 @@ def _compute_chunked_ticker_independent_panels(
         computed here. The returned tuple's technical/intraday/pnd/
         adv_tech/patterns entries are empty placeholders in that case; the
         caller (build_feature_matrix) uses its own `staged_panel` instead.
+    advanced_technical_used_only : bool
+        [2026-08-04] Forwarded to `compute_advanced_technical_features`'s
+        `used_only` — see that function's docstring. Default False
+        preserves original, unchanged behavior (all 18 features computed).
 
     Returns
     -------
@@ -726,7 +734,10 @@ def _compute_chunked_ticker_independent_panels(
     if panel_workers <= 1 or len(chunk_panels) <= 1:
         for chunk_panel in chunk_panels:
             results = _compute_one_chunk_panels(
-                (chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories)
+                (
+                    chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories,
+                    advanced_technical_used_only,
+                )
             )
             technical, intraday, hmm, pnd, adv_tech, pat_scores = results
             technical_chunks.append(technical)
@@ -744,7 +755,10 @@ def _compute_chunked_ticker_independent_panels(
         # unsafe/wasteful. Callers that want parallel HMM fitting should
         # use panel_workers=1 with hmm_workers>1 instead.
         worker_args = [
-            (chunk_panel, benchmark_wide, target_date, compute_hmm, 1, skip_batch_categories)
+            (
+                chunk_panel, benchmark_wide, target_date, compute_hmm, 1, skip_batch_categories,
+                advanced_technical_used_only,
+            )
             for chunk_panel in chunk_panels
         ]
         # [2026-07-29] Delegates to the shared _run_pool_over_chunks helper
@@ -779,7 +793,8 @@ def _compute_chunked_ticker_independent_panels(
 
 
 def compute_full_range_chunk_panels(
-    chunk_panel: pd.DataFrame, benchmark_wide: Optional[pd.DataFrame]
+    chunk_panel: pd.DataFrame, benchmark_wide: Optional[pd.DataFrame],
+    advanced_technical_used_only: bool = False,
 ) -> "tuple":
     """
     [2026-07-29, batch feature-backfill staging] The batch counterpart of
@@ -840,7 +855,9 @@ def compute_full_range_chunk_panels(
     # range — found 2026-08-01 after a 1050-minute backfill run produced
     # 100% NaN `flag_pattern_score`/`hurst_exp_21d` etc. for 2016-2026
     # despite completing with 0 failures.
-    adv_tech = compute_advanced_technical_features(chunk_panel, all_rows=True)
+    adv_tech = compute_advanced_technical_features(
+        chunk_panel, all_rows=True, used_only=advanced_technical_used_only,
+    )
     pat_scores = compute_pattern_scores(chunk_panel, all_rows=True)
     return technical, intraday, pnd, adv_tech, pat_scores
 
@@ -859,8 +876,8 @@ def _compute_full_range_chunk_panels_worker(args: "tuple") -> "tuple":
     panel — where the old always-last-row-only behavior had made it look
     nearly free).
     """
-    chunk_panel, benchmark_wide = args
-    return compute_full_range_chunk_panels(chunk_panel, benchmark_wide)
+    chunk_panel, benchmark_wide, advanced_technical_used_only = args
+    return compute_full_range_chunk_panels(chunk_panel, benchmark_wide, advanced_technical_used_only)
 
 
 def _save_feature_matrix(matrix: pd.DataFrame, target_date: pd.Timestamp) -> Path:
@@ -904,6 +921,7 @@ def build_feature_matrix(
     panel_workers: int = 1,
     staged_panel: Optional[pd.DataFrame] = None,
     skip_slow_categories: bool = False,
+    advanced_technical_used_only: bool = False,
 ) -> pd.DataFrame:
     """
     Build the full daily feature matrix for `tickers` on `date`.
@@ -969,6 +987,16 @@ def build_feature_matrix(
         pipeline never sets this True. calendar/macro (date-keyed, cheap)
         and technical/intraday/hmm/pnd/advanced_technical/pattern_scores
         are unaffected.
+    advanced_technical_used_only : bool
+        [2026-08-04] Forwarded to `compute_advanced_technical_features`'s
+        `used_only` (via `_compute_chunked_ticker_independent_panels` when
+        `staged_panel` is None, or effectively already applied upstream by
+        `features/panel_staging.py::stage_batch_panels` when it is — see
+        that function's own `advanced_technical_used_only` param). Only
+        `hurst_exp_21d` (the one downstream-referenced advanced feature)
+        is computed when True; the other 17 are left NaN, to be filled
+        later by `scripts/backfill_deferred_advanced_technical.py`.
+        Default False preserves original, unchanged behavior.
 
     Returns
     -------
@@ -1084,6 +1112,7 @@ def build_feature_matrix(
             _compute_chunked_ticker_independent_panels(
                 universe_panel, benchmark_wide, active_tickers, target_date, compute_hmm, hmm_workers,
                 panel_workers=panel_workers, skip_batch_categories=staged_panel is not None,
+                advanced_technical_used_only=advanced_technical_used_only,
             )
         )
         # [2026-07-29] staged_panel already has this date's rows for the 5

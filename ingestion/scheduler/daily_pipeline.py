@@ -871,6 +871,7 @@ def step_compute_features(
     panel_workers: Optional[int] = None,
     staged_panel=None,
     skip_slow_categories: bool = False,
+    advanced_technical_used_only: bool = True,
 ) -> None:
     """
     Build today's two feature matrices and save both to Parquet (SPEC-DS-005):
@@ -901,6 +902,21 @@ def step_compute_features(
         scripts/feature_backfill.py's --skip-slow-categories flag sets
         this True — see that flag's help text / build_feature_matrix's
         docstring for what it skips and why.
+    advanced_technical_used_only : bool
+        [2026-08-04] Forwarded to build_feature_matrix's
+        `advanced_technical_used_only`. **Default True here** (unlike
+        every other flag on this function) — of the 18 advanced_technical
+        features (wavelet/entropy/fractal/fracdiff/Lyapunov/RQA), only
+        hurst_exp_21d is ever referenced downstream by name (screener
+        templates); the other 17 are genuinely expensive (per-row
+        loop-based) and exist solely as bulk ML-model inputs. This is the
+        live daily pipeline's own invocation, so unlike
+        skip_slow_categories (backfill-only), this default change is
+        deliberately live from today onward — see FeatureBacklog.md and
+        the 2026-08-04 planning session for the full audit.
+        `scripts/backfill_deferred_advanced_technical.py` fills the
+        skipped 17 back in asynchronously, off this critical path. Pass
+        False to restore the original full-18 behavior for a given run.
 
     Returns
     -------
@@ -969,6 +985,7 @@ def step_compute_features(
         date_str, tickers, compute_hmm=compute_hmm, data_cache=data_cache,
         hmm_workers=HMM_FEATURE_WORKERS, panel_workers=panel_workers,
         staged_panel=staged_panel, skip_slow_categories=skip_slow_categories,
+        advanced_technical_used_only=advanced_technical_used_only,
     )
     logger.info(f"compute_features: built {len(matrix)}-row ALL_FEATURE_COLUMNS matrix for {date_str}")
 

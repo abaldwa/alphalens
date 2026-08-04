@@ -481,10 +481,12 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
 # ── Per-ticker computation ────────────────────────────────────────────────────
 
 
-def _compute_row_features(prices: np.ndarray, volumes: np.ndarray, log_prices: np.ndarray, end: int) -> dict:
+def _compute_row_features(
+    prices: np.ndarray, volumes: np.ndarray, log_prices: np.ndarray, end: int, used_only: bool = False,
+) -> dict:
     """
-    Compute all 18 advanced technical features "as of" bar index `end - 1`
-    (i.e. using only `prices[:end]`/`volumes[:end]`, never a future bar —
+    Compute advanced technical features "as of" bar index `end - 1` (i.e.
+    using only `prices[:end]`/`volumes[:end]`, never a future bar —
     PITRule.NONE-safe for any `end`, not just the last bar of the array).
 
     Extracted from the old `_compute_for_ticker` (which only ever called
@@ -492,17 +494,34 @@ def _compute_row_features(prices: np.ndarray, volumes: np.ndarray, log_prices: n
     pipeline) and all-rows (batch backfill staging — see `all_rows` param
     on `compute_advanced_technical_features`) callers share one
     implementation instead of two copies that could drift.
+
+    used_only : bool
+        [2026-08-04] Of these 18 features, only `hurst_exp_21d` is ever
+        referenced downstream by name (screener templates) — the other 17
+        exist solely as bulk ML-model inputs, yet dominate this module's
+        cost (per-row loop-based: wavelet decomposition, entropy,
+        fractal/fracdiff, Lyapunov, RQA — see module docstring). When True,
+        skip calling every helper except `_hurst_rs`'s 21d window entirely
+        (not just discard the result — the expensive call itself is never
+        made) — the other 17 keys are simply absent from `out`, which
+        already means NaN downstream (same "not yet computed" convention
+        used elsewhere in this codebase, e.g. `market_cap_cr == 0`).
+        Default False preserves original, unchanged behavior.
     """
     n = end
     out: dict = {}
+
+    if n >= 21:
+        out["hurst_exp_21d"] = _hurst_rs(prices[end - 21:end])
+
+    if used_only:
+        return out
 
     wavelet_window = min(64, n)
     trend_v, noise_v, energy_r, regime_s = _wavelet_features_series(prices[end - wavelet_window:end])
     out["wavelet_trend"], out["wavelet_noise"] = trend_v, noise_v
     out["wavelet_energy_ratio"], out["wavelet_regime_signal"] = energy_r, regime_s
 
-    if n >= 21:
-        out["hurst_exp_21d"] = _hurst_rs(prices[end - 21:end])
     if n >= 63:
         out["hurst_exp_63d"] = _hurst_rs(prices[end - 63:end])
 
@@ -535,9 +554,9 @@ def _compute_row_features(prices: np.ndarray, volumes: np.ndarray, log_prices: n
     return out
 
 
-def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False) -> pd.DataFrame:
+def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False, used_only: bool = False) -> pd.DataFrame:
     """
-    Compute all 18 advanced technical features for a single ticker's panel.
+    Compute advanced technical features for a single ticker's panel.
 
     Parameters
     ----------
@@ -558,13 +577,18 @@ def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False) -> pd.DataFra
         `pattern_scores` were the only 2 of panel_staging's 5 "batched"
         categories with this bug — technical/intraday/pnd were already
         genuinely vectorized across all rows).
+    used_only : bool
+        [2026-08-04] Forwarded to `_compute_row_features` — see its
+        docstring. Default False preserves original, unchanged behavior
+        (all 18 features computed).
 
     Returns
     -------
     pd.DataFrame
         Same rows as input; new columns = ADVANCED_TECHNICAL_FEATURES. All
         per-bar values filled by a rolling computation (look-back windows
-        defined by the sub-function).
+        defined by the sub-function); with used_only=True, only
+        hurst_exp_21d is non-NaN.
     """
     grp = grp.sort_values("date").reset_index(drop=True)
     n = len(grp)
@@ -581,7 +605,7 @@ def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False) -> pd.DataFra
 
     row_positions = range(15, n) if all_rows else [n - 1]
     for i in row_positions:
-        feats = _compute_row_features(prices, volumes, log_prices, end=i + 1)
+        feats = _compute_row_features(prices, volumes, log_prices, end=i + 1, used_only=used_only)
         for col, val in feats.items():
             result.loc[result.index[i], col] = val
 
@@ -591,9 +615,11 @@ def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False) -> pd.DataFra
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame, all_rows: bool = False) -> pd.DataFrame:
+def compute_advanced_technical_features(
+    ohlcv_panel: pd.DataFrame, all_rows: bool = False, used_only: bool = False,
+) -> pd.DataFrame:
     """
-    Compute all 18 advanced technical features for the full universe OHLCV panel.
+    Compute advanced technical features for the full universe OHLCV panel.
 
     Parameters
     ----------
@@ -612,6 +638,16 @@ def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame, all_rows: boo
         fixes). This is meaningfully more expensive (~n_rows/ticker calls
         into the rolling-window math instead of 1) — only pass True when
         you actually need per-date historical values, not "today only."
+    used_only : bool
+        [2026-08-04] Of these 18 features, only hurst_exp_21d is ever
+        referenced downstream by name (screener templates) — the other 17
+        exist solely as bulk ML-model inputs. When True, compute ONLY
+        hurst_exp_21d (skip the other 17's expensive per-row loop-based
+        computations entirely — wavelet decomposition, entropy,
+        fractal/fracdiff, Lyapunov, RQA), leaving them NaN. Default False
+        preserves original, unchanged behavior (all 18 computed).
+        `scripts/backfill_deferred_advanced_technical.py` fills the
+        skipped 17 back in for dates computed with used_only=True.
 
     Returns
     -------
@@ -619,7 +655,8 @@ def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame, all_rows: boo
         One row per (date, ticker); columns: date, ticker + ADVANCED_TECHNICAL_FEATURES.
         With all_rows=False (default), only the most recent bar per ticker
         has non-NaN values. With all_rows=True, every bar with >= 16 bars
-        of trailing history does.
+        of trailing history does. With used_only=True, only hurst_exp_21d
+        is ever non-NaN regardless of all_rows.
 
     Spec References
     ---------------
@@ -632,6 +669,6 @@ def compute_advanced_technical_features(ohlcv_panel: pd.DataFrame, all_rows: boo
         raise ValueError(f"ohlcv_panel missing columns: {missing}")
 
     result = ohlcv_panel.groupby("ticker", group_keys=False).apply(
-        lambda grp: _compute_for_ticker(grp, all_rows=all_rows)
+        lambda grp: _compute_for_ticker(grp, all_rows=all_rows, used_only=used_only)
     )
     return result[["date", "ticker"] + ADVANCED_TECHNICAL_FEATURES].reset_index(drop=True)

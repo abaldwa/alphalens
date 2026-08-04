@@ -234,6 +234,71 @@ class TestAdvancedTechnicalPanel:
             assert 1.0 <= val <= 2.0, f"fractal_dimension={val} outside [1,2]"
 
 
+class TestAdvancedTechnicalUsedOnly:
+    """[2026-08-04] Of the 18 advanced_technical features, only hurst_exp_21d
+    is ever referenced downstream by name (screener templates) — the other
+    17 exist solely as bulk ML-model inputs, yet dominate this module's cost
+    (per-row loop-based: wavelet, entropy, fractal/fracdiff, Lyapunov, RQA).
+    used_only=True must skip the expensive helpers' CALLS entirely (not
+    just discard their result) — proven here by patching each one and
+    asserting it's never invoked, not merely by checking the output is NaN
+    (which could pass even if the expensive call still happened)."""
+
+    def test_hurst_exp_21d_still_computed_correctly(self):
+        from features.advanced_technical import compute_advanced_technical_features
+
+        panel = _make_ohlcv(80)
+        full = compute_advanced_technical_features(panel, used_only=False)
+        fast = compute_advanced_technical_features(panel, used_only=True)
+        assert fast.iloc[-1]["hurst_exp_21d"] == pytest.approx(full.iloc[-1]["hurst_exp_21d"])
+
+    def test_other_17_features_are_nan(self):
+        from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES, compute_advanced_technical_features
+
+        panel = _make_ohlcv(80)
+        result = compute_advanced_technical_features(panel, used_only=True)
+        last = result.iloc[-1]
+        for col in ADVANCED_TECHNICAL_FEATURES:
+            if col == "hurst_exp_21d":
+                continue
+            assert np.isnan(last[col]), f"{col} should be NaN under used_only=True"
+
+    def test_expensive_helpers_never_called(self):
+        """The real speed win: used_only=True must skip the expensive CALLS,
+        not just NaN their output."""
+        from features import advanced_technical as adv_mod
+
+        panel = _make_ohlcv(80)
+        expensive_fns = [
+            "_wavelet_features_series", "_approx_entropy", "_sample_entropy",
+            "_permutation_entropy", "_spectral_entropy", "_fractal_dimension",
+            "_optimal_fracdiff_d", "_apply_fracdiff", "_lyapunov_proxy",
+            "_rqa_recurrence_rate", "_time_series_complexity", "_nonlinear_trend_strength",
+        ]
+        patches = [patch.object(adv_mod, name, wraps=getattr(adv_mod, name)) for name in expensive_fns]
+        mocks = [p.start() for p in patches]
+        try:
+            adv_mod.compute_advanced_technical_features(panel, used_only=True)
+        finally:
+            for p in patches:
+                p.stop()
+        for name, mock in zip(expensive_fns, mocks):
+            assert mock.call_count == 0, f"{name} should not be called when used_only=True"
+
+    def test_used_only_false_default_unaffected(self):
+        """Regression guard: default (used_only=False) behavior is byte-for-byte
+        unchanged — all 18 columns still populated."""
+        from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES, compute_advanced_technical_features
+
+        panel = _make_ohlcv(80)
+        result = compute_advanced_technical_features(panel)
+        last = result.iloc[-1]
+        non_nan = [c for c in ADVANCED_TECHNICAL_FEATURES if not np.isnan(last[c])]
+        assert len(non_nan) == len(ADVANCED_TECHNICAL_FEATURES), (
+            f"expected all 18 populated with sufficient history, got {non_nan}"
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # features/pattern_scores.py
 # ─────────────────────────────────────────────────────────────────────────────
