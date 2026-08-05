@@ -145,6 +145,7 @@ class StrategyPortfolio:
     # ===== Position sizing (horizon-bucket-driven, per HorizonSizingPolicy) =====
     def position_size(
         self, price: float, portfolio_value: float, adtv_cr: Optional[float] = None,
+        weight_multiplier: float = 1.0,
     ) -> int:
         """
         Share quantity for a new position, capped by:
@@ -152,14 +153,23 @@ class StrategyPortfolio:
           - available cash
           - adtv_cap_fraction of trailing ADTV, if adtv_cr is supplied (Truthful
             Review Gap #6 — a hard rejection cap, not just a cost-model input)
+
+        weight_multiplier scales ONLY the equal-weight slot (2026-08-05,
+        Momentum volume-weighted sizing — mirrors MomentumBacktester's
+        `investable_per_slot * volume_weights[ticker]`), never the
+        max_position_pct / cash / ADTV caps, which stay hard ceilings a
+        strategy's weighting scheme cannot talk its way past. 1.0 (the
+        default, used by every other channel) is exactly today's behavior.
         """
         if price <= 0:
             raise ValueError("price must be positive")
         if portfolio_value < 0:
             raise ValueError("portfolio_value must be non-negative")
+        if weight_multiplier <= 0:
+            raise ValueError("weight_multiplier must be positive")
 
         max_position_inr = portfolio_value * self.sizing.max_position_pct
-        equal_weight_inr = portfolio_value / self.n_target_positions
+        equal_weight_inr = (portfolio_value / self.n_target_positions) * weight_multiplier
         target_inr = min(equal_weight_inr, max_position_inr, self.cash)
 
         if adtv_cr is not None and adtv_cr > 0:
@@ -179,6 +189,7 @@ class StrategyPortfolio:
 
     def can_buy(
         self, ticker: str, sector: str, price: float, prices: Dict[str, float], adtv_cr: Optional[float] = None,
+        weight_multiplier: float = 1.0,
     ) -> bool:
         if ticker in self.positions:
             return False
@@ -198,7 +209,7 @@ class StrategyPortfolio:
         if adtv_cr is not None and adtv_cr * 1e7 < MIN_ADT_INR:
             return False
         equity = self.total_equity(prices)
-        qty = self.position_size(price, equity, adtv_cr)
+        qty = self.position_size(price, equity, adtv_cr, weight_multiplier)
         if qty <= 0:
             return False
         turnover = price * qty
@@ -217,11 +228,12 @@ class StrategyPortfolio:
         template: Optional[str] = None, pillar: Optional[str] = None,
         market_cap_rank: Optional[int] = None,
         entry_feature_vector: Optional[Dict[str, Any]] = None,
+        weight_multiplier: float = 1.0,
     ) -> Optional[Position]:
-        if not self.can_buy(ticker, sector, price, prices, adtv_cr):
+        if not self.can_buy(ticker, sector, price, prices, adtv_cr, weight_multiplier):
             return None
         equity = self.total_equity(prices)
-        qty = self.position_size(price, equity, adtv_cr)
+        qty = self.position_size(price, equity, adtv_cr, weight_multiplier)
         turnover = price * qty
         self.cash -= turnover
         position = Position(

@@ -201,6 +201,11 @@ class Signal:
     conviction: float = 0.0  # higher = prioritized first when capital is constrained
     adtv_cr: Optional[float] = None
     template: Optional[str] = None  # screener template name / fundamental preset that generated this signal (strategy identity for PerTemplateExitPolicy routing); None if the adapter doesn't track one
+    # Per-ticker position-size multiplier applied on top of the portfolio's
+    # own equal-weight slot (2026-08-05, Momentum volume-weighted sizing).
+    # None = "no opinion, size normally" — every channel that doesn't set it
+    # is completely unaffected.
+    size_multiplier: Optional[float] = None
 
 
 class StrategyAdapter(Protocol):
@@ -640,6 +645,11 @@ class BacktestOrchestrator:
                     # already returns) onto the position so a losing trade
                     # can be inspected against its actual entry signal later.
                     entry_feature_vector=adapter.feature_vector(signal.ticker, execution_date),
+                    # 2026-08-05: an adapter with a per-ticker weighting
+                    # scheme (Momentum's volume_weighted sizing) scales its
+                    # own slot here; None means "size normally", which is
+                    # every other channel.
+                    weight_multiplier=signal.size_multiplier if signal.size_multiplier is not None else 1.0,
                 )
 
             # Daily exit-policy pass (task requirement: checked EVERY trading

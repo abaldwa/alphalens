@@ -8,6 +8,8 @@ config.universe.load_universe_raw() is monkeypatched to a small controlled
 DataFrame so the candidate ticker list is deterministic.
 """
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -288,3 +290,110 @@ class TestNifty500ProxyUniverse:
             yearly = mu.yearly_nifty500_proxy_universes(conn, "2026-01-01", "2026-12-31")
 
         assert "AAA" in yearly["2026-01-02"]
+
+
+class TestYearlyRankLookupFromRankings:
+    """2026-08-05 Momentum engine consolidation Phase 3 —
+    yearly_rank_lookup_from_rankings mirrors
+    yearly_band_approximation_flags_from_rankings' shape but over the FULL
+    ranking (not a band slice), so a consumer can see ranks ABOVE its own
+    band's rank_start."""
+
+    def test_maps_every_ranked_ticker_to_its_real_rank(self, normalised_db, raw_universe):
+        # Closes descending -> AAA rank 1, BBB rank 2, CCC rank 3 (equal shares).
+        for ticker, close in [("AAA", 300.0), ("BBB", 200.0), ("CCC", 100.0)]:
+            _seed_fundamentals(normalised_db, ticker, "2025-12-01", 1_000_000)
+            _seed_ohlcv(normalised_db, ticker, "2026-01-02", close)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            rankings = mu.all_yearly_full_rankings(conn, "2026-01-01", "2026-12-31")
+            lookup = mu.yearly_rank_lookup_from_rankings(rankings)
+
+        assert lookup["2026-01-02"] == {"AAA": 1, "BBB": 2, "CCC": 3}
+        # Not band-sliced: the same keys as the full ranking, regardless of
+        # any band a caller might later ask about.
+        assert set(lookup) == set(rankings)
+
+    def test_ticker_absent_from_ranking_has_no_fabricated_rank(self, normalised_db, raw_universe):
+        _seed_fundamentals(normalised_db, "AAA", "2025-12-01", 1_000_000)
+        _seed_ohlcv(normalised_db, "AAA", "2026-01-02", 100.0)
+        # DDD has OHLCV but no shares_outstanding ever -> excluded outright.
+        _seed_ohlcv(normalised_db, "DDD", "2026-01-02", 500.0)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            rankings = mu.all_yearly_full_rankings(conn, "2026-01-01", "2026-12-31")
+            lookup = mu.yearly_rank_lookup_from_rankings(rankings)
+
+        assert "DDD" not in lookup["2026-01-02"]
+        assert lookup["2026-01-02"]["AAA"] == 1
+
+    def test_empty_rankings_produce_empty_lookup(self, normalised_db, raw_universe):
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            rankings = mu.all_yearly_full_rankings(conn, "2026-01-01", "2026-12-31")
+            lookup = mu.yearly_rank_lookup_from_rankings(rankings)
+        assert lookup == {}
+
+
+class TestBuildYearlyRankBandUniverseProvider:
+    """2026-08-05 Momentum engine consolidation Phase 2 — adapts this
+    module's yearly-fixed band universes to backtest/core/engine.py's
+    UniverseProvider = Callable[[date], List[str]] contract."""
+
+    @pytest.fixture
+    def two_year_rankings(self, normalised_db, raw_universe):
+        # 2025: AAA(1) > BBB(2) > CCC(3).  2026: CCC(1) > AAA(2) > BBB(3)
+        # — the band's membership genuinely changes between the two years.
+        for ticker in ("AAA", "BBB", "CCC"):
+            _seed_fundamentals(normalised_db, ticker, "2024-12-01", 1_000_000)
+        for ticker, close in [("AAA", 300.0), ("BBB", 200.0), ("CCC", 100.0)]:
+            _seed_ohlcv(normalised_db, ticker, "2025-01-01", close)
+        for ticker, close in [("CCC", 900.0), ("AAA", 300.0), ("BBB", 200.0)]:
+            _seed_ohlcv(normalised_db, ticker, "2026-01-02", close)
+
+        with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
+            return mu.all_yearly_full_rankings(conn, "2025-01-01", "2026-12-31")
+
+    def test_returns_that_years_band_for_a_date_in_each_year(self, two_year_rankings):
+        provider = mu.build_yearly_rank_band_universe_provider(two_year_rankings, 1, 2)
+
+        # Mid-2025 -> the 2025-01-01 list, held constant all year.
+        assert provider(date(2025, 6, 30)) == ["AAA", "BBB"]
+        # Mid-2026 -> the 2026-01-02 list.
+        assert provider(date(2026, 6, 30)) == ["CCC", "AAA"]
+
+    def test_year_start_date_itself_uses_that_years_new_list(self, two_year_rankings):
+        provider = mu.build_yearly_rank_band_universe_provider(two_year_rankings, 1, 2)
+        # Boundary: <= is inclusive, so the first trading day already gets
+        # its own year's list, not the previous year's.
+        assert provider(date(2026, 1, 2)) == ["CCC", "AAA"]
+        assert provider(date(2026, 1, 1)) == ["AAA", "BBB"]
+
+    def test_date_before_any_year_start_is_empty_not_backdated(self, two_year_rankings):
+        provider = mu.build_yearly_rank_band_universe_provider(two_year_rankings, 1, 2)
+        # Back-dating the first year's membership here would be exactly the
+        # look-ahead bias the yearly-fixing convention exists to avoid.
+        assert provider(date(2024, 12, 31)) == []
+
+    def test_slices_to_the_requested_band_only(self, two_year_rankings):
+        band2 = mu.build_yearly_rank_band_universe_provider(two_year_rankings, 2, 3)
+        assert band2(date(2025, 6, 30)) == ["BBB", "CCC"]
+
+    def test_matches_orchestrator_universe_provider_contract(self, two_year_rankings):
+        """OrchestratorConfig.universe_provider is Callable[[date], List[str]]
+        and is called once per rebalance date — a plain datetime.date must
+        work, and the result must be a real list of str."""
+        from backtest.core.engine import OrchestratorConfig
+
+        provider = mu.build_yearly_rank_band_universe_provider(two_year_rankings, 1, 2)
+        config = OrchestratorConfig(
+            trading_days=pd.DatetimeIndex([pd.Timestamp("2025-06-30")]),
+            universe_provider=provider,
+            price_lookup=lambda ticker, as_of: None,
+        )
+        result = config.universe_provider(date(2025, 6, 30))
+        assert isinstance(result, list) and all(isinstance(t, str) for t in result)
+        assert result == ["AAA", "BBB"]
+
+    def test_empty_rankings_provider_returns_empty(self):
+        provider = mu.build_yearly_rank_band_universe_provider({}, 1, 50)
+        assert provider(date(2026, 6, 30)) == []

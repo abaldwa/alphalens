@@ -33,7 +33,8 @@ rank to decide whether it belonged in a band years earlier.
 """
 
 import logging
-from typing import Any, Dict, List
+from datetime import date as date_type
+from typing import Any, Callable, Dict, List
 
 import pandas as pd
 
@@ -302,6 +303,71 @@ def yearly_band_approximation_flags_from_rankings(
             band = ranked.iloc[rank_start - 1:rank_end]
             result[date_str] = dict(zip(band["ticker"], band["shares_outstanding_is_approximated"]))
     return result
+
+
+def yearly_rank_lookup_from_rankings(
+    yearly_rankings: Dict[str, pd.DataFrame]
+) -> Dict[str, Dict[str, int]]:
+    """
+    Companion to yearly_band_universes_from_rankings /
+    yearly_band_approximation_flags_from_rankings — same
+    {year_start_date: {ticker: value}} shape, but keyed over the FULL
+    ranking rather than one band slice, carrying each ticker's real
+    1-indexed market-cap rank. {year_start_date: {ticker: rank}}.
+
+    Deliberately not band-sliced: its consumer (MomentumAdapter's
+    sticky-promotion rule, 2026-08-05 Momentum engine consolidation
+    Phase 3) needs to see ranks BETTER than its own band's rank_start —
+    i.e. exactly the tickers a band slice would have dropped — to tell a
+    promoted holding (moved to a higher market-cap band) apart from a
+    demoted or delisted one. A ticker absent from the year's ranking
+    entirely has no entry, and is never assigned a fabricated rank.
+    """
+    result: Dict[str, Dict[str, int]] = {}
+    for date_str, ranked in yearly_rankings.items():
+        if ranked.empty:
+            result[date_str] = {}
+        else:
+            result[date_str] = {t: int(r) for t, r in zip(ranked["ticker"], ranked["rank"])}
+    return result
+
+
+def build_yearly_rank_band_universe_provider(
+    yearly_rankings: Dict[str, pd.DataFrame], rank_start: int, rank_end: int
+) -> Callable[[date_type], List[str]]:
+    """
+    Adapt this module's yearly-fixed rank-band universes to
+    backtest/core/engine.py's `UniverseProvider = Callable[[date], List[str]]`
+    contract, so a BacktestOrchestrator momentum run selects from the same
+    market-cap band the standalone MomentumBacktester does instead of the
+    generic "every ticker with a recent OHLCV bar" pool
+    (run_orchestrator_backtest._build_config's default).
+
+    Pre-slices the band ONCE at build time (yearly_band_universes_from_rankings)
+    and closes over it — OrchestratorConfig.universe_provider is called once
+    per rebalance date for the whole run, so the per-call work is reduced to
+    the year lookup itself, with no DB access at all.
+
+    The returned callable applies the same "most recent year_start <=
+    as_of_date wins" convention as MomentumBacktester._active_universe: a
+    year's constituent list is fixed on the first real trading day of that
+    year and held for the rest of it. A date BEFORE the earliest year_start
+    (i.e. no list has taken effect yet) yields an empty universe rather
+    than back-dating the first year's membership onto it, which would be
+    exactly the look-ahead bias the yearly-fixing convention exists to
+    avoid.
+    """
+    band = yearly_band_universes_from_rankings(yearly_rankings, rank_start, rank_end)
+    by_start = {pd.Timestamp(date_str): tickers for date_str, tickers in band.items()}
+
+    def universe_provider(as_of: date_type) -> List[str]:
+        as_of_ts = pd.Timestamp(as_of)
+        applicable_starts = [d for d in by_start if d <= as_of_ts]
+        if not applicable_starts:
+            return []
+        return list(by_start[max(applicable_starts)])
+
+    return universe_provider
 
 
 def yearly_band_universes(

@@ -78,6 +78,13 @@ from config.settings import (
     DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
 )
 from config.timezone import now_ist
+from features.momentum_universe import (
+    RANK_BANDS,
+    all_yearly_full_rankings,
+    build_yearly_rank_band_universe_provider,
+    yearly_band_approximation_flags_from_rankings,
+    yearly_rank_lookup_from_rankings,
+)
 from config.universe import get_tickers, get_top_adtv_tickers
 from datastore.api.db import get_duckdb_connection
 from backtest.export_trade_book import export_trade_book
@@ -146,6 +153,55 @@ def _fetch_real_ohlcv(max_tickers: Optional[int], min_history_days: int, start_d
 # than this (no bar at all in the last ~2 weeks) means the ticker hasn't
 # listed yet or has already delisted/stopped trading as of `as_of`.
 UNIVERSE_STALENESS_TOLERANCE_DAYS = 10
+
+
+def _momentum_rank_band_wiring(rank_band_id: int, start_date: date_type, end_date: date_type) -> dict:
+    """
+    (2026-08-05, Momentum engine consolidation Phase 2) Everything the
+    momentum channel needs to run against a real market-cap RANK BAND
+    (features/momentum_universe.py's RANK_BANDS — the same yearly-fixed
+    band universes the standalone MomentumBacktester uses) instead of
+    _build_config's generic "every ticker with a recent OHLCV bar" pool:
+
+        universe_provider     -> overrides OrchestratorConfig's default
+        approximation_flags   -> MomentumAdapter.exclude_approximated_mcap
+        yearly_rank_lookup    -> MomentumAdapter's Phase 3 sticky-promotion
+        rank_start            -> which band this instance represents
+
+    All three are derived from ONE all_yearly_full_rankings() call (one DB
+    round trip per calendar year, total) — the band slice, the
+    approximation flags and the full rank map are pure re-slices of that
+    same result, never separate queries.
+
+    include_delisted=True is hard-wired, not a parameter: it is the
+    module's own survivorship-bias fix (2026-07-20), every real momentum
+    caller already passes it, and a rank-band universe built without it
+    silently excludes any stock that delisted after the period being
+    tested — precisely the bias this path exists to avoid.
+
+    Uses its own short-lived READ-ONLY connection to DUCKDB_PATH (the
+    normalised-schema DB), opened and closed before the run's other
+    connections — same pattern/rationale as regime_cm/fundamentals_cm
+    below, and safe alongside them since DuckDB permits many concurrent
+    read-only connections to one file.
+    """
+    band = next((b for b in RANK_BANDS if b[0] == rank_band_id), None)
+    if band is None:
+        raise ValueError(
+            f"unknown rank_band_id {rank_band_id!r} — must be one of {[b[0] for b in RANK_BANDS]} "
+            f"(see features/momentum_universe.py::RANK_BANDS)"
+        )
+    _, rank_start, rank_end = band
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        yearly_rankings = all_yearly_full_rankings(
+            conn, start_date.isoformat(), end_date.isoformat(), include_delisted=True,
+        )
+    return {
+        "rank_start": rank_start,
+        "universe_provider": build_yearly_rank_band_universe_provider(yearly_rankings, rank_start, rank_end),
+        "approximation_flags": yearly_band_approximation_flags_from_rankings(yearly_rankings, rank_start, rank_end),
+        "yearly_rank_lookup": yearly_rank_lookup_from_rankings(yearly_rankings),
+    }
 
 
 def _build_config(ohlcv: pd.DataFrame, sector_map: Dict[str, str]) -> OrchestratorConfig:
@@ -346,7 +402,7 @@ def _run_immediate(
     template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
     exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-    combo_templates, precomputed_matches_dir, prefetch_feature_parquets,
+    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -365,15 +421,29 @@ def _run_immediate(
         # MIN_ADT_INR floor for these two channels).
         _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
         _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
+        # Hoisted out of the technical branch (2026-08-05, Momentum engine
+        # consolidation Phase 1) — the momentum branch now takes the same
+        # quality-gate thresholds, so both channels read one construction.
+        quality_gate = {}
+        if quality_gate_min_f_score is not None:
+            quality_gate["min_f_score"] = quality_gate_min_f_score
+        if quality_gate_max_m_score is not None:
+            quality_gate["max_m_score"] = quality_gate_max_m_score
+        # Momentum rank-band universe (2026-08-05 Phase 2). Only when a
+        # band was explicitly requested — omitting --rank-band-id keeps
+        # every existing momentum job on _build_config's generic universe,
+        # unchanged.
+        momentum_band = (
+            _momentum_rank_band_wiring(rank_band_id, start_date, end_date)
+            if channel == "momentum" and rank_band_id is not None
+            else None
+        )
+        if momentum_band:
+            config.universe_provider = momentum_band["universe_provider"]
 
         if channel == "technical":
             if not template_name and not combo_templates:
                 raise ValueError("channel=technical requires --template-name or --combo-templates")
-            quality_gate = {}
-            if quality_gate_min_f_score is not None:
-                quality_gate["min_f_score"] = quality_gate_min_f_score
-            if quality_gate_max_m_score is not None:
-                quality_gate["max_m_score"] = quality_gate_max_m_score
             # [PERF, 2026-08-02] ONE ScreenerEngine shared across every
             # TechnicalAdapter/sub-adapter this job constructs AND the
             # exit-check lookup built below — ScreenerEngine._load_df's
@@ -441,8 +511,24 @@ def _run_immediate(
             )
         elif channel == "momentum":
             adapter = MomentumAdapter(
-                price_panel=_price_panel_for_adtv, top_n=top_n, lookback_months=lookback_months,
+                price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+                top_n=top_n, lookback_months=lookback_months,
                 sector_lookup=sector_map,
+                min_adtv_cr=min_adtv_cr,
+                quality_gate=quality_gate or None,
+                downtrend_filter_pct=downtrend_filter_pct,
+                circuit_band_pct=circuit_band_pct,
+                disable_buys_in_regime=set(disable_buys_in_regime) if disable_buys_in_regime else None,
+                regime_index_name=regime_index_name or "Nifty 500",
+                regime_method=regime_method,
+                # Rank-band wiring (Phase 2 approximation_flags, Phase 3
+                # sticky promotion) — all None without --rank-band-id.
+                rank_start=(momentum_band or {}).get("rank_start"),
+                approximation_flags=(momentum_band or {}).get("approximation_flags"),
+                yearly_rank_lookup=(momentum_band or {}).get("yearly_rank_lookup"),
+                # regime_conn wired post-construction below, same deferred
+                # pattern as the technical branch (the connection doesn't
+                # exist yet at this point in the function).
             )
         else:
             raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
@@ -518,6 +604,11 @@ def _run_immediate(
                     # was actually requested; regime_conn is always a real
                     # (possibly no-op _no_regime_conn()) context manager either way.
                     _sub._regime_conn = regime_conn
+            elif channel == "momentum":
+                # Same deferred-wiring pattern as the technical branch above —
+                # MomentumAdapter self-fetches regime segments through this
+                # connection when disable_buys_in_regime was requested.
+                adapter._regime_conn = regime_conn
             elif channel == "fundamental" and preset in BESPOKE_PRESETS:
                 # Same deferred-wiring pattern as the technical branch above.
                 adapter._db_conn = fundamentals_conn
@@ -575,7 +666,7 @@ def _run_deferred(
     template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
     exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-    combo_templates, precomputed_matches_dir, prefetch_feature_parquets,
+    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -593,15 +684,25 @@ def _run_deferred(
     config = _build_config(ohlcv, sector_map)
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
+    # Hoisted out of the technical branch — see the matching note in
+    # _run_immediate (the momentum branch takes the same thresholds).
+    quality_gate = {}
+    if quality_gate_min_f_score is not None:
+        quality_gate["min_f_score"] = quality_gate_min_f_score
+    if quality_gate_max_m_score is not None:
+        quality_gate["max_m_score"] = quality_gate_max_m_score
+    # See the matching note in _run_immediate.
+    momentum_band = (
+        _momentum_rank_band_wiring(rank_band_id, start_date, end_date)
+        if channel == "momentum" and rank_band_id is not None
+        else None
+    )
+    if momentum_band:
+        config.universe_provider = momentum_band["universe_provider"]
 
     if channel == "technical":
         if not template_name and not combo_templates:
             raise ValueError("channel=technical requires --template-name or --combo-templates")
-        quality_gate = {}
-        if quality_gate_min_f_score is not None:
-            quality_gate["min_f_score"] = quality_gate_min_f_score
-        if quality_gate_max_m_score is not None:
-            quality_gate["max_m_score"] = quality_gate_max_m_score
         # [PERF, 2026-08-02] see the matching comment in _run_immediate —
         # one ScreenerEngine shared across every sub-adapter and the
         # exit-check lookup built below, so a given date's feature Parquet
@@ -639,8 +740,20 @@ def _run_deferred(
         )
     elif channel == "momentum":
         adapter = MomentumAdapter(
-            price_panel=_price_panel_for_adtv, top_n=top_n, lookback_months=lookback_months,
+            price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+            top_n=top_n, lookback_months=lookback_months,
             sector_lookup=sector_map,
+            min_adtv_cr=min_adtv_cr,
+            quality_gate=quality_gate or None,
+            downtrend_filter_pct=downtrend_filter_pct,
+            circuit_band_pct=circuit_band_pct,
+            disable_buys_in_regime=set(disable_buys_in_regime) if disable_buys_in_regime else None,
+            regime_index_name=regime_index_name or "Nifty 500",
+            regime_method=regime_method,
+            # See the matching note in _run_immediate.
+            rank_start=(momentum_band or {}).get("rank_start"),
+            approximation_flags=(momentum_band or {}).get("approximation_flags"),
+            yearly_rank_lookup=(momentum_band or {}).get("yearly_rank_lookup"),
         )
     else:
         raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
@@ -688,6 +801,8 @@ def _run_deferred(
             # (read-only) is still wired since disable_buys_in_regime needs it.
             for _sub in (adapter.adapters if combo_templates else [adapter]):
                 _sub._regime_conn = regime_conn
+        elif channel == "momentum":
+            adapter._regime_conn = regime_conn
         elif channel == "fundamental" and preset in BESPOKE_PRESETS:
             adapter._db_conn = fundamentals_conn
 
@@ -757,8 +872,21 @@ def run_orchestrator_backtest(
     defer_db_writes: bool = False,
     precomputed_matches_dir: Optional[str] = None,
     prefetch_feature_parquets: bool = False,
+    rank_band_id: Optional[int] = None,
 ) -> dict:
     """
+    rank_band_id : (2026-08-05, Momentum engine consolidation Phase 2 —
+        momentum channel only) run against one of
+        features/momentum_universe.py's RANK_BANDS market-cap bands
+        (1 = rank 1-50, 2 = 51-100, 3 = 100-150, 4 = 150-200,
+        5 = 100-200) instead of the generic recent-OHLCV-bar universe:
+        band membership is fixed on the first real trading day of each
+        calendar year, built from real PIT market cap with
+        include_delisted=True. Also supplies the adapter's
+        approximation_flags and the Phase 3 sticky-promotion rank lookup.
+        None (default) leaves every existing momentum job's universe
+        exactly as it is today. Ignored for other channels.
+
     precomputed_matches_dir : (2026-08-02, sweep-scale entry-signal reuse)
         directory of scripts/precompute_technical_screener_matches.py
         output — see TechnicalAdapter's precomputed_matches_dir docstring.
@@ -844,7 +972,7 @@ def run_orchestrator_backtest(
         template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
         exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
         quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-        combo_templates, precomputed_matches_dir, prefetch_feature_parquets,
+        combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -997,6 +1125,18 @@ def main() -> None:
             "speed. Default (omit) is today's unchanged lazy-loading behavior."
         ),
     )
+    parser.add_argument(
+        "--rank-band-id", type=int, default=None, choices=[b[0] for b in RANK_BANDS],
+        help=(
+            "momentum channel only (2026-08-05): select from one of features/momentum_universe.py's "
+            "RANK_BANDS market-cap rank bands — 1=rank 1-50, 2=51-100, 3=100-150, 4=150-200, "
+            "5=100-200 — instead of the generic 'every ticker with a recent OHLCV bar' universe. "
+            "Membership is fixed on the first real trading day of each calendar year from real PIT "
+            "market cap (include_delisted=True). Also enables the sticky-promotion rule: a held "
+            "position promoted to a higher-market-cap band stays rankable instead of being "
+            "force-sold at the year boundary. Default (omit) is today's unchanged behavior."
+        ),
+    )
     args = parser.parse_args()
 
     run_orchestrator_backtest(
@@ -1016,6 +1156,7 @@ def main() -> None:
         defer_db_writes=args.defer_db_writes,
         precomputed_matches_dir=args.precomputed_matches_dir,
         prefetch_feature_parquets=args.prefetch_feature_parquets,
+        rank_band_id=args.rank_band_id,
     )
 
 

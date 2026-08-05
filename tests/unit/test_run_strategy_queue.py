@@ -29,6 +29,17 @@ class TestJobToCmd:
         assert "--top-n" in cmd and "10" in cmd
         assert "--report-suffix" in cmd and "q1_job0" in cmd
 
+    def test_momentum_rank_band_id_is_queueable(self):
+        """2026-08-05 Momentum engine consolidation Phase 2 — --rank-band-id
+        must be usable from a queue job, not CLI-only."""
+        job = {
+            "kind": "orchestrator", "channel": "momentum", "top_n": 10, "lookback_months": 6,
+            "rank_band_id": 2, "start_date": "2016-01-01", "end_date": "2026-07-01",
+        }
+        cmd = _job_to_cmd(job, job_index=3, report_suffix="q1")
+        assert "--rank-band-id" in cmd
+        assert cmd[cmd.index("--rank-band-id") + 1] == "2"
+
     def test_iterative_retrain_job_maps_flags(self):
         job = {"kind": "iterative_retrain", "horizon_days": 5, "folds": 4}
         cmd = _job_to_cmd(job, job_index=1, report_suffix="q1")

@@ -79,7 +79,10 @@ _ORCHESTRATOR_FLAGS = {
     # --max-hold-days/--min-adtv-cr/etc.) — see that script's argparse block.
     "max_hold_days", "min_adtv_cr", "quality_gate_min_f_score", "quality_gate_max_m_score",
     "downtrend_filter_pct", "circuit_band_pct", "disable_buys_in_regime", "combo_templates",
-    "defer_db_writes", "precomputed_matches_dir", "prefetch_feature_parquets",
+    "defer_db_writes", "precomputed_matches_dir", "prefetch_feature_parquets", "ohlcv_snapshot_dir",
+    # 2026-08-05 Momentum engine consolidation Phase 2: market-cap rank-band
+    # universe selection (features/momentum_universe.py RANK_BANDS ids 1-5).
+    "rank_band_id",
 } | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",
@@ -250,6 +253,44 @@ def _check_integrity_passed(job: Dict[str, Any], job_index: int, suffix: str) ->
     except Exception:
         logger.warning(f"run_strategy_queue: integrity_passed lookup failed for job[{job_index}]", exc_info=True)
         return None
+
+
+def _maybe_prewarm_ohlcv(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """2026-08-05 (FeatureBacklog A73 remaining gap): the common technical-
+    sweep shape is N orchestrator jobs all covering the exact same
+    [start_date, end_date] window (42 templates x up to 9 exit variants,
+    same backtest period) — each launched as its own subprocess (deliberate
+    OOM-safety isolation, see batch_common.py), so each independently
+    issued the same GET /ohlcv/_bulk call. When every orchestrator job in
+    this queue shares one (start_date, end_date) and none has already set
+    its own ohlcv_snapshot_dir, prewarm the shared snapshot ONCE here (main
+    process, before any subprocess launches) and inject it into every such
+    job — turning N live bulk fetches into 1. A queue mixing date ranges,
+    or where a caller already set ohlcv_snapshot_dir explicitly, is left
+    untouched (falls back to each job's own current behavior) — this is a
+    pure optimization, never a correctness change."""
+    orchestrator_jobs = [j for j in jobs if j.get("kind") == "orchestrator"]
+    candidates = [j for j in orchestrator_jobs if not j.get("ohlcv_snapshot_dir")]
+    if not candidates:
+        return jobs
+    date_pairs = {(j.get("start_date"), j.get("end_date")) for j in candidates}
+    if len(date_pairs) != 1 or None in next(iter(date_pairs)):
+        return jobs
+    start_date_str, end_date_str = next(iter(date_pairs))
+    try:
+        from backtest.core.ohlcv_prewarm import prewarm_ohlcv_snapshot
+        start_date = date_type.fromisoformat(str(start_date_str)[:10])
+        end_date = date_type.fromisoformat(str(end_date_str)[:10])
+        snapshot_dir = prewarm_ohlcv_snapshot(start_date, end_date)
+    except Exception:
+        logger.warning("run_strategy_queue: OHLCV prewarm failed — jobs fall back to their own live fetch", exc_info=True)
+        return jobs
+    logger.info(f"run_strategy_queue: OHLCV prewarmed for [{start_date}, {end_date}] at {snapshot_dir} — {len(candidates)} job(s) will reuse it")
+    candidate_ids = {id(j) for j in candidates}
+    return [
+        {**j, "ohlcv_snapshot_dir": str(snapshot_dir)} if id(j) in candidate_ids else j
+        for j in jobs
+    ]
 
 
 def _job_label(job: Dict[str, Any]) -> str:
@@ -498,6 +539,7 @@ def run_queue(
     """
     if not jobs:
         raise ValueError("jobs is empty — nothing to schedule")
+    jobs = _maybe_prewarm_ohlcv(jobs)
     if max_workers > 1:
         return _run_queue_concurrent(
             jobs, min_free_mb=min_free_mb, wait_timeout_s=wait_timeout_s,

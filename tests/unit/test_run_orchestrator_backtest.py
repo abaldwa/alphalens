@@ -12,7 +12,15 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from backtest.run_orchestrator_backtest import _build_config, _fetch_real_ohlcv, build_technical_feature_lookup
+import pytest
+
+import backtest.run_orchestrator_backtest as ro
+from backtest.run_orchestrator_backtest import (
+    _build_config,
+    _fetch_real_ohlcv,
+    _momentum_rank_band_wiring,
+    build_technical_feature_lookup,
+)
 
 
 def _ohlcv_row(ticker, d, close=100.0):
@@ -271,3 +279,84 @@ class TestFetchRealOhlcvMaxTickersUsesAdtvOrdering:
 
         mock_plain.assert_called_once()
         mock_top_adtv.assert_not_called()
+
+
+class TestMomentumRankBandWiring:
+    """2026-08-05 Momentum engine consolidation Phase 2 —
+    _momentum_rank_band_wiring builds the rank-band universe_provider,
+    approximation_flags and sticky-promotion rank lookup from ONE
+    all_yearly_full_rankings() call against a real seeded normalised DB
+    (no DB mocking — same convention as tests/unit/test_momentum_universe.py).
+    """
+
+    @pytest.fixture
+    def seeded_db(self, tmp_path, monkeypatch):
+        from datastore.api.db import close_all_connections, get_duckdb_connection
+        from datastore.schema import create_normalised
+
+        db_path = tmp_path / "normalised_rank_band.duckdb"
+        create_normalised.create_schema(db_path=db_path)
+        close_all_connections()
+
+        # Ranks by close (equal shares): AAA 1, BBB 2, CCC 3, DDD 4.
+        rows = [("AAA", 400.0), ("BBB", 300.0), ("CCC", 200.0), ("DDD", 100.0)]
+        with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
+            for ticker, close in rows:
+                conn.execute(
+                    "INSERT INTO fundamentals (ticker, fiscal_year, quarter, quarter_end_date, "
+                    "announcement_date, shares_outstanding) VALUES (?, 2025, 1, '2025-12-01', '2025-12-01', ?)",
+                    [ticker, 1_000_000],
+                )
+                conn.execute(
+                    "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, "
+                    "delivery_qty, delivery_pct) VALUES ('2026-01-02', ?, ?, ?, ?, ?, 1000, 500, 50.0)",
+                    [ticker, close, close, close, close],
+                )
+
+        monkeypatch.setattr(ro, "DUCKDB_PATH", db_path)
+        universe_df = pd.DataFrame({"ticker": [t for t, _ in rows]})
+        monkeypatch.setattr("config.universe.load_universe_raw", lambda: universe_df)
+        return db_path
+
+    def test_builds_provider_flags_and_rank_lookup_for_the_requested_band(self, seeded_db):
+        # RANK_BANDS band 2 is rank 51-100, far past this 4-ticker fixture,
+        # so exercise the plumbing with band 1 (rank 1-50) and assert the
+        # rank_start it reports back matches RANK_BANDS.
+        wiring = _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
+
+        assert wiring["rank_start"] == 1
+        assert wiring["universe_provider"](date(2026, 6, 30)) == ["AAA", "BBB", "CCC", "DDD"]
+        # Real PIT shares_outstanding on record -> nothing approximated.
+        assert wiring["approximation_flags"]["2026-01-02"] == {
+            "AAA": False, "BBB": False, "CCC": False, "DDD": False
+        }
+        # Full ranking (not the band slice) for sticky promotion.
+        assert wiring["yearly_rank_lookup"]["2026-01-02"] == {"AAA": 1, "BBB": 2, "CCC": 3, "DDD": 4}
+
+    def test_universe_is_empty_before_the_first_year_start(self, seeded_db):
+        wiring = _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
+        assert wiring["universe_provider"](date(2025, 12, 31)) == []
+
+    def test_uses_include_delisted_so_survivorship_bias_is_not_reintroduced(self, seeded_db):
+        """include_delisted=True is hard-wired (the module's own 2026-07-20
+        survivorship-bias fix) — a rank-band universe built without it
+        silently drops anything that delisted after the tested period."""
+        seen = {}
+        real = ro.all_yearly_full_rankings
+
+        def _spy(conn, start, end, **kwargs):
+            seen.update(kwargs)
+            seen["n_calls"] = seen.get("n_calls", 0) + 1
+            return real(conn, start, end, **kwargs)
+
+        with patch.object(ro, "all_yearly_full_rankings", _spy):
+            _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
+
+        assert seen["include_delisted"] is True
+        # One round trip total — the band slice, the approximation flags and
+        # the rank lookup are all re-slices of this single result.
+        assert seen["n_calls"] == 1
+
+    def test_unknown_band_id_is_rejected(self, seeded_db):
+        with pytest.raises(ValueError, match="unknown rank_band_id"):
+            _momentum_rank_band_wiring(99, date(2026, 1, 1), date(2026, 12, 31))

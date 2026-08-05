@@ -49,6 +49,31 @@ class TestPositionSizing:
         with pytest.raises(ValueError):
             p.position_size(price=0.0, portfolio_value=1_000_000.0)
 
+    def test_weight_multiplier_defaults_to_todays_behavior(self):
+        """2026-08-05 (Momentum volume-weighted sizing): the new optional
+        param must be a strict no-op for every existing caller."""
+        p = _portfolio(horizon_bucket=HorizonBucket.Y1, n_target_positions=10)
+        assert p.position_size(price=100.0, portfolio_value=1_000_000.0) == p.position_size(
+            price=100.0, portfolio_value=1_000_000.0, weight_multiplier=1.0,
+        )
+
+    def test_weight_multiplier_scales_the_equal_weight_slot(self):
+        # n=25 -> 4,000 equal-weight slot, below Y1's 5,000 max_position cap,
+        # so the multiplier (not a cap) is what binds.
+        p = _portfolio(horizon_bucket=HorizonBucket.Y1, n_target_positions=25)
+        assert p.position_size(price=100.0, portfolio_value=100_000.0) == 40
+        assert p.position_size(price=100.0, portfolio_value=100_000.0, weight_multiplier=0.5) == 20
+
+    def test_weight_multiplier_never_overrides_the_max_position_cap(self):
+        p = _portfolio(horizon_bucket=HorizonBucket.Y1, n_target_positions=10)
+        # 2x the 100,000 slot is 200,000, but max_position_pct=0.05 caps at 50,000
+        assert p.position_size(price=100.0, portfolio_value=1_000_000.0, weight_multiplier=2.0) == 500
+
+    def test_rejects_non_positive_weight_multiplier(self):
+        p = _portfolio()
+        with pytest.raises(ValueError):
+            p.position_size(price=100.0, portfolio_value=1_000_000.0, weight_multiplier=0.0)
+
 
 class TestBuySell:
     def test_buy_reduces_cash_and_opens_position(self):
