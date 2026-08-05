@@ -1,0 +1,28 @@
+2026-08-05 21:28:13,796 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:13,968 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:14,107 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:14,260 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:14,446 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:14,642 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:14,835 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:15,063 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:15,296 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:15,550 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:15,855 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-05 21:28:16,200 INFO Loading price/volume panels for 1356 candidate tickers
+2026-08-05 21:28:18,527 INFO Precomputing 4 momentum panels (signal reuse across strategies)
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/amit/projects/AlphaLens/scripts/run_momentum_dynamic_report.py", line 452, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/scripts/run_momentum_dynamic_report.py", line 442, in main
+    report = run_dynamic_report(years_back=args.years_back, workers=args.workers)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/scripts/run_momentum_dynamic_report.py", line 319, in run_dynamic_report
+    momentum_panels = {
+                      ^
+  File "/home/amit/projects/AlphaLens/scripts/run_momentum_dynamic_report.py", line 320, in <dictcomp>
+    lookback_trading_days(lb): build_momentum_panel(price_panel, lookback_trading_days(lb))
+                               ^^^^^^^^^^^^^^^^^^^^
+NameError: name 'build_momentum_panel' is not defined

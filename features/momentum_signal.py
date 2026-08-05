@@ -134,6 +134,28 @@ def load_volume_panel(normalised_conn: Any, tickers: List[str], start_date: str,
     return df.pivot(index="date", columns="ticker", values="volume")
 
 
+def build_momentum_panel(price_panel: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+    """Precompute trailing momentum for ALL (date, ticker) pairs — a vectorised
+    rolling operation that replaces per-rebalance ``trailing_momentum_from_panel()``
+    calls with an O(1) ``.loc`` lookup.  Same semantics: a ticker missing either
+    endpoint (or with a zero start price) is NaN; the first ``lookback_days``
+    rows are all-NaN (insufficient history), matching the empty-Series branch
+    that ``trailing_momentum_from_panel`` returns for early dates.
+
+    Returns
+    -------
+    pd.DataFrame, same shape as *price_panel*, where each cell is
+    ``price[ticker, date] / price[ticker, date - lookback_days] - 1``."""
+    if price_panel.empty or lookback_days < 1:
+        return pd.DataFrame()
+    shift = price_panel.shift(lookback_days)
+    # Replace zero starts with NaN (div-by-zero → inf, then masked below)
+    safe_start = shift.replace(0, np.nan)
+    momentum = (price_panel / safe_start) - 1.0
+    momentum = momentum.replace([np.inf, -np.inf], np.nan)
+    return momentum
+
+
 def trailing_momentum_from_panel(
     price_panel: pd.DataFrame, tickers: List[str], as_of_date: str, lookback_days: int
 ) -> pd.Series:

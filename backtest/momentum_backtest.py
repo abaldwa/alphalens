@@ -201,6 +201,7 @@ class MomentumBacktester:
         beta_map: Optional[Dict[str, float]] = None,
         quality_scores: Optional[Dict[str, Dict[str, float]]] = None,
         quality_gate: Optional[Dict[str, float]] = None,
+        momentum_panel: Optional[pd.DataFrame] = None,
     ):
         """
         price_panel : wide close-price DataFrame (index=date, columns=ticker),
@@ -415,6 +416,7 @@ class MomentumBacktester:
         self.beta_map = beta_map or {}
         self.quality_scores = quality_scores or {}
         self.quality_gate = quality_gate or {}
+        self.momentum_panel = momentum_panel
 
         self.cash = starting_capital
         self.positions: Dict[str, Position] = {}
@@ -617,7 +619,11 @@ class MomentumBacktester:
                 injection_idx += 1
 
             universe = self._active_universe(date)
-            momentum = trailing_momentum_from_panel(self.price_panel, universe, str(date.date()), self.lookback_days)
+            if self.momentum_panel is not None and date in self.momentum_panel.index:
+                raw = self.momentum_panel.loc[date].reindex(universe)
+                momentum = raw.dropna()
+            else:
+                momentum = trailing_momentum_from_panel(self.price_panel, universe, str(date.date()), self.lookback_days)
 
             selection_pool = momentum
 
