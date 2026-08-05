@@ -83,11 +83,12 @@ def features_20_stocks(ohlcv_20_stocks, benchmark_300d):
 
 
 class TestFeatureCatalog:
-    def test_catalog_has_70_features(self):
-        """CORE_TECHNICAL_FEATURES is the resolved 70-feature list (see module docstring
-        for the 76-vs-70 discrepancy in the original per-category spec counts)."""
-        assert len(CORE_TECHNICAL_FEATURES) == 70
-        assert len(set(CORE_TECHNICAL_FEATURES)) == 70  # no duplicates
+    def test_catalog_has_77_features(self):
+        """CORE_TECHNICAL_FEATURES is the resolved 77-feature list: the original
+        70 (see module docstring for the 76-vs-70 discrepancy in the per-category
+        spec counts) plus Category 12's 7 exit indicators."""
+        assert len(CORE_TECHNICAL_FEATURES) == 77
+        assert len(set(CORE_TECHNICAL_FEATURES)) == 77  # no duplicates
 
     def test_output_columns_match_catalog(self, features_20_stocks):
         expected = ["date", "ticker"] + CORE_TECHNICAL_FEATURES
@@ -117,6 +118,36 @@ class TestDTypeAndFiniteness:
     def test_delivery_pct_in_0_100(self, features_20_stocks):
         dp = features_20_stocks["delivery_pct"].dropna()
         assert (dp >= 0).all() and (dp <= 100).all()
+
+
+class TestCategory12ExitIndicators:
+    @pytest.mark.parametrize("m", [10, 20, 22])
+    def test_atr_pct_is_non_negative(self, features_20_stocks, m):
+        atr_pct = features_20_stocks[f"atr_{m}_pct"].dropna()
+        assert len(atr_pct) > 0
+        assert (atr_pct >= 0).all()
+
+    @pytest.mark.parametrize("window", [10, 22, 55])
+    def test_hh_is_at_least_the_rolling_low(self, features_20_stocks, ohlcv_20_stocks, window):
+        """hh_N (rolling max of high) must be >= the rolling min of low over
+        the same window — a basic sanity bound that doesn't depend on the
+        exact rolling-max implementation."""
+        hh = features_20_stocks[f"hh_{window}"]
+        low_min = (
+            ohlcv_20_stocks.sort_values(["ticker", "date"])
+            .groupby("ticker", sort=False)["low"]
+            .rolling(window, min_periods=window)
+            .min()
+            .reset_index(level=0, drop=True)
+        )
+        mask = hh.notna() & low_min.notna()
+        assert mask.sum() > 0
+        assert (hh[mask].to_numpy() >= low_min[mask].to_numpy()).all()
+
+    def test_psar_is_finite_after_warmup(self, features_20_stocks):
+        psar = features_20_stocks["psar"].dropna()
+        assert len(psar) > 0
+        assert (psar > 0).all()
 
 
 class TestVectorization:

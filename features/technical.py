@@ -7,7 +7,7 @@ Owner: Platform / Features
 Consumers: features/matrix_builder, systems/ml_signal_engine, backtest
 
 Computes the core technical-indicator feature set from adjusted OHLCV data
-(DuckDB `ohlcv_adjusted`, SPEC-DS-001) across 11 categories. Every feature
+(DuckDB `ohlcv_adjusted`, SPEC-DS-001) across 12 categories. Every feature
 is computed for the *entire* ticker x date panel in one vectorized pass —
 SPEC-PIPE-004 forbids Python loops over individual stocks. The only
 per-ticker iteration here is `DataFrame.groupby('ticker').apply(...)`,
@@ -25,6 +25,17 @@ prompt's header. This module implements exactly the 70 named/countable
 features enumerated per-category (CORE_TECHNICAL_FEATURES below) rather
 than inventing 6 unspecified extra ones — see BuildLog.md "P1.1" for the
 arithmetic and the decision to flag rather than guess.
+
+Category 12 (exit indicators, added later) supplies the raw indicator
+inputs an ATR-based exit framework needs (Chandelier Exit / ATR trailing
+stop, per indian-stock-exit-module-spec.md) that categories 1-11 didn't
+already expose as named columns: additional ATR lengths beyond the
+existing atr_14_pct, a reusable rolling highest-high (vs. category 11's
+private, ratio-only _hi21), and Parabolic SAR. It does NOT include
+"highest-close-since-entry" — that anchor is inherently trade-state
+(depends on each position's own entry date), not a per-ticker market
+indicator, so it cannot be precomputed here; whatever system holds
+position state must compute it downstream.
 """
 
 import logging
@@ -139,6 +150,15 @@ _CATEGORY_11_DERIVED = [
     "close_position_in_range",
     "body_to_range_ratio",
 ]
+_CATEGORY_12_EXIT_INDICATORS = [
+    "atr_10_pct",
+    "atr_20_pct",
+    "atr_22_pct",
+    "hh_10",
+    "hh_22",
+    "hh_55",
+    "psar",
+]
 
 CORE_TECHNICAL_FEATURES: List[str] = (
     _CATEGORY_1_PRICE_POSITION
@@ -152,8 +172,9 @@ CORE_TECHNICAL_FEATURES: List[str] = (
     + _CATEGORY_9_VOLUME_DELIVERY
     + _CATEGORY_10_ICHIMOKU
     + _CATEGORY_11_DERIVED
+    + _CATEGORY_12_EXIT_INDICATORS
 )
-assert len(CORE_TECHNICAL_FEATURES) == 70, "CORE_TECHNICAL_FEATURES catalog drifted — see module docstring"
+assert len(CORE_TECHNICAL_FEATURES) == 77, "CORE_TECHNICAL_FEATURES catalog drifted — see module docstring"
 
 # Nifty-tracking ETF tickers used as Category 7 relative-strength benchmarks
 # (no raw NSE index series is ingested as of Phase 1 — these ETFs trade as
@@ -550,9 +571,25 @@ def _category_11_derived(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# ===== Category 12: Exit Indicators (ATR-based exit framework inputs) =====
+def _category_12_exit_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    out = pd.DataFrame(index=df.index)
+    for m in (10, 20, 22):
+        atr = _grouped_talib_single(df, ["high", "low", "close"], talib.ATR, timeperiod=m)
+        out[f"atr_{m}_pct"] = _safe_div(atr, df["close"]) * 100
+
+    for window in (10, 22, 55):
+        out[f"hh_{window}"] = _grouped_rolling(df, "high", window, "max")
+
+    out["psar"] = _grouped_talib_single(
+        df, ["high", "low"], talib.SAR, acceleration=0.02, maximum=0.2
+    )
+    return out
+
+
 def compute_technical_features(ohlcv: pd.DataFrame, benchmark: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
-    Compute all 70 core technical features for a multi-ticker OHLCV panel.
+    Compute all 77 core technical features for a multi-ticker OHLCV panel.
 
     Parameters
     ----------
@@ -573,7 +610,7 @@ def compute_technical_features(ohlcv: pd.DataFrame, benchmark: Optional[pd.DataF
     Returns
     -------
     pd.DataFrame
-        Columns: date, ticker, + CORE_TECHNICAL_FEATURES (70 cols), float64,
+        Columns: date, ticker, + CORE_TECHNICAL_FEATURES (77 cols), float64,
         no infinities. One row per (ticker, date) in the input panel.
         Rows are sorted by (ticker, date).
 
@@ -629,6 +666,7 @@ def compute_technical_features(ohlcv: pd.DataFrame, benchmark: Optional[pd.DataF
         _category_9_volume_delivery(df),
         _category_10_ichimoku(df),
         _category_11_derived(df),
+        _category_12_exit_indicators(df),
     ]
     result = pd.concat(pieces, axis=1)
 

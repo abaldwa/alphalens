@@ -438,6 +438,7 @@ _FEATURE_LABEL_OVERRIDES = {
     "rsi": "RSI", "sma": "SMA", "ema": "EMA", "macd": "MACD", "bb": "BB",
     "atr": "ATR", "adx": "ADX", "roc": "ROC", "cci": "CCI", "mfi": "MFI",
     "vwap": "VWAP", "di": "DI", "rs": "RS", "cvi": "CVI", "obv": "OBV",
+    "hh": "HH", "sar": "SAR",
 }
 
 
