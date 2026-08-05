@@ -101,7 +101,10 @@ REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 HORIZON_BUCKET_MAP = {b.value: b for b in HorizonBucket}
 
 
-def _fetch_real_ohlcv(max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type) -> pd.DataFrame:
+def _fetch_real_ohlcv(
+    max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type,
+    ohlcv_snapshot_dir: Optional[str] = None,
+) -> pd.DataFrame:
     """Real OHLCV (config.universe's curated universe) over exactly
     [start_date, end_date] — the run's own requested window, not
     run_phase1_backtest.py's fixed 5-year lookback.
@@ -121,18 +124,30 @@ def _fetch_real_ohlcv(max_tickers: Optional[int], min_history_days: int, start_d
     plain get_tickers()[:max_tickers] — the CSV's row order carries no
     liquidity meaning, so --max-tickers 800 used to be an arbitrary 800,
     not the top-800-by-ADTV a user reviewing partial sweep results expects.
+
+    [2026-08-05] ohlcv_snapshot_dir (FeatureBacklog A73, remaining gap):
+    the bulk call above is a pure function of (start_date, end_date) alone
+    — a technical batch sweep (backtest/run_strategy_queue.py) launches
+    each job as its own subprocess, so without this every job in a
+    42-template sweep re-issued the same bulk call. When set, reads/writes
+    a shared Parquet snapshot instead (backtest/core/ohlcv_prewarm.py) —
+    the queue driver prewarms it once before launching jobs. None (default)
+    is today's unchanged always-live-fetch behavior.
     """
     client = DataStoreClient()
     tickers = get_top_adtv_tickers(max_tickers) if max_tickers else get_tickers()
     ticker_set = set(tickers)
 
-    # DataStoreClient.get_ohlcv_bulk calls .date() on its from_date/to_date
-    # args (it's typed for datetime) — a plain date.fromisoformat() argparse
-    # value has no .date() method, so these must be Timestamps, not dates.
-    from_dt = pd.Timestamp(start_date)
-    to_dt = pd.Timestamp(end_date)
-
-    bulk = client.get_ohlcv_bulk(from_dt, to_dt)
+    if ohlcv_snapshot_dir:
+        from backtest.core.ohlcv_prewarm import get_or_fetch_ohlcv_bulk
+        bulk = get_or_fetch_ohlcv_bulk(client, start_date, end_date, Path(ohlcv_snapshot_dir))
+    else:
+        # DataStoreClient.get_ohlcv_bulk calls .date() on its from_date/to_date
+        # args (it's typed for datetime) — a plain date.fromisoformat() argparse
+        # value has no .date() method, so these must be Timestamps, not dates.
+        from_dt = pd.Timestamp(start_date)
+        to_dt = pd.Timestamp(end_date)
+        bulk = client.get_ohlcv_bulk(from_dt, to_dt)
     bulk = bulk[bulk["ticker"].isin(ticker_set)][["date", "ticker", "close", "volume"]]
 
     counts = bulk.groupby("ticker").size()
@@ -402,7 +417,7 @@ def _run_immediate(
     template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
     exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id,
+    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -410,7 +425,7 @@ def _run_immediate(
     throughout. Extracted verbatim from run_orchestrator_backtest() only to
     make room for _run_deferred() as a sibling — no logic changed."""
     with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
-        ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+        ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
         sector_map = _real_sector_map()
         config = _build_config(ohlcv, sector_map)
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
@@ -666,7 +681,7 @@ def _run_deferred(
     template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
     exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id,
+    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -679,7 +694,7 @@ def _run_deferred(
 
     from backtest.core.feature_log import load_spill_file
 
-    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date)
+    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
     sector_map = _real_sector_map()
     config = _build_config(ohlcv, sector_map)
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
@@ -873,8 +888,19 @@ def run_orchestrator_backtest(
     precomputed_matches_dir: Optional[str] = None,
     prefetch_feature_parquets: bool = False,
     rank_band_id: Optional[int] = None,
+    ohlcv_snapshot_dir: Optional[str] = None,
 ) -> dict:
     """
+    ohlcv_snapshot_dir : (2026-08-05, FeatureBacklog A73 remaining gap —
+        batch-sweep OHLCV reuse) — when set, _fetch_real_ohlcv reads/writes
+        a shared Parquet snapshot (backtest/core/ohlcv_prewarm.py) instead
+        of always issuing its own GET /ohlcv/_bulk call. Intended to be set
+        by a queue driver (backtest/run_strategy_queue.py) that has already
+        prewarmed the snapshot once for the whole sweep's [start_date,
+        end_date] — every job then hits the cache instead of independently
+        re-fetching the same bulk data. None (default) preserves today's
+        always-live-fetch behavior exactly.
+
     rank_band_id : (2026-08-05, Momentum engine consolidation Phase 2 —
         momentum channel only) run against one of
         features/momentum_universe.py's RANK_BANDS market-cap bands
@@ -972,7 +998,7 @@ def run_orchestrator_backtest(
         template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
         exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
         quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-        combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id,
+        combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1137,6 +1163,16 @@ def main() -> None:
             "force-sold at the year boundary. Default (omit) is today's unchanged behavior."
         ),
     )
+    parser.add_argument(
+        "--ohlcv-snapshot-dir", default=None,
+        help=(
+            "2026-08-05 (FeatureBacklog A73 remaining gap): directory of a shared OHLCV Parquet "
+            "snapshot (backtest/core/ohlcv_prewarm.py), prewarmed once by a queue driver "
+            "(backtest/run_strategy_queue.py) before launching a sweep's jobs. When set, this job "
+            "reads OHLCV from the snapshot instead of issuing its own GET /ohlcv/_bulk call. "
+            "Default (omit) is today's unchanged always-live-fetch behavior."
+        ),
+    )
     args = parser.parse_args()
 
     run_orchestrator_backtest(
@@ -1157,6 +1193,7 @@ def main() -> None:
         precomputed_matches_dir=args.precomputed_matches_dir,
         prefetch_feature_parquets=args.prefetch_feature_parquets,
         rank_band_id=args.rank_band_id,
+        ohlcv_snapshot_dir=args.ohlcv_snapshot_dir,
     )
 
 

@@ -92,6 +92,15 @@ def build_jobs(start_date: date, end_date: date, quick: bool = False) -> List[Di
             "initial_capital": TECHNICAL_INITIAL_CAPITAL,
             "defer_db_writes": True,
             "precomputed_matches_dir": str(SCREENER_CACHE_DIR),
+            # 2026-08-05: per-job exit-check speedup (~2.2x, see
+            # run_orchestrator_backtest.py's prefetch_feature_parquets
+            # docstring) — every job here is technical channel, so this is
+            # unconditionally safe to turn on for the whole sweep. OHLCV
+            # itself doesn't need a flag here: every job in this sweep
+            # shares one [start_date, end_date], so run_strategy_queue.py's
+            # _maybe_prewarm_ohlcv() auto-detects that and injects
+            # ohlcv_snapshot_dir for all of them (FeatureBacklog A73).
+            "prefetch_feature_parquets": True,
         }
 
     for template_name in template_names:
