@@ -132,6 +132,14 @@ STEPS = [
     # failed CA download blocks and later retries this check together
     # rather than evaluating stale/incomplete data now and never
     # re-checking once the CA data actually lands.
+    # [2026-08-05] derive_fundamentals_ratios: permanently derives computable
+    # fundamentals columns (ebit, net_debt, debt_to_ebitda, total_equity,
+    # retained_earnings) from raw XBRL/Screener fields before data_integrity_
+    # check's null_sweep runs — otherwise those columns show up as 100%-NaN
+    # criticals (see daily_pipeline.step_derive_fundamentals_ratios). Runs
+    # early (depends only on adjust_prices, proxy for "cycle has progressed");
+    # idempotent, fills NULLs only.
+    {"name": "derive_fundamentals_ratios", "is_backfillable": True, "depends_on": ["adjust_prices"]},
     {"name": "data_integrity_check", "is_backfillable": True, "depends_on": ["adjust_prices", "download_corporate_actions"]},
     # compute_features needs adjusted OHLCV. macro/fno data is consumed as
     # NaN-tolerant soft inputs — features compute fine without them.

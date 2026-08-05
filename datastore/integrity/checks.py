@@ -205,32 +205,61 @@ _NULL_SWEEP_WARN_THRESHOLD = 0.10
 
 def check_null_sweep(conn, as_of_date: date_type) -> List[Finding]:
     """
-    Per-column null/NaN rate sweep over source tables (only rows for
-    as_of_date, to keep this a bounded daily check rather than a full-
-    history scan) plus that day's feature Parquet, skipping columns
-    already known to be structurally sparse
+    Per-column null/NaN rate sweep over SOURCE input tables only, skipping
+    columns already known to be structurally sparse
     (_SANITY_KNOWN_SPARSE_COLUMNS — same list step_sanity_check uses, so
     A20 never re-alerts on already-accepted gaps).
+
+    For ohlcv_adjusted and macro_indicators: checks rows for as_of_date
+    only (bounded daily check).
+
+    For fundamentals: uses a **30-day trailing window** (announcement_date
+    BETWEEN as_of_date - 30 AND as_of_date) because fundamentals are
+    sparse per-date (only a handful of companies announce on any given
+    day) and balance-sheet fields have ~11% coverage table-wide. A
+    per-date check would flag normal date-specific sparsity as critical.
+    The 30-day window gives ~100-200 rows for a statistically meaningful
+    null rate, catching genuine regressions (source-wide data outage) while
+    not false-positiving on per-date coverage gaps.
+
+    This deliberately does NOT sweep the feature Parquet: the feature
+    Parquet is a downstream OUTPUT of compute_features, and data_integrity_check
+    runs BEFORE compute_features (checkpoint.py STEPS ordering) so a bad
+    ingest is caught before features are built. At that point the feature
+    Parquet can only hold the previous/staged (price-only) state, so
+    sweeping it flags ~165 derived columns as 100% NaN and blocks
+    compute_features from ever populating them — a circular gate. Feature-
+    output quality is instead gated by step_sanity_check, which runs AFTER
+    write_signals and raises on all-NaN feature columns.
     """
     from ingestion.scheduler.daily_pipeline import _SANITY_KNOWN_SPARSE_COLUMNS
 
     findings: List[Finding] = []
     date_col_by_table = {"ohlcv_adjusted": "date", "fundamentals": "announcement_date", "macro_indicators": "date"}
+    # fundamentals: per-date check is too noisy (sparse announcements per day);
+    # use a 30-day trailing window for a statistically meaningful null rate.
+    _FUNDAMENTALS_WINDOW_DAYS = 30
 
     for table in _NULL_SWEEP_TABLES:
         date_col = date_col_by_table[table]
         try:
-            df = conn.execute(f"SELECT * FROM {table} WHERE {date_col} = ?", [as_of_date]).df()
+            if table == "fundamentals":
+                # announcement_date is VARCHAR ('YYYY-MM-DD'); cast to DATE for
+                # the trailing-window arithmetic (a raw BETWEEN on VARCHAR would
+                # mix VARCHAR with a TIMESTAMP interval and fail).
+                df = conn.execute(
+                    f"SELECT * FROM {table} WHERE CAST({date_col} AS DATE) "
+                    f"BETWEEN CAST(? AS DATE) - INTERVAL '{_FUNDAMENTALS_WINDOW_DAYS} days' AND CAST(? AS DATE)",
+                    [as_of_date, as_of_date],
+                ).df()
+            else:
+                df = conn.execute(f"SELECT * FROM {table} WHERE {date_col} = ?", [as_of_date]).df()
         except Exception as exc:  # noqa: BLE001
             logger.warning("check_null_sweep: could not read %s: %s", table, exc)
             continue
         if df.empty:
             continue
         findings.extend(_null_rate_findings(df, table, as_of_date, _SANITY_KNOWN_SPARSE_COLUMNS))
-
-    feature_df = _load_feature_parquet(as_of_date)
-    if feature_df is not None and not feature_df.empty:
-        findings.extend(_null_rate_findings(feature_df, "features", as_of_date, _SANITY_KNOWN_SPARSE_COLUMNS))
 
     return findings
 
@@ -263,15 +292,6 @@ def _null_rate_findings(df: pd.DataFrame, source: str, as_of_date: date_type, kn
                 )
             )
     return findings
-
-
-def _load_feature_parquet(as_of_date: date_type) -> Optional[pd.DataFrame]:
-    from config.settings import FEATURES_DAILY_DIR
-
-    path = Path(FEATURES_DAILY_DIR) / f"{as_of_date.isoformat()}.parquet"
-    if not path.exists():
-        return None
-    return pd.read_parquet(path)
 
 
 def check_holiday_leakage(conn, as_of_date: date_type, lookback_days: int = 30) -> List[Finding]:

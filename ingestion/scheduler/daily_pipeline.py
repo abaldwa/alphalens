@@ -295,10 +295,12 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
         last_fyers_date = last_fyers_date.date()
 
     if last_fyers_date is not None and last_fyers_date < run_date:
-        cursor = last_fyers_date + timedelta(days=1)
-        since_date = cursor if is_trading_day(cursor) else run_date
-        # Walk forward to the actual next trading day >= cursor, in case
-        # cursor itself is a weekend/holiday.
+        # Gap-resilient: since_date starts the day after the last FYERS
+        # date, then walks forward to the actual next trading day (handles
+        # weekends/holidays). Previously this bailed to `run_date` when
+        # `cursor` itself was non-trading, silently dropping the trading
+        # day(s) in between (e.g. last=Friday, run=Tuesday -> Monday lost).
+        since_date = last_fyers_date + timedelta(days=1)
         while since_date < run_date and not is_trading_day(since_date):
             since_date += timedelta(days=1)
     else:
@@ -372,21 +374,34 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
                 # DuckDB 1.2.0 internal engine crash regardless of the
                 # date column's declared type — rewritten as a standard
                 # correlated EXISTS join (column-wise equality) instead.
-                conn.execute(
-                    """
-                    DELETE FROM ohlcv_adjusted
-                    WHERE EXISTS (
-                        SELECT 1 FROM staging.ohlcv_fyers_daily s
-                        WHERE s.ticker = ohlcv_adjusted.ticker AND s.date = ohlcv_adjusted.date
-                    )
-                    """
-                )
+                #
+                # [2026-08-05] Changed from DELETE+INSERT to UPSERT to
+                # preserve bhavcopy delivery_qty/delivery_pct.  The previous
+                # DELETE+INSERT destroyed delivery data that step_download_
+                # bhavcopy had already written (bhavcopy runs first, per
+                # checkpoint STEPS ordering), because the Fyers re-INSERT
+                # doesn't carry delivery columns.  This caused:
+                #   (a) null_sweep critical findings on delivery_pct (100%
+                #       NULL for Fyers-sourced rows)
+                #   (b) PSI drift halt on delivery_pct (degenerate all-NaN
+                #       distribution vs real reference)
+                # With UPSERT, only Fyers columns (prices, source, factors)
+                # are updated; existing delivery values are untouched.
                 conn.execute(
                     """
                     INSERT INTO ohlcv_adjusted
                         (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, source)
                     SELECT date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, 'fyers'
                     FROM staging.ohlcv_fyers_daily
+                    ON CONFLICT (date, ticker) DO UPDATE SET
+                        open           = excluded.open,
+                        high           = excluded.high,
+                        low            = excluded.low,
+                        close          = excluded.close,
+                        volume         = excluded.volume,
+                        adj_factor     = excluded.adj_factor,
+                        vol_adj_factor = excluded.vol_adj_factor,
+                        source         = excluded.source
                     """
                 )
 
@@ -1460,7 +1475,115 @@ _SANITY_KNOWN_SPARSE_COLUMNS = {
     # structurally NaN too). dilution_3y shares the same "source doesn't
     # reliably provide this" character. See DataModelAudit.md priority #1.
     "receivable_days_change", "inventory_days_change", "dilution_3y",
+    # [2026-08-05] Structural metadata/placeholder columns that are 100% NULL
+    # table-wide across the entire fundamentals table (53k+ rows).  These are
+    # never populated by any ingestion path:
+    #   as_of_ingested — migration-added TIMESTAMP column (2026-07-09) but no
+    #     write path stamps it; the DB-API upsert at fundamentals.py:697
+    #     includes it in _COLUMNS but uses DEFAULT CURRENT_TIMESTAMP which is
+    #     only effective for direct INSERT, not DuckDB's UPSERT.
+    #   sector_specific_metric_1-6 — schema placeholders for sector-specific
+    #     ratios; no scraper ever writes to them.
+    "as_of_ingested",
+    "sector_specific_metric_1", "sector_specific_metric_2",
+    "sector_specific_metric_3", "sector_specific_metric_4",
+    "sector_specific_metric_5", "sector_specific_metric_6",
+    # [2026-08-05] cash-flow/capex fields not reliably parsed by any automated
+    # scraper: Screener free-tier hardcodes capex/fcf to None; XBRL captures
+    # cash-flow line items but not capex directly.  These are structurally
+    # sparse (~44-53% populated table-wide from historical backfill data,
+    # but 0% for recent 6 months of automated scrapes).
+    "capex", "capex_intensity", "fcf_margin",
 }
+
+
+_FUNDAMENTALS_DERIVE_UPDATE_SQL = [
+    # total_equity from XBRL balance-sheet identity: Equity Share Capital + Other Equity.
+    # Only fills where NULL (never overwrites a Screener-scraped equity_cr value).
+    """
+    UPDATE fundamentals SET
+        total_equity = equity_share_capital + other_equity
+    WHERE total_equity IS NULL
+      AND equity_share_capital IS NOT NULL AND other_equity IS NOT NULL
+    """,
+    # retained_earnings: Reserves & Surplus. XBRL exposes this as Other Equity
+    # (Ind-AS); only fills where NULL (Screener's Reserves row, added
+    # 2026-08-05, is preferred when present).
+    """
+    UPDATE fundamentals SET
+        retained_earnings = other_equity
+    WHERE retained_earnings IS NULL AND other_equity IS NOT NULL
+    """,
+    # net_debt = Total Borrowings - Cash (all XBRL-sourced).
+    """
+    UPDATE fundamentals SET
+        net_debt = COALESCE(borrowings_current, 0) + COALESCE(borrowings_noncurrent, 0)
+                   - cash_and_equivalents
+    WHERE net_debt IS NULL AND cash_and_equivalents IS NOT NULL
+    """,
+    # debt_to_ebitda = Total Debt / EBITDA (matches features/financial_ratios.py).
+    """
+    UPDATE fundamentals SET
+        debt_to_ebitda = (COALESCE(borrowings_current, 0) + COALESCE(borrowings_noncurrent, 0)) / ebitda
+    WHERE debt_to_ebitda IS NULL AND ebitda IS NOT NULL AND ebitda != 0
+    """,
+    # ebit = EBITDA - Depreciation (matches financial_ratios.compute_ebit; the
+    # Screener-scraped operating_profit is preferred and never overwritten).
+    """
+    UPDATE fundamentals SET
+        ebit = ebitda - depreciation
+    WHERE ebit IS NULL AND ebitda IS NOT NULL AND depreciation IS NOT NULL
+    """,
+]
+
+
+def step_derive_fundamentals_ratios(run_date: date_type, db_path: Optional[Path] = None) -> None:
+    """
+    [2026-08-05] Permanently derive computable fundamentals columns from the
+    raw XBRL/Screener fields already present in the `fundamentals` table, so
+    ebit/net_debt/debt_to_ebitda/total_equity/retained_earnings are never left
+    NULL when their raw inputs exist.
+
+    These columns were declared in the schema and computed by
+    features/financial_ratios.py::derive_all_ratios, but that function was
+    never wired into the pipeline (dead code), so the derived columns stayed
+    100% NULL for recent dates — which surfaced as data_integrity_check
+    null_sweep criticals (100% NaN) that blocked compute_features for
+    backfill dates.
+
+    Idempotent: every UPDATE uses `WHERE <col> IS NULL` (COALESCE pattern), so
+    real scraped values (e.g. Screener's operating_profit-as-ebit, or XBRL's
+    equity_share_capital+other_equity) are never overwritten; only NULL gaps
+    are filled. Safe to run every cycle and on already-ingested history.
+
+    Parameters
+    ----------
+    run_date : date
+        Ignored except for signature parity with other steps — the derivation
+        is table-wide and idempotent, not date-scoped.
+    db_path : Path, optional
+        Defaults to config.settings.DUCKDB_PATH.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    None — failures are logged and swallowed (non-critical: a partial derive
+    simply leaves some derived columns NULL for compute_features to handle,
+    same as today).
+    """
+    from config.settings import DUCKDB_PATH
+
+    resolved_db_path = db_path or DUCKDB_PATH
+    try:
+        with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+            for sql in _FUNDAMENTALS_DERIVE_UPDATE_SQL:
+                conn.execute(sql)
+        logger.info("step_derive_fundamentals_ratios: derived computable fundamentals columns")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("step_derive_fundamentals_ratios: derivation failed (non-critical): %s", exc)
 
 
 def step_sanity_check(run_date: date_type, db_path: Optional[Path] = None) -> None:
@@ -2061,6 +2184,7 @@ _STEP_DISPATCH = {
     "download_large_deals": step_download_large_deals,
     "attribute_bulk_deals": step_attribute_bulk_deals,
     "adjust_prices": step_adjust_prices,
+    "derive_fundamentals_ratios": step_derive_fundamentals_ratios,
     "compute_features": step_compute_features,
     "run_models": step_run_models,
     "write_signals": step_write_signals,

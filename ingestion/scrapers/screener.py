@@ -174,6 +174,14 @@ _BALANCE_SHEET_FIELDS = {
     # because these columns didn't exist in the schema at all.
     "Total Assets": "total_assets",
     "CWIP": "cwip",
+    # [2026-08-05] "Reserves" is Screener's label for Reserves & Surplus —
+    # the standard accounting analog of retained earnings.  Parsed from the
+    # most-recent FY column of the #balance-sheet table.  Feeds
+    # fundamentals.retained_earnings, needed by altman_z and debt_to_ebitda
+    # derivation.  Note: this is the same field _parse_balance_sheet_history
+    # extracts for multi-year history; here we get the current-quarter value
+    # from _parse_section_table (rightmost column only).
+    "Reserves": "retained_earnings",
 }
 # #balance-sheet row label -> internal field name, for the FULL multi-year
 # history parse (_parse_balance_sheet_history) used to derive total_equity
@@ -740,6 +748,14 @@ def _build_fundamentals_row(
             if balance_sheet.get("total_debt") is not None and equity_cr else None
         ),
         "interest_coverage": interest_coverage,
+        "ebit": operating_profit,  # [2026-08-05] operating_profit IS ebit for Indian GAAP reporting
+        "debt_to_ebitda": (
+            balance_sheet.get("total_debt") / ebitda
+            if balance_sheet.get("total_debt") is not None and ebitda is not None and ebitda != 0 else None
+        ),
+        "net_debt": None,  # [AS BUILT] Cash not on free-tier balance sheet; derived from XBRL in recompute step
+        "total_equity": equity_cr,  # [2026-08-05] equity_cr = book_value_per_share × shares / 1e7
+        "retained_earnings": balance_sheet.get("retained_earnings"),  # [2026-08-05] from Reserves row
         "fcf": None,  # not reliably parseable from the free-tier cash-flow table — see module docstring
         "asset_turnover": None,
         "inventory_days": None,

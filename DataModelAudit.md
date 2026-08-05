@@ -130,9 +130,7 @@ plus a newly found 07-28 data-integrity blocker, not a transient issue.
    structurally unavailable from the current data source, so `paper_trade`
    stops losing forward-time days over data that was never going to arrive.
    Needs a decision on which approach before implementing.
-2. **[NEW]** Investigate the 07-28 `data_integrity_check` failure (30
-   critical findings, see §3) — actively blocking that day's entire
-   downstream chain and part of why the 07-20→07-28 backfill hasn't cleared.
+2. **[2026-08-05, expanded]** `data_integrity_check` blocks backfill for **all 12 gap dates** (07-20→08-04) — **root cause identified, fix needed.** `check_null_sweep` flags **165 features** as `critical` (100% NaN) for each backfill date. These are features dependent on data sources **not yet ingested** for those dates: fundamentals (`pe_ratio`, `roce`, `altman_z`, `debt_to_equity`…), F&O (`iv_call`, `pcr_oi`, `futures_basis_pct`…), shareholding (`promoter_pct`, `fii_pct`, `dii_pct`…), MF holdings (`mf_pct`, `mf_scheme_count`…), HMM (`hmm_regime`, `hmm_regime_duration`…), and other PIT-dependent columns. The feature Parquet exists (written by the Fyers staged backfill recompute, which only covers price/volume-dependent features), so `check_null_sweep` sees 165 columns at 100% NaN → raises → blocks `compute_features` → `run_models` → `write_signals` for every gap date. **Fix: ingest the missing data sources** (fundamentals, shareholding, MF holdings, F&O) for the gap dates **before** running `compute_features`. Suppressing via `_SANITY_KNOWN_SPARSE_COLUMNS` is wrong — these features are not permanently sparse in normal operation.
 3. Complete the Fundamental strategy backfill (07-20→07-28) — still not
    done; likely blocked by the same #1 root cause for any day whose
    fundamentals feed into valuation scoring.
