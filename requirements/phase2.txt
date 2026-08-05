@@ -22,6 +22,11 @@
 # not needed on an officially-supported OS).
 playwright==1.60.0
 
+# pyotp: generates TOTP 2FA codes for the daily unattended FYERS login
+# (ingestion/scrapers/fyers_login.py), from FYERS_TOTP_SECRET in .env —
+# same purpose as any other TOTP app, done headlessly.
+pyotp==2.9.0
+
 # openpyxl: parses .xlsx files some sources (AMC portfolio disclosures)
 # publish instead of CSV/HTML.
 openpyxl==3.1.5

@@ -430,10 +430,11 @@ def run_backfill(
                             delivery_pct=None,
                             adj_factor=1.0,
                             vol_adj_factor=1.0,
+                            source=None,
                         )[[
                             "date", "ticker", "open", "high", "low", "close",
                             "volume", "delivery_qty", "delivery_pct",
-                            "adj_factor", "vol_adj_factor",
+                            "adj_factor", "vol_adj_factor", "source",
                         ]]
                     )
             else:

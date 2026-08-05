@@ -69,17 +69,39 @@ def test_batch_download_processes_all_tickers(monkeypatch):
 
 
 def test_rate_limiting_sleeps_between_calls(monkeypatch):
-    """SPEC-PIPE-001: a 0.5s throttle must run between every FYERS API call."""
+    """SPEC-PIPE-001: the shared global rate limiter must gate every FYERS API call.
+
+    2026-08-04: _throttle() now goes through _GlobalRateLimiter (a real
+    cross-thread minimum-interval gate, not a fixed per-call sleep) — see
+    that class's docstring for why per-instance sleeps alone don't
+    prevent concurrent callers from bursting past FYERS' rate limit. The
+    exact sleep duration is no longer a fixed constant (it depends on
+    real elapsed monotonic time between calls), so this test asserts the
+    gate fires with roughly the right duration instead of an exact value.
+    """
     sleeps = []
     monkeypatch.setattr(fyers_backfill.time, "sleep", lambda secs: sleeps.append(secs))
+    # _RATE_LIMITER is a module-level singleton shared across the whole
+    # process (by design — see _GlobalRateLimiter's docstring: the whole
+    # point is one gate shared across every caller, not per-test
+    # isolation). Reset its state so this test only observes waits caused
+    # by ITS OWN two calls, not backlog accumulated by other tests that
+    # ran earlier in the same process.
+    monkeypatch.setattr(fyers_backfill._RATE_LIMITER, "_next_allowed_at", 0.0)
 
     fb, stub = _make_backfill(monkeypatch, lambda data: _ok_response(2020))
 
     # A 400-day span exceeds FYERS_HISTORY_MAX_DAYS_PER_CALL (365) -> 2 chunks -> 2 throttled calls.
     fb.download_history("RELIANCE", "2020-01-01", "2021-02-04")
 
+    # The first call may fire immediately (the freshly-reset limiter has
+    # no backlog, so time.sleep is skipped entirely — see
+    # _GlobalRateLimiter.acquire's `if wait_seconds > 0` guard); the
+    # second call must always wait roughly one full interval behind it.
     assert len(stub.calls) == 2
-    assert sleeps == [fyers_backfill.FYERS_RATE_LIMIT_SLEEP_SECONDS] * 2
+    assert len(sleeps) in (1, 2)
+    for sleep_seconds in sleeps:
+        assert 0 < sleep_seconds <= fyers_backfill.FYERS_RATE_LIMIT_SLEEP_SECONDS
 
 
 def test_extract_auth_code_from_full_redirected_url():

@@ -127,7 +127,7 @@ DuckDB provides columnar storage, multi-core query execution, and native AsOf jo
 
 -- OHLCV: adjusted prices, delivery data, PIT-correct
 ohlcv_adjusted(date, ticker, open, high, low, close, volume,
-               delivery_qty, delivery_pct, adj_factor)
+               delivery_qty, delivery_pct, adj_factor, vol_adj_factor, source)
 
 -- Corporate actions ledger
 corporate_actions(ticker, ex_date, action_type, ratio,

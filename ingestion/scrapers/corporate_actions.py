@@ -360,7 +360,8 @@ def download_corporate_actions(date: str, filter_by_date: bool = True) -> pd.Dat
         # Reg 42(2)-based conservative lower bound off record_date, never
         # fabricated when record_date itself is unknown.
         announcement_date = (
-            record_date - timedelta(days=CORP_ACTION_NOTICE_DAYS) if record_date else None
+            (datetime.strptime(record_date, "%Y-%m-%d") - timedelta(days=CORP_ACTION_NOTICE_DAYS)).strftime("%Y-%m-%d")
+            if record_date else None
         )
 
         rows.append({

@@ -2499,6 +2499,91 @@ def schedule_daily_backup(
     logger.info(f"Daily off-machine backup scheduled: {schedule_time} IST (every day)")
 
 
+def _execute_fyers_login_job() -> None:
+    """
+    Unattended daily FYERS login attempt (ingestion/scrapers/fyers_login.py)
+    — obtains/caches today's FYERS access token via Playwright + PIN/TOTP
+    before any FYERS-dependent step (download_fyers_daily,
+    scripts/fyers_staged_backfill.py if run same-day) needs one.
+    Idempotent: daily_login() skips the browser flow entirely if a cached
+    token from earlier today already validates.
+
+    [AS BUILT, 2026-08-04] FYERS' login page is Cloudflare-Turnstile-
+    protected — see fyers_login.py's module docstring. This job WILL
+    currently fail every day it actually needs to log in (i.e. whenever
+    no cached token exists), recording a "failed" heartbeat. That's
+    expected, not a bug to chase, until a semi-automated flow (or a
+    different unattended-auth mechanism) replaces the fully-automated
+    browser path. Kept registered per 2026-08-04 user decision ("don't
+    remove, we'll use it later") — production daily login today uses the
+    manual non-interactive CLI instead (`python3 -m
+    ingestion.scrapers.fyers_backfill login` / `... exchange <url>`).
+
+    Non-critical: a failure here does NOT block the rest of the daily
+    pipeline — step_download_fyers_daily itself catches and logs FYERS
+    failures (including "no valid token"), and step_download_bhavcopy is
+    the always-on backing source regardless.
+
+    Top-level + picklable.
+    """
+    from ingestion.scrapers.fyers_login import FyersLoginError, daily_login
+
+    _t0 = _job_timer_start()
+    try:
+        daily_login(headless=True)
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        logger.info("fyers_login: today's FYERS access token is ready")
+        _record_heartbeat(
+            "fyers_login", "success", duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb
+        )
+    except FyersLoginError as exc:
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        logger.warning(
+            f"fyers_login: failed (expected while the Turnstile blocker is unresolved — "
+            f"log in manually via `python3 -m ingestion.scrapers.fyers_backfill login`) — {exc}"
+        )
+        _record_heartbeat(
+            "fyers_login", "failed", str(exc), duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb
+        )
+    except Exception as exc:
+        duration_seconds, peak_rss_mb = _job_timer_stats(_t0)
+        logger.error(f"fyers_login job raised an unexpected exception: {exc}", exc_info=True)
+        _record_heartbeat(
+            "fyers_login", "failed", str(exc), duration_seconds=duration_seconds, peak_rss_mb=peak_rss_mb
+        )
+
+
+def schedule_fyers_login(
+    scheduler: BackgroundScheduler,
+    schedule_time: str = "06:30",
+) -> None:
+    """
+    Register the daily FYERS login-attempt job, early enough (06:30 IST,
+    before NSE open and before download_fyers_daily/bhavcopy fire in
+    schedule_daily_pipeline) that a cached token would be ready when the
+    rest of the day's pipeline needs one, IF the browser flow succeeds.
+
+    [AS BUILT, 2026-08-04] See _execute_fyers_login_job's docstring —
+    this job currently fails at Cloudflare Turnstile whenever it actually
+    needs to log in. Registered anyway per explicit user decision to keep
+    the automation in place for later, not remove it.
+
+    Spec References
+    ----------------
+    SPEC-PIPE-001.
+    """
+    hour, minute = (int(part) for part in schedule_time.split(":"))
+    scheduler.add_job(
+        _execute_fyers_login_job,
+        CronTrigger(hour=hour, minute=minute, timezone="Asia/Kolkata"),
+        id="fyers_login",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+    logger.info(f"Daily FYERS login attempt scheduled: {schedule_time} IST (every day)")
+
+
 def _execute_job_health_check_job() -> None:
     """
     A21 (Pipeline Health Checker): weekly job-completeness audit. Reads

@@ -428,6 +428,12 @@ FYERS_APP_ID = os.environ.get("FYERS_APP_ID")
 FYERS_SECRET_ID = os.environ.get("FYERS_SECRET_ID")
 FYERS_ACCESS_TOKEN = os.environ.get("FYERS_ACCESS_TOKEN")
 FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://127.0.0.1")
+FYERS_PIN = os.environ.get("FYERS_PIN")
+FYERS_TOTP_SECRET = os.environ.get("FYERS_TOTP_SECRET")
+# FYERS Client ID used to log into the FYERS *login page* (step 1, before
+# PIN/TOTP), e.g. "FAJ86720" — distinct from FYERS_APP_ID, which is the API
+# app credential used in the OAuth2 URL, not a login-page field.
+FYERS_CLIENT_LOGIN_ID = os.environ.get("FYERS_CLIENT_LOGIN_ID")
 SCREENER_USERNAME = os.environ.get("SCREENER_USERNAME")
 SCREENER_PASSWORD = os.environ.get("SCREENER_PASSWORD")
 VALUERESEARCH_USERNAME = os.environ.get("VALUERESEARCH_USERNAME")
@@ -445,9 +451,32 @@ FYERS_RAW_DIR = RAW_DIR / "fyers"
 FYERS_TOKEN_CACHE_PATH = FYERS_RAW_DIR / "access_token.json"
 FYERS_RESUME_CHECKPOINT_PATH = FYERS_RAW_DIR / "backfill_resume.txt"
 FYERS_MAX_CALLS_PER_DAY = 1000
-FYERS_RATE_LIMIT_SLEEP_SECONDS = 0.5
+# [2026-08-04, live-confirmed] FYERS' documented 200-req/minute cap (not
+# the more forgiving ~10/sec instantaneous-burst figure) is the real
+# binding constraint under sustained multi-threaded fetching — 200/60 ≈
+# 3.33 req/sec average. 0.35s (≈171/min, ~86% of budget) leaves real
+# margin under that; a naive 0.3s (exactly at the 200/min boundary) still
+# produced occasional 429s in testing. Enforced GLOBALLY across all
+# threads via FYERSBackfill's module-level _GlobalRateLimiter, not
+# per-thread — see that class's docstring for why per-thread pacing
+# alone doesn't prevent bursts past this.
+FYERS_RATE_LIMIT_SLEEP_SECONDS = 0.35
 FYERS_HISTORY_MAX_DAYS_PER_CALL = 365  # FYERS daily-resolution history API window limit
 BACKFILL_YEARS = 5
+
+# FYERS-primary daily cutover (SPEC-PIPE-001 extension, scripts/
+# fyers_staged_backfill.py). False until the full 2017->present staged
+# backfill has completed cleanly, at which point it should be flipped to
+# True (manually, or by whatever completion-marker check wires it up) —
+# ingestion/scheduler/daily_pipeline.py::step_download_fyers_daily is a
+# no-op while this is False, so today's NSE-Bhavcopy-primary pipeline is
+# completely unaffected by every change in this rollout until then.
+FYERS_PRIMARY_ENABLED = True  # flipped 2026-08-04: 2017->present staged backfill completed cleanly (0 failures across all 10 years)
+# Minimum fraction of the expected stock universe FYERS must return data
+# for on a given day before step_fyers_health_check trusts that day's
+# pull (otherwise: log/alert and rely on the existing Bhavcopy step,
+# which always runs regardless of FYERS_PRIMARY_ENABLED).
+FYERS_HEALTH_CHECK_MIN_COVERAGE = 0.95
 
 # ---------------------------------------------------------------------------
 # Screener.in fundamentals ingestion — SPEC-PIPE-003 (PIT, CRITICAL)

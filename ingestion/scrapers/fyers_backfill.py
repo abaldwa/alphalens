@@ -42,6 +42,7 @@ for the rest of that day).
 import json
 import logging
 import sys
+import threading
 import time
 from datetime import date as date_type
 from datetime import datetime, timedelta
@@ -64,6 +65,53 @@ from config.settings import (
 from config.timezone import now_ist
 
 logger = logging.getLogger(__name__)
+
+
+class _GlobalRateLimiter:
+    """
+    Thread-safe minimum-interval gate, shared across every FYERSBackfill
+    instance/thread in this process.
+
+    [2026-08-04, live-confirmed] FYERS' rate limit is per-app (account-
+    wide), not per-object or per-thread — the OLD per-instance
+    `time.sleep(FYERS_RATE_LIMIT_SLEEP_SECONDS)` in _throttle() paces
+    each caller independently, which does nothing to stop N concurrent
+    threads from each sleeping the same interval and then firing at
+    nearly the same moment, bursting well past the true limit. Confirmed
+    live: a one-shot burst of 8 concurrent calls succeeded cleanly, but a
+    SUSTAINED stream of 6 concurrent workers hit widespread 429s within
+    about a minute — consistent with FYERS' documented 200-req/minute cap
+    (200/60 ≈ 3.3 req/sec sustained) being the real binding constraint
+    for a long-running backfill, not the more forgiving ~10/sec
+    instantaneous-burst figure. This class enforces one global minimum
+    interval between calls REGARDLESS of how many threads are calling.
+    """
+
+    def __init__(self, min_interval_seconds: float) -> None:
+        self._min_interval = min_interval_seconds
+        self._lock = threading.Lock()
+        self._next_allowed_at = 0.0
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_allowed_at - now)
+            self._next_allowed_at = max(now, self._next_allowed_at) + self._min_interval
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+
+# One limiter shared by every FYERSBackfill instance in this process —
+# see _GlobalRateLimiter's docstring for why this must be global, not
+# per-instance.
+_RATE_LIMITER = _GlobalRateLimiter(FYERS_RATE_LIMIT_SLEEP_SECONDS)
+
+# Retry budget for a 429 ("request limit reached") response specifically
+# — distinct from every other error type, which still fails immediately
+# (an invalid symbol will never succeed no matter how many times it's
+# retried, so retrying THAT would just waste calls and delay the batch).
+_MAX_429_RETRIES = 4
+_429_BACKOFF_BASE_SECONDS = 2.0
 
 EXCHANGE_SEGMENT_SUFFIX = "-EQ"
 EXCHANGE_PREFIX = "NSE:"
@@ -140,6 +188,20 @@ class FYERSBackfill:
         self._access_token: Optional[str] = access_token
         self._non_interactive = non_interactive
         self._client: Optional[fyersModel.FyersModel] = None
+        # [2026-08-04] Guards _get_client()'s lazy construction (and the
+        # get_access_token() call chain it triggers) against a real,
+        # live-confirmed race: scripts/fyers_staged_backfill.py's
+        # parallel ticker fetch shares ONE FYERSBackfill instance across
+        # worker threads. Without this lock, multiple threads independently
+        # see self._client is None at once and each independently call
+        # get_access_token() -> _validate_token() -> a duplicate
+        # get_profile() probe per thread. One of those redundant probes
+        # got 429-rate-limited in testing, which _validate_token then
+        # (before its own 2026-08-04 fix) misread as "token invalid" and
+        # deleted the still-good cached token file out from under every
+        # other thread. The lock makes only the FIRST thread do the
+        # token dance; the rest block briefly and then reuse self._client.
+        self._client_lock = threading.Lock()
 
     @staticmethod
     def _extract_auth_code(raw_input_value: str) -> str:
@@ -260,7 +322,10 @@ class FYERSBackfill:
         -------
         bool
             True iff FYERS accepts the token (get_profile() returns
-            {'s': 'ok', ...}).
+            {'s': 'ok', ...}), OR the probe itself was merely rate-limited
+            (code 429) — a 429 says nothing about token validity, so it
+            must not be treated as "invalid" (see 2026-08-04 fix note
+            below). Only a genuine auth rejection returns False.
 
         Spec References
         ----------------
@@ -274,7 +339,24 @@ class FYERSBackfill:
         try:
             probe = fyersModel.FyersModel(client_id=self._app_id, token=token, is_async=False)
             response = probe.get_profile()
-            return isinstance(response, dict) and response.get("s") == "ok"
+            if isinstance(response, dict) and response.get("s") == "ok":
+                return True
+            # [2026-08-04, live-confirmed] A concurrent/high-throughput
+            # caller (e.g. parallel ticker fetch) can 429 this validation
+            # probe itself before ever getting far enough to check the
+            # token. Treating that as "invalid" was a real, destructive
+            # bug: get_access_token() would then unlink() the cache file
+            # and refuse to proceed (non_interactive=True), discarding a
+            # perfectly good token over what was actually just rate
+            # limiting on the PROBE call, not a rejection of the token.
+            if isinstance(response, dict) and response.get("code") == 429:
+                logger.warning(
+                    "FYERS token validation probe was rate-limited (429) — treating the "
+                    "cached token as still valid rather than discarding it; a 429 on this "
+                    "probe says nothing about the token's own validity."
+                )
+                return True
+            return False
         except Exception as exc:
             logger.warning(f"FYERS token validation request failed: {exc}")
             return False
@@ -401,16 +483,26 @@ class FYERSBackfill:
         )
 
     def _get_client(self) -> fyersModel.FyersModel:
-        """Lazily construct the FyersModel client once a token is available."""
+        """Lazily construct the FyersModel client once a token is available.
+
+        Thread-safe (see self._client_lock's docstring at __init__) — the
+        double-checked lock avoids serializing every call through the
+        lock once self._client is already set, which matters when this
+        is invoked from many parallel worker threads.
+        """
         if self._client is None:
-            self._client = fyersModel.FyersModel(
-                client_id=self._app_id, token=self.get_access_token(), is_async=False
-            )
+            with self._client_lock:
+                if self._client is None:
+                    self._client = fyersModel.FyersModel(
+                        client_id=self._app_id, token=self.get_access_token(), is_async=False
+                    )
         return self._client
 
     def _throttle(self) -> None:
         """
-        Inter-call pacing sleep.
+        Inter-call pacing gate — global across every thread/instance in
+        this process (see _GlobalRateLimiter's docstring), not a plain
+        per-call sleep.
 
         [2026-08-01] The FYERS_MAX_CALLS_PER_DAY daily-call-count cap was
         removed at explicit user request — it was a project-chosen planning
@@ -418,10 +510,10 @@ class FYERSBackfill:
         budget"), not a limit sourced from FYERS' own published API rate
         limits, and was blocking same-day resumption of an in-progress
         backfill for no confirmed real-world reason. The per-call pacing
-        sleep (FYERS_RATE_LIMIT_SLEEP_SECONDS) is kept — that one is a
-        genuine inter-request throttle, not a daily budget.
+        (FYERS_RATE_LIMIT_SLEEP_SECONDS) is kept — that one is a genuine
+        inter-request throttle, not a daily budget.
         """
-        time.sleep(FYERS_RATE_LIMIT_SLEEP_SECONDS)
+        _RATE_LIMITER.acquire()
 
     def download_history(
         self,
@@ -498,22 +590,46 @@ class FYERSBackfill:
     def _download_chunk(
         self, symbol: str, window_start: date_type, window_end: date_type, timeframe: str
     ) -> pd.DataFrame:
-        """Fetch one <= FYERS_HISTORY_MAX_DAYS_PER_CALL-day window of candles."""
-        self._throttle()
-        client = self._get_client()
-        response = client.history(
-            data={
-                "symbol": symbol,
-                "resolution": timeframe,
-                "date_format": DATE_FORMAT_EPOCH,
-                "range_from": str(int(datetime.combine(window_start, datetime.min.time()).timestamp())),
-                "range_to": str(int(datetime.combine(window_end, datetime.min.time()).timestamp())),
-                "cont_flag": "1",
-            }
-        )
+        """
+        Fetch one <= FYERS_HISTORY_MAX_DAYS_PER_CALL-day window of candles.
 
-        if not isinstance(response, dict):
-            raise RuntimeError(f"Unexpected FYERS response for {symbol}: {response!r}")
+        [2026-08-04, live-confirmed] A 429 ("request limit reached") is
+        retried with exponential backoff (_MAX_429_RETRIES attempts) — it
+        is transient rate limiting, NOT a real error about this specific
+        symbol/window, and must never be treated the same as a genuine
+        rejection (e.g. "Invalid symbol provided", which retrying can
+        never fix and should fail immediately). Before this fix, a
+        sustained multi-threaded backfill run silently dropped valid,
+        liquid tickers (RELIANCE-tier names) purely because they happened
+        to be rate-limited at the moment of their one and only attempt.
+        """
+        response = None
+        for attempt in range(_MAX_429_RETRIES + 1):
+            self._throttle()
+            client = self._get_client()
+            response = client.history(
+                data={
+                    "symbol": symbol,
+                    "resolution": timeframe,
+                    "date_format": DATE_FORMAT_EPOCH,
+                    "range_from": str(int(datetime.combine(window_start, datetime.min.time()).timestamp())),
+                    "range_to": str(int(datetime.combine(window_end, datetime.min.time()).timestamp())),
+                    "cont_flag": "1",
+                }
+            )
+
+            if not isinstance(response, dict):
+                raise RuntimeError(f"Unexpected FYERS response for {symbol}: {response!r}")
+
+            if response.get("code") == 429 and attempt < _MAX_429_RETRIES:
+                backoff_seconds = _429_BACKOFF_BASE_SECONDS * (2 ** attempt)
+                logger.warning(
+                    f"{symbol}: 429 rate-limited (attempt {attempt + 1}/{_MAX_429_RETRIES + 1}), "
+                    f"retrying in {backoff_seconds:.1f}s"
+                )
+                time.sleep(backoff_seconds)
+                continue
+            break
 
         status = response.get("s")
         if status == "no_data":

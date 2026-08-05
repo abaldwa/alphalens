@@ -69,6 +69,7 @@ import json
 import logging
 import time
 from datetime import date as date_type
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -208,6 +209,263 @@ def pd_isna(value) -> bool:
     import pandas as pd
 
     return bool(pd.isna(value))
+
+
+def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = None) -> None:
+    """
+    FYERS-primary OHLCV pull, staged/diffed/merged into ohlcv_adjusted
+    with source='fyers', adj_factor=1.0 — the daily counterpart of
+    scripts/fyers_staged_backfill.py's per-year cycle, scoped to one
+    write-lock hold per run (see publish_run_lock usage below) so the
+    lock is held only as long as the actual diffed rows take to merge.
+
+    Gap-resilient (2026-08-04): pulls [since_date, run_date] in one call,
+    not just run_date — since_date is the trading day after the latest
+    date already present with source='fyers' in ohlcv_adjusted. If the
+    scheduler process was down for a few days (laptop off, etc.), the
+    next run backfills every missed trading day in between instead of
+    only picking up from today, the same "no gap left behind" guarantee
+    ingestion/scheduler/gap_detector.py already provides for the rest of
+    the pipeline. First-ever run (no prior source='fyers' rows at all)
+    falls back to run_date only — the real historical catch-up is
+    scripts/fyers_staged_backfill.py's job, not this step's.
+
+    No-op while FYERS_PRIMARY_ENABLED is False (default) — today's
+    NSE-Bhavcopy-primary pipeline (step_download_bhavcopy, which always
+    runs regardless — see checkpoint.STEPS) is the sole OHLCV source
+    until this is explicitly turned on, once the full 2017->present
+    staged backfill has completed. This step still runs and just
+    early-returns rather than being removed from STEPS, so flipping
+    FYERS_PRIMARY_ENABLED later needs no scheduler/checkpoint changes.
+
+    Parameters
+    ----------
+    run_date : date
+    db_path : Path, optional
+        Defaults to config.settings.DUCKDB_PATH.
+
+    Returns
+    -------
+    None
+
+    Spec References
+    ----------------
+    SPEC-PIPE-001.
+
+    PIT Assumptions
+    ----------------
+    None — every date in [since_date, run_date] is already-published
+    historical/same-day data as of run_date; no lookahead.
+
+    Raises
+    ------
+    None — FYERS/network failures are logged and swallowed here (not
+    critical: step_download_bhavcopy is the always-on backing source).
+    step_fyers_health_check is the step that surfaces coverage problems.
+    """
+    from config.settings import DUCKDB_PATH, FYERS_PRIMARY_ENABLED
+
+    if not FYERS_PRIMARY_ENABLED:
+        logger.info("download_fyers_daily: FYERS_PRIMARY_ENABLED=False — skipping (Bhavcopy is primary)")
+        return
+
+    from config.universe import get_tickers_for_feature_engineering
+    from datastore.staging.gate import drop_staging_table, stage_dataframe
+    from datastore.staging.publish import publish_run_lock
+    from ingestion.reconcile.fyers_diff import diff_fyers_vs_prod, recompute_targets
+    from ingestion.scheduler.gap_detector import is_trading_day
+    from ingestion.scrapers.fyers_backfill import FYERSBackfill
+    from ingestion.scrapers.fyers_symbol_master import fetch_valid_nse_eq_tickers
+
+    resolved_db_path = db_path or DUCKDB_PATH
+    # Filter to FYERS' own valid-symbol list so tickers it simply doesn't
+    # cover (delisted/renamed/etc.) never generate an "Invalid Symbol
+    # Provided" API error in the first place — same fix as
+    # scripts/fyers_staged_backfill.py, applied here 2026-08-04 after this
+    # step's coverage denominator was found to include unfetchable tickers.
+    valid_symbols = fetch_valid_nse_eq_tickers()
+    tickers = [t for t in get_tickers_for_feature_engineering() if t in valid_symbols]
+
+    with get_duckdb_connection(resolved_db_path, persist=False, read_only=True) as ro_conn:
+        last_fyers_date = ro_conn.execute(
+            "SELECT MAX(date) FROM ohlcv_adjusted WHERE source = 'fyers'"
+        ).fetchone()[0]
+
+    if hasattr(last_fyers_date, "date") and callable(last_fyers_date.date):
+        last_fyers_date = last_fyers_date.date()
+
+    if last_fyers_date is not None and last_fyers_date < run_date:
+        cursor = last_fyers_date + timedelta(days=1)
+        since_date = cursor if is_trading_day(cursor) else run_date
+        # Walk forward to the actual next trading day >= cursor, in case
+        # cursor itself is a weekend/holiday.
+        while since_date < run_date and not is_trading_day(since_date):
+            since_date += timedelta(days=1)
+    else:
+        since_date = run_date
+
+    if since_date < run_date:
+        logger.info(
+            f"download_fyers_daily: gap detected — pulling {since_date}..{run_date} "
+            f"(last FYERS-sourced date was {last_fyers_date})"
+        )
+
+    from_str, to_str = since_date.isoformat(), run_date.isoformat()
+
+    try:
+        fb = FYERSBackfill(non_interactive=True)
+        results = fb.batch_download(tickers, from_str, to_str, save=False, show_progress=False)
+    except Exception as exc:
+        logger.error(f"download_fyers_daily: FYERS batch download failed for {from_str}..{to_str}: {exc}")
+        return
+
+    window_chunks = [df for df in results.values() if not df.empty]
+    if not window_chunks:
+        logger.warning(f"download_fyers_daily: FYERS returned no data at all for {from_str}..{to_str}")
+        return
+
+    window_df = pd.concat(window_chunks, ignore_index=True)
+
+    def _valid_ohlc(df: pd.DataFrame):
+        mask = (
+            df["open"].notna() & df["high"].notna() & df["low"].notna() & df["close"].notna()
+            & (df["high"] >= df["low"]) & (df["low"] >= 0)
+        )
+        passed, rejected = df[mask].copy(), df[~mask].copy()
+        if not rejected.empty:
+            rejected["reason"] = "invalid OHLC (null or high<low or negative)"
+        return passed, rejected
+
+    with get_duckdb_connection(resolved_db_path, persist=False) as conn:
+        stage_result = stage_dataframe(conn, "ohlcv_fyers_daily", window_df, validators=[_valid_ohlc])
+        if not stage_result.ok:
+            logger.warning(f"download_fyers_daily: nothing passed staging validation for {from_str}..{to_str}")
+            return
+
+        staged_df = conn.execute("SELECT * FROM staging.ohlcv_fyers_daily").df()
+        diff_df = diff_fyers_vs_prod(conn, staged_df, tickers, since_date, run_date)
+        targets = recompute_targets(diff_df)
+
+        if not targets.empty:
+            with publish_run_lock() as acquired:
+                if not acquired:
+                    logger.warning(
+                        f"download_fyers_daily: could not acquire publish_run_lock for {from_str}..{to_str} "
+                        "— another staging/publish operation is in progress, skipping this run"
+                    )
+                    drop_staging_table(conn, "ohlcv_fyers_daily")
+                    return
+                conn.execute(
+                    "ALTER TABLE staging.ohlcv_fyers_daily ADD COLUMN IF NOT EXISTS adj_factor DOUBLE DEFAULT 1.0"
+                )
+                conn.execute(
+                    "ALTER TABLE staging.ohlcv_fyers_daily ADD COLUMN IF NOT EXISTS vol_adj_factor DOUBLE DEFAULT 1.0"
+                )
+                # staging's "date" column loads as TIMESTAMP-family (pandas
+                # has no true date-only dtype) — cast to DATE so the INSERT
+                # below writes proper DATE values, matching ohlcv_adjusted's
+                # native column type.
+                conn.execute("ALTER TABLE staging.ohlcv_fyers_daily ALTER COLUMN date TYPE DATE")
+                # See scripts/fyers_staged_backfill.py's identical fix
+                # (2026-08-04, live-confirmed): the `(ticker, date) IN
+                # (SELECT ...)` row/tuple-comparison pattern hits a genuine
+                # DuckDB 1.2.0 internal engine crash regardless of the
+                # date column's declared type — rewritten as a standard
+                # correlated EXISTS join (column-wise equality) instead.
+                conn.execute(
+                    """
+                    DELETE FROM ohlcv_adjusted
+                    WHERE EXISTS (
+                        SELECT 1 FROM staging.ohlcv_fyers_daily s
+                        WHERE s.ticker = ohlcv_adjusted.ticker AND s.date = ohlcv_adjusted.date
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO ohlcv_adjusted
+                        (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, source)
+                    SELECT date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, 'fyers'
+                    FROM staging.ohlcv_fyers_daily
+                    """
+                )
+
+        drop_staging_table(conn, "ohlcv_fyers_daily")
+
+    logger.info(
+        f"download_fyers_daily: {from_str}..{to_str} — {len(window_df)} ticker-days pulled from "
+        f"FYERS, {len(targets)} new/changed rows merged into ohlcv_adjusted"
+    )
+
+
+def step_fyers_health_check(run_date: date_type, db_path: Optional[Path] = None) -> None:
+    """
+    Sanity-check that day's FYERS pull before trusting it as primary:
+    verifies row coverage against the expected stock universe. Does not
+    itself invoke Bhavcopy — step_download_bhavcopy already runs
+    unconditionally every day (depends_on=[] in checkpoint.STEPS) as the
+    always-on backing source, so there is nothing to "fall back to" here
+    beyond what already ran; this step's only job is to make a silent
+    FYERS coverage gap visible (log + non-critical checkpoint failure)
+    rather than letting a partial day pass unnoticed.
+
+    No-op while FYERS_PRIMARY_ENABLED is False.
+
+    Parameters
+    ----------
+    run_date : date
+    db_path : Path, optional
+
+    Returns
+    -------
+    None
+
+    Spec References
+    ----------------
+    SPEC-PIPE-001.
+
+    Raises
+    ------
+    RuntimeError
+        If FYERS_PRIMARY_ENABLED is True and coverage for run_date falls
+        below FYERS_HEALTH_CHECK_MIN_COVERAGE — a real, actionable signal
+        (not swallowed) that FYERS stopped serving data reliably.
+    """
+    from config.settings import DUCKDB_PATH, FYERS_HEALTH_CHECK_MIN_COVERAGE, FYERS_PRIMARY_ENABLED
+
+    if not FYERS_PRIMARY_ENABLED:
+        logger.info("fyers_health_check: FYERS_PRIMARY_ENABLED=False — skipping")
+        return
+
+    from config.universe import get_tickers_for_feature_engineering
+    from ingestion.scrapers.fyers_symbol_master import fetch_valid_nse_eq_tickers
+
+    resolved_db_path = db_path or DUCKDB_PATH
+    # Same FYERS-symbol-master filter as step_download_fyers_daily, so the
+    # coverage denominator only counts tickers FYERS can actually serve —
+    # otherwise permanently-unfetchable tickers artificially depress
+    # coverage below FYERS_HEALTH_CHECK_MIN_COVERAGE every single day.
+    valid_symbols = fetch_valid_nse_eq_tickers()
+    expected = [t for t in get_tickers_for_feature_engineering() if t in valid_symbols]
+
+    with get_duckdb_connection(resolved_db_path, persist=False, read_only=True) as conn:
+        got = conn.execute(
+            "SELECT COUNT(DISTINCT ticker) FROM ohlcv_adjusted WHERE date = ? AND source = 'fyers'",
+            [run_date.isoformat()],
+        ).fetchone()[0]
+
+    coverage = got / len(expected) if expected else 0.0
+    logger.info(
+        f"fyers_health_check: {run_date.isoformat()} — {got}/{len(expected)} tickers "
+        f"({coverage:.1%} coverage)"
+    )
+    if coverage < FYERS_HEALTH_CHECK_MIN_COVERAGE:
+        raise RuntimeError(
+            f"fyers_health_check: FYERS coverage for {run_date.isoformat()} is {coverage:.1%}, "
+            f"below FYERS_HEALTH_CHECK_MIN_COVERAGE={FYERS_HEALTH_CHECK_MIN_COVERAGE:.1%} — "
+            "FYERS may have stopped serving reliable data. step_download_bhavcopy's data for "
+            "this date is unaffected and remains available."
+        )
 
 
 def step_download_fno(run_date: date_type, db_path: Optional[Path] = None) -> None:
@@ -1794,6 +2052,8 @@ def step_data_integrity_check(run_date: date_type, db_path: Optional[Path] = Non
 
 _STEP_DISPATCH = {
     "download_bhavcopy": step_download_bhavcopy,
+    "download_fyers_daily": step_download_fyers_daily,
+    "fyers_health_check": step_fyers_health_check,
     "download_fno": step_download_fno,
     "download_macro": step_download_macro,
     "download_index_ohlcv": step_download_index_ohlcv,
@@ -2030,6 +2290,7 @@ def main() -> None:
         schedule_daily_pipeline,
         schedule_fno_late_catchup,
         schedule_forensic_scoring,
+        schedule_fyers_login,
         schedule_job_health_check,
         schedule_mf_holdings_ingestion,
         schedule_morning_catchup,
@@ -2076,6 +2337,14 @@ def main() -> None:
     # _execute_backfill_catchup's docstring) -- everything this pipeline
     # needs is sourced from the NSE website directly, so that job has no
     # unattended use here.
+    # 2026-08-04 (SPEC-PIPE-001 extension): unattended daily FYERS login,
+    # 06:30 IST — well before DAILY_PIPELINE_SCHEDULE_TIME (18:00) and
+    # MORNING_CATCHUP_SCHEDULE_TIME, so a cached token is ready whenever
+    # step_download_fyers_daily/fyers_health_check need one. Unlike
+    # schedule_backfill_catchup above, this now HAS an unattended path
+    # (ingestion/scrapers/fyers_login.py's Playwright PIN+TOTP flow) —
+    # safe to register here.
+    schedule_fyers_login(scheduler)
     schedule_daily_pipeline(
         scheduler, step_runner, checkpoint_manager, schedule_time=DAILY_PIPELINE_SCHEDULE_TIME
     )

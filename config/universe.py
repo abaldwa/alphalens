@@ -369,6 +369,82 @@ def get_market_cap_rank_map_as_of(conn: Any, tickers: List[str], as_of_date) -> 
     return {ticker: idx + 1 for idx, (ticker, _mcap) in enumerate(ranked)}
 
 
+def get_listing_windows(conn: Any, tickers: List[str]) -> Dict[str, tuple]:
+    """
+    {ticker: (listing_date, delisting_date)} for clipping a requested date
+    range to a ticker's actual traded life (e.g. before requesting FYERS
+    history for a year the ticker wasn't listed yet, or was already
+    delisted). listing_date comes from stock_master; delisting_date comes
+    from the separate delisted_companies table (see
+    datastore/schema/create_normalised.py's _CREATE_DELISTED_COMPANIES —
+    NOT a stock_master column). Direct DuckDB read — ingestion is the
+    writer for this data, not a DataStoreClient consumer (see
+    ingestion/scrapers/fyers_backfill.py's module docstring).
+
+    Parameters
+    ----------
+    conn : Any
+        Open DuckDB connection to the normalised-schema DB.
+    tickers : List[str]
+
+    Returns
+    -------
+    dict
+        ticker -> (listing_date: date | None, delisting_date: date | None).
+        A ticker missing from stock_master, or with a missing
+        listing_date/delisting_date, maps that side of the tuple to None
+        (meaning "no known bound" — treat as always-listed / not
+        delisted, never as "unknown = excluded").
+    """
+    if not tickers:
+        return {}
+    placeholders = ",".join("?" for _ in tickers)
+    rows = conn.execute(
+        f"""
+        SELECT sm.ticker, sm.listing_date, dc.delisting_date
+        FROM stock_master sm
+        LEFT JOIN delisted_companies dc ON dc.ticker = sm.ticker
+        WHERE sm.ticker IN ({placeholders})
+        """,
+        tickers,
+    ).fetchall()
+    windows = {ticker: (listing_date, delisting_date) for ticker, listing_date, delisting_date in rows}
+    for ticker in tickers:
+        windows.setdefault(ticker, (None, None))
+    return windows
+
+
+def clip_to_listing_window(
+    listing_date, delisting_date, range_start, range_end
+) -> Any:
+    """
+    Clip [range_start, range_end] to a ticker's [listing_date, delisting_date]
+    traded-life window (either bound may be None, meaning unbounded on that
+    side). Used by scripts/fyers_staged_backfill.py so a year entirely
+    before listing or entirely after delisting is skipped, and a partial
+    year (IPO or delisting mid-year) only requests the traded portion —
+    never data from before listing or after delisting.
+
+    Parameters
+    ----------
+    listing_date : date | None
+    delisting_date : date | None
+    range_start : date
+    range_end : date
+
+    Returns
+    -------
+    tuple(date, date) | None
+        The clipped (start, end), or None if the ranges don't overlap at
+        all (nothing to request for this ticker/year).
+    """
+    clipped_start = max(range_start, listing_date) if listing_date else range_start
+    clipped_end = min(range_end, delisting_date) if delisting_date else range_end
+    if clipped_start > clipped_end:
+        return None
+    return (clipped_start, clipped_end)
+
+
 def get_isin_to_ticker_map() -> dict:
     """
     ISIN -> ticker lookup, built from the full (unfiltered) universe CSV.

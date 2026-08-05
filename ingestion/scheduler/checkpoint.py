@@ -73,6 +73,17 @@ logger = logging.getLogger(__name__)
 STEPS = [
     # Foundation: OHLCV is the hard prerequisite for everything downstream.
     {"name": "download_bhavcopy", "is_backfillable": True, "depends_on": []},
+    # FYERS-primary daily pull (SPEC-PIPE-001 extension, scripts/
+    # fyers_staged_backfill.py). No-op while FYERS_PRIMARY_ENABLED=False
+    # (default) — see step_download_fyers_daily's docstring. Independent
+    # of download_bhavcopy (both run unconditionally); when live, this
+    # step's merge into ohlcv_adjusted simply runs after/alongside
+    # Bhavcopy's, source-tagged so adjust_prices never re-adjusts it.
+    {"name": "download_fyers_daily", "is_backfillable": True, "depends_on": []},
+    # Coverage sanity gate for the above — only meaningful once
+    # FYERS_PRIMARY_ENABLED=True; a no-op otherwise. Placed right after so
+    # a coverage gap is caught before compute_features runs on partial data.
+    {"name": "fyers_health_check", "is_backfillable": True, "depends_on": ["download_fyers_daily"]},
     # Independent downloaders: failures are isolated (no other step
     # depends_on them except publish_and_snapshot below), so failing them
     # never blocks adjust_prices/compute_features.

@@ -224,12 +224,19 @@ def adjust_for_corporate_actions(conn, ticker: str) -> None:
         logger.info(f"{ticker}: no corporate actions — nothing to adjust")
         return
 
+    # source='fyers' rows are already corporate-action-adjusted by FYERS
+    # itself (see ingestion/scrapers/fyers_backfill.py / scripts/
+    # fyers_staged_backfill.py) — re-applying this project's own adjustment
+    # on top would double-adjust and corrupt them. Excluded from the read
+    # entirely so they never enter the target-factor computation or the
+    # UPDATE below; NULL/other source values (legacy NSE-Bhavcopy rows)
+    # are unaffected and adjusted exactly as before.
     ohlcv_df = conn.execute(
         """
         SELECT date, open, high, low, close, volume, delivery_qty,
                adj_factor, vol_adj_factor
         FROM ohlcv_adjusted
-        WHERE ticker = ?
+        WHERE ticker = ? AND (source IS NULL OR source != 'fyers')
         ORDER BY date
         """,
         [ticker],

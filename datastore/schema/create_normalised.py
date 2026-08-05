@@ -48,6 +48,11 @@ _CREATE_OHLCV_ADJUSTED = """
         delivery_pct DOUBLE,
         adj_factor DOUBLE NOT NULL DEFAULT 1.0,
         vol_adj_factor DOUBLE NOT NULL DEFAULT 1.0,
+        -- 'fyers' for rows sourced from the FYERS API (already corporate-
+        -- action-adjusted, adj_factor pinned at 1.0 forever — see
+        -- ingestion/adjust/price_adjuster.py's source filter); NULL/other
+        -- for NSE-Bhavcopy-sourced rows, which DO get adjusted in place.
+        source VARCHAR,
         PRIMARY KEY (date, ticker)
     )
 """
@@ -1015,6 +1020,9 @@ _MIGRATE_ADDED_COLUMNS = {
         # raw_ columns (raw_open…raw_delivery_qty) were added and then removed in P3.5;
         # original NSE values now live in ohlcv_ca_audit instead.
         "ALTER TABLE ohlcv_adjusted ADD COLUMN IF NOT EXISTS vol_adj_factor DOUBLE DEFAULT 1.0",
+        # 'fyers' marks rows sourced from the FYERS API (already adjusted,
+        # adj_factor pinned at 1.0) — see price_adjuster.py's source filter.
+        "ALTER TABLE ohlcv_adjusted ADD COLUMN IF NOT EXISTS source VARCHAR",
     ],
     "corporate_actions": [
         "ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS details VARCHAR",

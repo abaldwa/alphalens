@@ -26,6 +26,10 @@ NORMALISED_TABLE_COLUMNS = {
         "delivery_qty", "delivery_pct", "adj_factor",
         # [AS BUILT] vol_adj_factor added for volume-adjusted corporate action tracking
         "vol_adj_factor",
+        # [AS BUILT 2026-08-04] 'fyers' marks FYERS-sourced rows (already
+        # adjusted, never re-adjusted by price_adjuster.py) — see
+        # scripts/fyers_staged_backfill.py.
+        "source",
     },
     "corporate_actions": {
         "ticker", "ex_date", "action_type", "ratio",
