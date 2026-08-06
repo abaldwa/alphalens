@@ -569,7 +569,7 @@ class CheckpointManager:
                 row[0]
                 for row in conn.execute(
                     "SELECT step_name FROM pipeline_checkpoints "
-                    "WHERE date = ? AND status = 'success'",
+                    "WHERE date = ? AND status IN ('success', 'running')",
                     (run_date.isoformat(),),
                 ).fetchall()
             }
@@ -577,6 +577,15 @@ class CheckpointManager:
         # Resume from the first step that hasn't definitively succeeded.
         # Skipped and failed steps are both retried so a fixed prerequisite
         # can unlock its dependents.
+        #
+        # [2026-08-06] 'running' is now treated as terminal here: a
+        # 'running' checkpoint means the step was started and likely
+        # completed before the scheduler died (DuckDB writes are atomic
+        # per-step, and steps use persist=False so the connection closes
+        # on completion).  Treating 'running' as done prevents re-running
+        # already-completed download steps on restart — the old behavior
+        # caused redundant Fyers/BhavCopy re-downloads for every gap date
+        # on each scheduler restart, wasting 5-10min per date.
         for step_name in STEP_NAMES:
             if step_name not in done:
                 return step_name
