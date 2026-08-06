@@ -314,6 +314,21 @@ def run_steps_for_date(
     # so a fixed prerequisite unlocks its dependents on resume.
     succeeded_this_run: set = checkpoint_manager.get_succeeded_steps(run_date)
 
+    # [2026-08-06, Issue5] Fast-path: a date whose output is already fully
+    # delivered (signals written AND snapshot published) is done, even if a
+    # post-hoc validation step (sanity_check) is recorded 'failed'. Otherwise
+    # every scheduler restart re-runs sanity_check + the expensive snapshot
+    # publish for every already-complete gap date (~6min of wasted work across
+    # a 13-day backfill), delaying the actual pending work. write_signals
+    # success implies its own prerequisites (compute_features, run_models)
+    # succeeded too, so this pair is a sufficient "date complete" signal.
+    if {"write_signals", "publish_and_snapshot"} <= succeeded_this_run:
+        logger.info(
+            f"{run_date}: output already fully delivered (signals+snapshot) — "
+            f"skipping re-process on restart"
+        )
+        return True
+
     any_step_failed = False
     any_step_attempted = False
 

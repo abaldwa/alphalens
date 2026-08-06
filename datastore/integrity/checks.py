@@ -29,6 +29,7 @@ d. check_spot_check — samples random (ticker, date) pairs across 5 years,
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date as date_type
 from datetime import timedelta
@@ -388,6 +389,19 @@ def check_spot_check(
             )
     if yahoo_fetch is None:
         yahoo_fetch = _yahoo_close
+
+    # [2026-08-06, Issue4] Deterministic per-date sample. A None seed used to
+    # mean "sample 100 fresh random (ticker, date) pairs every run" — so the
+    # same underlying data issue was randomly caught on one run and missed on
+    # the next (observed: PREMIERPOL blocked 08-06, passed on re-run). Deriving
+    # a stable seed from as_of_date makes the sample reproducible: a given data
+    # issue reliably blocks every run until it is actually fixed, and re-runs
+    # are deterministic. Callers can still pass an explicit `seed` to override
+    # (used by tests and ad-hoc investigations).
+    if seed is None:
+        # hashlib (not Python's hash()) so the seed is stable across processes —
+        # PYTHONHASHSEED would otherwise randomize the sample between runs.
+        seed = int(hashlib.sha256(as_of_date.isoformat().encode()).hexdigest(), 16) % (2 ** 31)
 
     window_start = as_of_date - timedelta(days=365 * lookback_years)
     universe = conn.execute(

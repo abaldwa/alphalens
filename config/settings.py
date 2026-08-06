@@ -762,6 +762,17 @@ SNAPSHOT_DIR = DATASTORE_DIR / "snapshots"
 SNAPSHOT_RETENTION_N = int(os.environ.get("SNAPSHOT_RETENTION_N", "7"))
 if SNAPSHOT_RETENTION_N <= 0:
     raise ValueError(f"SNAPSHOT_RETENTION_N must be positive, got {SNAPSHOT_RETENTION_N}")
+# [2026-08-06, Issue1] Wall-clock timeout (seconds) for a single snapshot
+# export, enforced via subprocess isolation in step_publish_and_snapshot.
+# DuckDB's COPY of the large fno_data table (1.5GB) is a single blocking
+# C call that Python can't interrupt in-process, so a stalled export used
+# to freeze the whole scheduler (observed: 27min stuck on
+# fno_data.parquet.tmp). Running the export in a child process and killing
+# it at this timeout keeps a snapshot hiccup from halting the pipeline.
+# 15 min is generous for the 1.5GB export; a genuine stall exceeds it.
+SNAPSHOT_TIMEOUT_S = int(os.environ.get("SNAPSHOT_TIMEOUT_S", "900"))
+if SNAPSHOT_TIMEOUT_S <= 0:
+    raise ValueError(f"SNAPSHOT_TIMEOUT_S must be positive, got {SNAPSHOT_TIMEOUT_S}")
 # Cross-process advisory lock guarding the staging→publish sequence — same
 # fcntl.flock pattern as PIPELINE_RUN_LOCK_PATH above, and for the same
 # reason (commit 8147579: two processes independently opening a writable

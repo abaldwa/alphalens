@@ -113,6 +113,16 @@ _RATE_LIMITER = _GlobalRateLimiter(FYERS_RATE_LIMIT_SLEEP_SECONDS)
 _MAX_429_RETRIES = 4
 _429_BACKOFF_BASE_SECONDS = 2.0
 
+# [2026-08-06, Issue2] Progress-telemetry cadence for batch_download when
+# show_progress=False (the scheduler's path — ~2000 tickers at 0.35s each
+# ≈ 12min of otherwise-silent output that reads as a hang). _PROGRESS_LOG_
+# INTERVAL_S sets how often a cumulative progress line is emitted; _IDLE_
+# WATCHDOG_S is a stall tripwire: if no ticker completes within that window
+# (far longer than the rate-limiter's pacing), log a warning so an operator
+# can distinguish "slow-but-progressing" from "genuinely stuck".
+_PROGRESS_LOG_INTERVAL_S = 20.0
+_IDLE_WATCHDOG_S = 180.0
+
 EXCHANGE_SEGMENT_SUFFIX = "-EQ"
 EXCHANGE_PREFIX = "NSE:"
 RESOLUTION_DAILY = "D"
@@ -698,19 +708,67 @@ class FYERSBackfill:
         from tqdm import tqdm
 
         results: Dict[str, pd.DataFrame] = {}
+        n_total = len(tickers)
+        n_done = 0
+        n_failed = 0
+        start_ts = time.monotonic()
+        last_progress_ts = start_ts
+        last_complete_ts = start_ts
+
+        def _log_progress(force: bool = False) -> None:
+            nonlocal last_progress_ts
+            now = time.monotonic()
+            if not force and now - last_progress_ts < _PROGRESS_LOG_INTERVAL_S:
+                return
+            last_progress_ts = now
+            elapsed = now - start_ts
+            if n_done > 0:
+                eta = elapsed / n_done * (n_total - n_done)
+            else:
+                eta = float("nan")
+            logger.info(
+                "FYERS backfill: %d/%d tickers (elapsed=%.0fs, ETA=%.0fs, %d failed)",
+                n_done, n_total, elapsed, eta, n_failed,
+            )
+
         iterator = tqdm(tickers, desc="FYERS backfill", unit="ticker") if show_progress else tickers
 
         for ticker in iterator:
             try:
                 df = self.download_history(ticker, from_date, to_date, timeframe)
+                ok = not df.empty
             except Exception as exc:
                 logger.error(f"{ticker}: FYERS backfill failed: {exc}")
                 df = pd.DataFrame(columns=OUTPUT_COLUMNS)
+                ok = False
+
+            n_done += 1
+            if not ok:
+                n_failed += 1
+            else:
+                last_complete_ts = time.monotonic()
 
             if save and not df.empty:
                 self._save_parquet(ticker, from_date, to_date, df)
 
             results[ticker] = df
+
+            # [2026-08-06, Issue2] Telemetry on the silent (show_progress=False)
+            # scheduler path: emit cumulative progress ~every 20s, and trip the
+            # idle watchdog if nothing has completed for _IDLE_WATCHDOG_S.
+            if not show_progress:
+                _log_progress()
+                idle_s = time.monotonic() - last_complete_ts
+                if idle_s >= _IDLE_WATCHDOG_S:
+                    logger.warning(
+                        "FYERS backfill: no ticker completed in %.0fs — possibly stalled "
+                        "on a hung network call (only %d/%d done). Inspect before aborting.",
+                        idle_s, n_done, n_total,
+                    )
+                    last_complete_ts = time.monotonic()  # avoid spamming every iteration
+
+        if not show_progress:
+            _log_progress(force=True)
 
         return results
 

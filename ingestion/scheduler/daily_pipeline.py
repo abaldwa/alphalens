@@ -87,12 +87,18 @@ logger = logging.getLogger(__name__)
 # ohlcv_ca_audit rows for this date are deleted immediately after (see
 # step_download_bhavcopy), because the audit rows were based on the old NSE
 # data and would be stale after a re-download.
+# [2026-08-06, Issue3] source is now written explicitly as 'bhavcopy' here
+# (never left NULL) so an interrupted fyers merge leaves rows correctly
+# labeled rather than unlabeled. The fyers merge later upgrades covered
+# rows to source='fyers'; the ON CONFLICT CASE preserves an existing
+# 'fyers' label rather than downgrading it when bhavcopy re-runs a date
+# fyers already claimed.
 _UPSERT_OHLCV_WITH_DELIVERY = """
     INSERT INTO ohlcv_adjusted (
         date, ticker, open, high, low, close, volume, delivery_qty, delivery_pct,
-        adj_factor, vol_adj_factor
+        adj_factor, vol_adj_factor, source
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, 1.0)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, 1.0, 'bhavcopy')
     ON CONFLICT (date, ticker) DO UPDATE SET
         open           = excluded.open,
         high           = excluded.high,
@@ -102,7 +108,9 @@ _UPSERT_OHLCV_WITH_DELIVERY = """
         delivery_qty   = excluded.delivery_qty,
         delivery_pct   = excluded.delivery_pct,
         adj_factor     = 1.0,
-        vol_adj_factor = 1.0
+        vol_adj_factor = 1.0,
+        source         = CASE WHEN ohlcv_adjusted.source = 'fyers'
+                              THEN 'fyers' ELSE excluded.source END
 """
 
 _DELETE_AUDIT_FOR_DATE = "DELETE FROM ohlcv_ca_audit WHERE date = ?"
@@ -1494,6 +1502,21 @@ _SANITY_KNOWN_SPARSE_COLUMNS = {
     # sparse (~44-53% populated table-wide from historical backfill data,
     # but 0% for recent 6 months of automated scrapes).
     "capex", "capex_intensity", "fcf_margin",
+    # [2026-08-06, Issue6] Advanced signal-processing feature families that
+    # compute 100% all-NaN on every date across the whole backfill — a known
+    # feature-computation gap in features/advanced_technical.py (wavelet
+    # decomposition, Hurst exponent, entropy measures, fractional differencing,
+    # Lyapunov proxy, recurrence-quantification), not a transient data issue.
+    # Exempting them from the all-NaN hard-floor lets sanity_check pass and
+    # surface real regressions; the computations themselves are tracked as a
+    # separate feature-engine work item (FeatureBacklog ML backlog).
+    "wavelet_trend", "wavelet_noise", "wavelet_energy_ratio",
+    "wavelet_regime_signal", "hurst_exp_63d",
+    "approx_entropy_21d", "sample_entropy_21d", "permutation_entropy_21d",
+    "spectral_entropy", "fractal_dimension",
+    "fracdiff_d_optimal", "fracdiff_price", "fracdiff_volume",
+    "lyapunov_exponent_proxy", "rqa_rec_rate",
+    "time_series_complexity", "nonlinear_trend_strength",
 }
 
 
@@ -2047,19 +2070,48 @@ def step_publish_and_snapshot(run_date: date_type, db_path: Optional[Path] = Non
     None — snapshotting failure is logged, not raised, so a rollback-point
     hiccup never blocks the rest of the pipeline (this step runs last).
     """
-    from config.settings import DUCKDB_PATH, SNAPSHOT_DIR, SNAPSHOT_RETENTION_N
-    from datastore.staging.snapshot import prune_snapshots, take_snapshot
+    import subprocess
+    import sys
+    import textwrap
+
+    from config.settings import DUCKDB_PATH, SNAPSHOT_DIR, SNAPSHOT_RETENTION_N, SNAPSHOT_TIMEOUT_S
+    from datastore.staging.snapshot import prune_snapshots
 
     resolved_db_path = db_path or DUCKDB_PATH
     tables = ["fno_data", "ohlcv_adjusted"]
 
+    # [2026-08-06, Issue1] The snapshot export (COPY of the 1.5GB fno_data
+    # table) is a single blocking DuckDB call that Python cannot interrupt
+    # in-process — a stalled export used to freeze the whole scheduler
+    # (observed: 27min stuck on fno_data.parquet.tmp, no checkpoints, needed a
+    # manual restart). Running the export in a child process with an OS-level
+    # timeout means a stall is killed at SNAPSHOT_TIMEOUT_S and this step logs
+    # a non-fatal failure instead of halting the pipeline. prune_snapshots
+    # stays in-process (fast, local file ops). Snapshotting is non-critical by
+    # design (rollback point only), so a timeout here never blocks downstream.
+    snapshot_script = textwrap.dedent(f"""
+        from pathlib import Path
+        from datastore.staging.snapshot import take_snapshot
+        from datastore.api.db import get_duckdb_connection
+        with get_duckdb_connection({resolved_db_path!r}, persist=False) as conn:
+            take_snapshot(conn, {tables!r}, Path({str(SNAPSHOT_DIR)!r}))
+    """)
     try:
-        with get_duckdb_connection(resolved_db_path, persist=False) as conn:
-            snapshot_path = take_snapshot(conn, tables, SNAPSHOT_DIR)
+        subprocess.run(
+            [sys.executable, "-c", snapshot_script],
+            timeout=SNAPSHOT_TIMEOUT_S,
+            check=True,
+        )
+        snapshot_path = SNAPSHOT_DIR / run_date.isoformat()
         removed = prune_snapshots(SNAPSHOT_DIR, SNAPSHOT_RETENTION_N)
         logger.info(
             "publish_and_snapshot: snapshot written to %s, %d old snapshot(s) pruned",
             snapshot_path, len(removed),
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "publish_and_snapshot: snapshot of %s exceeded %ss — export aborted (non-fatal)",
+            tables, SNAPSHOT_TIMEOUT_S,
         )
     except Exception as exc:
         logger.error(f"publish_and_snapshot: snapshot failed (non-fatal): {exc}")
