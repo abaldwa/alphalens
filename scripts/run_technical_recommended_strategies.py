@@ -56,7 +56,9 @@ TOP_N_OPTIONS = [10, 15, 20]
 # run_momentum_recommended_strategies.py), translated to Technical's own
 # entry-filter kwargs (backtest/adapters/technical_adapter.py).
 _BALANCED_FIELDS = {"min_adtv_cr": 0.1, "quality_gate_min_f_score": 4, "circuit_band_pct": 0.19}
-_RISK_MANAGED_FIELDS = {**_BALANCED_FIELDS, "downtrend_filter_pct": 0.05, "downtrend_lookback_days": 20}
+# NOTE: downtrend_lookback_days is Momentum-only (backtest/momentum_backtest.py),
+# NOT a valid Technical orchestrator flag — do not include here.
+_RISK_MANAGED_FIELDS = {**_BALANCED_FIELDS, "downtrend_filter_pct": 0.05}
 _MAX_DEFENSIVE_FIELDS = {**_RISK_MANAGED_FIELDS, "disable_buys_in_regime": "bear"}
 
 COMPOSITE_STRATEGIES: Dict[str, Dict] = {
@@ -92,15 +94,18 @@ def build_jobs(start_date: date, end_date: date, quick: bool = False) -> List[Di
             "initial_capital": TECHNICAL_INITIAL_CAPITAL,
             "defer_db_writes": True,
             "precomputed_matches_dir": str(SCREENER_CACHE_DIR),
-            # 2026-08-05: per-job exit-check speedup (~2.2x, see
-            # run_orchestrator_backtest.py's prefetch_feature_parquets
-            # docstring) — every job here is technical channel, so this is
-            # unconditionally safe to turn on for the whole sweep. OHLCV
-            # itself doesn't need a flag here: every job in this sweep
-            # shares one [start_date, end_date], so run_strategy_queue.py's
-            # _maybe_prewarm_ohlcv() auto-detects that and injects
-            # ohlcv_snapshot_dir for all of them (FeatureBacklog A73).
-            "prefetch_feature_parquets": True,
+            # 2026-08-06: prefetch_feature_parquets DISABLED — eagerly
+            # loading every day's feature Parquet for a 10-year/800-ticker
+            # window blew to ~8.5 GB RSS (far beyond the ~1.5 GB estimate
+            # in run_orchestrator_backtest.py's docstring), triggering swap
+            # thrash and risking systemd-oomd kill. The lazy single-slot
+            # cache is slower but memory-safe. Re-enable only for short
+            # windows (<2 years) or small universes (<200 tickers) once
+            # a chunked-prefetch implementation caps peak memory. OHLCV
+            # doesn't need a flag here: every job shares one date range,
+            # so run_strategy_queue.py's _maybe_prewarm_ohlcv()
+            # auto-injects ohlcv_snapshot_dir (FeatureBacklog A73).
+            "prefetch_feature_parquets": False,
         }
 
     for template_name in template_names:
