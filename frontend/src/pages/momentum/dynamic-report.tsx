@@ -69,9 +69,38 @@ async function fetchAvgHoldingDays(variantId: string): Promise<number | null> {
   return count > 0 ? sum / count : null
 }
 
+// Parses the trailing "_g<N>" grace-cycles suffix that the YoY variant_id
+// carries (e.g. "b1_1-50_lb3mo_monthly_top20_g2") -- the YoY row type doesn't
+// expose grace_cycles as its own field, so this is the only place it's recoverable.
+function graceCyclesFromVariantId(variantId: string): number | null {
+  const m = /_g(\d+)$/.exec(variantId)
+  return m ? Number(m[1]) : null
+}
+
+function rowLabel(r: MomentumDynamicReportYoyRow): string {
+  const grace = graceCyclesFromVariantId(r.variant_id)
+  return `Top${r.top_n} · ${r.lookback_months}mo · ${r.rebalance_period}${grace != null ? ` · g${grace}` : ''}`
+}
+
+type RagBand = 'red' | 'amber' | 'green'
+
+function classifyRag(returnPct: number, redBoundary: number, greenBoundary: number): RagBand {
+  if (returnPct < redBoundary) return 'red'
+  if (returnPct < greenBoundary) return 'amber'
+  return 'green'
+}
+
+const RAG_CLASSES: Record<RagBand, string> = {
+  red: 'bg-red/15 text-red',
+  amber: 'bg-amber/15 text-amber',
+  green: 'bg-green/15 text-green',
+}
+
 export function MomentumDynamicReportPage() {
   const [strategy, setStrategy] = useState<string>('')
   const [yoyBandId, setYoyBandId] = useState<string>('')
+  const [redBoundary, setRedBoundary] = useState(0)
+  const [greenBoundary, setGreenBoundary] = useState(18)
   const queryClient = useQueryClient()
 
   const report = useQuery({
@@ -161,6 +190,44 @@ export function MomentumDynamicReportPage() {
   function jumpToYoy(bandId: number) {
     setYoyBandId(String(bandId))
     document.getElementById('yoy-section')?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  // Pivot: per band, one row per strategy variant, one column per fiscal
+  // year -- lets you scan consistency across years at a glance, instead of
+  // the flat (band, variant, year) table above where each variant's history
+  // is spread across many rows.
+  const matrixByBand = useMemo(() => {
+    const byBand = new Map<
+      number,
+      { rankStart: number; rankEnd: number; years: string[]; rows: Array<{ variantId: string; label: string; byYear: Map<string, number> }> }
+    >()
+    for (const r of allYoyRows) {
+      if (r.return_pct == null) continue
+      let band = byBand.get(r.band_id)
+      if (!band) {
+        band = { rankStart: r.rank_start, rankEnd: r.rank_end, years: [], rows: [] }
+        byBand.set(r.band_id, band)
+      }
+      if (!band.years.includes(r.fy_label)) band.years.push(r.fy_label)
+      let row = band.rows.find((row) => row.variantId === r.variant_id)
+      if (!row) {
+        row = { variantId: r.variant_id, label: rowLabel(r), byYear: new Map() }
+        band.rows.push(row)
+      }
+      row.byYear.set(r.fy_label, r.return_pct)
+    }
+    for (const band of byBand.values()) {
+      band.years.sort()
+      band.rows.sort((a, b) => a.label.localeCompare(b.label))
+    }
+    return byBand
+  }, [allYoyRows])
+
+  function computeCagr(byYear: Map<string, number>, years: string[]): number | null {
+    const present = years.filter((y) => byYear.has(y))
+    if (present.length === 0) return null
+    const growth = present.reduce((acc, y) => acc * (1 + (byYear.get(y) ?? 0) / 100), 1)
+    return (Math.pow(growth, 1 / present.length) - 1) * 100
   }
 
   const columns = useMemo<ColumnDef<MomentumDynamicReportVariant, unknown>[]>(
@@ -529,6 +596,117 @@ export function MomentumDynamicReportPage() {
             isLoading={report.isLoading}
             emptyMessage="No year-on-year rows yet."
           />
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6" id="yoy-matrix-section">
+        <CardHeader>
+          <CardTitle>YoY Consistency Matrix</CardTitle>
+          <CardDescription>
+            Per band: strategies as rows, fiscal years as columns, one return figure per cell — scan for the
+            strategy with the most consistent (fewest red, most green) year-on-year returns. CAGR and Red/Amber/Green
+            counts are in the trailing columns.
+          </CardDescription>
+          <div className="mt-2 flex flex-wrap items-center gap-4 text-xs">
+            <label className="flex items-center gap-2">
+              <span className={`inline-block h-3 w-3 rounded-sm ${RAG_CLASSES.red}`} />
+              Red: return &lt;
+              <input
+                type="number"
+                step={0.5}
+                value={redBoundary}
+                onChange={(e) => setRedBoundary(Number(e.target.value))}
+                className="h-7 w-16 rounded-[var(--radius-token)] border border-border bg-transparent px-1.5 text-xs"
+              />
+              %
+            </label>
+            <label className="flex items-center gap-2">
+              <span className={`inline-block h-3 w-3 rounded-sm ${RAG_CLASSES.amber}`} />
+              Amber: {redBoundary}% –
+              <input
+                type="number"
+                step={0.5}
+                value={greenBoundary}
+                onChange={(e) => setGreenBoundary(Number(e.target.value))}
+                className="h-7 w-16 rounded-[var(--radius-token)] border border-border bg-transparent px-1.5 text-xs"
+              />
+              %
+            </label>
+            <label className="flex items-center gap-2">
+              <span className={`inline-block h-3 w-3 rounded-sm ${RAG_CLASSES.green}`} />
+              Green: return &ge; {greenBoundary}%
+            </label>
+            {greenBoundary <= redBoundary ? (
+              <span className="text-red">Green boundary must be greater than the red boundary.</span>
+            ) : null}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {report.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : matrixByBand.size === 0 ? (
+            <p className="text-sm text-muted-foreground">No year-on-year rows yet.</p>
+          ) : (
+            Array.from(matrixByBand.entries())
+              .sort((a, b) => a[1].rankStart - b[1].rankStart)
+              .map(([bandId, band]) => (
+                <details key={bandId} className="mb-4 rounded-[var(--radius-token)] border border-border" open>
+                  <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">
+                    Universe (rank {bandLabel(band.rankStart, band.rankEnd)}) — {band.rows.length} strategies
+                  </summary>
+                  <div className="overflow-x-auto border-t border-border p-2">
+                    <table className="w-full border-collapse text-xs">
+                      <thead>
+                        <tr>
+                          <th className="sticky left-0 z-10 bg-card px-2 py-1.5 text-left font-semibold">Strategy</th>
+                          {band.years.map((y) => (
+                            <th key={y} className="px-2 py-1.5 text-right font-semibold">
+                              {y}
+                            </th>
+                          ))}
+                          <th className="px-2 py-1.5 text-right font-semibold">CAGR</th>
+                          <th className="px-2 py-1.5 text-right font-semibold text-red">Red</th>
+                          <th className="px-2 py-1.5 text-right font-semibold text-amber">Amber</th>
+                          <th className="px-2 py-1.5 text-right font-semibold text-green">Green</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {band.rows.map((row) => {
+                          const counts: Record<RagBand, number> = { red: 0, amber: 0, green: 0 }
+                          for (const y of band.years) {
+                            const v = row.byYear.get(y)
+                            if (v != null) counts[classifyRag(v, redBoundary, greenBoundary)] += 1
+                          }
+                          const cagr = computeCagr(row.byYear, band.years)
+                          return (
+                            <tr key={row.variantId} className="border-t border-border">
+                              <td className="sticky left-0 z-10 whitespace-nowrap bg-card px-2 py-1 font-medium">
+                                {row.label}
+                              </td>
+                              {band.years.map((y) => {
+                                const v = row.byYear.get(y)
+                                return (
+                                  <td
+                                    key={y}
+                                    className={`px-2 py-1 text-right ${v != null ? RAG_CLASSES[classifyRag(v, redBoundary, greenBoundary)] : ''}`}
+                                  >
+                                    {v != null ? `${v.toFixed(1)}%` : '—'}
+                                  </td>
+                                )
+                              })}
+                              <td className="px-2 py-1 text-right font-semibold">{cagr != null ? `${cagr.toFixed(1)}%` : '—'}</td>
+                              <td className="px-2 py-1 text-right text-red">{counts.red}</td>
+                              <td className="px-2 py-1 text-right text-amber">{counts.amber}</td>
+                              <td className="px-2 py-1 text-right text-green">{counts.green}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              ))
+          )}
         </CardContent>
       </Card>
     </AppShell>

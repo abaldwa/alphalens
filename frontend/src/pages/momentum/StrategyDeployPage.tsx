@@ -23,7 +23,6 @@ import {
   SelectTrigger,
   SelectValue,
   Label,
-  Checkbox,
 } from '@/lib/ui'
 import { apiGet, apiPost, apiPut, apiDelete } from '@/shared/api/client'
 import type {
@@ -31,7 +30,6 @@ import type {
   MomentumStrategyConfigCreate,
   MomentumStrategyConfigUpdate,
   MomentumYoyReturnRow,
-  MomentumPortfolio,
   MomentumDynamicReportVariant,
 } from './types'
 
@@ -118,16 +116,12 @@ export function StrategyDeployPage() {
     queryFn: () => apiGet<MomentumStrategyConfigResponse[]>('/api/v1/momentum/configs'),
   })
 
-  // Fetch bands for selector
+  // Fetch bands for selector -- reuses the same /strategies endpoint the
+  // rest of the Momentum dashboard uses for its band dropdown (there is no
+  // separate /universe/bands route).
   const bandsQuery = useQuery({
-    queryKey: ['momentum-bands'],
-    queryFn: () => apiGet<Array<{ band_id: number; rank_start: number; rank_end: number }>>('/api/v1/momentum/universe/bands'),
-  })
-
-  // Fetch portfolios for selector
-  const portfoliosQuery = useQuery({
-    queryKey: ['portfolios'],
-    queryFn: () => apiGet<MomentumPortfolio[]>('/api/v1/portfolio/list'),
+    queryKey: ['momentum-strategies'],
+    queryFn: () => apiGet<Array<{ band_id: number; rank_start: number; rank_end: number; label: string }>>('/api/v1/momentum/strategies'),
   })
 
   // Fetch YoY returns when a config is selected
@@ -319,12 +313,8 @@ export function StrategyDeployPage() {
     },
     {
       accessorKey: 'portfolio_id',
-      header: 'Portfolio',
-      cell: ({ getValue, row }) => {
-        const portfolios = portfoliosQuery.data ?? []
-        const p = portfolios.find((pf) => pf.id === getValue())
-        return p?.name ?? '—'
-      },
+      header: 'Portfolio ID',
+      cell: ({ getValue }) => getValue() ?? '—',
       meta: { align: 'left' as const },
     },
     {
@@ -359,7 +349,7 @@ export function StrategyDeployPage() {
       ),
       meta: { align: 'center' as const },
     },
-  ], [portfoliosQuery.data])
+  ], [])
 
   // YoY Returns table columns with Red/Green P&L
   const yoyColumns = useMemo<ColumnDef<MomentumYoyReturnRow, unknown>[]>(() => [
@@ -450,12 +440,14 @@ export function StrategyDeployPage() {
                 <div className="flex flex-wrap gap-4 mt-1">
                   {CATEGORIES.map((cat) => (
                     <label key={cat} className="flex items-center gap-2 cursor-pointer">
-                      <Checkbox
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
                         checked={formData.categories.includes(cat)}
-                        onCheckedChange={(checked) =>
+                        onChange={(e) =>
                           setFormData({
                             ...formData,
-                            categories: checked
+                            categories: e.target.checked
                               ? [...formData.categories, cat]
                               : formData.categories.filter((c) => c !== cat),
                           })
@@ -655,20 +647,14 @@ export function StrategyDeployPage() {
               <h3 className="text-lg font-semibold mb-4">Portfolio Assignment</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <Label htmlFor="portfolio_id">Portfolio</Label>
-                  <Select value={String(formData.portfolio_id ?? '')} onValueChange={(v) => setFormData({ ...formData, portfolio_id: v ? Number(v) : null })}>
-                    <SelectTrigger id="portfolio_id">
-                      <SelectValue placeholder="Select portfolio (optional)" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="">None</SelectItem>
-                      {(portfoliosQuery.data ?? []).map((p) => (
-                        <SelectItem key={p.id} value={String(p.id)}>
-                          {p.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label htmlFor="portfolio_id">Portfolio ID (optional)</Label>
+                  <Input
+                    id="portfolio_id"
+                    type="number"
+                    placeholder="No portfolio system wired up yet -- leave blank"
+                    value={formData.portfolio_id ?? ''}
+                    onChange={(e) => setFormData({ ...formData, portfolio_id: e.target.value ? Number(e.target.value) : null })}
+                  />
                 </div>
               </div>
             </div>
