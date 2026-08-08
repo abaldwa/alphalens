@@ -24,29 +24,29 @@ from systems.technical_analysis.screener.templates import TEMPLATE_MAP, TEMPLATE
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Templates registry contains exactly 42 templates
+# Test 1: Templates registry contains exactly 66 templates
 # ---------------------------------------------------------------------------
 
-def test_templates_count_exactly_42():
-    """SPEC-TA-005: the registry must define exactly 42 pre-built templates.
+def test_templates_count_exactly_66():
+    """SPEC-TA-005: the registry must define exactly 66 pre-built templates.
 
     Verifies that:
-    1. TEMPLATES list has exactly 46 entries.
+    1. TEMPLATES list has exactly 66 entries.
     2. All template names are unique.
-    3. ScreenerEngine.list_templates() also returns exactly 46 TemplateInfo objects.
+    3. ScreenerEngine.list_templates() also returns exactly 66 TemplateInfo objects.
     """
-    assert len(TEMPLATES) == 46, (
-        f"Expected 46 templates, got {len(TEMPLATES)}. "
+    assert len(TEMPLATES) == 66, (
+        f"Expected 66 templates, got {len(TEMPLATES)}. "
         "Check systems/technical_analysis/screener/templates.py."
     )
 
     names = [t.name for t in TEMPLATES]
-    assert len(set(names)) == 46, "Duplicate template names detected"
+    assert len(set(names)) == 66, "Duplicate template names detected"
 
     engine = ScreenerEngine()
     infos = engine.list_templates()
-    assert len(infos) == 46, (
-        f"ScreenerEngine.list_templates() returned {len(infos)}, expected 46"
+    assert len(infos) == 66, (
+        f"ScreenerEngine.list_templates() returned {len(infos)}, expected 66"
     )
 
 
@@ -580,7 +580,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         assert resolved is None
         assert results == {}
 
-    def test_evaluate_runs_all_42_templates(self, tmp_path, monkeypatch):
+    def test_evaluate_runs_all_66_templates(self, tmp_path, monkeypatch):
         import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
         import systems.technical_analysis.screener.engine as engine_mod
 
@@ -591,7 +591,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
-        assert len(template_results) == 46
+        assert len(template_results) == 66
         # A1 should have TICKER_A as a full match (verified in test 2 above)
         assert any(r.ticker == "TICKER_A" for r in template_results.get("A1", []))
 
@@ -606,10 +606,10 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
 
         # evaluate() loads the feature Parquet once and calls _screen_df()
-        # per template (not screen(), which would re-read the file 42x) —
+        # per template (not screen(), which would re-read the file 66x) —
         # patch the method actually invoked per-template to simulate one
         # template failing, and confirm it's isolated rather than crashing
-        # the whole 42-template run.
+        # the whole 66-template run.
         original_screen_df = checker._engine._screen_df
 
         def flaky_screen_df(df, template, date_str, limit):
@@ -621,7 +621,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
         assert template_results["A1"] == []  # failed template degrades to empty, not a crash
-        assert len(template_results) == 46
+        assert len(template_results) == 66
 
     def test_run_writes_to_signals_db_and_returns_counts(self, tmp_path, monkeypatch):
         import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
@@ -637,7 +637,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         counts = checker.run("2026-07-02")
 
-        assert len(counts) == 46
+        assert len(counts) == 66
         assert counts["A1"] == 1
 
         from datastore.api.db import get_duckdb_connection
@@ -662,7 +662,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
 # missing/typo'd feature as "condition unmet" with only a WARNING log, so a
 # future feature-column rename could zero out a template's results with no
 # test failure. This test statically cross-checks every "feature"/"feature2"
-# and key_display_features entry across all 46 templates against the real
+# and key_display_features entry across all 66 templates against the real
 # feature registries. No Parquet/DB I/O — pure static data-structure check.
 # ---------------------------------------------------------------------------
 

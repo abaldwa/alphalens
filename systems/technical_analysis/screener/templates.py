@@ -780,6 +780,458 @@ _R4 = ScreenerTemplate(
 )
 
 # ---------------------------------------------------------------------------
+# Category T — Indicator-Library Strategies (20 templates, 2026-08-08)
+#
+# T01-T20 from the "Technical Strategies from AlphaLens Indicators" brief.
+# Every feature referenced below was verified present in the daily feature
+# Parquet before authoring (2026-08-07 snapshot).
+#
+# CALIBRATION NOTE — thresholds are NOT copied literally from the brief.
+# The brief's absolute cutoffs assume textbook distributions that this
+# universe does not have; using them verbatim would produce no-op or
+# match-everything conditions. Measured on the 2026-08-07 snapshot:
+#   - hurst_exp_21d: median 0.686 (NOT ~0.5). "hurst >= 0.55" would match
+#     ~85% of the universe (no filter at all) and "hurst <= 0.45" would
+#     match almost nothing. Persistence/anti-persistence conditions are
+#     therefore expressed CROSS-SECTIONALLY via top_pct/bottom_pct, which
+#     preserves the brief's intent ("more persistent than peers") and is
+#     robust to the distribution drifting over time.
+#   - Same treatment for the entropy/complexity features, whose absolute
+#     levels are equally universe- and window-specific.
+# Two features from the brief are deliberately UNUSED as conditions:
+#   - fractal_dimension: constant 1.000 across the entire universe
+#     (min=q25=med=q75=max=1.0) — degenerate, filters nothing.
+#   - sample_entropy_21d: saturated at a clipped 23.026 for >50% of rows
+#     (median=q75=max) — cannot discriminate.
+# Both are kept in key_display_features where the brief cites them, so the
+# values still surface for review, but no condition depends on them.
+# The brief's `hh_21` does not exist; `hh_22` is the 22-day rolling high
+# the brief itself calls the "22-day high proxy" (see T05) and is used.
+# ---------------------------------------------------------------------------
+
+_T01 = ScreenerTemplate(
+    name="T01",
+    category="T",
+    description="Multi-Timeframe Ichimoku Trend Continuation",
+    conditions=[
+        # Above the cloud (ichimoku_cloud_position > 0 = above)
+        {"feature": "ichimoku_cloud_position", "op": "gt", "value": 0.0},
+        # Conversion/base and lagging-span confirmations both bullish
+        {"feature": "tenkan_kijun_signal", "op": "gt", "value": 0.0},
+        {"feature": "chikou_span_signal", "op": "gt", "value": 0.0},
+        # Trend strength
+        {"feature": "adx_14", "op": "gt", "value": 20},
+        # Persistent regime, cross-sectional (see CALIBRATION NOTE)
+        {"feature": "hurst_exp_21d", "op": "top_pct", "value": 0.40},
+        # Pullback-then-reclaim proxy: price back above the short EMA while
+        # still only modestly extended from the 20-day mean.
+        {"feature": "ema_8_ratio", "op": "gt", "value": 1.0},
+        {"feature": "sma_20_ratio", "op": "lt", "value": 1.10},
+    ],
+    key_display_features=[
+        "ichimoku_cloud_position", "tenkan_kijun_signal", "chikou_span_signal",
+        "adx_14", "hurst_exp_21d", "wavelet_noise", "atr_14_pct",
+    ],
+)
+
+_T02 = ScreenerTemplate(
+    name="T02",
+    category="T",
+    description="52-Week High Volatility Breakout",
+    conditions=[
+        # At/just under the 52-week high (dist_from_52w_high maxes at 0.0)
+        {"feature": "dist_from_52w_high", "op": "between", "value": [-0.03, 0.0]},
+        # Range expansion after compression
+        {"feature": "bb_width_pct", "op": "top_pct", "value": 0.50},
+        {"feature": "volume_ratio_21d", "op": "gte", "value": 1.5},
+        # Long-term uptrend filter
+        {"feature": "sma_200_ratio", "op": "gte", "value": 1.0},
+    ],
+    key_display_features=[
+        "dist_from_52w_high", "bb_width_pct", "volume_ratio_21d",
+        "sma_200_ratio", "adx_14", "rs_vs_nifty500_21d", "atr_14_pct",
+    ],
+)
+
+_T03 = ScreenerTemplate(
+    name="T03",
+    category="T",
+    description="Flag Continuation + EMA Ribbon",
+    conditions=[
+        # EMA8 > EMA21 > EMA55 > EMA89 (composite: +1 = fully aligned)
+        {"feature": "ema_ribbon_alignment", "op": "gte", "value": 1.0},
+        {"feature": "flag_pattern_score", "op": "gte", "value": 0.6},
+        {"feature": "sma_50_ratio", "op": "gt", "value": 1.0},
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+        {"feature": "adx_14", "op": "gt", "value": 20},
+    ],
+    key_display_features=[
+        "ema_ribbon_alignment", "flag_pattern_score", "sma_50_ratio",
+        "sma_200_ratio", "adx_14", "ema_21_ratio", "atr_14_pct",
+    ],
+)
+
+_T04 = ScreenerTemplate(
+    name="T04",
+    category="T",
+    description="Ichimoku + Relative Strength Breakout",
+    conditions=[
+        # Top-decile relative strength and 63d composite momentum
+        {"feature": "rs_vs_nifty500_21d", "op": "top_pct", "value": 0.10},
+        {"feature": "composite_momentum_63d", "op": "top_pct", "value": 0.10},
+        {"feature": "ichimoku_cloud_position", "op": "gt", "value": 0.0},
+        {"feature": "tenkan_kijun_signal", "op": "gt", "value": 0.0},
+        {"feature": "base_breakout_score", "op": "gte", "value": 0.6},
+    ],
+    key_display_features=[
+        "rs_vs_nifty500_21d", "composite_momentum_63d", "ichimoku_cloud_position",
+        "tenkan_kijun_signal", "base_breakout_score", "atr_14_pct",
+    ],
+)
+
+_T05 = ScreenerTemplate(
+    name="T05",
+    category="T",
+    description="Donchian-Style High Channel Breakout",
+    conditions=[
+        # Prior consolidation: vol_compression_21d in the low (tight) cohort
+        {"feature": "vol_compression_21d", "op": "bottom_pct", "value": 0.40},
+        # Breaking the 22-day high (close/hh_22 >= 1.0)
+        {"feature": "base_breakout_ratio", "op": "gte", "value": 1.0},
+        # Range expanding out of the squeeze
+        {"feature": "bb_width_pct", "op": "top_pct", "value": 0.50},
+        {"feature": "volume_ratio_21d", "op": "gte", "value": 1.8},
+    ],
+    key_display_features=[
+        "vol_compression_21d", "base_breakout_ratio", "hh_22", "hh_55",
+        "bb_width_pct", "volume_ratio_21d", "adx_14", "atr_14_pct",
+    ],
+)
+
+_T06 = ScreenerTemplate(
+    name="T06",
+    category="T",
+    description="Supertrend + EMA Trend Filter",
+    conditions=[
+        {"feature": "supertrend_dir", "op": "gt", "value": 0.0},
+        {"feature": "ema_8_ratio", "op": "gt", "value": 1.0},
+        {"feature": "ema_21_ratio", "op": "gt", "value": 1.0},
+        {"feature": "volume_ratio_5d", "op": "gte", "value": 1.3},
+    ],
+    key_display_features=[
+        "supertrend_dir", "ema_8_ratio", "ema_21_ratio",
+        "volume_ratio_5d", "adx_14", "atr_14_pct",
+    ],
+)
+
+_T07 = ScreenerTemplate(
+    name="T07",
+    category="T",
+    description="Wavelet-Filtered Trend Persistence",
+    conditions=[
+        # Strong smoothed trend, low high-frequency noise (both cross-sectional)
+        {"feature": "wavelet_trend", "op": "top_pct", "value": 0.40},
+        {"feature": "wavelet_noise", "op": "bottom_pct", "value": 0.40},
+        {"feature": "hurst_exp_21d", "op": "top_pct", "value": 0.40},
+        {"feature": "trend_consistency_21", "op": "top_pct", "value": 0.40},
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+        {"feature": "adx_14", "op": "gt", "value": 20},
+    ],
+    key_display_features=[
+        "wavelet_trend", "wavelet_noise", "hurst_exp_21d", "trend_consistency_21",
+        "sma_200_ratio", "adx_14", "wavelet_energy_ratio", "atr_14_pct",
+    ],
+)
+
+_T08 = ScreenerTemplate(
+    name="T08",
+    category="T",
+    description="Short-Term RSI-2 Mean Reversion",
+    conditions=[
+        # Anti-persistent (choppy) regime, cross-sectional bottom cohort
+        {"feature": "hurst_exp_21d", "op": "bottom_pct", "value": 0.40},
+        {"feature": "approx_entropy_21d", "op": "top_pct", "value": 0.50},
+        # The signal itself
+        {"feature": "rsi_2", "op": "lt", "value": 10},
+        # Long-term uptrend intact
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+    ],
+    key_display_features=[
+        "rsi_2", "hurst_exp_21d", "approx_entropy_21d", "sma_200_ratio",
+        "open_close_range_pct", "sma_20_ratio", "atr_14_pct",
+    ],
+)
+
+_T09 = ScreenerTemplate(
+    name="T09",
+    category="T",
+    description="Bollinger/Keltner Squeeze Reversion",
+    conditions=[
+        # Squeeze: tight range, BB width in the low cohort
+        {"feature": "vol_compression_21d", "op": "bottom_pct", "value": 0.40},
+        {"feature": "bb_width_pct", "op": "bottom_pct", "value": 0.30},
+        # Near the lower band, no strong directional drift
+        {"feature": "bb_position", "op": "lt", "value": 0.25},
+        {"feature": "keltner_position", "op": "between", "value": [0.0, 0.55]},
+        {"feature": "rsi_14", "op": "between", "value": [30, 40]},
+        {"feature": "hurst_exp_21d", "op": "bottom_pct", "value": 0.50},
+    ],
+    key_display_features=[
+        "bb_width_pct", "bb_position", "keltner_position", "rsi_14",
+        "vol_compression_21d", "hurst_exp_21d", "adx_14", "atr_14_pct",
+    ],
+)
+
+_T10 = ScreenerTemplate(
+    name="T10",
+    category="T",
+    description="VWAP Proxy (20-Day SMA) Reversion",
+    conditions=[
+        # No clear HH/HL trend
+        {"feature": "trend_consistency_21", "op": "bottom_pct", "value": 0.40},
+        # Low in the 21-day range. NOTE: the brief also asks for stoch_k<20,
+        # but stoch_k IS the position-in-range oscillator — stacking it on
+        # close_position_in_range double-counts the same condition and drove
+        # matches to exactly 0 on the 2026-08-07 snapshot. Keeping the
+        # oscillator (stoch_k) as the range-position gate and relaxing the
+        # raw-range cutoff to the lower quartile keeps the brief's intent
+        # (buy the bottom of a rangebound name) without the redundancy.
+        {"feature": "close_position_in_range", "op": "lt", "value": 0.25},
+        {"feature": "stoch_k", "op": "lt", "value": 20},
+        {"feature": "sma_20_ratio", "op": "lt", "value": 0.98},
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+    ],
+    key_display_features=[
+        "trend_consistency_21", "close_position_in_range", "sma_20_ratio",
+        "sma_200_ratio", "stoch_k", "hh_22", "adx_14", "atr_14_pct",
+    ],
+)
+
+_T11 = ScreenerTemplate(
+    name="T11",
+    category="T",
+    description="Gap-Fade in High Entropy",
+    conditions=[
+        # Noisy, non-trending regime. Both gates are widened from the
+        # brief's "high threshold"/"adx<20": measured on three sample dates,
+        # a -2% gap in an uptrend leaves only 6-25 names, and each of
+        # rsi<45 / adx<20 / entropy-top-40% independently cut that by ~5x,
+        # so the brief's full conjunction produced 0-2 matches per day.
+        # The gap in an uptrend IS the signal here; these two stay as a
+        # regime sanity check (not strongly trending, noisier than median)
+        # rather than as additional rare-event filters.
+        {"feature": "approx_entropy_21d", "op": "top_pct", "value": 0.60},
+        {"feature": "adx_14", "op": "lt", "value": 30},
+        # Large downside gap (gap_down_pct is negative, floors at 0).
+        # Relaxed from the brief's -3% to -2%: a -3% gap fired on only 26 of
+        # 2,317 names on the 2026-08-07 snapshot, and stacking the brief's
+        # additional rsi_14<30 on top left ZERO matches. A gap-fade is
+        # inherently a rare event, so the gap threshold is kept strict-ish
+        # while the oscillator gate is widened to <45 (still "weak, not yet
+        # bouncing") rather than the deep-oversold <30 that made the
+        # conjunction empty.
+        {"feature": "gap_down_pct", "op": "lt", "value": -2.0},
+        # Avoid structurally weak names
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+        {"feature": "rsi_14", "op": "lt", "value": 45},
+    ],
+    key_display_features=[
+        "gap_down_pct", "gap_up_pct", "approx_entropy_21d", "sample_entropy_21d",
+        "adx_14", "rsi_14", "sma_200_ratio", "atr_14_pct",
+    ],
+)
+
+_T12 = ScreenerTemplate(
+    name="T12",
+    category="T",
+    description="Intraday Reversal Score Mean Reversion",
+    conditions=[
+        # Strong downside reversal / capitulation (lower decile)
+        {"feature": "intraday_reversal_score", "op": "bottom_pct", "value": 0.10},
+        {"feature": "rsi_14", "op": "between", "value": [30, 40]},
+        {"feature": "hurst_exp_21d", "op": "bottom_pct", "value": 0.50},
+    ],
+    key_display_features=[
+        "intraday_reversal_score", "rsi_14", "hurst_exp_21d",
+        "delivery_pct_zscore_21d", "open_close_range_pct", "adx_14", "atr_14_pct",
+    ],
+)
+
+_T13 = ScreenerTemplate(
+    name="T13",
+    category="T",
+    description="Range-Bound ATR/Entropy Reversion",
+    conditions=[
+        # Low realised vol, range-bound non-directional noise
+        {"feature": "hist_vol_21", "op": "bottom_pct", "value": 0.40},
+        {"feature": "spectral_entropy", "op": "top_pct", "value": 0.40},
+        # Near the lower edge of the range
+        {"feature": "close_position_in_range", "op": "lt", "value": 0.20},
+        {"feature": "cci_20", "op": "lt", "value": -100},
+        {"feature": "stoch_k", "op": "lt", "value": 20},
+    ],
+    key_display_features=[
+        "hist_vol_21", "spectral_entropy", "close_position_in_range",
+        "cci_20", "stoch_k", "atr_14_pct", "bb_width_pct", "adx_14",
+    ],
+)
+
+_T14 = ScreenerTemplate(
+    name="T14",
+    category="T",
+    description="6-Month Relative Strength Rotation",
+    conditions=[
+        # Liquid names only
+        {"feature": "volume_ratio_21d", "op": "gte", "value": 1.0},
+        # Top-decile on both RS and 63d composite momentum, penalising
+        # excess volatility (the brief's weighted score, expressed as the
+        # cross-sectional conjunction the screener can evaluate per-date).
+        {"feature": "rs_vs_nifty500_21d", "op": "top_pct", "value": 0.10},
+        {"feature": "composite_momentum_63d", "op": "top_pct", "value": 0.10},
+        {"feature": "hist_vol_21", "op": "bottom_pct", "value": 0.60},
+    ],
+    key_display_features=[
+        "rs_vs_nifty500_21d", "composite_momentum_63d", "hist_vol_21",
+        "volume_ratio_21d", "delivery_pct", "sma_200_ratio",
+    ],
+)
+
+_T15 = ScreenerTemplate(
+    name="T15",
+    category="T",
+    description="Relative Strength + Hurst Rotation",
+    conditions=[
+        # The brief frames T15 at sector level; AlphaLens's screener is
+        # per-ticker, so this is the same score applied to stocks: strong
+        # RS vs Nifty 50, persistent regime, low entropy penalty.
+        {"feature": "rs_vs_nifty50_21d", "op": "top_pct", "value": 0.20},
+        {"feature": "hurst_exp_63d", "op": "top_pct", "value": 0.30},
+        {"feature": "approx_entropy_21d", "op": "bottom_pct", "value": 0.50},
+    ],
+    key_display_features=[
+        "rs_vs_nifty50_21d", "hurst_exp_63d", "approx_entropy_21d",
+        "sma_200_ratio", "adx_14", "hist_vol_21",
+    ],
+)
+
+_T16 = ScreenerTemplate(
+    name="T16",
+    category="T",
+    description="Relative Strength + Low Volatility Leader",
+    conditions=[
+        {"feature": "rs_vs_nifty500_21d", "op": "top_pct", "value": 0.50},
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+        {"feature": "hist_vol_21", "op": "bottom_pct", "value": 0.50},
+        # Quiet regime beginning to expand
+        {"feature": "vol_compression_21d", "op": "bottom_pct", "value": 0.50},
+        {"feature": "ema_ribbon_alignment", "op": "gte", "value": 1.0},
+    ],
+    key_display_features=[
+        "rs_vs_nifty500_21d", "hist_vol_21", "vol_compression_21d",
+        "ema_ribbon_alignment", "sma_200_ratio", "ema_21_ratio", "atr_14_pct",
+    ],
+)
+
+# --- T17-T20: the brief defines these as meta-strategies/overlays ----------
+# T17 gates between trend and mean-reversion modes; T18 filters breakout
+# entries on entropy; T19 filters trend entries on fractional-diff drift;
+# T20 scales position size by complexity. The screener evaluates ONE set of
+# per-ticker conditions per template and has no cross-template gating or
+# position-sizing hook, so each is implemented as the standalone entry rule
+# its filter implies — i.e. the subset of names that would SURVIVE that
+# overlay, expressed directly. This makes each independently backtestable
+# and measures exactly what the overlay's filter is worth on its own.
+# Applying them as true overlays over T01-T16 is adapter-level work
+# (backtest/adapters/) and is deliberately NOT faked here.
+
+_T17 = ScreenerTemplate(
+    name="T17",
+    category="T",
+    description="Hurst-Gated Trend Mode (Meta-Strategy, trend leg)",
+    conditions=[
+        # Trend regime leg of the dual-mode strategy: persistent + clean
+        # signal. (The mean-reversion leg is already covered by T08/T09/T10,
+        # which carry the inverse hurst/entropy gates.)
+        {"feature": "hurst_exp_21d", "op": "top_pct", "value": 0.30},
+        {"feature": "wavelet_trend", "op": "top_pct", "value": 0.40},
+        {"feature": "wavelet_noise", "op": "bottom_pct", "value": 0.40},
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+        {"feature": "adx_14", "op": "gt", "value": 20},
+    ],
+    key_display_features=[
+        "hurst_exp_21d", "wavelet_trend", "wavelet_noise",
+        "adx_14", "sma_200_ratio", "atr_14_pct",
+    ],
+)
+
+_T18 = ScreenerTemplate(
+    name="T18",
+    category="T",
+    description="Entropy-Filtered Breakout (Meta-Filter)",
+    conditions=[
+        # The breakout setup...
+        {"feature": "base_breakout_ratio", "op": "gte", "value": 1.0},
+        {"feature": "volume_ratio_21d", "op": "gte", "value": 1.5},
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+        # ...allowed only in the structured, low-chaos cohort.
+        {"feature": "permutation_entropy_21d", "op": "bottom_pct", "value": 0.40},
+        {"feature": "spectral_entropy", "op": "bottom_pct", "value": 0.40},
+        # Instability guard (brief: suspend breakouts on extreme readings)
+        {"feature": "lyapunov_exponent_proxy", "op": "bottom_pct", "value": 0.70},
+    ],
+    key_display_features=[
+        "base_breakout_ratio", "permutation_entropy_21d", "spectral_entropy",
+        "lyapunov_exponent_proxy", "rqa_rec_rate", "volume_ratio_21d", "atr_14_pct",
+    ],
+)
+
+_T19 = ScreenerTemplate(
+    name="T19",
+    category="T",
+    description="Fractional-Diff Trend Robustness Filter",
+    conditions=[
+        # Trend candidate...
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+        {"feature": "adx_14", "op": "gt", "value": 20},
+        # ...with strong fracdiff drift and d in a memory-preserving,
+        # near-stationary band. BOTH are cross-sectional, and deliberately so:
+        # a literal fracdiff_price>0 passes ~78% of the universe (filters
+        # nothing), while a FIXED d-band is worse than useless because
+        # fracdiff_d_optimal's distribution moves sharply between dates —
+        # measured, [0.60,0.80] held 664/701 trend candidates on 2026-08-07
+        # but only 97/663 on 2026-07-15, which made this template swing from
+        # 298 matches to 0 on consecutive months. Ranking within each date
+        # keeps the thesis ("trend with the most robust memory-preserving
+        # drift") stable as the underlying distribution drifts.
+        {"feature": "fracdiff_price", "op": "top_pct", "value": 0.30},
+        {"feature": "fracdiff_d_optimal", "op": "bottom_pct", "value": 0.60},
+    ],
+    key_display_features=[
+        "fracdiff_price", "fracdiff_d_optimal", "fracdiff_volume",
+        "sma_200_ratio", "adx_14", "atr_14_pct",
+    ],
+)
+
+_T20 = ScreenerTemplate(
+    name="T20",
+    category="T",
+    description="Complexity-Aware Calm-Regime Entry (Risk Overlay)",
+    conditions=[
+        # The overlay's "calm" regime, as an entry filter: low Lyapunov,
+        # stable recurrence, moderate complexity, real nonlinear trend.
+        {"feature": "lyapunov_exponent_proxy", "op": "bottom_pct", "value": 0.40},
+        {"feature": "rqa_rec_rate", "op": "top_pct", "value": 0.50},
+        {"feature": "time_series_complexity", "op": "bottom_pct", "value": 0.50},
+        {"feature": "nonlinear_trend_strength", "op": "top_pct", "value": 0.50},
+        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+    ],
+    key_display_features=[
+        "lyapunov_exponent_proxy", "rqa_rec_rate", "time_series_complexity",
+        "nonlinear_trend_strength", "atr_14_pct", "atr_10_pct", "atr_20_pct",
+    ],
+)
+
+# ---------------------------------------------------------------------------
 # Master registry
 # ---------------------------------------------------------------------------
 
@@ -800,13 +1252,16 @@ TEMPLATES: List[ScreenerTemplate] = [
     _S001, _S002, _S003, _S004, _S005, _S006, _S008,
     # Category R (4 — per-ticker HMM regime, R5 removed: "volatile" was mislabeled)
     _R1, _R2, _R3, _R4,
+    # Category T (20 — indicator-library strategies, 2026-08-08)
+    _T01, _T02, _T03, _T04, _T05, _T06, _T07, _T08, _T09, _T10,
+    _T11, _T12, _T13, _T14, _T15, _T16, _T17, _T18, _T19, _T20,
 ]
 
 # Fast name → template lookup used by ScreenerEngine
 TEMPLATE_MAP: Dict[str, ScreenerTemplate] = {t.name: t for t in TEMPLATES}
 
-assert len(TEMPLATES) == 46, (
-    f"Expected 46 templates, got {len(TEMPLATES)}. "
+assert len(TEMPLATES) == 66, (
+    f"Expected 66 templates, got {len(TEMPLATES)}. "
     "If you added or removed templates, update this assertion."
 )
 
@@ -868,6 +1323,28 @@ TEMPLATE_STYLE: Dict[str, str] = {
     "R2": "Regime",            # HMM bearish regime transition exit
     "R3": "Regime",            # HMM established stable bullish regime
     "R4": "Regime",            # HMM any regime transition
+    # Category T (2026-08-08) — styled by the trade each one actually puts
+    # on, matching the brief's own "Style" line where the two agree.
+    "T01": "Trend Following",  # Ichimoku continuation, pullback-then-reclaim
+    "T02": "Volatility",       # 52w-high breakout out of a BB-width expansion
+    "T03": "Trend Following",  # Flag continuation behind a full EMA ribbon
+    "T04": "Momentum",         # Top-decile RS/composite-momentum leaders
+    "T05": "Volatility",       # Donchian channel breakout out of compression
+    "T06": "Trend Following",  # Supertrend flip confirmed by EMA8/EMA21
+    "T07": "Trend Following",  # Wavelet-clean, Hurst-persistent trend
+    "T08": "Mean Reversion",   # RSI-2 snap-back in an anti-persistent regime
+    "T09": "Mean Reversion",   # Squeeze reversion off the lower band
+    "T10": "Mean Reversion",   # 20-day-SMA reversion from the range low
+    "T11": "Mean Reversion",   # Gap fade in a high-entropy regime
+    "T12": "Mean Reversion",   # Capitulation-reversal bounce
+    "T13": "Mean Reversion",   # Range-bound reversion, low vol + high entropy
+    "T14": "Momentum",         # Cross-sectional RS rotation
+    "T15": "Momentum",         # RS + Hurst rotation
+    "T16": "Momentum",         # Quality momentum in low-vol leaders
+    "T17": "Trend Following",  # Hurst-gated trend leg of the dual-mode meta
+    "T18": "Volatility",       # Entropy-filtered breakout
+    "T19": "Trend Following",  # Fracdiff-robust trend
+    "T20": "Trend Following",  # Calm-regime (low-complexity) trend entry
 }
 assert set(TEMPLATE_STYLE) == set(TEMPLATE_MAP), "TEMPLATE_STYLE must classify every template, no more, no less."
 STRATEGY_STYLES: List[str] = ["Momentum", "Trend Following", "Mean Reversion", "Volatility", "Regime"]
