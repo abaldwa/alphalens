@@ -1,0 +1,1061 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AlphaLens Explainer</title>
+<style>
+:root{
+  --bg:#f7f6f3;
+  --sidebar-bg:#f1efe8;
+  --surface:#ffffff;
+  --border:#e2ded4;
+  --text:#241f1a;
+  --text-dim:#6b6357;
+  --accent:#1f6f5c;
+  --accent-soft:#e4efe9;
+  --mono-bg:#efece4;
+  --used-bg:#e4efe9; --used-fg:#1f6f5c;
+  --dead-bg:#f3e3df; --dead-fg:#a1483e;
+  --stub-bg:#f1ecd9; --stub-fg:#8a6d3b;
+  --code-bg:#221f1b; --code-fg:#e8e3d8;
+}
+:root[data-theme="dark"]{
+  --bg:#171512; --sidebar-bg:#1c1a16; --surface:#221f1b; --border:#39352c;
+  --text:#ece7dc; --text-dim:#a89e8c; --accent:#5fbf9f; --accent-soft:#20332b;
+  --mono-bg:#1e1b17; --used-bg:#20362c; --used-fg:#7ad4b3; --dead-bg:#3a2420; --dead-fg:#e08672;
+  --stub-bg:#332c1c; --stub-fg:#d4b46a; --code-bg:#0f0e0c; --code-fg:#e8e3d8;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#171512; --sidebar-bg:#1c1a16; --surface:#221f1b; --border:#39352c;
+    --text:#ece7dc; --text-dim:#a89e8c; --accent:#5fbf9f; --accent-soft:#20332b;
+    --mono-bg:#1e1b17; --used-bg:#20362c; --used-fg:#7ad4b3; --dead-bg:#3a2420; --dead-fg:#e08672;
+    --stub-bg:#332c1c; --stub-fg:#d4b46a; --code-bg:#0f0e0c; --code-fg:#e8e3d8;
+  }
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;height:100%;}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:'Iowan Old Style','Palatino Linotype',Georgia,serif;
+  line-height:1.55; -webkit-font-smoothing:antialiased;
+  display:flex; min-height:100vh;
+}
+code,.mono{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;}
+
+/* ---------- Sidebar ---------- */
+.sidebar{
+  width:272px; flex:none; background:var(--sidebar-bg); border-right:1px solid var(--border);
+  height:100vh; position:sticky; top:0; overflow-y:auto; padding:1.4rem 0 2rem;
+}
+.brand{padding:0 1.3rem 1.1rem; margin-bottom:0.6rem; border-bottom:1px solid var(--border);}
+.brand .name{font-weight:700; font-size:1.12rem; letter-spacing:-0.01em;}
+.brand .tag{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.72rem; color:var(--accent); font-weight:600; letter-spacing:0.08em; text-transform:uppercase; margin-top:0.2rem;}
+.navgroup{margin-top:1.3rem;}
+.navgroup .glabel{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim);
+  font-weight:700; padding:0 1.3rem; margin-bottom:0.45rem;
+}
+.navitem{
+  display:flex; align-items:center; justify-content:space-between; gap:0.5rem;
+  width:100%; text-align:left; background:none; border:none; cursor:pointer;
+  padding:0.5rem 1.3rem; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  font-size:0.87rem; color:var(--text); border-left:3px solid transparent;
+}
+.navitem:hover{background:var(--accent-soft);}
+.navitem.active{background:var(--accent-soft); border-left-color:var(--accent); color:var(--accent); font-weight:600;}
+.navitem:focus-visible,.navlink:focus-visible,.page-link:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+.navitem .badge{
+  font-size:0.62rem; font-weight:700; padding:0.08rem 0.4rem; border-radius:20px;
+  background:var(--stub-bg); color:var(--stub-fg); letter-spacing:0.02em; flex:none;
+}
+.navitem.active .badge{background:var(--accent); color:#fff;}
+.navitem .badge.ready{background:var(--used-bg); color:var(--used-fg);}
+.navitem.active .badge.ready{background:var(--accent); color:#fff;}
+.navlink{
+  display:flex; align-items:center; justify-content:space-between; gap:0.5rem;
+  padding:0.4rem 1.3rem 0.4rem 2.1rem; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  font-size:0.84rem; color:var(--text-dim); border-left:3px solid transparent; text-decoration:none;
+}
+.navlink:hover{background:var(--accent-soft); color:var(--text);}
+.navlink .ext{font-size:0.7rem; opacity:0.75; color:var(--accent); flex:none;}
+.sublabel{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  font-size:0.64rem; letter-spacing:0.09em; text-transform:uppercase; color:var(--text-dim);
+  font-weight:700; padding:0 1.3rem 0 2.1rem; margin:0.9rem 0 0.35rem;
+}
+
+/* ---------- Content ---------- */
+.content{flex:1; min-width:0; padding:3rem 3rem 6rem; max-width:1000px;}
+.section{display:none;}
+.section.active{display:block;}
+
+.pagehead{border-bottom:1px solid var(--border); padding-bottom:1.6rem; margin-bottom:2.4rem;}
+.eyebrow{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.72rem; letter-spacing:0.14em; text-transform:uppercase; color:var(--accent); font-weight:600; margin-bottom:0.6rem;}
+h1{font-size:2rem; font-weight:700; margin:0 0 0.55rem; text-wrap:balance; letter-spacing:-0.01em;}
+.subhead{color:var(--text-dim); font-size:1rem; max-width:64ch; margin:0;}
+
+.stat-strip{display:grid; gap:1px; background:var(--border); border:1px solid var(--border); border-radius:8px; overflow:hidden; margin-bottom:2.4rem;}
+.stat{background:var(--surface); padding:1rem 1.15rem;}
+.stat .n{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:1.4rem; font-weight:700; font-variant-numeric:tabular-nums; color:var(--accent); line-height:1;}
+.stat .l{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.7rem; color:var(--text-dim); margin-top:0.3rem;}
+
+p.lead{font-size:1rem; max-width:68ch; margin:0 0 1rem;}
+p.lead code{background:var(--mono-bg); padding:0.1rem 0.35rem; border-radius:4px; font-size:0.88em;}
+
+.category{margin-bottom:2.4rem; scroll-margin-top:1.5rem;}
+.cat-head{display:flex; align-items:baseline; gap:0.7rem; margin-bottom:0.3rem;}
+.cat-num{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.7rem; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:0.15rem 0.5rem; border-radius:5px;}
+h2{font-size:1.28rem; font-weight:700; margin:0; text-wrap:balance;}
+h3{font-size:1.05rem; font-weight:700; margin:0 0 0.3rem;}
+.cat-desc{color:var(--text-dim); font-size:0.9rem; margin:0.3rem 0 1.1rem; max-width:64ch;}
+
+table.ind{width:100%; border-collapse:collapse; font-size:0.86rem; background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden;}
+table.ind thead th{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.66rem; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-dim); font-weight:600; text-align:left; padding:0.5rem 0.85rem; border-bottom:1px solid var(--border);}
+table.ind td{padding:0.6rem 0.85rem; border-bottom:1px solid var(--border); vertical-align:top;}
+table.ind tr:last-child td{border-bottom:none;}
+table.ind td.name{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace; font-size:0.8rem; font-weight:600; white-space:nowrap;}
+table.ind td.params{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace; font-size:0.76rem; color:var(--text-dim); white-space:nowrap;}
+table.ind td.desc{color:var(--text);}
+.tbl-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; margin-bottom:0.6rem;}
+
+.status{display:inline-flex; align-items:center; gap:0.35rem; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.68rem; font-weight:600; padding:0.18rem 0.5rem; border-radius:20px; white-space:nowrap;}
+.status.used{background:var(--used-bg); color:var(--used-fg);}
+.status.dead{background:var(--dead-bg); color:var(--dead-fg);}
+.status .dot{width:6px; height:6px; border-radius:50%; background:currentColor; flex:none;}
+.status-note{font-size:0.76rem; color:var(--text-dim); font-weight:400; display:block; margin-top:0.2rem;}
+.legend{display:flex; gap:1.3rem; flex-wrap:wrap; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.78rem; color:var(--text-dim); margin-bottom:0.6rem; align-items:center;}
+.legend .status{font-size:0.7rem;}
+
+hr.divider{height:1px; background:var(--border); margin:2.4rem 0; border:none;}
+
+.callout{background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:6px; padding:1.1rem 1.3rem; margin:0.8rem 0;}
+.callout p{margin:0 0 0.55rem; font-size:0.92rem;}
+.callout p:last-child{margin-bottom:0;}
+
+.card{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:1.2rem 1.35rem; margin-bottom:1rem;}
+.card-head{display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.4rem;}
+.pill{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.66rem; font-weight:700; padding:0.16rem 0.5rem; border-radius:20px; background:var(--accent-soft); color:var(--accent); letter-spacing:0.02em;}
+.card p{font-size:0.92rem; margin:0.3rem 0 0;}
+.card .meta{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.76rem; color:var(--text-dim); margin-top:0.5rem;}
+
+.formula-box{background:var(--code-bg); color:var(--code-fg); border-radius:8px; padding:1rem 1.2rem; font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace; font-size:0.82rem; line-height:1.7; overflow-x:auto; margin:0.7rem 0 1rem; white-space:pre;}
+.formula-box .c{color:#a89e8c;}
+
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem;}
+@media (max-width:760px){.grid2{grid-template-columns:1fr;}}
+
+.stub-hero{text-align:left; padding:2.6rem 0 1rem;}
+.stub-hero .icon{
+  width:52px; height:52px; border-radius:12px; background:var(--stub-bg); color:var(--stub-fg);
+  display:flex; align-items:center; justify-content:center; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  font-weight:700; font-size:1.3rem; margin-bottom:1.1rem;
+}
+.stub-badge{display:inline-flex; align-items:center; gap:0.4rem; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.72rem; font-weight:700; padding:0.25rem 0.65rem; border-radius:20px; background:var(--stub-bg); color:var(--stub-fg); margin-bottom:0.9rem;}
+.stub-list{margin:1.2rem 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:0.5rem;}
+.stub-list li{font-size:0.92rem; color:var(--text-dim); padding-left:1.1rem; position:relative;}
+.stub-list li::before{content:"\203A"; position:absolute; left:0; color:var(--accent); font-weight:700;}
+
+.linkgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:0.7rem; margin:0.8rem 0 1.6rem;}
+.page-link{
+  display:flex; align-items:center; justify-content:space-between; gap:0.6rem;
+  background:var(--surface); border:1px solid var(--border); border-radius:8px;
+  padding:0.8rem 1rem; text-decoration:none; color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.86rem; font-weight:600;
+  transition:border-color .12s, transform .12s;
+}
+.page-link:hover{border-color:var(--accent); transform:translateY(-1px);}
+.page-link .rt{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace; font-size:0.68rem; color:var(--text-dim); font-weight:400;}
+.page-link .ext{color:var(--accent); flex:none;}
+@media (prefers-reduced-motion: reduce){.page-link{transition:none;} .page-link:hover{transform:none;}}
+
+.footer-note{margin-top:3rem; padding-top:1.3rem; border-top:1px solid var(--border); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.74rem; color:var(--text-dim);}
+
+.chip-row{display:flex; flex-wrap:wrap; gap:0.4rem; margin:0.7rem 0;}
+.chip{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:0.74rem; background:var(--accent-soft); color:var(--accent); padding:0.26rem 0.6rem; border-radius:20px; font-weight:600;}
+
+@media (max-width:860px){
+  body{flex-direction:column;}
+  .sidebar{width:100%; height:auto; position:relative; border-right:none; border-bottom:1px solid var(--border);}
+  .content{padding:2rem 1.3rem 4rem; max-width:100%;}
+  .stat-strip{grid-template-columns:1fr !important;}
+}
+</style>
+</head>
+<body>
+
+<nav class="sidebar" id="sidebar" aria-label="Explainer sections">
+  <div class="brand">
+    <div class="name">AlphaLens</div>
+    <div class="tag">Explainer</div>
+  </div>
+
+  <div class="navgroup">
+    <div class="glabel">Start here</div>
+    <button class="navitem" data-target="overview" type="button">Overview</button>
+  </div>
+
+  <div class="navgroup">
+    <div class="glabel">Technical</div>
+    <button class="navitem" data-target="tech-indicators" type="button">Indicators <span class="badge ready">88</span></button>
+    <button class="navitem" data-target="tech-screener" type="button">Screener Templates <span class="badge ready">42</span></button>
+    <button class="navitem" data-target="tech-strategies" type="button">Technical Strategies <span class="badge ready">Combos</span></button>
+    <div class="sublabel">Product pages</div>
+    <a class="navlink" href="http://localhost:5173/technical-overview" target="_blank" rel="noopener">Overview <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-screener" target="_blank" rel="noopener">Screener <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-recommended-strategies" target="_blank" rel="noopener">Recommended Strategies <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-chart" target="_blank" rel="noopener">Chart <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-deep_dive" target="_blank" rel="noopener">Deep Dive <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-compare" target="_blank" rel="noopener">Compare <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-portfolio" target="_blank" rel="noopener">Portfolio <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-watchlist" target="_blank" rel="noopener">Watchlist <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-alerts" target="_blank" rel="noopener">Alerts <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-experimentation" target="_blank" rel="noopener">Experimentation <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="navlink" href="http://localhost:5173/technical-batch-backtest" target="_blank" rel="noopener">Batch Backtest <span class="ext" aria-hidden="true">&#8599;</span></a>
+  </div>
+
+  <div class="navgroup">
+    <div class="glabel">Fundamental &amp; Valuation</div>
+    <button class="navitem" data-target="fundamental" type="button">Fundamental Screens <span class="badge">soon</span></button>
+    <button class="navitem" data-target="valuation" type="button">Damodaran Valuation <span class="badge ready">4 models</span></button>
+  </div>
+
+  <div class="navgroup">
+    <div class="glabel">Machine Learning</div>
+    <button class="navitem" data-target="ml-engine" type="button">ML Signal Engine <span class="badge ready">13 models</span></button>
+  </div>
+
+  <div class="navgroup">
+    <div class="glabel">Other systems</div>
+    <button class="navitem" data-target="momentum" type="button">Momentum <span class="badge">soon</span></button>
+    <button class="navitem" data-target="sector-accum" type="button">Sector Accumulation <span class="badge">soon</span></button>
+    <button class="navitem" data-target="big-investors" type="button">Big Investors / MF Holdings <span class="badge">soon</span></button>
+    <button class="navitem" data-target="copilot" type="button">Copilot <span class="badge">soon</span></button>
+  </div>
+</nav>
+
+<main class="content">
+
+<!-- =================== OVERVIEW =================== -->
+<section class="section" id="sec-overview">
+  <header class="pagehead">
+    <div class="eyebrow">AlphaLens &middot; Explainer</div>
+    <h1>How AlphaLens Decides What To Buy</h1>
+    <p class="subhead">One reference for every scoring system in the product &mdash; what it computes, how it's derived, and whether it actually drives a decision or just rides along in the data.</p>
+  </header>
+
+  <div class="stat-strip" style="grid-template-columns:repeat(4,1fr);">
+    <div class="stat"><div class="n">88</div><div class="l">technical indicators</div></div>
+    <div class="stat"><div class="n">42</div><div class="l">screener templates</div></div>
+    <div class="stat"><div class="n">13</div><div class="l">ML model families</div></div>
+    <div class="stat"><div class="n">4</div><div class="l">valuation approaches</div></div>
+  </div>
+
+  <p class="lead">This documentation consolidates every scoring system in AlphaLens &mdash; technical, fundamental, valuation, and ML &mdash; under one menu. Fully written today: <strong>Technical</strong> (indicators, screener templates, and strategies), <strong>ML Signal Engine</strong>, and <strong>Damodaran Valuation</strong>. The remaining systems are stubbed with a scope preview and will be filled in next.</p>
+
+  <div class="callout">
+    <p><strong>How to read the "Used" status.</strong> Every raw indicator in AlphaLens is computed daily for the full universe, but not everything that's computed is actually consumed. Where you see a status pill, it means the codebase was searched to confirm whether a feature is named in an actual screener rule, exit condition, ranking formula, or served by the API/UI &mdash; versus only being passed into an ML model in bulk, where it may or may not end up mattering.</p>
+  </div>
+
+  <hr class="divider" />
+  <h2 style="margin-bottom:0.8rem;">Section map</h2>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-head"><h3 style="margin:0;">Technical Indicators</h3><span class="pill">Ready</span></div>
+      <p>70 core + 18 advanced features computed daily per stock &mdash; moving averages, oscillators, volatility, Ichimoku, entropy/wavelet diagnostics. 32 of 87 are actually used downstream.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 style="margin:0;">Technical Screener &amp; Strategies</h3><span class="pill">Ready</span></div>
+      <p>42 named rule templates that threshold the indicators into buy setups, plus the recommended-strategy tiers (Balanced / Risk-Managed / Max-Defensive) and curated Combo strategies.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 style="margin:0;">ML Signal Engine</h3><span class="pill">Ready</span></div>
+      <p>13 model families &mdash; directional signal, 8 exit-policy variants, multibagger ranking, P&amp;D detection, forensic fraud scoring, regime detection, deep sequence models, conformal uncertainty.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 style="margin:0;">Damodaran Valuation</h3><span class="pill">Ready</span></div>
+      <p>DCF (4 model variants), relative PE regression, Monte Carlo scenario analysis, and a rule-based company lifecycle classifier &mdash; India-specific WACC throughout.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 style="margin:0;">Fundamental Screens</h3><span class="pill" style="background:var(--stub-bg);color:var(--stub-fg);">Coming soon</span></div>
+      <p>Quality, Growth, Contrarian, and Management strategy families (magic formula, moat, GARP, governance-weighted growth, and more).</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 style="margin:0;">Momentum, Sector Accumulation, Big Investors, Copilot</h3><span class="pill" style="background:var(--stub-bg);color:var(--stub-fg);">Coming soon</span></div>
+      <p>Rebalance-driven momentum strategy, delivery-weighted sector accumulation, MF holdings/announcement tracking, and the natural-language strategy builder.</p>
+    </div>
+  </div>
+
+  <div class="footer-note">AlphaLens internal reference &middot; built from features/technical.py, systems/technical_analysis/, systems/ml_signal_engine/, systems/damodaran_valuation/</div>
+</section>
+
+<!-- =================== TECHNICAL INDICATORS =================== -->
+<section class="section" id="sec-tech-indicators">
+  <header class="pagehead">
+    <div class="eyebrow">Technical &middot; Indicators</div>
+    <h1>Technical Indicators Computed Per Stock, Per Day</h1>
+    <p class="subhead">What each of the 88 daily technical features measures, its parameters, and whether it's actually used downstream.</p>
+  </header>
+
+  <div class="stat-strip" style="grid-template-columns:repeat(3,1fr);">
+    <div class="stat"><div class="n">70</div><div class="l">core technical features</div></div>
+    <div class="stat"><div class="n">18</div><div class="l">advanced / nonlinear features</div></div>
+    <div class="stat"><div class="n">32 / 87</div><div class="l">actually referenced by name downstream</div></div>
+  </div>
+
+  <p class="lead">Every trading day, AlphaLens computes this full set of indicators for every stock in the universe and writes them to a daily feature snapshot. The <strong>core layer</strong> (<code>features/technical.py</code>) covers the classical technical-analysis toolkit &mdash; moving averages, oscillators, trend and volatility measures, Ichimoku, volume/delivery signals. The <strong>advanced layer</strong> (<code>features/advanced_technical.py</code>) adds signal-processing and chaos-theory diagnostics &mdash; wavelet decomposition, entropy, Hurst exponent &mdash; that try to characterize how "trending" vs. "noisy" a stock's price series currently is.</p>
+  <p class="lead">The <a href="#" class="nav-jump" data-target="tech-screener" style="color:var(--accent);">screener layer</a> and <a href="#" class="nav-jump" data-target="tech-strategies" style="color:var(--accent);">strategies</a> don't compute new numbers &mdash; they threshold and combine the ones below into buy/sell/watch signals.</p>
+
+  <div class="linkgrid">
+    <a class="page-link" href="http://localhost:5173/technical-deep_dive" target="_blank" rel="noopener">See indicators per stock <span class="rt">/technical-deep_dive</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="page-link" href="http://localhost:5173/technical-chart" target="_blank" rel="noopener">Plot them on a chart <span class="rt">/technical-chart</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="page-link" href="http://localhost:5173/technical-compare" target="_blank" rel="noopener">Compare across stocks <span class="rt">/technical-compare</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+  </div>
+
+  <div class="legend"><span class="status used"><span class="dot"></span>Used</span><span>&mdash; named in a screener rule, exit condition, ranking formula, or served by the API/UI</span></div>
+  <div class="legend" style="margin-bottom:1.6rem;"><span class="status dead"><span class="dot"></span>Not used</span><span>&mdash; computed and stored, but only consumed in bulk by ML models; no dedicated signal, rule, or UI reference found</span></div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">01</span><h2>Price Position</h2></div>
+    <p class="cat-desc">Where is today's close relative to recent trading ranges and the 52-week band?</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">pct_rank_5d</td><td class="params">5d window</td><td class="desc">Close's percentile position within the 5-day high&ndash;low range.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">pct_rank_21d</td><td class="params">21d window</td><td class="desc">Same, over the trailing month.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">pct_rank_63d</td><td class="params">63d window</td><td class="desc">Same, over the trailing quarter.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">dist_from_52w_high</td><td class="params">252d</td><td class="desc">% distance of close below the 52-week high.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">dist_from_52w_low</td><td class="params">252d</td><td class="desc">% distance of close above the 52-week low.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">open_close_range_pct</td><td class="params">&mdash;</td><td class="desc">Today's open-to-close move as % of close.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">high_low_range_pct</td><td class="params">&mdash;</td><td class="desc">Today's high-low range as % of close &mdash; a single-day volatility proxy.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">prev_close_gap_pct</td><td class="params">&mdash;</td><td class="desc">Today's open vs. yesterday's close, as a % gap.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_1_price_position</code>, features/technical.py:172</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">02</span><h2>SMA Ratios</h2></div>
+    <p class="cat-desc">Close price and moving-average crossovers, expressed as ratios rather than raw levels &mdash; so they compare across stocks of any price.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">sma_20_ratio</td><td class="params">SMA-20</td><td class="desc">close &divide; 20-day simple moving average.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">sma_50_ratio</td><td class="params">SMA-50</td><td class="desc">close &divide; 50-day SMA.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">sma_100_ratio</td><td class="params">SMA-100</td><td class="desc">close &divide; 100-day SMA.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">sma_200_ratio</td><td class="params">SMA-200</td><td class="desc">close &divide; 200-day SMA &mdash; the classic long-term trend line.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">sma_20_50</td><td class="params">&mdash;</td><td class="desc">Cross-ratio of the 20d and 50d SMAs (short vs. medium trend).</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">sma_50_100</td><td class="params">&mdash;</td><td class="desc">Cross-ratio of the 50d and 100d SMAs.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">sma_50_200</td><td class="params">&mdash;</td><td class="desc">Cross-ratio of 50d/200d SMA &mdash; golden/death-cross signal.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">sma_200_weekly_ratio</td><td class="params">50-week SMA</td><td class="desc">close &divide; SMA of 50 weekly closes &mdash; a smoother, longer-horizon trend read.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_2_sma_ratios</code>, features/technical.py:207</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">03</span><h2>EMA Ratios</h2></div>
+    <p class="cat-desc">Same idea as SMA ratios, but using exponential moving averages at Fibonacci periods &mdash; EMAs react faster to recent price changes.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">ema_8_ratio</td><td class="params">EMA-8</td><td class="desc">close &divide; 8-day EMA &mdash; very short-term trend.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">ema_21_ratio</td><td class="params">EMA-21</td><td class="desc">close &divide; 21-day EMA.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">ema_55_ratio</td><td class="params">EMA-55</td><td class="desc">close &divide; 55-day EMA.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">ema_89_ratio</td><td class="params">EMA-89</td><td class="desc">close &divide; 89-day EMA &mdash; the "slow" leg of the ribbon.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_3_ema_ratios</code>, features/technical.py:222</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">04</span><h2>Oscillators</h2></div>
+    <p class="cat-desc">Bounded or mean-reverting indicators that flag overbought/oversold conditions and momentum turns.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">rsi_14</td><td class="params">RSI, 14d</td><td class="desc">Relative Strength Index &mdash; classic 0&ndash;100 overbought(&gt;70)/oversold(&lt;30) gauge.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">rsi_2</td><td class="params">RSI, 2d</td><td class="desc">Very fast RSI, for short-term mean-reversion timing.<span class="status-note">Screener uses rsi_14&lt;10 as a substitute instead of this feature.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">stoch_k</td><td class="params">fastK 14</td><td class="desc">Stochastic %K &mdash; close's position within the 14-day range.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">stoch_d</td><td class="params">slowK/D 3,3</td><td class="desc">Smoothed stochastic signal line.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">macd_hist</td><td class="params">MACD 12,26,9</td><td class="desc">MACD histogram &mdash; gap between the MACD line and its signal line; measures momentum acceleration.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">williams_r</td><td class="params">WILLR, 14d</td><td class="desc">Williams %R &mdash; inverse-scaled stochastic, overbought/oversold.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">cci_20</td><td class="params">CCI, 20d</td><td class="desc">Commodity Channel Index &mdash; deviation of price from its statistical mean.<span class="status-note">Only referenced in the unused features/registry.py.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">mfi_14</td><td class="params">MFI, 14d</td><td class="desc">Money Flow Index &mdash; volume-weighted RSI, tracks buying/selling pressure.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">roc_10</td><td class="params">ROC, 10d</td><td class="desc">Rate of Change &mdash; simple % price change over 10 days.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_4_oscillators</code>, features/technical.py:230 (via talib)</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">05</span><h2>Trend Strength</h2></div>
+    <p class="cat-desc">Is the stock trending, and how strongly &mdash; separate from which direction it's trending.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">adx_14</td><td class="params">ADX, 14d</td><td class="desc">Average Directional Index &mdash; trend strength, 0&ndash;100, direction-agnostic.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">di_plus / di_minus</td><td class="params">&plusmn;DI, 14d</td><td class="desc">Directional movement indicators &mdash; which way the trend, if any, is pointing.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">supertrend_dir</td><td class="params">period 10, mult 3.0</td><td class="desc">Supertrend indicator's current direction (up/down band).</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">supertrend_signal</td><td class="params">period 10, mult 3.0</td><td class="desc">Flip signal when price crosses the Supertrend band.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">linear_reg_slope_21</td><td class="params">21d</td><td class="desc">Slope of the linear-regression best-fit line over 21 days &mdash; trend steepness.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">linear_reg_r2_21</td><td class="params">21d</td><td class="desc">R&sup2; of that regression &mdash; how "clean" / linear the trend is.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">trend_consistency_21</td><td class="params">21d</td><td class="desc">Ratio of up-days to down-days, direction-conditioned &mdash; trend persistence.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_5_trend_strength</code>, features/technical.py:315; Supertrend at <code>_supertrend</code>, :263</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">06</span><h2>Volatility</h2></div>
+    <p class="cat-desc">How much the stock is moving, and where it sits inside its own volatility bands.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">atr_14_pct</td><td class="params">ATR 14d &divide; close</td><td class="desc">Average True Range as a % of price &mdash; normalized daily volatility.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">bb_position</td><td class="params">Bollinger 20, &plusmn;2&sigma;</td><td class="desc">Close's position between the lower and upper Bollinger Band.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">bb_width_pct</td><td class="params">Bollinger 20, &plusmn;2&sigma;</td><td class="desc">Band width as % of price &mdash; volatility compression/expansion.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">keltner_position</td><td class="params">EMA 20 &plusmn; 2&times;ATR 20</td><td class="desc">Close's position within the Keltner Channel &mdash; ATR-based alternative to Bollinger.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">hist_vol_21</td><td class="params">21d, annualized</td><td class="desc">21-day stdev of log returns &times; &radic;252 &times; 100 &mdash; annualized historical volatility.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_6_volatility</code>, features/technical.py:355</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">07</span><h2>Relative Strength</h2></div>
+    <p class="cat-desc">Performance against the market, not in isolation &mdash; key for stock-picking vs. index-hugging.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">rs_vs_nifty50_21d</td><td class="params">21d, vs NIFTYBEES</td><td class="desc">Excess return over the Nifty 50 ETF proxy, trailing month.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">rs_vs_nifty100_21d</td><td class="params">21d, vs NIF100BEES</td><td class="desc">Excess return over the Nifty 100 ETF proxy.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">rs_vs_nifty500_21d</td><td class="params">21d, vs MONIFTY500</td><td class="desc">Excess return over the Nifty 500 ETF proxy &mdash; broadest benchmark.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">beta_63d</td><td class="params">63d rolling, vs NIFTY50</td><td class="desc">Rolling beta &mdash; sensitivity to Nifty 50 moves (70-row window, min 63 obs).</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">alpha_21d</td><td class="params">21d</td><td class="desc">Return unexplained by market beta &mdash; stock-specific excess return.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_7_relative_strength</code>, features/technical.py:381; beta at :442</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">08</span><h2>Momentum Scores</h2></div>
+    <p class="cat-desc">Raw and composite price momentum across horizons, plus how aligned the EMA ribbon is.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">composite_momentum_5d</td><td class="params">5d</td><td class="desc">Trailing 5-day % price change.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">composite_momentum_21d</td><td class="params">21d</td><td class="desc">Trailing 1-month % price change.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">composite_momentum_63d</td><td class="params">63d</td><td class="desc">Trailing quarter % price change.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">ema_ribbon_alignment</td><td class="params">EMA 8/21/55/89</td><td class="desc">Whether all four EMAs agree on direction (fully stacked = strong trend).</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">ema_ribbon_spread</td><td class="params">(EMA8&minus;EMA89)/close</td><td class="desc">How wide the ribbon has fanned out &mdash; trend maturity/strength.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_8_momentum_scores</code>, features/technical.py:454</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">09</span><h2>Volume &amp; Delivery</h2></div>
+    <p class="cat-desc">Trading activity and delivery-based conviction signals &mdash; specific to the Indian market's delivery-% disclosure.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">volume_ratio_5d</td><td class="params">vol &divide; SMA(vol,5)</td><td class="desc">Today's volume vs. its 5-day average &mdash; short-term activity spike.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">volume_ratio_21d</td><td class="params">vol &divide; SMA(vol,21)</td><td class="desc">Volume vs. its monthly average.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">delivery_pct</td><td class="params">&mdash;</td><td class="desc">% of traded volume actually delivered (not squared off intraday) &mdash; a conviction proxy.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">delivery_pct_zscore_21d</td><td class="params">21d</td><td class="desc">How unusual today's delivery % is vs. its own recent history.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">delivery_price_corr_21d</td><td class="params">21d rolling corr</td><td class="desc">Correlation between delivery % and price moves &mdash; do delivery buyers drive the rally?</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_9_volume_delivery</code>, features/technical.py:468</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">10</span><h2>Ichimoku Cloud</h2></div>
+    <p class="cat-desc">The full Ichimoku Kinko Hyo system &mdash; a multi-line Japanese trend/support-resistance framework.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">ichimoku_cloud_position</td><td class="params">Tenkan 9 / Kijun 26 / Senkou B 52</td><td class="desc">Whether price is above, inside, or below the cloud (Kumo).</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">ichimoku_leading_span_a</td><td class="params">shifted 26d fwd</td><td class="desc">The faster leading edge of the cloud.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">tenkan_kijun_signal</td><td class="params">9 / 26</td><td class="desc">Crossover signal between the conversion and base lines.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">chikou_span_signal</td><td class="params">26d lag</td><td class="desc">Lagging span vs. price 26 days ago &mdash; confirms trend.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">ichimoku_breakout</td><td class="params">&mdash;</td><td class="desc">Whether price has broken decisively out of the cloud.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_10_ichimoku</code>, features/technical.py:488</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">11</span><h2>Derived / Composite</h2></div>
+    <p class="cat-desc">Second-order signals built from the day's own candle shape and volatility ratios.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Params</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">base_breakout_ratio</td><td class="params">vs prior 21d high</td><td class="desc">Close vs. the prior month's high &mdash; breakout strength.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">vol_compression_21d</td><td class="params">std21 &divide; std63</td><td class="desc">Is volatility contracting vs. the quarter (often precedes a breakout)?</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">vol_compression_63d</td><td class="params">std63 &divide; std126</td><td class="desc">Same comparison one step further out.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">gap_up_pct / gap_down_pct</td><td class="params">&mdash;</td><td class="desc">Size of today's opening gap, split into up/down components.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">intraday_reversal_score</td><td class="params">&mdash;</td><td class="desc">How much the close reversed from the intraday extreme.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">close_position_in_range</td><td class="params">&mdash;</td><td class="desc">Where the close fell within today's own high-low range.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">body_to_range_ratio</td><td class="params">&mdash;</td><td class="desc">Candle body size relative to its full range &mdash; conviction of the day's move.<span class="status-note">Only referenced internally by matrix_builder.py's normalization logic.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: <code>_category_11_derived</code>, features/technical.py:527</div>
+  </div>
+
+  <hr class="divider" />
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num" style="color:var(--stub-fg);background:var(--stub-bg);">ADV</span><h2>Advanced &amp; Nonlinear Features</h2></div>
+    <p class="cat-desc">A second, more experimental layer &mdash; signal-processing and chaos-theory diagnostics that try to characterize a stock's underlying regime (trending vs. noisy vs. chaotic) rather than direction. 17 of these 18 features are computed and fed to ML models in bulk only &mdash; <code>hurst_exp_21d</code> is the sole one referenced by name in a screener rule.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Feature</th><th>Family</th><th>What it measures</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td class="name">wavelet_trend</td><td class="params">Wavelet (db4)</td><td class="desc">The smooth, low-frequency component of price after wavelet decomposition &mdash; the "true" trend with noise stripped out.<span class="status-note">Only appears in a docstring example, not an active rule.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">wavelet_noise</td><td class="params">Wavelet (db4)</td><td class="desc">The high-frequency residual &mdash; how much of the move is noise vs. signal.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">wavelet_energy_ratio</td><td class="params">Wavelet (db4)</td><td class="desc">Ratio of trend energy to total energy &mdash; signal-to-noise ratio of the price series.<span class="status-note">Only exercised by a unit-test bounds check.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">wavelet_regime_signal</td><td class="params">Wavelet (db4)</td><td class="desc">Regime classification derived from the wavelet decomposition.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">hurst_exp_21d</td><td class="params">Hurst, 21d</td><td class="desc">Hurst exponent (R/S analysis) &mdash; &gt;0.5 means trending/persistent, &lt;0.5 means mean-reverting.</td><td><span class="status used"><span class="dot"></span>Used</span></td></tr>
+        <tr><td class="name">hurst_exp_63d</td><td class="params">Hurst, 63d</td><td class="desc">Same, over a longer window &mdash; more stable regime read.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">approx_entropy_21d</td><td class="params">Entropy, 21d</td><td class="desc">Approximate entropy &mdash; how unpredictable/irregular the price series is.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">sample_entropy_21d</td><td class="params">Entropy, 21d</td><td class="desc">Sample entropy &mdash; a bias-corrected variant of approximate entropy.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">permutation_entropy_21d</td><td class="params">Entropy, 21d</td><td class="desc">Entropy of the ordinal patterns in price moves &mdash; complexity of short-term structure.<span class="status-note">Only exercised by a unit-test bounds check.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">spectral_entropy</td><td class="params">Entropy</td><td class="desc">Entropy of the price series' frequency spectrum &mdash; how "white noise"-like it is.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">fractal_dimension</td><td class="params">&mdash;</td><td class="desc">Fractal dimension of the price path &mdash; roughness of the trajectory.<span class="status-note">Only exercised by a unit-test bounds check.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">fracdiff_d_optimal</td><td class="params">Fractional diff</td><td class="desc">The optimal fractional differencing order.<span class="status-note">Only exercised by a unit-test bounds check.</span></td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">fracdiff_price</td><td class="params">Fractional diff</td><td class="desc">Fractionally-differenced price series at the optimal order.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">fracdiff_volume</td><td class="params">Fractional diff</td><td class="desc">Fractionally-differenced volume series.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">lyapunov_exponent_proxy</td><td class="params">Complexity</td><td class="desc">Proxy for sensitivity to initial conditions &mdash; how "chaotic" recent price action is.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">rqa_rec_rate</td><td class="params">Complexity (RQA)</td><td class="desc">Recurrence rate from Recurrence Quantification Analysis &mdash; how often price states repeat.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">time_series_complexity</td><td class="params">Complexity</td><td class="desc">Composite complexity score of the price series.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+        <tr><td class="name">nonlinear_trend_strength</td><td class="params">Complexity</td><td class="desc">Trend strength measured via nonlinear (non-regression) methods.</td><td><span class="status dead"><span class="dot"></span>Not used</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Source: features/advanced_technical.py (module docstring, lines 9&ndash;17)</div>
+  </div>
+
+  <div class="footer-note">Compiled from features/technical.py and features/advanced_technical.py</div>
+</section>
+
+<!-- =================== TECHNICAL SCREENER =================== -->
+<section class="section" id="sec-tech-screener">
+  <header class="pagehead">
+    <div class="eyebrow">Technical &middot; Screener</div>
+    <h1>Screener Templates</h1>
+    <p class="subhead">42 named rule templates that turn the raw indicators into buy setups &mdash; each one a small AND-combination of feature thresholds, paired with its own exit parameters.</p>
+  </header>
+
+  <div class="stat-strip" style="grid-template-columns:repeat(4,1fr);">
+    <div class="stat"><div class="n">42</div><div class="l">templates total</div></div>
+    <div class="stat"><div class="n">7</div><div class="l">category groups (A&ndash;F, S)</div></div>
+    <div class="stat"><div class="n">4</div><div class="l">behavioral exit styles</div></div>
+    <div class="stat"><div class="n">21d</div><div class="l">typical exit horizon</div></div>
+  </div>
+
+  <p class="lead">Every template is a <code>ScreenerTemplate</code> &mdash; a name, a category, and a list of conditions (<code>lt / gt / lte / gte / eq / between / top_pct / bottom_pct</code>) evaluated against that day's precomputed feature columns, never raw price. A stock qualifies for a setup only when <em>all</em> of its conditions hold on the same day. Templates don't compute new numbers &mdash; see <a href="#" class="nav-jump" data-target="tech-indicators" style="color:var(--accent);">Technical Indicators</a> for what each underlying feature means.</p>
+
+  <div class="linkgrid">
+    <a class="page-link" href="http://localhost:5173/technical-screener" target="_blank" rel="noopener">Run the Screener <span class="rt">/technical-screener</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="page-link" href="http://localhost:5173/technical-alerts" target="_blank" rel="noopener">Template alerts <span class="rt">/technical-alerts</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="page-link" href="http://localhost:5173/technical-overview" target="_blank" rel="noopener">Technical Overview <span class="rt">/technical-overview</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+  </div>
+
+  <div class="callout">
+    <p><strong>Two independent classification schemes coexist.</strong> The letter-prefix category (A&ndash;F, S) groups templates by the trading philosophy they were modeled after. A separate <code>TEMPLATE_STYLE</code> mapping (Momentum / Trend Following / Mean Reversion / Volatility) reclassifies all 42 templates by actual behavior, and it's this second mapping that drives exit parameters &mdash; so a letter-category-A template can carry a "Trend Following" exit profile if its rule is gated by a hard trend filter.</p>
+  </div>
+
+  <h2 style="margin:1.8rem 0 0.8rem;">Exit parameters by behavioral style</h2>
+  <div class="tbl-scroll"><table class="ind">
+    <thead><tr><th>Style</th><th>Stop</th><th>Target</th><th>Max hold</th></tr></thead>
+    <tbody>
+      <tr><td class="name">Momentum</td><td class="params">4%</td><td class="params">10%</td><td class="params">21d</td></tr>
+      <tr><td class="name">Trend Following</td><td class="params">5%</td><td class="params">12%</td><td class="params">25d</td></tr>
+      <tr><td class="name">Mean Reversion</td><td class="params">5%</td><td class="params">10%</td><td class="params">21d</td></tr>
+      <tr><td class="name">Volatility</td><td class="params">4.5%</td><td class="params">9%</td><td class="params">20d</td></tr>
+    </tbody>
+  </table></div>
+  <div class="status-note" style="margin-bottom:1.6rem;">Widened from an earlier 3%/6%/10&ndash;15d after a 2026-07-30 signal-quality diagnostic showed real edge materializes on a ~21-day horizon (e.g. template A4's backtest CAGR moved from -0.1% to +0.5% after the change). Source: <code>STYLE_EXIT_PARAMS</code>, <code>PerTemplateExitPolicy</code>.</div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">A</span><h2>Technical Momentum <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 4 templates</span></h2></div>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>ID</th><th>Name</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">A1</td><td class="desc">BB Squeeze Breakout</td><td class="params" style="white-space:normal;">bb_width_pct bottom 25% AND sma_200_ratio &gt; 1.0 AND volume_ratio_21d &gt; 1.8</td></tr>
+        <tr><td class="name">A2</td><td class="desc">MACD Histogram Divergence</td><td class="params" style="white-space:normal;">macd_hist &gt; 0 AND rsi_14 &ge; 40</td></tr>
+        <tr><td class="name">A3</td><td class="desc">Williams %R Mean Reversion</td><td class="params" style="white-space:normal;">williams_r &lt; -85 AND sma_200_ratio &gt; 1.0</td></tr>
+        <tr><td class="name">A4</td><td class="desc">RSI Oversold + Trend</td><td class="params" style="white-space:normal;">rsi_14 &lt; 30 AND sma_200_ratio &gt; 1.0</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">B</span><h2>Price Action <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 5 templates</span></h2></div>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>ID</th><th>Name</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">B1</td><td class="desc">Weinstein Stage 2</td><td class="params" style="white-space:normal;">sma_200_ratio &gt; 1.0 AND volume_ratio_21d &gt; 1.5 AND adx_14 &gt; 20</td></tr>
+        <tr><td class="name">B2</td><td class="desc">IBD Base Breakout</td><td class="params" style="white-space:normal;">base_breakout_ratio &gt; 0.97 AND volume_ratio_21d &gt; 1.4</td></tr>
+        <tr><td class="name">B3</td><td class="desc">Darvas Box</td><td class="params" style="white-space:normal;">base_breakout_ratio &gt; 0.98 AND adx_14 &gt; 20 AND volume_ratio_21d &gt; 1.5</td></tr>
+        <tr><td class="name">B4</td><td class="desc">AVWAP Support</td><td class="params" style="white-space:normal;">rsi_14 between [40,60] AND double_bottom_score &gt; 0.4</td></tr>
+        <tr><td class="name">B5</td><td class="desc">Livermore Pivot</td><td class="params" style="white-space:normal;">base_breakout_score &gt; 0.5 AND volume_ratio_21d &gt; 2.0</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">C</span><h2>Momentum <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 7 templates</span></h2></div>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>ID</th><th>Name</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">C1</td><td class="desc">Time Series Momentum</td><td class="params" style="white-space:normal;">sma_200_ratio &gt; 1.0 AND roc_10 &gt; 0</td></tr>
+        <tr><td class="name">C2</td><td class="desc">Cross-Sectional Momentum</td><td class="params" style="white-space:normal;">roc_10 top 20% of universe</td></tr>
+        <tr><td class="name">C3</td><td class="desc">Dual Momentum</td><td class="params" style="white-space:normal;">roc_10 &gt; 0 AND sma_200_ratio &gt; 1.0</td></tr>
+        <tr><td class="name">C4</td><td class="desc">CAN SLIM proxy</td><td class="params" style="white-space:normal;">sma_200_ratio &gt; 1.0 AND volume_ratio_21d &gt; 1.5 AND adx_14 &gt; 20 AND rsi_14 &gt; 50</td></tr>
+        <tr><td class="name">C5</td><td class="desc">52-Week High Proximity</td><td class="params" style="white-space:normal;">base_breakout_ratio &gt; 0.99 AND volume_ratio_21d &gt; 2.0 AND adx_14 &ge; 20</td></tr>
+        <tr><td class="name">C6</td><td class="desc">EMA Ribbon Alignment</td><td class="params" style="white-space:normal;">ema_ribbon_alignment &ge; 1.0 AND ema_8_ratio &gt; 1.0</td></tr>
+        <tr><td class="name">C7</td><td class="desc">Post-Earnings Drift</td><td class="params" style="white-space:normal;">volume_ratio_21d &gt; 2.0 AND roc_10 &gt; 0.02 AND base_breakout_score &gt; 0.4</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">D</span><h2>Reversal <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 4 templates</span></h2></div>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>ID</th><th>Name</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">D1</td><td class="desc">RSI-2 Mean Reversion</td><td class="params" style="white-space:normal;">rsi_14 &lt; 10 (proxy for Connors RSI-2) AND sma_200_ratio &gt; 1.0</td></tr>
+        <tr><td class="name">D2</td><td class="desc">Long-Horizon Contrarian</td><td class="params" style="white-space:normal;">rsi_14 &lt; 35 AND base_breakout_ratio &lt; 0.7</td></tr>
+        <tr><td class="name">D3</td><td class="desc">MACD + RSI Divergence</td><td class="params" style="white-space:normal;">macd_hist &gt; 0 AND rsi_14 &lt; 45 AND double_bottom_score &gt; 0.4</td></tr>
+        <tr><td class="name">D4</td><td class="desc">IBD Follow-Through Day</td><td class="params" style="white-space:normal;">roc_10 &gt; 0.017 AND volume_ratio_21d &gt; 1.5 AND base_breakout_score &gt; 0.4</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">E</span><h2>Trend Following &amp; Systematic <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 7 templates</span></h2></div>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>ID</th><th>Name</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">E1</td><td class="desc">Turtle Donchian</td><td class="params" style="white-space:normal;">base_breakout_ratio &gt; 0.99 AND adx_14 &ge; 15</td></tr>
+        <tr><td class="name">E2</td><td class="desc">Minervini SEPA</td><td class="params" style="white-space:normal;">sma_50_ratio &gt; 1.0 AND sma_200_ratio &gt; 1.0 AND adx_14 &gt; 20 AND volume_ratio_21d &gt; 1.0 AND rsi_14 &gt; 50 <span style="color:var(--accent);">(most stringent &mdash; 5 conditions)</span></td></tr>
+        <tr><td class="name">E3</td><td class="desc">Piotroski F proxy</td><td class="params" style="white-space:normal;">flag_pattern_score &gt; 0.6 AND hurst_exp_21d &gt; 0.5</td></tr>
+        <tr><td class="name">E4</td><td class="desc">Sector Rotation</td><td class="params" style="white-space:normal;">flag_pattern_score &gt; 0.5 AND sma_50_ratio &gt; 1.0</td></tr>
+        <tr><td class="name">E5</td><td class="desc">Earnings Acceleration</td><td class="params" style="white-space:normal;">volume_ratio_21d &gt; 1.5 AND roc_10 &gt; 0.05 AND adx_14 &gt; 20</td></tr>
+        <tr><td class="name">E6</td><td class="desc">GARP Momentum</td><td class="params" style="white-space:normal;">sma_200_ratio &gt; 1.0 AND rsi_14 between [50,70]</td></tr>
+        <tr><td class="name">E7</td><td class="desc">Greenblatt Magic Formula proxy</td><td class="params" style="white-space:normal;">flag_pattern_score &gt; 0.6 AND sma_200_ratio &gt; 1.0</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">F</span><h2>Fundamental Proxies <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 8 templates</span></h2></div>
+    <p class="cat-desc">Technical features standing in for fundamental characteristics &mdash; no real fundamentals data is used in these rules.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>ID</th><th>Name</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">F1</td><td class="desc">Low RSI Quality</td><td class="params" style="white-space:normal;">rsi_14 &lt; 45 AND sma_200_ratio &gt; 1.0 AND hurst_exp_21d &gt; 0.5</td></tr>
+        <tr><td class="name">F2</td><td class="desc">Momentum + Volume</td><td class="params" style="white-space:normal;">sma_200_ratio &gt; 1.0 AND volume_ratio_21d &gt; 1.5 AND adx_14 &gt; 20</td></tr>
+        <tr><td class="name">F3</td><td class="desc">Dividend/Consistent Growth proxy</td><td class="params" style="white-space:normal;">flag_pattern_score &gt; 0.5 AND hurst_exp_21d &gt; 0.5</td></tr>
+        <tr><td class="name">F4</td><td class="desc">Compounder proxy</td><td class="params" style="white-space:normal;">sma_200_ratio &gt; 1.0 AND hurst_exp_21d &gt; 0.55 AND adx_14 &gt; 15</td></tr>
+        <tr><td class="name">F5</td><td class="desc">Cash Flow King proxy</td><td class="params" style="white-space:normal;">flag_pattern_score &gt; 0.6 AND volume_ratio_21d &lt; 0.8 (steady/low-volume accumulation)</td></tr>
+        <tr><td class="name">F6</td><td class="desc">Turnaround proxy</td><td class="params" style="white-space:normal;">rsi_14 between [30,50] AND macd_hist &gt; 0</td></tr>
+        <tr><td class="name">F7</td><td class="desc">Promoter Confidence proxy</td><td class="params" style="white-space:normal;">flag_pattern_score &gt; 0.5 AND hurst_exp_21d &gt; 0.5</td></tr>
+        <tr><td class="name">F8</td><td class="desc">PEG proxy</td><td class="params" style="white-space:normal;">roc_10 &gt; 0.02 AND rsi_14 &lt; 60 AND adx_14 &gt; 15</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><span class="cat-num">S</span><h2>Core Technical Library <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 7 templates (S001&ndash;S006, S008)</span></h2></div>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>ID</th><th>Name</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">S001</td><td class="desc">EMA Crossover</td><td class="params" style="white-space:normal;">ema_ribbon_alignment &gt; 0 AND sma_200_ratio &gt; 1.0</td></tr>
+        <tr><td class="name">S002</td><td class="desc">Supertrend Breakout</td><td class="params" style="white-space:normal;">supertrend_dir &gt; 0 AND volume_ratio_21d &gt; 1.5</td></tr>
+        <tr><td class="name">S003</td><td class="desc">RSI Mean Reversion</td><td class="params" style="white-space:normal;">rsi_14 &lt; 35 AND sma_200_ratio &gt; 1.0</td></tr>
+        <tr><td class="name">S004</td><td class="desc">52-Week High Breakout</td><td class="params" style="white-space:normal;">base_breakout_ratio &gt; 0.995 AND volume_ratio_21d &gt; 2.0</td></tr>
+        <tr><td class="name">S005</td><td class="desc">VWAP Reversal</td><td class="params" style="white-space:normal;">sma_20_ratio &gt; 1.0 AND volume_ratio_21d &gt; 1.3</td></tr>
+        <tr><td class="name">S006</td><td class="desc">Ichimoku Cloud Breakout</td><td class="params" style="white-space:normal;">ichimoku_cloud_position &gt; 0 AND adx_14 &gt; 20 AND hurst_exp_21d &gt; 0.5</td></tr>
+        <tr><td class="name">S008</td><td class="desc">MACD Histogram</td><td class="params" style="white-space:normal;">macd_hist &gt; 0 AND macd_hist top 40% of universe</td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">S007/S009&ndash;S012 excluded &mdash; duplicates of other templates, kept the set at exactly 42.</div>
+  </div>
+
+  <div class="footer-note">Source: systems/technical_analysis/screener/templates.py, engine.py, outcomes.py. Rules operate on precomputed feature columns (e.g. sma_200_ratio = close/sma200), not raw price.</div>
+</section>
+
+<!-- =================== TECHNICAL STRATEGIES =================== -->
+<section class="section" id="sec-tech-strategies">
+  <header class="pagehead">
+    <div class="eyebrow">Technical &middot; Strategies</div>
+    <h1>Technical Strategies</h1>
+    <p class="subhead">The curated composite strategies built on top of the screener templates &mdash; entry-filter tiers across every template, plus cross-style "Combo" strategies that mix templates from different behavioral styles.</p>
+  </header>
+
+  <div class="stat-strip" style="grid-template-columns:repeat(4,1fr);">
+    <div class="stat"><div class="n">3</div><div class="l">entry-filter tiers</div></div>
+    <div class="stat"><div class="n">2</div><div class="l">strategy kinds (Single / Combo)</div></div>
+    <div class="stat"><div class="n">42</div><div class="l">underlying templates</div></div>
+    <div class="stat"><div class="n">4</div><div class="l">behavioral styles combined</div></div>
+  </div>
+
+  <p class="lead">The <strong>Recommended Strategies</strong> screen is where backtested technical strategies are surfaced. It is generated by <code>scripts/run_technical_recommended_strategies.py</code> and reads from the API endpoint <code>/api/v1/technical_backtest/recommended_strategies</code>. It renders a table of backtest variants across every template, filterable by strategy and by Single/Combo kind, with a Sweep button to re-run.</p>
+
+  <div class="linkgrid">
+    <a class="page-link" href="http://localhost:5173/technical-recommended-strategies" target="_blank" rel="noopener">Recommended Strategies <span class="rt">/technical-recommended-strategies</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="page-link" href="http://localhost:5173/technical-experimentation" target="_blank" rel="noopener">Experimentation <span class="rt">/technical-experimentation</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="page-link" href="http://localhost:5173/technical-batch-backtest" target="_blank" rel="noopener">Batch Backtest <span class="rt">/technical-batch-backtest</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+    <a class="page-link" href="http://localhost:5173/technical-portfolio" target="_blank" rel="noopener">Strategy Portfolio <span class="rt">/technical-portfolio</span> <span class="ext" aria-hidden="true">&#8599;</span></a>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Entry-Filter Tiers</h2></div>
+    <p class="cat-desc">Each of the 42 templates is backtested under three entry-filter intensities &mdash; a conservative/balanced/aggressive reading of the same rule set.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Tier</th><th>Profile</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td class="name">Balanced</td><td class="desc">Default risk</td><td class="params" style="white-space:normal;">The template's standard rule thresholds with no additional entry gating.</td></tr>
+        <tr><td class="name">Risk-Managed</td><td class="desc">Tighter entry</td><td class="params" style="white-space:normal;">Applies stricter entry filters (higher confidence requirements) to admit fewer, higher-conviction setups.</td></tr>
+        <tr><td class="name">Max-Defensive</td><td class="desc">Most conservative</td><td class="params" style="white-space:normal;">The most selective tier &mdash; strongest trend/quality gates, fewest entries, lowest drawdown profile.</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Combo Strategies</h2></div>
+    <p class="cat-desc">Beyond running each template on its own, AlphaLens builds curated <strong>Combo</strong> strategies via the <code>TechnicalComboAdapter</code> &mdash; combinations that pull templates from different behavioral styles (Momentum + Trend Following + Mean Reversion) into one diversified strategy, so the portfolio isn't over-exposed to a single regime's behavior.</p>
+    <div class="callout">
+      <p>The per-variant view also exposes a <strong>Signal Failures</strong> breakdown &mdash; for each losing trade, the entry-signal snapshot that triggered it &mdash; so a strategy's losses can be audited back to the exact setup that fired. The single-template view routes each position through its template's own exit parameters (see the exit style table on the <a href="#" class="nav-jump" data-target="tech-screener" style="color:var(--accent);">Screener Templates</a> page).</p>
+    </div>
+    <div class="status-note">Source: frontend/src/pages/technical/recommended-strategies.tsx, backtest/adapters/technical_combo_adapter.py</div>
+  </div>
+
+  <div class="footer-note">Built from run_technical_recommended_strategies.py and TechnicalComboAdapter</div>
+</section>
+
+<!-- =================== ML SIGNAL ENGINE =================== -->
+<section class="section" id="sec-ml-engine">
+  <header class="pagehead">
+    <div class="eyebrow">Machine Learning</div>
+    <h1>ML Signal Engine</h1>
+    <p class="subhead">13 model families spanning directional prediction, exits, multibagger ranking, fraud/P&amp;D screening, regime detection, and deep sequence models &mdash; plus a conformal layer that calibrates uncertainty.</p>
+  </header>
+
+  <div class="stat-strip" style="grid-template-columns:repeat(4,1fr);">
+    <div class="stat"><div class="n">13</div><div class="l">model families</div></div>
+    <div class="stat"><div class="n">8</div><div class="l">exit-policy variants</div></div>
+    <div class="stat"><div class="n">330</div><div class="l">features into the deep TFT model</div></div>
+    <div class="stat"><div class="n">90%</div><div class="l">target conformal coverage</div></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Directional Signal</h2></div>
+    <div class="card">
+      <div class="card-head"><h3>Signal 5D / 21D / 63D</h3><span class="pill">M-02 / M-03</span></div>
+      <p><code>BaseSignalModel</code> stacks 3 base classifiers (LightGBM, CatBoost, XGBoost), each producing out-of-fold 3-class probabilities (Sell / Hold / Buy via triple-barrier labeling), fed into a <code>LogisticRegression</code> meta-learner for calibrated final probabilities. A parallel set of 3 LightGBM quantile regressors (&alpha; = 0.10 / 0.50 / 0.90) predicts the forward return distribution. Per-class thresholds are tuned on the validation fold by maximizing one-vs-rest F1 &mdash; never a flat 0.5 cutoff. Inputs are the 70+ technical features (63D also pulls fundamentals/governance/MF-holdings/F&amp;O once Phase 2 data is live).</p>
+      <div class="meta">Source: systems/ml_signal_engine/models/signal/</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Meta-Labeler</h3><span class="pill">M-04</span></div>
+      <p>A separate binary classifier answering "should I act on this primary signal?" &mdash; trained on the same feature set, but labeled by whether the primary model's directional call was <em>profitable after transaction costs</em> (via the backtest engine's Indian cost model), not just direction correctness.</p>
+      <div class="meta">Source: systems/ml_signal_engine/models/signal/meta_labeler.py</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Exit Policies <span style="font-weight:400;color:var(--text-dim);font-size:0.85rem;">&mdash; 8 variants</span></h2></div>
+    <p class="cat-desc">All 8 implement the same contract: <code>predict_full(X)</code> returning exit_urgency, exit_type, and exit_survival at 5/21/63d.</p>
+    <div class="grid2">
+      <div class="card"><div class="card-head"><h3>1. Exit Signal (ML)</h3><span class="pill">M-07</span></div><p>LightGBM regression for urgency (0&ndash;100) + LightGBM classifier for exit type (6 categories) + Cox Proportional Hazards for survival probability at 5/21/63d.</p><div class="meta">Currently blocked &mdash; needs at least 200 real closed paper-trading positions to train; none exist yet.</div></div>
+      <div class="card"><div class="card-head"><h3>2. Rule-Based (bootstrap)</h3></div><p>Mechanical stand-in for #1 while it's blocked. Flat/ATR-scaled target:stop in a 2:1 ratio, plus max-hold and a P&amp;D-score override.</p></div>
+      <div class="card"><div class="card-head"><h3>3. Per-Template</h3></div><p>Routes each position by its originating screener template to a rule-based policy configured with that template's own style-derived stop/target/max-hold.</p></div>
+      <div class="card"><div class="card-head"><h3>4. ATR-Adaptive</h3></div><p>Scales stop (1.5&times;ATR%) and target (3.0&times;ATR%) off the position's own entry volatility, falling back to flat defaults when ATR is unavailable.</p></div>
+      <div class="card"><div class="card-head"><h3>5. Trailing Stop</h3></div><p>Stop triggers on drawdown from the position's peak price, not its entry price; target logic is unchanged from rule-based.</p></div>
+      <div class="card"><div class="card-head"><h3>6. Condition-Based</h3></div><p>Derives exit triggers from the entry template's own conditions "unwinding" (e.g. an sma_200_ratio &gt; 1.0 entry exits when it drops below 1.0) &mdash; independent of P&amp;L.</p></div>
+      <div class="card"><div class="card-head"><h3>7. Regime-Conditional</h3></div><p>Scales stop_pct by market regime &mdash; Bear &times;0.7 (tighter), Bull &times;1.3 (looser), Sideways &times;1.0. Target and max-hold are unaffected.</p></div>
+      <div class="card"><div class="card-head"><h3>8. Composite</h3></div><p>OR-combines any N wrapped policies via a row-wise MAX of exit_urgency across them.</p></div>
+    </div>
+    <div class="status-note">Source: systems/ml_signal_engine/models/exit/</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Multibagger</h2></div>
+    <div class="card">
+      <div class="card-head"><h3>Multibagger Ranking Model</h3><span class="pill">M-08</span></div>
+      <p>LightGBM with a <code>lambdarank</code> objective ranks stocks by probability of a 2&times;+ return within 3 years. A Platt-scaling <code>LogisticRegression</code> calibrates that ranking score into a 0&ndash;1 probability, and a Random Survival Forest fits time-to-multibag to produce survival curves at 6/12/18/24/36 months. <code>mb_tier</code> and <code>mb_archetype</code> are deterministic rule-based post-hoc labels, not separately trained. Inputs: 109 features (76 technical + 33 multibagger-specific); P&amp;D episodes are excluded from positive labels via the P&amp;D detector's score.</p>
+      <div class="meta">Source: systems/ml_signal_engine/models/multibagger/</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Analogue Miner</h3></div>
+      <p>Cosine-similarity historical-analogue matching against a small hand-curated archive of past multibaggers (Avanti Feeds, Relaxo Footwears, Page Industries + 4 others) with archetype-consistent feature vectors.</p>
+      <div class="meta">Source: systems/ml_signal_engine/models/multibagger/analogue_miner.py</div>
+    </div>
+    <div class="chip-row">
+      <span class="chip">Base formation &middot; 6</span><span class="chip">Accumulation signals &middot; 7</span><span class="chip">Relative strength &middot; 5</span><span class="chip">Trend quality &middot; 5</span><span class="chip">Volatility compression &middot; 4</span><span class="chip">Historical analogues &middot; 6</span>
+    </div>
+    <div class="status-note">33 dedicated multibagger features grouped into these 6 categories &mdash; source: features/multibagger.py</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Pump &amp; Dump Detection</h2></div>
+    <div class="card">
+      <div class="card-head"><h3>P&amp;D Detector</h3><span class="pill">M-06</span></div>
+      <p>LightGBM (primary, supervised) + IsolationForest (secondary, unsupervised anomaly layer), combined 0.7/0.3 weighted into <code>pnd_score</code>. SMOTETomek rebalances the ~1&ndash;3% positive rate on the training fold only. Trained on real OHLCV data, labeling confirmed SEBI/NSE enforcement cases as positives. Runs as a <strong>pre-filter before any buy signal is issued</strong>.</p>
+      <div class="meta">22 dedicated features (bid_ask_spread_proxy, price_impact_ratio, turnover_acceleration, operator_signature_score, circuit-proximity, and more). Source: systems/ml_signal_engine/models/pnd/pnd_detector.py, features/pnd_features.py</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Forensic / Fraud Risk</h2></div>
+    <div class="grid2">
+      <div class="card">
+        <div class="card-head"><h3>Classical Scores</h3><span class="pill">M-09</span></div>
+        <p>Pure-formula, no training required &mdash; 7 academic models: Beneish M-Score, Altman Z-Score, Piotroski F-Score, Ohlson O-Score, Dechow F-Score, Sloan Accrual, Benford's Law. Each a small pure function on explicit named inputs, using same-quarter-prior-year (t-4) comparisons to control for seasonality.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Forensic ML</h3><span class="pill">M-10</span></div>
+        <p>84-feature ensemble (LightGBM + XGBoost fraud classifier) + IsolationForest anomaly layer. Fused into a 4-layer Forensic Risk Score: Classical 20% + ML Fraud 40% + Anomaly 20% + Governance 20% = 0&ndash;100, flagged green/yellow/orange/red/black.</p>
+      </div>
+    </div>
+    <div class="status-note">Source: systems/ml_signal_engine/models/forensic/</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Regime Detection</h2></div>
+    <div class="card">
+      <div class="card-head"><h3>HMM Regime Model</h3><span class="pill">M-01</span></div>
+      <p><code>GaussianHMM(n_components=4, covariance_type='full')</code>, fit per-ticker on 5 observables: daily_return, log_return, realized_vol_10d, volume_ratio_20d, atr_pct. Outputs 6 features: hmm_regime, hmm_regime_prob_bullish/bearish, hmm_regime_duration, hmm_regime_transition, hmm_regime_stability. Production fit uses 5 restarts &times; 200 iterations (reduced from research-grade 10&ndash;20 &times; 1000 to fit the daily 90-minute pipeline budget across ~500 stocks).</p>
+      <div class="meta">Source: systems/ml_signal_engine/models/hmm/regime_detector.py</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Deep Sequence Models</h2></div>
+    <div class="grid2">
+      <div class="card">
+        <div class="card-head"><h3>Temporal Fusion Transformer</h3><span class="pill">M-11</span></div>
+        <p>Pure PyTorch implementation: InputProjection &rarr; VariableSelectionNetwork &rarr; 2-layer LSTM encoder &rarr; StaticEnrichment &rarr; InterpretableMultiHeadAttention &rarr; GRN decoder &rarr; 3 quantile heads (Q10/Q50/Q90). hidden_dim=64 (vs. the paper's 160&ndash;300, for CPU memory constraints), n_heads=4, lstm_layers=2, all 330 features treated as time-varying reals over 63-day windows.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>BiLSTM</h3><span class="pill">M-12</span></div>
+        <p>Bidirectional LSTM (2 layers, hidden=128, dropout=0.3) + optional Mamba-2 layer (Linux/CUDA only, falls back to a Temporal Attention layer if mamba-ssm is unavailable) &rarr; 3 quantile output heads.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Stacking Ensemble</h3><span class="pill">M-13</span></div>
+      <p>Meta-learner combining Signal5D/21D/63D + TFT + BiLSTM via <code>LogisticRegression</code> on out-of-fold predictions, minimum weight 0.10 per base model, monthly adaptive weight blending. At inference time the ensemble actually only combines signal_5d/21d/63d &mdash; TFT/BiLSTM are excluded there per a documented fix; the full 5-model stack is used only in offline OOF training.</p>
+    </div>
+    <div class="status-note">Source: systems/ml_signal_engine/models/deep/</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Uncertainty Calibration</h2></div>
+    <div class="card">
+      <div class="card-head"><h3>Conformal Prediction</h3><span class="pill">M-05</span></div>
+      <p>Wraps any already-trained regressor (e.g. the signal model's Q50) using MAPIE's ACI (Adaptive Conformal Inference) &mdash; chosen over standard CQR because financial time series violates the exchangeability assumption (regime changes, autocorrelation). Target coverage 90%, alerts if rolling coverage drops below 85%, with monthly online recalibration.</p>
+      <div class="meta">Source: systems/ml_signal_engine/models/uncertainty/conformal.py</div>
+    </div>
+  </div>
+
+  <div class="footer-note">Source: systems/ml_signal_engine/models/. A parallel systems/ml_signal_engine_gainer/ runs separate gainer-focused signal + multibagger models on the same architecture.</div>
+</section>
+
+<!-- =================== VALUATION =================== -->
+<section class="section" id="sec-valuation">
+  <header class="pagehead">
+    <div class="eyebrow">Fundamental &amp; Valuation</div>
+    <h1>Damodaran Valuation</h1>
+    <p class="subhead">Four intrinsic-value approaches &mdash; DCF, relative PE regression, Monte Carlo scenarios, and a rule-based lifecycle classifier &mdash; built on an India-specific WACC.</p>
+  </header>
+
+  <div class="stat-strip" style="grid-template-columns:repeat(4,1fr);">
+    <div class="stat"><div class="n">4</div><div class="l">DCF model variants</div></div>
+    <div class="stat"><div class="n">10,000</div><div class="l">Monte Carlo simulations</div></div>
+    <div class="stat"><div class="n">21</div><div class="l">sector unlevered betas</div></div>
+    <div class="stat"><div class="n">7</div><div class="l">lifecycle stages</div></div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>DCF &mdash; 4 Model Variants</h2></div>
+    <p class="cat-desc">All four return a common <code>DCFResult</code>: per-share intrinsic value, enterprise value, equity value, terminal value, terminal value as % of EV, implied terminal EV/NOPAT, and the WACC used.</p>
+    <div class="grid2">
+      <div class="card">
+        <div class="card-head"><h3>1&ndash;2. FCFF Two-Stage</h3></div>
+        <p>Phase 1: explicit FCFF grown at a high-growth rate for 5 years (default), discounted at WACC. Phase 2: Gordon Growth terminal value, <code>TV = FCFF_(N+1) / (WACC &minus; g)</code>. Raises an error if WACC &le; terminal growth rate.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>3. FCFF Three-Stage</h3></div>
+        <p>Revenue-driven. Stage 1 high growth at base margin; Stage 2 linear transition (5 years) where growth decelerates to terminal and margin ramps to a stable 12%; Stage 3 perpetuity. Capex/D&amp;A/NWC held at base-year ratios to revenue throughout.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>4. Excess Return (banks/NBFCs)</h3></div>
+        <p><code>Equity value = BV + PV(excess returns) + PV(terminal excess return)</code>, where excess return per period = <code>(ROE &minus; CoE) &times; BV</code>, and book value compounds at <code>ROE &times; reinvestment_rate</code>. 10-year default horizon.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>7. Commodity-Normalized</h3></div>
+        <p>For metals/commodities: uses a through-cycle (typically 10-year average) EBIT margin instead of current margin, to avoid extrapolating cyclical peaks. Lower default growth assumptions (4% high-growth, 3% terminal) reflect long-run commodity-sector growth.</p>
+      </div>
+    </div>
+    <div class="status-note">FCFFInputs includes a minority-interest deduction in the equity bridge &mdash; added after a review found the earlier version omitted it, which overstated per-share value for companies with material listed subsidiaries. Source: systems/damodaran_valuation/dcf/</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>WACC &mdash; India-Specific</h2></div>
+    <p class="cat-desc">Follows Damodaran's 2025 India methodology, not a generic CAPM.</p>
+    <div class="formula-box"><span class="c"># step by step</span>
+risk_free_rate      = india_10y_yield &minus; india_default_spread   <span class="c">(default spread 2.16%)</span>
+lambda              = domestic_revenue_pct / 0.80              <span class="c">(0.80 = "average" domestic exposure)</span>
+equity_risk_premium = mature_market_erp(4.2%) + lambda &times; india_country_risk_premium(2.3%)
+beta_levered        = beta_unlevered &times; (1 + (1 &minus; tax_rate) &times; D/E)     <span class="c">(Hamada)</span>
+beta_adjusted       = 0.67 &times; beta_levered + 0.33                <span class="c">(Blume, toward 1.0)</span>
+cost_of_equity      = risk_free_rate + beta_adjusted &times; equity_risk_premium
+after_tax_cost_of_debt = cost_of_debt &times; (1 &minus; tax_rate)
+WACC                = equity_weight &times; cost_of_equity + debt_weight &times; after_tax_cost_of_debt</div>
+    <p class="lead">Cost of debt comes from <code>synthetic_rating_spread(interest_coverage)</code> &mdash; an interest-coverage to credit-rating to Damodaran default-spread table. Unlevered betas are keyed to NSE's real 21-sector taxonomy (e.g. Financial Services 0.45, Information Technology 0.85, Metals &amp; Mining 1.10, Automobile &amp; Auto Components 0.90, Realty 0.95, Default 0.90) &mdash; a fix from an earlier version that used made-up sector labels which never matched real data, silently defaulting every stock to 0.90.</p>
+    <div class="status-note">Source: systems/damodaran_valuation/dcf/wacc.py</div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Relative Valuation</h2></div>
+    <div class="card">
+      <div class="card-head"><h3>PE Regression</h3><span class="pill">Model 5</span></div>
+      <p>Cross-sectional OLS: <code>PE = &alpha; + &beta;1&middot;EPS_growth_3y + &beta;2&middot;payout_ratio + &beta;3&middot;beta</code>, fit on sector peers (minimum 20 required &mdash; fewer leaves near-zero degrees of freedom for a 3-factor fit). Output: actual PE, predicted PE, <code>gap_pct = (actual &minus; predicted) / predicted</code> (positive = trading at a premium to peers), R&sup2;, peer count, and an overvalued flag when gap exceeds 10%.</p>
+      <div class="meta">Source: systems/damodaran_valuation/relative/pe_regression.py</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Scenario Analysis</h2></div>
+    <div class="card">
+      <div class="card-head"><h3>Monte Carlo DCF</h3><span class="pill">SPEC-VAL-005</span></div>
+      <p>Wraps the FCFF Two-Stage model, drawing per-simulation parameters from triangular distributions for growth rate (0.5&times;&ndash;1.5&times; base) and terminal margin (0.6&times;&ndash;1.3&times; base), and a normal distribution for WACC (&plusmn;1% std). Default 10,000 simulations (100 in fast test mode); draws where WACC falls below terminal growth are discarded and resampled.</p>
+      <p>Output: median value, P10/P90 (bear/bull intrinsic value), probability the stock is undervalued, 5% value-at-risk, and the skew of the value distribution.</p>
+      <div class="meta">Source: systems/damodaran_valuation/scenarios/monte_carlo.py</div>
+    </div>
+  </div>
+
+  <div class="category">
+    <div class="cat-head"><h2>Lifecycle Classification</h2></div>
+    <p class="cat-desc">A stateless, rule-based classifier that assigns one of 7 stages, evaluated in priority order &mdash; each stage is meant to route to a different valuation approach above.</p>
+    <div class="tbl-scroll"><table class="ind">
+      <thead><tr><th>Order</th><th>Stage</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="name">1</td><td class="desc">Financial Services</td><td class="params" style="white-space:normal;">Sector match against NSE's official "Financial Services" taxonomy</td></tr>
+        <tr><td class="name">2</td><td class="desc">Distressed</td><td class="params" style="white-space:normal;">Interest coverage &lt; 1.5 OR Altman Z&Prime; &lt; 1.1</td></tr>
+        <tr><td class="name">3</td><td class="desc">Young Growth</td><td class="params" style="white-space:normal;">Revenue CAGR &ge; 30% AND margin &le; 10%</td></tr>
+        <tr><td class="name">4</td><td class="desc">High Growth</td><td class="params" style="white-space:normal;">CAGR &ge; 15% AND margin &ge; 8% AND ROE &ge; 12%</td></tr>
+        <tr><td class="name">5</td><td class="desc">Mature Growth</td><td class="params" style="white-space:normal;">CAGR &ge; 5% AND payout ratio &ge; 15%</td></tr>
+        <tr><td class="name">6</td><td class="desc">Mature Stable</td><td class="params" style="white-space:normal;">CAGR &le; 8% AND payout ratio &ge; 30%</td></tr>
+        <tr><td class="name">7</td><td class="desc">Declining</td><td class="params" style="white-space:normal;">CAGR &le; 2% or margin &lt; 50% of sector median</td></tr>
+      </tbody>
+    </table></div>
+    <div class="status-note">Default fallback stage is Mature Stable. The Z-Score threshold (1.1) uses the Z&Prime; non-manufacturing/emerging-market revision, matching the engine's actual Z&Prime; weights, not the classic manufacturing 1.81. Source: systems/damodaran_valuation/lifecycle/classifier.py</div>
+  </div>
+
+  <div class="footer-note">Source: systems/damodaran_valuation/</div>
+</section>
+
+<!-- =================== STUB SECTIONS =================== -->
+<section class="section" id="sec-fundamental">
+  <div class="stub-hero">
+    <div class="icon">&Sigma;</div>
+    <div class="stub-badge">Coming soon</div>
+    <h1>Fundamental Screens</h1>
+    <p class="subhead">Quality, Growth, Contrarian, and Management strategy families that score companies on fundamentals rather than price action.</p>
+    <ul class="stub-list">
+      <li><strong>Quality</strong> &mdash; magic_formula, moat, net_net, piotroski_on_value, fcf_low_debt, owner_earnings, capital_allocation, margin_of_safety, quality_value, sector_leader</li>
+      <li><strong>Growth</strong> &mdash; garp, qglp, smile, story_numbers, small_cap_compounders, earnings_rerating, capital_efficiency, longevity, under_followed</li>
+      <li><strong>Contrarian</strong> &mdash; recovery, normalization</li>
+      <li><strong>Management</strong> &mdash; governance_quality_growth, promoter_aligned</li>
+    </ul>
+    <div class="status-note" style="margin-top:1.4rem;">Source: systems/fundamental_analysis/</div>
+  </div>
+</section>
+
+<section class="section" id="sec-momentum">
+  <div class="stub-hero">
+    <div class="icon">M</div>
+    <div class="stub-badge">Coming soon</div>
+    <h1>Momentum Strategy</h1>
+    <p class="subhead">Rebalance-driven universe construction and portfolio rules built on the momentum features, separate from the technical screener's momentum templates.</p>
+    <ul class="stub-list">
+      <li>Momentum universe construction and rebalance cadence</li>
+      <li>Live vs. backtest momentum signal generation</li>
+      <li>Portfolio construction rules and position sizing</li>
+    </ul>
+    <div class="status-note" style="margin-top:1.4rem;">Source: features/momentum_*.py, frontend/src/pages/momentum/</div>
+  </div>
+</section>
+
+<section class="section" id="sec-sector-accum">
+  <div class="stub-hero">
+    <div class="icon">&Sigma;</div>
+    <div class="stub-badge">Coming soon</div>
+    <h1>Sector Accumulation</h1>
+    <p class="subhead">A daily per-sector accumulation score derived from delivery-weighted volume relative to sector shares outstanding.</p>
+    <ul class="stub-list">
+      <li>accumulation_score formula and normalization</li>
+      <li>How sector rotation surfaces in the screener (template E4)</li>
+    </ul>
+    <div class="status-note" style="margin-top:1.4rem;">Source: features/sector_accumulation.py</div>
+  </div>
+</section>
+
+<section class="section" id="sec-big-investors">
+  <div class="stub-hero">
+    <div class="icon">I</div>
+    <div class="stub-badge">Coming soon</div>
+    <h1>Big Investors / MF Holdings</h1>
+    <p class="subhead">Tracking of mutual fund holdings changes and corporate action / announcement-driven features.</p>
+    <ul class="stub-list">
+      <li>MF holdings delta tracking</li>
+      <li>Corporate action feature extraction</li>
+    </ul>
+    <div class="status-note" style="margin-top:1.4rem;">Source: features/mf_holdings.py, features/corporate_action_features.py</div>
+  </div>
+</section>
+
+<section class="section" id="sec-copilot">
+  <div class="stub-hero">
+    <div class="icon">C</div>
+    <div class="stub-badge">Coming soon</div>
+    <h1>Copilot</h1>
+    <p class="subhead">The natural-language strategy builder &mdash; turns a plain-English request into a structured strategy spec and runs it through the backtest engine.</p>
+    <ul class="stub-list">
+      <li>spec_builder &mdash; NL request to structured strategy spec</li>
+      <li>backtest_bridge &mdash; spec to backtest execution</li>
+    </ul>
+    <div class="status-note" style="margin-top:1.4rem;">Source: systems/copilot/</div>
+  </div>
+</section>
+
+</main>
+
+<script>
+(function(){
+  var items = document.querySelectorAll('.navitem');
+  var sections = document.querySelectorAll('.section');
+  function show(target){
+    sections.forEach(function(s){ s.classList.toggle('active', s.id === 'sec-' + target); });
+    items.forEach(function(i){ i.classList.toggle('active', i.dataset.target === target); });
+    if (history.replaceState) { history.replaceState(null, '', '#' + target); }
+    window.scrollTo(0, 0);
+  }
+  items.forEach(function(btn){
+    btn.addEventListener('click', function(){ show(btn.dataset.target); });
+  });
+  document.querySelectorAll('.nav-jump').forEach(function(a){
+    a.addEventListener('click', function(e){ e.preventDefault(); show(a.dataset.target); });
+  });
+  var initial = (location.hash || '#overview').slice(1);
+  var valid = Array.prototype.some.call(items, function(i){ return i.dataset.target === initial; });
+  show(valid ? initial : 'overview');
+})();
+</script>
+</body>
+</html>
