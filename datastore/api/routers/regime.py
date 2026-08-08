@@ -183,7 +183,7 @@ async def get_per_ticker_regime(
     """Per-ticker HMM regime for a single date, read from the daily feature
     parquet. Rows with all-NaN regime columns (undecodable tickers) are
     excluded. The hmm_regime_name is a human-readable label derived from
-    the numeric rank (0=bearish, 1=sideways, 2=volatile, 3=bullish)."""
+    the numeric rank (0=bearish, 1=sideways, 2=bullish)."""
     import pandas as pd
     from config.settings import FEATURES_DAILY_DIR
 
