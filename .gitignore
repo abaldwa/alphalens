@@ -37,3 +37,6 @@ datastore/backtest_store/
 
 # Backtest orchestrator cache (generated parquet/log scratch, not source)
 backtest/cache/
+
+# Backtest job-output reports (generated JSON, 4.3GB+, not source)
+backtest/reports/
