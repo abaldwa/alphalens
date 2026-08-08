@@ -84,12 +84,13 @@ import subprocess
 import sys
 import uuid
 from datetime import date as date_type
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backtest.momentum_metrics import cagr as compute_cagr
 from backtest.momentum_metrics import xirr
@@ -102,6 +103,7 @@ from datastore.schema.create_normalised import (
     _CREATE_MOMENTUM_REBALANCE_STATE,
     _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS,
     _CREATE_MOMENTUM_TRADES,
+    _CREATE_MOMENTUM_STRATEGY_CONFIGS,
 )
 from features import momentum_live
 from features.momentum_signal import trailing_momentum
@@ -128,6 +130,7 @@ def _ensure_tables(conn) -> None:
     for ddl in (
         _CREATE_MOMENTUM_TRADES, _CREATE_MOMENTUM_CONTRIBUTIONS, _CREATE_MOMENTUM_RANKINGS,
         _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS, _CREATE_MOMENTUM_REBALANCE_STATE,
+        _CREATE_MOMENTUM_STRATEGY_CONFIGS,
     ):
         conn.execute(ddl)
 
@@ -925,3 +928,280 @@ async def get_dynamic_report_trade_book(variant_id: str) -> FileResponse:
     if not csv_path.is_file():
         raise HTTPException(status_code=404, detail=f"No trade book found for variant_id={variant_id}")
     return FileResponse(csv_path, media_type="text/csv", filename=csv_path.name)
+
+
+# ---------------------------------------------------- strategy configs (Live Deployment Page)
+
+
+class MomentumStrategyConfigCreate(BaseModel):
+    band_id: int = Field(ge=1, le=7)
+    category: Literal['all_risk', 'balanced', 'risk_managed', 'max_defensive']
+    lookback_months: int = Field(ge=1, le=24)
+    top_n: int = Field(ge=1, le=50)
+    grace_period: int = Field(ge=0, le=5)
+    rebalance_frequency: Literal['monthly', 'biweekly']
+    # Tier 1 params
+    exit_rank: Optional[int] = None
+    trailing_stop_pct: Optional[float] = None
+    # Tier 2 params
+    downtrend_filter_pct: Optional[float] = None
+    hmm_regime_filter: Optional[Literal['none', 'bearish', 'bearish_sideways']] = 'none'
+    # Capital deployment
+    initial_capital: float = Field(ge=0)
+    sip_amount: float = Field(ge=0, default=0)
+    start_date: date_type
+    rebalance_day_of_month: Optional[int] = Field(None, ge=1, le=28)
+    portfolio_id: Optional[int] = None
+
+
+class MomentumStrategyConfigUpdate(BaseModel):
+    initial_capital: Optional[float] = None
+    sip_amount: Optional[float] = None
+    start_date: Optional[date_type] = None
+    rebalance_day_of_month: Optional[int] = Field(None, ge=1, le=28)
+    portfolio_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class MomentumStrategyConfigResponse(MomentumStrategyConfigCreate):
+    config_id: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class YoyReturnRow(BaseModel):
+    fiscal_year: str
+    cagr_pct: float
+    pnl: float
+    max_drawdown_pct: float
+    sharpe: float
+    sortino: float
+    num_trades: int
+
+
+@router.get("/configs", response_model=List[MomentumStrategyConfigResponse])
+async def list_strategy_configs(
+    band_id: Optional[int] = None,
+    category: Optional[str] = None,
+    is_active: Optional[bool] = None,
+) -> List[MomentumStrategyConfigResponse]:
+    """List all momentum strategy configs with optional filters."""
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
+        _ensure_tables(conn)
+        conditions = []
+        params = []
+        if band_id is not None:
+            conditions.append("band_id = ?")
+            params.append(band_id)
+        if category is not None:
+            conditions.append("category = ?")
+            params.append(category)
+        if is_active is not None:
+            conditions.append("is_active = ?")
+            params.append(is_active)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        rows = conn.execute(
+            f"""
+            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
+                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+                   hmm_regime_filter, initial_capital, sip_amount, start_date,
+                   rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
+            FROM momentum_strategy_configs {where}
+            ORDER BY band_id, category, config_id
+            """,
+            params,
+        ).fetchall()
+    columns = [
+        "config_id", "band_id", "category", "lookback_months", "top_n", "grace_period",
+        "rebalance_frequency", "exit_rank", "trailing_stop_pct", "downtrend_filter_pct",
+        "hmm_regime_filter", "initial_capital", "sip_amount", "start_date",
+        "rebalance_day_of_month", "portfolio_id", "is_active", "created_at", "updated_at"
+    ]
+    return [MomentumStrategyConfigResponse(**_row_to_dict(r, columns)) for r in rows]
+
+
+_STRATEGY_CONFIG_COLUMNS = [
+    "config_id", "band_id", "category", "lookback_months", "top_n", "grace_period",
+    "rebalance_frequency", "exit_rank", "trailing_stop_pct", "downtrend_filter_pct",
+    "hmm_regime_filter", "initial_capital", "sip_amount", "start_date",
+    "rebalance_day_of_month", "portfolio_id", "is_active", "created_at", "updated_at"
+]
+
+
+@router.post("/configs", response_model=MomentumStrategyConfigResponse)
+async def create_strategy_config(config: MomentumStrategyConfigCreate) -> MomentumStrategyConfigResponse:
+    """Create a new momentum strategy configuration."""
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
+        _ensure_tables(conn)
+        new_id = conn.execute(
+            """
+            INSERT INTO momentum_strategy_configs
+                (band_id, category, lookback_months, top_n, grace_period, rebalance_frequency,
+                 exit_rank, trailing_stop_pct, downtrend_filter_pct, hmm_regime_filter,
+                 initial_capital, sip_amount, start_date, rebalance_day_of_month, portfolio_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING config_id
+            """,
+            [
+                config.band_id, config.category, config.lookback_months, config.top_n, config.grace_period,
+                config.rebalance_frequency, config.exit_rank, config.trailing_stop_pct,
+                config.downtrend_filter_pct, config.hmm_regime_filter, config.initial_capital,
+                config.sip_amount, config.start_date, config.rebalance_day_of_month, config.portfolio_id,
+            ],
+        ).fetchone()[0]
+        row = conn.execute(
+            """
+            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
+                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+                   hmm_regime_filter, initial_capital, sip_amount, start_date,
+                   rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
+            FROM momentum_strategy_configs WHERE config_id = ?
+            """,
+            [new_id],
+        ).fetchone()
+    return MomentumStrategyConfigResponse(**_row_to_dict(row, _STRATEGY_CONFIG_COLUMNS))
+
+
+@router.get("/configs/{config_id}", response_model=MomentumStrategyConfigResponse)
+async def get_strategy_config(config_id: int) -> MomentumStrategyConfigResponse:
+    """Get a single momentum strategy configuration by ID."""
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
+        _ensure_tables(conn)
+        row = conn.execute(
+            """
+            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
+                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+                   hmm_regime_filter, initial_capital, sip_amount, start_date,
+                   rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
+            FROM momentum_strategy_configs WHERE config_id = ?
+            """,
+            [config_id],
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
+    return MomentumStrategyConfigResponse(**_row_to_dict(row, _STRATEGY_CONFIG_COLUMNS))
+
+
+@router.put("/configs/{config_id}", response_model=MomentumStrategyConfigResponse)
+async def update_strategy_config(config_id: int, update: MomentumStrategyConfigUpdate) -> MomentumStrategyConfigResponse:
+    """Update a momentum strategy configuration (partial update)."""
+    fields = update.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
+        _ensure_tables(conn)
+        existing = conn.execute("SELECT config_id FROM momentum_strategy_configs WHERE config_id = ?", [config_id]).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
+
+        set_clause = ", ".join(f"{col} = ?" for col in fields)
+        params = list(fields.values()) + [config_id]
+        conn.execute(
+            f"UPDATE momentum_strategy_configs SET {set_clause}, updated_at = now() WHERE config_id = ?", params,
+        )
+        row = conn.execute(
+            """
+            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
+                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+                   hmm_regime_filter, initial_capital, sip_amount, start_date,
+                   rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
+            FROM momentum_strategy_configs WHERE config_id = ?
+            """,
+            [config_id],
+        ).fetchone()
+    return MomentumStrategyConfigResponse(**_row_to_dict(row, _STRATEGY_CONFIG_COLUMNS))
+
+
+@router.delete("/configs/{config_id}")
+async def delete_strategy_config(config_id: int) -> dict:
+    """Soft delete a momentum strategy configuration (set is_active = false)."""
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
+        _ensure_tables(conn)
+        existing = conn.execute("SELECT config_id FROM momentum_strategy_configs WHERE config_id = ?", [config_id]).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
+        conn.execute("UPDATE momentum_strategy_configs SET is_active = FALSE, updated_at = now() WHERE config_id = ?", [config_id])
+    return {"deleted": True, "id": config_id}
+
+
+@router.get("/configs/{config_id}/returns", response_model=List[YoyReturnRow])
+async def get_config_historical_returns(config_id: int) -> List[YoyReturnRow]:
+    """Get historical YoY returns for a strategy config by matching it to the latest dynamic report.
+
+    Matches the config parameters against variants in the latest momentum_dynamic_report_*.json
+    and returns the year-on-year breakdown for the matching variant.
+    """
+    # First get the config to match against dynamic report
+    with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
+        _ensure_tables(conn)
+        config_row = conn.execute(
+            """
+            SELECT band_id, category, lookback_months, top_n, grace_period, rebalance_frequency,
+                   exit_rank, trailing_stop_pct, downtrend_filter_pct, hmm_regime_filter
+            FROM momentum_strategy_configs WHERE config_id = ?
+            """,
+            [config_id],
+        ).fetchone()
+        if config_row is None:
+            raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
+
+    config = _row_to_dict(config_row, [
+        "band_id", "category", "lookback_months", "top_n", "grace_period", "rebalance_frequency",
+        "exit_rank", "trailing_stop_pct", "downtrend_filter_pct", "hmm_regime_filter"
+    ])
+
+    # Find latest dynamic report
+    files = sorted(
+        [p for p in _EXPERIMENTATION_REPORTS_DIR.glob("momentum_dynamic_report_*.json") if "BASELINE" not in p.name],
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not files:
+        return []  # No dynamic report yet
+
+    latest = files[-1]
+    data = json.loads(latest.read_text())
+    variants = data.get("variants", [])
+    yoy = data.get("yoy", [])
+
+    # Build lookup: config params -> variant_id
+    # Dynamic report variants don't have all tier params, so match on core params
+    def variant_matches(v):
+        return (
+            v.get("band_id") == config["band_id"] and
+            v.get("strategy") == config["category"] and
+            v.get("lookback_months") == config["lookback_months"] and
+            v.get("rebalance_period") == config["rebalance_frequency"] and
+            v.get("top_n") == config["top_n"] and
+            v.get("grace_period") == config.get("grace_period", 0)
+        )
+
+    matching_variant = next((v for v in variants if variant_matches(v)), None)
+    if not matching_variant:
+        return []  # No matching variant in dynamic report
+
+    variant_id = matching_variant.get("variant_id")
+    if not variant_id:
+        return []
+
+    # Filter YoY rows for this variant
+    matching_yoy = [row for row in yoy if row.get("variant_id") == variant_id]
+
+    # Convert to response format with P&L calculation
+    result = []
+    for row in matching_yoy:
+        starting = row.get("starting_capital", 0) or 0
+        ending = row.get("ending_capital", 0) or 0
+        pnl = ending - starting
+        result.append(YoyReturnRow(
+            fiscal_year=row.get("fy_label", ""),
+            cagr_pct=row.get("return_pct", 0) or 0,
+            pnl=pnl,
+            max_drawdown_pct=row.get("max_drawdown", 0) or 0,  # This field might not exist in yoy
+            sharpe=matching_variant.get("sharpe", 0) or 0,
+            sortino=matching_variant.get("sortino", 0) or 0,
+            num_trades=row.get("churn", 0) or 0,
+        ))
+
+    return result

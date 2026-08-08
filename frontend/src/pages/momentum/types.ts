@@ -179,3 +179,56 @@ export interface MomentumTriggerStatus {
   log_tail: string | null
   report_file: string | null
 }
+
+// Live Strategy Configuration & Deployment Page (2026-08-08)
+// POST/GET/PUT/DELETE /api/v1/momentum/configs
+export interface MomentumStrategyConfigCreate {
+  band_id: number
+  category: 'all_risk' | 'balanced' | 'risk_managed' | 'max_defensive'
+  lookback_months: number
+  top_n: number
+  grace_period: number
+  rebalance_frequency: 'monthly' | 'biweekly'
+  exit_rank?: number | null
+  trailing_stop_pct?: number | null
+  downtrend_filter_pct?: number | null
+  hmm_regime_filter?: 'none' | 'bearish' | 'bearish_sideways'
+  initial_capital: number
+  sip_amount: number
+  start_date: string
+  rebalance_day_of_month?: number | null
+  portfolio_id?: number | null
+}
+
+export interface MomentumStrategyConfigUpdate {
+  initial_capital?: number | null
+  sip_amount?: number | null
+  start_date?: string | null
+  rebalance_day_of_month?: number | null
+  portfolio_id?: number | null
+  is_active?: boolean | null
+}
+
+export interface MomentumStrategyConfigResponse extends MomentumStrategyConfigCreate {
+  config_id: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface MomentumYoyReturnRow {
+  fiscal_year: string
+  cagr_pct: number
+  pnl: number
+  max_drawdown_pct: number
+  sharpe: number
+  sortino: number
+  num_trades: number
+}
+
+export interface MomentumPortfolio {
+  id: number
+  name: string
+  description?: string
+  created_at: string
+}

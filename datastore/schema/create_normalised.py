@@ -937,6 +937,41 @@ _CREATE_MOMENTUM_REBALANCE_STATE = f"""
     )
 """
 
+# [AS BUILT, 2026-08-08] Live Strategy Configuration & Deployment Page.
+# Stores per-band strategy configurations with all filter combinations,
+# capital deployment parameters, and portfolio assignment.
+# Uses surrogate key (sequence) like my_holdings/momentum_trades.
+# Composite UNIQUE constraint ensures no duplicate strategy configs.
+_CREATE_MOMENTUM_STRATEGY_CONFIGS = """
+    CREATE SEQUENCE IF NOT EXISTS momentum_strategy_configs_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS momentum_strategy_configs (
+        config_id BIGINT PRIMARY KEY DEFAULT nextval('momentum_strategy_configs_id_seq'),
+        band_id INTEGER NOT NULL,
+        category VARCHAR NOT NULL,
+        lookback_months INTEGER NOT NULL,
+        top_n INTEGER NOT NULL,
+        grace_period INTEGER NOT NULL,
+        rebalance_frequency VARCHAR NOT NULL,
+        -- Tier 1 params (asymmetric entry/exit, trailing stop)
+        exit_rank INTEGER,
+        trailing_stop_pct DOUBLE,
+        -- Tier 2 params (downtrend filter, HMM regime filter)
+        downtrend_filter_pct DOUBLE,
+        hmm_regime_filter VARCHAR,
+        -- Capital deployment
+        initial_capital DOUBLE NOT NULL DEFAULT 0,
+        sip_amount DOUBLE NOT NULL DEFAULT 0,
+        start_date DATE NOT NULL,
+        rebalance_day_of_month INTEGER,
+        portfolio_id INTEGER,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        UNIQUE (band_id, category, lookback_months, top_n, grace_period, rebalance_frequency,
+                exit_rank, trailing_stop_pct, downtrend_filter_pct, hmm_regime_filter)
+    )
+"""
+
 # [AS BUILT] Rule-based Bull/Bear/Sideways market-phase segments — see
 # systems/regime/market_regime.py. Deliberately a SEPARATE table/taxonomy
 # from ml_signals' hmm_regime column (bullish/bearish/sideways/volatile
@@ -1019,6 +1054,7 @@ _ALL_TABLES = {
     "momentum_rankings": _CREATE_MOMENTUM_RANKINGS,
     "momentum_rebalance_suggestions": _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS,
     "momentum_rebalance_state": _CREATE_MOMENTUM_REBALANCE_STATE,
+    "momentum_strategy_configs": _CREATE_MOMENTUM_STRATEGY_CONFIGS,
 }
 
 # [AS BUILT, P2.1] This project has no formal migration system — `CREATE
