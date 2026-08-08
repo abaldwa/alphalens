@@ -34,3 +34,6 @@ datastore/snapshots/
 
 # Backtest DuckDB store (generated, multi-GB, not source)
 datastore/backtest_store/
+
+# Backtest orchestrator cache (generated parquet/log scratch, not source)
+backtest/cache/

@@ -99,8 +99,16 @@ const RAG_CLASSES: Record<RagBand, string> = {
 export function MomentumDynamicReportPage() {
   const [strategy, setStrategy] = useState<string>('')
   const [yoyBandId, setYoyBandId] = useState<string>('')
-  const [redBoundary, setRedBoundary] = useState(0)
-  const [greenBoundary, setGreenBoundary] = useState(18)
+  // Kept as raw strings (not numbers) because a controlled number <input>
+  // bound to Number(value) breaks mid-typing on "-" or a trailing "." --
+  // e.g. typing "-5" hits Number("-") === NaN on the first keystroke,
+  // setState(NaN) makes the input show "NaN", and every further keystroke
+  // just appends to that. Parsing happens only where the boundary is used.
+  const [redBoundaryInput, setRedBoundaryInput] = useState('0')
+  const [greenBoundaryInput, setGreenBoundaryInput] = useState('18')
+  const redBoundary = Number(redBoundaryInput)
+  const greenBoundary = Number(greenBoundaryInput)
+  const [matrixSort, setMatrixSort] = useState<Record<number, { key: string; dir: 'asc' | 'desc' }>>({})
   const queryClient = useQueryClient()
 
   const report = useQuery({
@@ -228,6 +236,56 @@ export function MomentumDynamicReportPage() {
     if (present.length === 0) return null
     const growth = present.reduce((acc, y) => acc * (1 + (byYear.get(y) ?? 0) / 100), 1)
     return (Math.pow(growth, 1 / present.length) - 1) * 100
+  }
+
+  function matrixRagCounts(byYear: Map<string, number>, years: string[]): Record<RagBand, number> {
+    const counts: Record<RagBand, number> = { red: 0, amber: 0, green: 0 }
+    for (const y of years) {
+      const v = byYear.get(y)
+      if (v != null) counts[classifyRag(v, redBoundary, greenBoundary)] += 1
+    }
+    return counts
+  }
+
+  function sortedMatrixRows(
+    band: { years: string[]; rows: Array<{ variantId: string; label: string; byYear: Map<string, number> }> },
+    bandId: number,
+  ) {
+    const sort = matrixSort[bandId]
+    const rows = [...band.rows]
+    if (!sort) return rows.sort((a, b) => a.label.localeCompare(b.label))
+    const valueFor = (row: (typeof rows)[number]): number | string | null => {
+      if (sort.key === 'label') return row.label
+      if (sort.key === 'cagr') return computeCagr(row.byYear, band.years)
+      if (sort.key === 'red' || sort.key === 'amber' || sort.key === 'green') {
+        return matrixRagCounts(row.byYear, band.years)[sort.key]
+      }
+      return row.byYear.get(sort.key) ?? null
+    }
+    rows.sort((a, b) => {
+      const av = valueFor(a)
+      const bv = valueFor(b)
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      const cmp = typeof av === 'string' && typeof bv === 'string' ? av.localeCompare(bv) : Number(av) - Number(bv)
+      return sort.dir === 'asc' ? cmp : -cmp
+    })
+    return rows
+  }
+
+  function toggleMatrixSort(bandId: number, key: string) {
+    setMatrixSort((prev) => {
+      const current = prev[bandId]
+      const dir: 'asc' | 'desc' = current?.key === key && current.dir === 'asc' ? 'desc' : 'asc'
+      return { ...prev, [bandId]: { key, dir } }
+    })
+  }
+
+  function sortIndicator(bandId: number, key: string): string {
+    const sort = matrixSort[bandId]
+    if (!sort || sort.key !== key) return ''
+    return sort.dir === 'asc' ? ' ▲' : ' ▼'
   }
 
   const columns = useMemo<ColumnDef<MomentumDynamicReportVariant, unknown>[]>(
@@ -612,31 +670,34 @@ export function MomentumDynamicReportPage() {
               <span className={`inline-block h-3 w-3 rounded-sm ${RAG_CLASSES.red}`} />
               Red: return &lt;
               <input
-                type="number"
-                step={0.5}
-                value={redBoundary}
-                onChange={(e) => setRedBoundary(Number(e.target.value))}
-                className="h-7 w-16 rounded-[var(--radius-token)] border border-border bg-transparent px-1.5 text-xs"
+                type="text"
+                inputMode="decimal"
+                value={redBoundaryInput}
+                onChange={(e) => setRedBoundaryInput(e.target.value)}
+                className="h-7 w-16 rounded-[var(--radius-token)] border border-border bg-background px-1.5 text-xs"
               />
               %
             </label>
             <label className="flex items-center gap-2">
               <span className={`inline-block h-3 w-3 rounded-sm ${RAG_CLASSES.amber}`} />
-              Amber: {redBoundary}% –
+              Amber: {redBoundaryInput}% –
               <input
-                type="number"
-                step={0.5}
-                value={greenBoundary}
-                onChange={(e) => setGreenBoundary(Number(e.target.value))}
-                className="h-7 w-16 rounded-[var(--radius-token)] border border-border bg-transparent px-1.5 text-xs"
+                type="text"
+                inputMode="decimal"
+                value={greenBoundaryInput}
+                onChange={(e) => setGreenBoundaryInput(e.target.value)}
+                className="h-7 w-16 rounded-[var(--radius-token)] border border-border bg-background px-1.5 text-xs"
               />
               %
             </label>
             <label className="flex items-center gap-2">
               <span className={`inline-block h-3 w-3 rounded-sm ${RAG_CLASSES.green}`} />
-              Green: return &ge; {greenBoundary}%
+              Green: return &ge; {greenBoundaryInput}%
             </label>
-            {greenBoundary <= redBoundary ? (
+            <span className="text-muted-foreground">(global — applies to every band below)</span>
+            {Number.isNaN(redBoundary) || Number.isNaN(greenBoundary) ? (
+              <span className="text-red">Enter valid numbers for both boundaries.</span>
+            ) : greenBoundary <= redBoundary ? (
               <span className="text-red">Green boundary must be greater than the red boundary.</span>
             ) : null}
           </div>
@@ -658,25 +719,51 @@ export function MomentumDynamicReportPage() {
                     <table className="w-full border-collapse text-xs">
                       <thead>
                         <tr>
-                          <th className="sticky left-0 z-10 bg-card px-2 py-1.5 text-left font-semibold">Strategy</th>
+                          <th
+                            className="sticky left-0 z-10 cursor-pointer select-none bg-card px-2 py-1.5 text-left font-semibold"
+                            onClick={() => toggleMatrixSort(bandId, 'label')}
+                          >
+                            Strategy{sortIndicator(bandId, 'label')}
+                          </th>
                           {band.years.map((y) => (
-                            <th key={y} className="px-2 py-1.5 text-right font-semibold">
+                            <th
+                              key={y}
+                              className="cursor-pointer select-none px-2 py-1.5 text-right font-semibold"
+                              onClick={() => toggleMatrixSort(bandId, y)}
+                            >
                               {y}
+                              {sortIndicator(bandId, y)}
                             </th>
                           ))}
-                          <th className="px-2 py-1.5 text-right font-semibold">CAGR</th>
-                          <th className="px-2 py-1.5 text-right font-semibold text-red">Red</th>
-                          <th className="px-2 py-1.5 text-right font-semibold text-amber">Amber</th>
-                          <th className="px-2 py-1.5 text-right font-semibold text-green">Green</th>
+                          <th
+                            className="cursor-pointer select-none px-2 py-1.5 text-right font-semibold"
+                            onClick={() => toggleMatrixSort(bandId, 'cagr')}
+                          >
+                            CAGR{sortIndicator(bandId, 'cagr')}
+                          </th>
+                          <th
+                            className="cursor-pointer select-none px-2 py-1.5 text-right font-semibold text-red"
+                            onClick={() => toggleMatrixSort(bandId, 'red')}
+                          >
+                            Red{sortIndicator(bandId, 'red')}
+                          </th>
+                          <th
+                            className="cursor-pointer select-none px-2 py-1.5 text-right font-semibold text-amber"
+                            onClick={() => toggleMatrixSort(bandId, 'amber')}
+                          >
+                            Amber{sortIndicator(bandId, 'amber')}
+                          </th>
+                          <th
+                            className="cursor-pointer select-none px-2 py-1.5 text-right font-semibold text-green"
+                            onClick={() => toggleMatrixSort(bandId, 'green')}
+                          >
+                            Green{sortIndicator(bandId, 'green')}
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
-                        {band.rows.map((row) => {
-                          const counts: Record<RagBand, number> = { red: 0, amber: 0, green: 0 }
-                          for (const y of band.years) {
-                            const v = row.byYear.get(y)
-                            if (v != null) counts[classifyRag(v, redBoundary, greenBoundary)] += 1
-                          }
+                        {sortedMatrixRows(band, bandId).map((row) => {
+                          const counts = matrixRagCounts(row.byYear, band.years)
                           const cagr = computeCagr(row.byYear, band.years)
                           return (
                             <tr key={row.variantId} className="border-t border-border">
