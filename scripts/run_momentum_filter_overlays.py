@@ -76,6 +76,11 @@ from features.momentum_universe import RANK_BANDS, all_yearly_full_rankings, yea
 from features.regime_signal import HIGH_VOL, compute_realized_vol_regime
 from scripts.download_damodaran_datasets import SECTOR_UNLEVERED_BETAS
 
+# Per-ticker HMM regime (bearish/sideways/bullish) from daily feature parquets
+HMM_REGIME_BEARISH = 0.0
+HMM_REGIME_SIDEWAYS = 1.0
+HMM_REGIME_BULLISH = 2.0
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -189,6 +194,59 @@ def _load_quality_scores(tickers: List[str]) -> Dict[str, Dict[str, float]]:
         for t, f, m in rows
         if f is not None or m is not None
     }
+
+
+def _load_per_ticker_hmm_regime(
+    tickers: List[str], start_date: str, end_date: str
+) -> Dict[str, pd.DataFrame]:
+    """Load per-ticker HMM regime (bearish=0, sideways=1, bullish=2) from daily
+    feature parquets for the given ticker list and date range.
+
+    Returns a dict of ticker -> DataFrame with index=date, columns=['hmm_regime'].
+    Missing tickers/dates get NaN (never fabricated).
+    """
+    from config.settings import FEATURES_DAILY_DIR
+
+    if not tickers:
+        return {}
+
+    logger.info("Loading per-ticker HMM regime from %s", FEATURES_DAILY_DIR)
+    regime_by_ticker = {}
+    ticker_set = set(tickers)
+
+    parquets = sorted(FEATURES_DAILY_DIR.glob("*.parquet"))
+    if not parquets:
+        logger.warning("No feature parquets found at %s", FEATURES_DAILY_DIR)
+        return {}
+
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
+    relevant_parquets = [p for p in parquets if start_ts <= pd.Timestamp(p.stem) <= end_ts]
+
+    for p in relevant_parquets:
+        date_str = p.stem
+        df = pd.read_parquet(p, columns=["ticker", "hmm_regime"])
+        df = df[df["ticker"].isin(ticker_set) & df["hmm_regime"].notna()]
+        if df.empty:
+            continue
+        for _, row in df.iterrows():
+            ticker = row["ticker"]
+            if ticker not in regime_by_ticker:
+                regime_by_ticker[ticker] = []
+            regime_by_ticker[ticker].append({"date": date_str, "hmm_regime": row["hmm_regime"]})
+
+    # Convert to DataFrames with DatetimeIndex
+    out = {}
+    for ticker, rows in regime_by_ticker.items():
+        if not rows:
+            continue
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+        out[ticker] = df[["hmm_regime"]]
+
+    logger.info("Loaded per-ticker HMM regime for %d tickers", len(out))
+    return out
 
 
 def _run_variant(

@@ -860,7 +860,10 @@ class TestSanityKnownSparseColumns:
         assert "contingent_liability_ratio" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
         assert "subsidiary_count" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
         assert "board_independence" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
-        assert "benford_mad" in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+        # [2026-08-08] benford_mad was exempted as a known-sparse/unsourceable
+        # column, but it is now 90.9% populated in feature parquets, so it must
+        # no longer be exempted from the all-NaN hard-floor.
+        assert "benford_mad" not in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
 
 
 class TestStepSanityCheck:

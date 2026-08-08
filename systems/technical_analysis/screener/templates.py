@@ -703,6 +703,83 @@ _S008 = ScreenerTemplate(
 )
 
 # ---------------------------------------------------------------------------
+# Category R — Regime (per-ticker HMM latent-state detection, 5 templates)
+# ---------------------------------------------------------------------------
+# Uses the 6 hmm_regime_* columns produced by the per-ticker GaussianHMM(4)
+# detector (systems/ml_signal_engine/models/hmm/regime_detector.py). The HMM
+# fits each ticker's own hidden state sequence over its 5 observables, so
+# these templates surface regime transitions that standard TA indicators on
+# the same name may not flag until later — the "stocks follow their own
+# patterns" signal. All 6 columns are float64 in the daily parquet:
+#   hmm_regime             : state rank 0.0=bearish, 1.0=sideways,
+#                            2.0=volatile, 3.0=bullish
+#   hmm_regime_transition  : 1.0 = state changed vs prior day
+#   hmm_regime_duration    : consecutive days in current state
+#   hmm_regime_stability   : max state probability (label confidence)
+#   hmm_regime_prob_bullish/bearish : per-state emission probabilities
+# NaN rows (undecodable ticker/day) are auto-excluded by the engine's
+# fillna(False) mask.
+
+_R1 = ScreenerTemplate(
+    name="R1",
+    category="R",
+    description="Regime Flip: Bullish Entry",
+    conditions=[
+        # Ticker's own HMM state is bullish (rank 2 in 3-state model)
+        {"feature": "hmm_regime", "op": "eq", "value": 2.0},
+        # Just transitioned into it — the hidden pattern just became visible
+        {"feature": "hmm_regime_transition", "op": "eq", "value": 1.0},
+        # High label confidence (max state probability)
+        {"feature": "hmm_regime_stability", "op": "gte", "value": 0.85},
+    ],
+    key_display_features=["hmm_regime_prob_bullish", "hmm_regime_stability", "hmm_regime_duration"],
+)
+
+_R2 = ScreenerTemplate(
+    name="R2",
+    category="R",
+    description="Regime Flip: Bearish Exit",
+    conditions=[
+        # Ticker's own HMM state is bearish (rank 0)
+        {"feature": "hmm_regime", "op": "eq", "value": 0.0},
+        # Just transitioned into it — de-risk signal
+        {"feature": "hmm_regime_transition", "op": "eq", "value": 1.0},
+        # High label confidence
+        {"feature": "hmm_regime_stability", "op": "gte", "value": 0.80},
+    ],
+    key_display_features=["hmm_regime_prob_bearish", "hmm_regime_stability", "hmm_regime_duration"],
+)
+
+_R3 = ScreenerTemplate(
+    name="R3",
+    category="R",
+    description="Stable Bullish Regime",
+    conditions=[
+        # Established bullish state (rank 2 in 3-state model)
+        {"feature": "hmm_regime", "op": "eq", "value": 2.0},
+        # Strong bullish emission probability
+        {"feature": "hmm_regime_prob_bullish", "op": "gte", "value": 0.70},
+        # Very high label confidence
+        {"feature": "hmm_regime_stability", "op": "gte", "value": 0.95},
+        # At least 10 days in the regime — trend is mature/confirmed
+        {"feature": "hmm_regime_duration", "op": "gte", "value": 10},
+    ],
+    key_display_features=["hmm_regime_prob_bullish", "hmm_regime_stability", "hmm_regime_duration"],
+)
+
+_R4 = ScreenerTemplate(
+    name="R4",
+    category="R",
+    description="Regime Transition: Any",
+    conditions=[
+        # Any high-confidence state change, regardless of direction
+        {"feature": "hmm_regime_transition", "op": "eq", "value": 1.0},
+        {"feature": "hmm_regime_stability", "op": "gte", "value": 0.80},
+    ],
+    key_display_features=["hmm_regime", "hmm_regime_prob_bullish", "hmm_regime_stability"],
+)
+
+# ---------------------------------------------------------------------------
 # Master registry
 # ---------------------------------------------------------------------------
 
@@ -721,13 +798,15 @@ TEMPLATES: List[ScreenerTemplate] = [
     _F1, _F2, _F3, _F4, _F5, _F6, _F7, _F8,
     # Category S (7 — S007/S009/S010/S011/S012 excluded; see module docstring)
     _S001, _S002, _S003, _S004, _S005, _S006, _S008,
+    # Category R (4 — per-ticker HMM regime, R5 removed: "volatile" was mislabeled)
+    _R1, _R2, _R3, _R4,
 ]
 
 # Fast name → template lookup used by ScreenerEngine
 TEMPLATE_MAP: Dict[str, ScreenerTemplate] = {t.name: t for t in TEMPLATES}
 
-assert len(TEMPLATES) == 42, (
-    f"Expected 42 templates, got {len(TEMPLATES)}. "
+assert len(TEMPLATES) == 46, (
+    f"Expected 46 templates, got {len(TEMPLATES)}. "
     "If you added or removed templates, update this assertion."
 )
 
@@ -785,9 +864,13 @@ TEMPLATE_STYLE: Dict[str, str] = {
     "S005": "Momentum",         # VWAP reversal — sma_20_ratio>1.0 + volume_ratio_21d>1.3, no oversold/oscillator condition; this is a breakout-on-volume continuation entry, not a snap-back-from-extreme reversion
     "S006": "Trend Following",  # Ichimoku cloud breakout
     "S008": "Momentum",        # MACD histogram
+    "R1": "Regime",            # HMM bullish regime transition entry
+    "R2": "Regime",            # HMM bearish regime transition exit
+    "R3": "Regime",            # HMM established stable bullish regime
+    "R4": "Regime",            # HMM any regime transition
 }
 assert set(TEMPLATE_STYLE) == set(TEMPLATE_MAP), "TEMPLATE_STYLE must classify every template, no more, no less."
-STRATEGY_STYLES: List[str] = ["Momentum", "Trend Following", "Mean Reversion", "Volatility"]
+STRATEGY_STYLES: List[str] = ["Momentum", "Trend Following", "Mean Reversion", "Volatility", "Regime"]
 
 # ---------------------------------------------------------------------------
 # Per-template exit params (PerTemplateExitPolicy), one set of stop/target/
@@ -820,6 +903,10 @@ STYLE_EXIT_PARAMS: Dict[str, Dict[str, float]] = {
     "Trend Following": {"stop_pct": 0.05, "target_pct": 0.12, "max_hold_days": 25},
     "Mean Reversion": {"stop_pct": 0.05, "target_pct": 0.10, "max_hold_days": 21},
     "Volatility": {"stop_pct": 0.045, "target_pct": 0.09, "max_hold_days": 20},
+    # Regime: a state change is a slower, more persistent signal than a
+    # momentum/mean-reversion event — the regime thesis (and the HMM state)
+    # plays out over weeks, so give it the most room to run.
+    "Regime": {"stop_pct": 0.06, "target_pct": 0.15, "max_hold_days": 30},
 }
 
 for _tname, _style in TEMPLATE_STYLE.items():

@@ -1,4 +1,4 @@
-// Consolidated Momentum strategy report — scripts/run_momentum_dynamic_report.py's
+// Consolidated Momentum strategy report -- scripts/run_momentum_dynamic_report.py's
 // All Risk / Balanced / Risk-Managed / Max-Defensive sweep across all 7 rank
 // bands (1-50 through 501-800), replacing the old Recommended Strategies page
 // plus the static Backtest Ledger / Year-on-Year Report / Rank-Band Sweep
@@ -92,8 +92,6 @@ export function MomentumDynamicReportPage() {
 
   const strategyOptions = useMemo(() => Array.from(new Set(allRows.map((r) => r.strategy))), [allRows])
 
-  const mostImportant = allRows.find((r) => r.is_most_important)
-
   // Client-side fallback for top_cagr_rank: the currently-loaded report was
   // generated before the backend computed this field, but every variant
   // still carries a real `cagr` value, so the top-2-by-CAGR per universe can
@@ -179,7 +177,6 @@ export function MomentumDynamicReportPage() {
               {STRATEGY_LABELS[v.strategy]}
               {v.is_recommended ? <Badge variant="success">Recommended</Badge> : null}
               {v.is_band_most_important ? <Badge variant="default">Most Important</Badge> : null}
-              {v.is_most_important ? <Badge variant="warning">Overall Best</Badge> : null}
               {topCagrRank ? <Badge variant="outline">Top CAGR #{topCagrRank}</Badge> : null}
             </span>
           )
@@ -414,34 +411,20 @@ export function MomentumDynamicReportPage() {
         Within each rank band, the highest-scoring variant per category is marked{' '}
         <Badge variant="success">Recommended</Badge> — score ={' '}
         {report.data?.score_formula ?? '0.30·z(Sharpe) + 0.25·z(Sortino) + 0.25·z(CAGR) − 0.20·z(|Max Drawdown|)'},
-        z-scored within each (band, category) group of 60 variants. Within each universe, the best-scoring
-        recommended pick is marked <Badge variant="default">Most Important</Badge>; the single best pick across
-        every universe is additionally marked <Badge variant="warning">Overall Best</Badge>. The top 2 variants by
-        raw CAGR in each universe (any category/config) are marked{' '}
-        <Badge variant="outline">Top CAGR #1/#2</Badge> for comparison against the risk-adjusted picks.
+        z-scored within each (band, category) group of 60 variants. The single best variant across all 240
+        configs in each universe is marked <Badge variant="default">Most Important</Badge> — the strategy
+        deployed for that band. The top 2 variants by raw CAGR in each universe (any category/config) are
+        marked <Badge variant="outline">Top CAGR #1/#2</Badge> for comparison against the risk-adjusted picks.
       </div>
-
-      {mostImportant ? (
-        <Card className="mb-4 border-accent">
-          <CardHeader>
-            <CardTitle>Most Important Strategy</CardTitle>
-            <CardDescription>
-              {STRATEGY_LABELS[mostImportant.strategy]} · Universe {bandLabel(mostImportant.rank_start, mostImportant.rank_end)} ·
-              {' '}{mostImportant.lookback_months}mo lookback · {mostImportant.rebalance_period} rebalance · Top {mostImportant.top_n} ·
-              {' '}CAGR {fmtPct(mostImportant.cagr)} · Sharpe {fmtNum(mostImportant.sharpe, 2)} · Max DD {fmtPct(mostImportant.max_drawdown)}
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      ) : null}
 
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>Recommended & Most Important Strategies</CardTitle>
           <CardDescription>
             The highest-scoring variant per (universe, category), the per-universe{' '}
-            <Badge variant="default">Most Important</Badge> pick, the <Badge variant="warning">Overall Best</Badge>{' '}
-            pick, and the per-universe <Badge variant="outline">Top CAGR #1/#2</Badge> variants (any
-            category/config) for comparison — {recommendedRows.length} rows across all 7 universes.
+            <Badge variant="default">Most Important</Badge> best strategy, and the per-universe{' '}
+            <Badge variant="outline">Top CAGR #1/#2</Badge> variants (any category/config) for comparison
+            — {recommendedRows.length} rows across all 7 universes.
           </CardDescription>
         </CardHeader>
         <CardContent>

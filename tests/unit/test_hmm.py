@@ -74,7 +74,7 @@ def _make_two_regime_series(n_per_regime=200, seed=5):
 
 
 class TestComputeHmmObservables:
-    def test_five_observable_columns_added(self):
+    def test_three_observable_columns_added(self):
         ohlcv = _make_ohlcv(["A"], n_days=60, seed=1)
         out = compute_hmm_observables(ohlcv)
         for col in OBSERVABLE_COLUMNS:
@@ -103,7 +103,7 @@ class TestHMMRegimeDetectorFit:
         with pytest.raises(RuntimeError):
             detector.predict_regime(obs)
 
-    def test_four_states_and_bearish_bullish_labeling_by_mean_return(self):
+    def test_three_states_and_bearish_bullish_labeling_by_mean_return(self):
         """02_models.md: 'States labelled correctly by mean return sign' — the bearish
         first half must rank lower than the bullish second half on average."""
         df, n_per_regime = _make_two_regime_series()
@@ -112,11 +112,11 @@ class TestHMMRegimeDetectorFit:
 
         detector = HMMRegimeDetector(n_restarts=8, n_iter=300, random_state=7)
         detector.fit(obs)
-        assert detector._model.n_components == 4
+        assert detector._model.n_components == 3
 
         regimes, probs = detector.predict_regime(obs)
-        assert set(regimes.dropna().unique()) <= {0.0, 1.0, 2.0, 3.0}
-        assert list(probs.columns) == [f"state_prob_{r}" for r in range(4)]
+        assert set(regimes.dropna().unique()) <= {0.0, 1.0, 2.0}
+        assert list(probs.columns) == [f"state_prob_{r}" for r in range(3)]
 
         bear_half_mean = regimes.iloc[:n_per_regime].mean()
         bull_half_mean = regimes.iloc[n_per_regime:].mean()

@@ -6,7 +6,7 @@ export interface NavSubItem {
   id: string
   label: string
   href: string
-  /** External link (e.g. a published research artifact) — opened in a new tab
+  /** External link (e.g. a published research artifact) -- opened in a new tab
    * instead of being treated as an internal Vite-entry route. */
   external?: boolean
   /** Optional one-level sub-grouping within a section's sub-menu (e.g.
@@ -21,7 +21,7 @@ export interface NavSection {
   label: string
   href: string
   subItems?: NavSubItem[]
-  /** External link (e.g. a published research artifact) — opened in a new tab
+  /** External link (e.g. a published research artifact) -- opened in a new tab
    * instead of being treated as an internal Vite-entry route. */
   external?: boolean
 }
@@ -119,6 +119,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'exit_urgency', label: 'Exit Urgency', href: '/ml-exit_urgency' },
       { id: 'universe', label: 'Universe', href: '/ml-universe' },
       { id: 'tools', label: 'Tools', href: '/ml-tools' },
+      { id: 'regime', label: 'HMM Regime', href: '/ml-regime' },
     ],
   },
   {

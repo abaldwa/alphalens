@@ -1475,7 +1475,7 @@ _SANITY_KNOWN_SPARSE_COLUMNS = {
     "rpt_intensity", "auditor_change_flag", "cfo_tenure_months",
     "board_independence", "director_resignation_count_4q",
     "whistle_blower_policy", "gst_revenue_divergence", "peer_outlier_score",
-    "tax_rate_anomaly", "benford_mad",
+    "tax_rate_anomaly",
     # [2026-08-01] receivable_days/inventory_days (base columns) were already
     # exempted above, but these derived _change columns were missed when
     # added — same root cause (ingestion/scrapers/screener.py hardcodes the
@@ -2476,7 +2476,6 @@ def main() -> None:
         schedule_nse_xbrl_fundamentals,
         schedule_promoter_pledge_backfill,
         schedule_weekend_feature_backfill,
-        schedule_weekend_fundamentals,
     )
 
     # 2026-07-07: ensure the DuckDB schema is fully provisioned before any
@@ -2567,17 +2566,20 @@ def main() -> None:
     # single-job version) is left intact and importable for any script
     # that still wants the original weekly-catch-up shape.
     schedule_model_training_nightly(scheduler)
-    # Weekend jobs: feature backfill (09:00 IST Sat) + fundamentals (10:30 IST Sat).
-    # weekend_fundamentals (Screener/Trendlyne) is the FALLBACK source and
-    # deliberately runs after nse_xbrl_fundamentals (the primary source).
+    # Weekend jobs: feature backfill (09:00 IST Sat).
+    # 2026-08-08: weekend_fundamentals (Trendlyne) removed — Trendlyne's WAF
+    # makes automated scraping unreliable, and the data it provides (revenue,
+    # ebitda, pat, eps, roe, roce, etc.) is already fully covered by
+    # nse_xbrl_fundamentals (primary) + Screener.in (fallback).  NSE XBRL
+    # fires at 05:00 IST Saturday with a ~2-3h head start over the rest of
+    # the weekend batch.
     schedule_weekend_feature_backfill(scheduler)
-    schedule_weekend_fundamentals(scheduler)
     # A54 (2026-07-10): two real, live-verified backfill scripts
     # (promoter-pledge from NSE, balance-sheet from cached Screener pages)
     # existed and worked but were never scheduled — 71% of
     # shareholding.promoter_pledge rows were NULL purely because of that.
-    # Fire after weekend_fundamentals (10:30) has refreshed the base rows
-    # these enrich, before model_training (12:00).
+    # Fire after weekend_feature_backfill (09:00) has refreshed the base
+    # feature rows these enrich, before model_training (12:00).
     schedule_promoter_pledge_backfill(scheduler)
     schedule_balance_sheet_backfill(scheduler)
     # FutureDevelopment.md #14: multibagger/forensic scoring were operator-CLI

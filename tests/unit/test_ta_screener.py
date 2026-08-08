@@ -31,22 +31,22 @@ def test_templates_count_exactly_42():
     """SPEC-TA-005: the registry must define exactly 42 pre-built templates.
 
     Verifies that:
-    1. TEMPLATES list has exactly 42 entries.
+    1. TEMPLATES list has exactly 46 entries.
     2. All template names are unique.
-    3. ScreenerEngine.list_templates() also returns exactly 42 TemplateInfo objects.
+    3. ScreenerEngine.list_templates() also returns exactly 46 TemplateInfo objects.
     """
-    assert len(TEMPLATES) == 42, (
-        f"Expected 42 templates, got {len(TEMPLATES)}. "
+    assert len(TEMPLATES) == 46, (
+        f"Expected 46 templates, got {len(TEMPLATES)}. "
         "Check systems/technical_analysis/screener/templates.py."
     )
 
     names = [t.name for t in TEMPLATES]
-    assert len(set(names)) == 42, "Duplicate template names detected"
+    assert len(set(names)) == 46, "Duplicate template names detected"
 
     engine = ScreenerEngine()
     infos = engine.list_templates()
-    assert len(infos) == 42, (
-        f"ScreenerEngine.list_templates() returned {len(infos)}, expected 42"
+    assert len(infos) == 46, (
+        f"ScreenerEngine.list_templates() returned {len(infos)}, expected 46"
     )
 
 
@@ -591,7 +591,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
-        assert len(template_results) == 42
+        assert len(template_results) == 46
         # A1 should have TICKER_A as a full match (verified in test 2 above)
         assert any(r.ticker == "TICKER_A" for r in template_results.get("A1", []))
 
@@ -621,7 +621,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
         assert template_results["A1"] == []  # failed template degrades to empty, not a crash
-        assert len(template_results) == 42
+        assert len(template_results) == 46
 
     def test_run_writes_to_signals_db_and_returns_counts(self, tmp_path, monkeypatch):
         import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
@@ -637,7 +637,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         counts = checker.run("2026-07-02")
 
-        assert len(counts) == 42
+        assert len(counts) == 46
         assert counts["A1"] == 1
 
         from datastore.api.db import get_duckdb_connection
@@ -662,7 +662,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
 # missing/typo'd feature as "condition unmet" with only a WARNING log, so a
 # future feature-column rename could zero out a template's results with no
 # test failure. This test statically cross-checks every "feature"/"feature2"
-# and key_display_features entry across all 42 templates against the real
+# and key_display_features entry across all 46 templates against the real
 # feature registries. No Parquet/DB I/O — pure static data-structure check.
 # ---------------------------------------------------------------------------
 
@@ -671,11 +671,13 @@ def test_all_template_feature_references_are_real_columns():
     from features.technical import CORE_TECHNICAL_FEATURES
     from features.advanced_technical import ADVANCED_TECHNICAL_FEATURES
     from features.pattern_scores import PATTERN_FEATURES
+    from systems.ml_signal_engine.models.hmm.regime_detector import HMM_REGIME_FEATURES
 
     valid_features = (
         set(CORE_TECHNICAL_FEATURES)
         | set(ADVANCED_TECHNICAL_FEATURES)
         | set(PATTERN_FEATURES)
+        | set(HMM_REGIME_FEATURES)  # per-ticker HMM regime columns (matrix_builder adds these)
         | {"ticker"}
     )
 

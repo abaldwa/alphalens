@@ -57,7 +57,7 @@ function StrategyRecentOutcomesDrawer({ template, onClose }: { template: string 
     <Sheet open={!!template} onOpenChange={(open) => !open && onClose()}>
       <SheetContent side="right" className="w-full sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle>{template} — latest recommendations</SheetTitle>
+          <SheetTitle>{template} -- latest recommendations</SheetTitle>
         </SheetHeader>
         <div className="mt-4">
           {outcomes.isLoading ? (
@@ -106,7 +106,7 @@ function fmtDelta(v: number | null): string {
   return v > 0 ? `+${pct}pp` : `${pct}pp`
 }
 
-const STYLE_ORDER = ['Momentum', 'Trend Following', 'Mean Reversion', 'Volatility']
+const STYLE_ORDER = ['Momentum', 'Trend Following', 'Mean Reversion', 'Volatility', 'Regime']
 
 const TIER_BADGE_VARIANT: Record<string, 'success' | 'outline' | 'destructive'> = {
   VALIDATED: 'success',

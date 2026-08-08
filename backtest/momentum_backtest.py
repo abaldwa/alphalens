@@ -140,6 +140,7 @@ class Position:
     entry_date: str
     entry_rank: Optional[int]
     grace_remaining: Optional[int] = None  # None = core (in current top-N) holding
+    peak_price: Optional[float] = None  # trailing-stop running high; None until first mark
 
 
 @dataclass
@@ -202,6 +203,10 @@ class MomentumBacktester:
         quality_scores: Optional[Dict[str, Dict[str, float]]] = None,
         quality_gate: Optional[Dict[str, float]] = None,
         momentum_panel: Optional[pd.DataFrame] = None,
+        exit_rank: Optional[int] = None,
+        trailing_stop_pct: Optional[float] = None,
+        per_ticker_hmm_regime: Optional[Dict[str, pd.DataFrame]] = None,
+        disable_hmm_regimes: Optional[Set[float]] = None,
     ):
         """
         price_panel : wide close-price DataFrame (index=date, columns=ticker),
@@ -380,6 +385,39 @@ class MomentumBacktester:
             {"min_f_score", "max_m_score"} may be supplied. None (default,
             or an empty dict) applies no quality filter, matching prior
             behavior.
+        exit_rank : int, optional
+            Asymmetric exit band (Tier 1, 2026-08-08): entry stays the
+            top_n momentum names, but a HELD position is not considered
+            "dropped" (doesn't enter grace) until its momentum rank falls
+            beyond `exit_rank`, where exit_rank >= top_n. With top_n=10 and
+            exit_rank=15, a winner that slips to rank 12 is held (ridden
+            longer) instead of entering grace; only a name at rank > 15
+            starts its grace countdown. None (default) keeps the symmetric
+            behavior: a held name drops to grace as soon as it leaves the
+            top_n target set.
+        trailing_stop_pct : float, optional
+            Max-drawdown-from-peak trailing stop (Tier 1, 2026-08-08):
+            checked on EVERY trading day (between rebalances), so a crashed
+            name is cut before the next scheduled rebalance instead of
+            riding a multi-week drawdown. Each open position tracks the
+            higher of its entry price and running high; if the current
+            price falls to <= peak * (1 - trailing_stop_pct), the position
+            is sold at the current close. Before a name has risen, peak ==
+            entry_price, so this also acts as a stop-loss that cuts fresh
+            losers fast. A name whose close is NaN on a given day (real
+            data gap past MAX_FORWARD_FILL_TRADING_DAYS) is skipped that
+            day, never stopped on a fabricated price. None (default)
+            disables it, matching prior behavior.
+        per_ticker_hmm_regime : Dict[str, pd.DataFrame], optional
+            Per-ticker HMM regime data from daily feature parquets. Dict of
+            ticker -> DataFrame with DatetimeIndex and 'hmm_regime' column
+            (values 0=bearish, 1=sideways, 2=bullish). If provided,
+            tickers in bearish regime (0) are excluded from new buys at
+            each rebalance. Missing tickers/dates (NaN) are never excluded
+            — same convention as other optional filters.
+        disable_hmm_regimes : set of float, optional
+            HMM regime values to disable new buys for. Default {0.0} (bearish
+            only). Ignored unless per_ticker_hmm_regime is also set.
         """
         if price_panel.empty:
             raise ValueError("price_panel must not be empty")
@@ -417,6 +455,10 @@ class MomentumBacktester:
         self.quality_scores = quality_scores or {}
         self.quality_gate = quality_gate or {}
         self.momentum_panel = momentum_panel
+        self.exit_rank = exit_rank
+        self.trailing_stop_pct = trailing_stop_pct
+        self.per_ticker_hmm_regime = per_ticker_hmm_regime or {}
+        self.disable_hmm_regimes = disable_hmm_regimes or {0.0}  # default: bearish only
 
         self.cash = starting_capital
         self.positions: Dict[str, Position] = {}
@@ -523,6 +565,48 @@ class MomentumBacktester:
         ret = (cur_price - prev_price) / prev_price
         return abs(ret) >= self.circuit_band_pct
 
+    def _apply_trailing_stops(self, date: pd.Timestamp, result: MomentumBacktestResult) -> None:
+        """Daily trailing-stop exit (Tier 1, 2026-08-08) — checked on every
+        trading day so a crashed name is cut between rebalances instead of
+        riding a multi-week drawdown until the next scheduled sell.
+
+        Each position's peak_price is max(entry_price, highest price seen
+        since entry).  If today's price falls to <= peak * (1 - trailing_stop_pct),
+        the position is sold at the current close.  When the position has
+        never risen above entry (peak == entry_price), this acts as a
+        stop-loss that implements "cut losers fast" from day one.
+
+        A ticker whose price is NaN (real data gap past
+        MAX_FORWARD_FILL_TRADING_DAYS) is skipped that day — never
+        stopped on a fabricated forward-filled close.
+        """
+        if self.trailing_stop_pct is None:
+            return
+        prices = self._price_row(date)
+        date_str = str(date.date())
+        for ticker in list(self.positions.keys()):
+            pos = self.positions[ticker]
+            price = prices.get(ticker)
+            if price is None or pd.isna(price) or price <= 0:
+                continue
+            # update peak
+            if pos.peak_price is None or price > pos.peak_price:
+                pos.peak_price = price
+            floor_price = pos.peak_price * (1 - self.trailing_stop_pct)
+            if price <= floor_price:
+                # stop fires — compute adtv for this single ticker (rare, cheap)
+                adtv_cr = None
+                if self.volume_panel is not None:
+                    adtv_s = self._adtv_cr(date, [ticker])
+                    if not adtv_s.empty:
+                        val = adtv_s.get(ticker)
+                        if val is not None and pd.notna(val):
+                            adtv_cr = val
+                proceeds = pos.qty * price
+                self.cash += proceeds - self._one_leg_cost(price, pos.qty, adtv_cr)
+                self._record_sell(result, ticker, date_str, price, None, exit_reason="stop")
+                del self.positions[ticker]
+
     def _price_row(self, date: pd.Timestamp) -> pd.Series:
         """Forward-filled close price per ticker as of `date`. Uses .loc
         directly (date is always a real row of price_panel — every caller
@@ -543,20 +627,29 @@ class MomentumBacktester:
                 holdings_value += pos.qty * price
         return self.cash + holdings_value
 
-    def _one_leg_cost(self, price: float, qty: int) -> float:
+    def _one_leg_cost(self, price: float, qty: int, adtv_cr: Optional[float] = None) -> float:
         """Approximate one-side (buy or sell) transaction cost as half the
         round-trip rate — costs.py only exposes a round-trip helper since
         its existing callers always cost a full open+close position; here
         buys and sells happen independently across different rebalances,
         so each leg is costed at roundtrip_pct/2, an approximation stated
         explicitly rather than silently assuming full round-trip cost
-        applies to a single leg."""
+        applies to a single leg.
+
+        adtv_cr : average daily traded value (INR crore) for this ticker,
+            passed through to costs.py so that SMALL_CAP_SLIPPAGE_PCT
+            (0.30%) activates for names with ADTV < Rs 1Cr instead of
+            always defaulting to 0.09% (the long-standing 3.3x cost
+            understatement for small-cap positions).  None (default)
+            keeps the old default-slip behavior for callers that don't
+            compute ADTV (e.g. tests without volume_panel).
+        """
         if qty <= 0 or price <= 0:
             return 0.0
         turnover = price * qty
-        return turnover * self.costs.compute_roundtrip_cost_pct(price, qty) / 2.0
+        return turnover * self.costs.compute_roundtrip_cost_pct(price, qty, adtv_cr=adtv_cr) / 2.0
 
-    def _record_sell(self, result: MomentumBacktestResult, ticker: str, sell_date: str, sell_price: float, sell_rank: Optional[int]) -> None:
+    def _record_sell(self, result: MomentumBacktestResult, ticker: str, sell_date: str, sell_price: float, sell_rank: Optional[int], exit_reason: str = "grace") -> None:
         pos = self.positions[ticker]
         holding_days = (pd.Timestamp(sell_date) - pd.Timestamp(pos.entry_date)).days
         result.transactions.append({
@@ -574,6 +667,7 @@ class MomentumBacktester:
             "buy_momentum_rank": pos.entry_rank,
             "sell_momentum_rank": sell_rank,
             "status": "closed",
+            "exit_reason": exit_reason,
         })
 
     def _monthly_injection_dates(self, trading_days: pd.DatetimeIndex) -> List[pd.Timestamp]:
@@ -590,6 +684,17 @@ class MomentumBacktester:
                 dates.append(d)
         return dates[1:]
 
+    def _adtv_cost_lookup(self, date: pd.Timestamp, tickers: List[str]) -> Dict[str, float]:
+        """Per-ticker ADTV (INR crore) for cost computation — pre-computed
+        once per rebalance and threaded into _one_leg_cost calls so
+        SMALL_CAP_SLIPPAGE_PCT activates for sub-Rs 1Cr ADTV names.  When
+        volume_panel is None (e.g. unit tests), returns {} — _one_leg_cost
+        then falls back to the default (non-small-cap) slippage rate."""
+        if not tickers or self.volume_panel is None:
+            return {}
+        adtv = self._adtv_cr(date, tickers)
+        return {t: v for t, v in adtv.items() if pd.notna(v) and v > 0}
+
     def run(self) -> MomentumBacktestResult:
         trading_days = self.price_panel.index
         rebalance_dates = trading_days[self.rebalance_offset_days :: self.rebalance_every_n_trading_days]
@@ -604,7 +709,23 @@ class MomentumBacktester:
         injection_dates = self._monthly_injection_dates(trading_days) if self.sip_amount else []
         injection_idx = 0
 
-        for date in rebalance_dates:
+        # When trailing_stop_pct is active, iterate every trading day so
+        # the stop can fire between rebalance dates (the real "cut losers
+        # fast" mechanism).  The rebalance logic only fires on scheduled
+        # days (guarded below).  When trailing_stop is None, the loop
+        # iterates only over rebalance_dates — same performance as before.
+        rebalance_date_set = set(rebalance_dates) if self.trailing_stop_pct is not None else None
+        loop_dates = trading_days if self.trailing_stop_pct is not None else rebalance_dates
+
+        for date in loop_dates:
+            # --- Daily trailing-stop check (Tier 1, 2026-08-08) ----------------
+            # Runs on every trading day so a crashed name is cut between
+            # rebalances, not at the next scheduled rotation ~2 months later.
+            if self.trailing_stop_pct is not None:
+                self._apply_trailing_stops(date, result)
+                if rebalance_date_set is not None and date not in rebalance_date_set:
+                    continue  # non-rebalance day: stop checked, nothing more
+
             n_bought = 0
             n_sold = 0
 
@@ -679,6 +800,22 @@ class MomentumBacktester:
                 sharply_down = short_term[short_term <= -self.downtrend_filter_pct].index
                 selection_pool = selection_pool.drop(index=[t for t in sharply_down if t in selection_pool.index])
 
+            # Per-ticker HMM regime filter: exclude bearish (and optionally
+            # sideways) regime tickers from new buys. Missing regime data
+            # never excludes (same convention as other optional filters).
+            if self.per_ticker_hmm_regime and not selection_pool.empty:
+                bearish_tickers = set()
+                for ticker in selection_pool.index:
+                    if ticker in self.per_ticker_hmm_regime:
+                        regime_df = self.per_ticker_hmm_regime[ticker]
+                        # Get most recent regime on or before this rebalance date
+                        eligible_regimes = regime_df.loc[:date]
+                        if not eligible_regimes.empty:
+                            latest_regime = eligible_regimes["hmm_regime"].iloc[-1]
+                            if pd.notna(latest_regime) and latest_regime in self.disable_hmm_regimes:
+                                bearish_tickers.add(ticker)
+                selection_pool = selection_pool.drop(index=[t for t in bearish_tickers if t in selection_pool.index])
+
             eligible = selection_pool[selection_pool > self.min_momentum] if self.min_momentum is not None else selection_pool
             target_set = set(eligible.sort_values(ascending=False).head(self.top_n).index) if not eligible.empty else set()
             # 1 = highest momentum, within the active universe band this
@@ -691,13 +828,34 @@ class MomentumBacktester:
             total_value = self._mark_to_market(date, prices)
             date_str = str(date.date())
 
+            # --- Asymmetric exit band (Tier 1, 2026-08-08) ---------------------
+            # With exit_rank set, a held position stays "core" (doesn't enter
+            # grace) as long as its raw momentum rank is <= exit_rank, not
+            # just when it's in the top_n buy set.  With top_n=10 and
+            # exit_rank=15: a winner at rank 12 is held (ridden longer) —
+            # only a name at rank > 15 starts its grace countdown.  This
+            # directly implements the "ride winners" design intent that the
+            # symmetric top_n threshold was missing.
+            if self.exit_rank is not None and not rank_series.empty:
+                keep_set = set(rank_series[rank_series <= self.exit_rank].index) | target_set
+            else:
+                keep_set = target_set
+
             # 1. Update grace status for currently-held names (see
             #    decide_grace_transitions' docstring for why this is a
             #    shared pure function rather than inlined here).
+            #    Pass keep_set (may be wider than target_set) so names
+            #    within exit_rank stay core instead of entering grace.
             held_grace = {t: p.grace_remaining for t, p in self.positions.items()}
-            updated_grace = decide_grace_transitions(held_grace, target_set, self.grace_cycles)
+            updated_grace = decide_grace_transitions(held_grace, keep_set, self.grace_cycles)
             for ticker, grace_remaining in updated_grace.items():
                 self.positions[ticker].grace_remaining = grace_remaining
+
+            # --- ADTV lookup for cost computation ------------------------------
+            # Pre-computed once per rebalance and threaded into _one_leg_cost
+            # so SMALL_CAP_SLIPPAGE_PCT (0.30%) activates for names with
+            # ADTV < Rs 1Cr instead of always defaulting to 0.09%.
+            cost_adtv = self._adtv_cost_lookup(date, list(set(self.positions.keys()) | target_set))
 
             # 2. Force-sell names whose grace period has fully elapsed.
             #    A circuit-locked name is left open this rebalance (its
@@ -719,9 +877,9 @@ class MomentumBacktester:
                         # rebalance instead, same as the circuit-lock branch.
                         continue
                     proceeds = pos.qty * price
-                    self.cash += proceeds - self._one_leg_cost(price, pos.qty)
+                    self.cash += proceeds - self._one_leg_cost(price, pos.qty, cost_adtv.get(ticker))
                     sell_rank = int(rank_series[ticker]) if ticker in rank_series.index else None
-                    self._record_sell(result, ticker, date_str, price, sell_rank)
+                    self._record_sell(result, ticker, date_str, price, sell_rank, exit_reason="grace")
                     del self.positions[ticker]
                     n_sold += 1
 
@@ -763,7 +921,7 @@ class MomentumBacktester:
                         qty = min(qty, max_qty_by_adtv)
                 if qty <= 0:
                     continue
-                cost = self._one_leg_cost(price, qty)
+                cost = self._one_leg_cost(price, qty, cost_adtv.get(ticker))
                 required_cash = qty * price + cost
 
                 while required_cash > self.cash:
@@ -777,23 +935,24 @@ class MomentumBacktester:
                     if oldest_price is None or pd.isna(oldest_price):
                         break
                     proceeds = oldest_pos.qty * oldest_price
-                    self.cash += proceeds - self._one_leg_cost(oldest_price, oldest_pos.qty)
+                    self.cash += proceeds - self._one_leg_cost(oldest_price, oldest_pos.qty, cost_adtv.get(oldest_ticker))
                     oldest_rank = int(rank_series[oldest_ticker]) if oldest_ticker in rank_series.index else None
-                    self._record_sell(result, oldest_ticker, date_str, oldest_price, oldest_rank)
+                    self._record_sell(result, oldest_ticker, date_str, oldest_price, oldest_rank, exit_reason="cash")
                     del self.positions[oldest_ticker]
                     n_sold += 1
 
                 if required_cash > self.cash:
-                    qty = int((self.cash / (1 + self.costs.compute_roundtrip_cost_pct(price, 1) / 2.0)) // price)
+                    qty = int((self.cash / (1 + self.costs.compute_roundtrip_cost_pct(price, 1, adtv_cr=cost_adtv.get(ticker)) / 2.0)) // price)
                     if qty <= 0:
                         continue
-                    cost = self._one_leg_cost(price, qty)
+                    cost = self._one_leg_cost(price, qty, cost_adtv.get(ticker))
                     required_cash = qty * price + cost
 
                 self.cash -= required_cash
                 buy_rank = int(rank_series[ticker]) if ticker in rank_series.index else None
                 self.positions[ticker] = Position(
-                    qty=qty, entry_price=price, entry_date=date_str, entry_rank=buy_rank, grace_remaining=None
+                    qty=qty, entry_price=price, entry_date=date_str, entry_rank=buy_rank,
+                    grace_remaining=None, peak_price=price,
                 )
                 n_bought += 1
 
@@ -839,6 +998,7 @@ class MomentumBacktester:
                 "buy_momentum_rank": pos.entry_rank,
                 "sell_momentum_rank": None,
                 "status": "open",
+                "exit_reason": "open",
             })
 
         result.ending_value = (result.equity_curve[-1]["total_value"] if result.equity_curve else self.starting_capital) + trailing_sip_cash

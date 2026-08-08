@@ -1,5 +1,5 @@
 {
-  "as_of_date": "2026-07-08",
+  "as_of_date": "2026-08-07",
   "cash": 877806.3511441669,
   "initial_capital": 10000000,
   "sizing_mode": "equal_weight",
@@ -29,7 +29,7 @@
       "entry_date": "2026-07-02",
       "entry_price": 49.18,
       "quantity": 20317,
-      "peak_price": 49.18,
+      "peak_price": 52.7,
       "entry_atr_pct": null
     },
     {
@@ -38,7 +38,7 @@
       "entry_date": "2026-07-02",
       "entry_price": 141.82,
       "quantity": 7045,
-      "peak_price": 142.24,
+      "peak_price": 152.19,
       "entry_atr_pct": null
     },
     {
@@ -47,7 +47,7 @@
       "entry_date": "2026-07-02",
       "entry_price": 453.8,
       "quantity": 2201,
-      "peak_price": 463.05,
+      "peak_price": 638.9,
       "entry_atr_pct": null
     },
     {
@@ -74,7 +74,7 @@
       "entry_date": "2026-07-03",
       "entry_price": 1410.1,
       "quantity": 708,
-      "peak_price": 1428.8,
+      "peak_price": 1635.0,
       "entry_atr_pct": null
     },
     {
@@ -83,7 +83,7 @@
       "entry_date": "2026-07-04",
       "entry_price": 2296.6,
       "quantity": 435,
-      "peak_price": 2296.6,
+      "peak_price": 2475.0,
       "entry_atr_pct": null
     },
     {
@@ -92,7 +92,7 @@
       "entry_date": "2026-07-04",
       "entry_price": 3281.5,
       "quantity": 2,
-      "peak_price": 3358.7,
+      "peak_price": 3648.8,
       "entry_atr_pct": null
     },
     {
@@ -101,7 +101,7 @@
       "entry_date": "2026-07-04",
       "entry_price": 228.96,
       "quantity": 8,
-      "peak_price": 228.96,
+      "peak_price": 342.6,
       "entry_atr_pct": null
     }
   ],
@@ -133,6 +133,10 @@
     {
       "date": "2026-07-08",
       "equity": 9800920.936838234
+    },
+    {
+      "date": "2026-08-07",
+      "equity": 10451457.501144167
     }
   ],
   "position_meta": {

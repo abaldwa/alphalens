@@ -1,22 +1,29 @@
 """
 systems/ml_signal_engine/models/hmm/regime_detector.py
 
-Phase: 1.2 (Core Feature Computation — HMM regime bucket)
+Phase: 2.1 (HMM Redesign — 3-state, standardized, anchored)
 Specs: SPEC-MODEL-003, SPEC-SOLID-003, SPEC-SOLID-004, SPEC-PIPE-004
 Owner: ml_signal_engine / hmm
-Consumers: features/matrix_builder (6 hmm_regime_* feature columns),
-           backtest (BEAR_REGIME_POSITION_SCALE), systems/ml_signal_engine (Phase 1+)
+Consumers: features/matrix_builder (hmm_regime_* feature columns),
+           backtest (BEAR_REGIME_POSITION_SCALE), systems/ml_signal_engine (Phase 1+),
+           screener templates R1-R4
 
-M-01 (02_models.md): GaussianHMM(n_components=4, covariance_type='full')
-regime detector. One detector instance is fit per ticker on that ticker's
-own 5 observables (daily_return, log_return, realized_vol_10d, volume_
-ratio_20d, atr_pct) — hmmlearn has no batch/panel-fit API, so this is a
-genuine per-entity model-fitting loop (compute_hmm_regime_features below),
-not a vectorized-feature-arithmetic loop. SPEC-PIPE-004's "no Python loop
-over individual stocks" rule governs the latter (see features/technical.py's
-module docstring for that distinction) — fitting N independent statistical
-models cannot be vectorized away the way rolling means or TA-Lib calls can,
-the same reasoning that already applies to Supertrend's recurrence.
+Redesigned HMM regime detector (2026-08-07) based on 6-agent model review:
+  - 3 observables (de-redundant): daily_return, realized_vol_10d, volume_ratio_20d
+  - 3 states: bearish (rank 0), sideways (rank 1), bullish (rank 2)
+  - Z-score standardization before EM (fixes variance dominance)
+  - Label anchoring via real-space mean return ranking (fixes permutation invariance)
+  - MIN_OBSERVATIONS raised to 80 (safe for 3-state, 3-observable full covariance)
+
+Previous design (5 observables, 4 states, no standardization, no anchoring) was
+found untrustworthy: labels were non-reproducible (34% seed agreement on INFY),
+assigned by return-rank but states separated on ATR/volume (99.6% variance in 2 dims),
+and "volatile" (rank 2) was mislabeled as a volatility state when it was actually
+the second-highest-mean-return state.
+
+One detector instance is fit per ticker on that ticker's own 3 observables —
+hmmlearn has no batch/panel-fit API, so this is a genuine per-entity model-fitting
+loop (compute_hmm_regime_features below), not a vectorized-feature-arithmetic loop.
 """
 
 import logging
@@ -24,7 +31,6 @@ from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import talib
 from hmmlearn.hmm import GaussianHMM
 
 from contracts.interfaces import IRegimeModel
@@ -46,9 +52,15 @@ HMM_REGIME_FEATURES = [
     "hmm_regime_stability",
 ]
 
-OBSERVABLE_COLUMNS = ["daily_return", "log_return", "realized_vol_10d", "volume_ratio_20d", "atr_pct"]
+# 3 de-redundant observables (redesigned 2026-08-07 per 6-agent review):
+#   daily_return     — primary return signal (log_return dropped: r=0.9998 with daily_return)
+#   realized_vol_10d — 10-day realized volatility (atr_pct dropped: redundant, degenerate under circuit caps)
+#   volume_ratio_20d — volume relative to 20-day SMA (retained as regime-quality signal)
+OBSERVABLE_COLUMNS = ["daily_return", "realized_vol_10d", "volume_ratio_20d"]
 
-N_STATES = 4
+N_STATES = 3  # bearish (rank 0), sideways (rank 1), bullish (rank 2)
+REGIME_RANK_NAMES = {0.0: "bearish", 1.0: "sideways", 2.0: "bullish"}
+
 # 02_models.md's reference snippet uses 10-20 restarts x 1000 iterations for
 # offline research-grade fits; reduced here for the *daily, per-ticker*
 # production fit (every ticker refits "today only, not backfill" per
@@ -57,24 +69,26 @@ N_STATES = 4
 # for offline/research use.
 DEFAULT_N_RESTARTS = 5
 DEFAULT_N_ITER = 200
-# Below this many valid observations, a 4-state HMM has too little data to
-# meaningfully separate states — matches the same "insufficient history ->
-# NaN, not a degraded guess" spirit as SPEC-FEAT-001, applied to a model
-# fit rather than a rolling window.
-MIN_OBSERVATIONS = 60
+# 3-state, 3-observable full covariance: ~35 free params (3×9 mean+cov + 6 transitions + 2 init).
+# Floor at 80 valid observations ≈ 2.3× params, safe for stable EM convergence.
+MIN_OBSERVATIONS = 80
 
 
 class HMMRegimeDetector(IRegimeModel):
     """
-    GaussianHMM(n_components=4) regime detector for a single price series.
+    GaussianHMM(n_components=3) regime detector for a single price series.
+
+    Redesigned 2026-08-07 per 6-agent model review:
+    - 3 observables (de-redundant): daily_return, realized_vol_10d, volume_ratio_20d
+    - 3 states: bearish (rank 0), sideways (rank 1), bullish (rank 2)
+    - Z-score standardization before EM (fixes variance dominance)
+    - Label anchoring via real-space mean return ranking (fixes permutation invariance)
 
     States are labeled post-hoc by mean `daily_return` (ascending): rank 0
-    = Bearish, 1 = Sideways/Volatile boundary, ..., 3 = Bullish — per
-    02_models.md's "labeled post-hoc by mean return" convention. (The doc's
-    qualitative 4-state story — Bearish/Sideways/Volatile/Bullish — folds
-    vol into the same return-rank ordering here rather than a second axis;
-    a future iteration could rank by (mean_return, vol) jointly if the
-    pure-return ranking proves too coarse in backtests.)
+    = Bearish, 1 = Sideways, 2 = Bullish. The anchoring uses real-space
+    (unscaled) mean returns so the ranking is stable across refits —
+    "bullish" always corresponds to the physical state with the highest
+    mean daily return, regardless of EM's internal permutation.
 
     Spec References
     ----------------
@@ -94,12 +108,19 @@ class HMMRegimeDetector(IRegimeModel):
         self.random_state = random_state
         self._model: Optional[GaussianHMM] = None
         self._state_order: Optional[np.ndarray] = None  # raw state idx, ordered bearish -> bullish
+        self._mu: Optional[np.ndarray] = None   # z-score mean (per feature)
+        self._sigma: Optional[np.ndarray] = None  # z-score std (per feature)
 
     def fit(self, X: pd.DataFrame) -> None:
         """
         Fit GaussianHMM to X[OBSERVABLE_COLUMNS], keeping the best of
         `n_restarts` random-seed fits by log-likelihood (best BIC proxy
         per 02_models.md's reference snippet).
+
+        Features are z-score standardized before fitting to prevent
+        variance dominance (fixes the 2800× ATR-over-return issue found
+        in the 2026-08-07 model review). The scaler is fit on the window
+        and stored for predict_regime to use the same transformation.
 
         Parameters
         ----------
@@ -117,6 +138,14 @@ class HMMRegimeDetector(IRegimeModel):
         if len(obs) < MIN_OBSERVATIONS:
             raise ValueError(f"need >= {MIN_OBSERVATIONS} valid observations to fit, got {len(obs)}")
 
+        # Z-score standardization — critical fix from model review.
+        # Without this, ATR/variance dominates EM's likelihood and states
+        # separate on volatility, not returns — mislabeling the regime.
+        mu = obs.mean(axis=0)
+        sigma = obs.std(axis=0)
+        sigma[sigma < 1e-8] = 1.0  # guard against zero-variance (constant series)
+        obs_scaled = (obs - mu) / sigma
+
         best_model, best_score = None, -np.inf
         for i in range(self.n_restarts):
             model = GaussianHMM(
@@ -126,8 +155,8 @@ class HMMRegimeDetector(IRegimeModel):
                 random_state=self.random_state + i,
             )
             try:
-                model.fit(obs)
-                score = model.score(obs)
+                model.fit(obs_scaled)
+                score = model.score(obs_scaled)
             except Exception as exc:  # hmmlearn can raise on degenerate/singular covariance
                 logger.debug(f"HMM restart {i} failed to converge: {exc}")
                 continue
@@ -138,8 +167,15 @@ class HMMRegimeDetector(IRegimeModel):
             raise ValueError("all HMM restarts failed to converge")
 
         self._model = best_model
-        mean_return_per_state = best_model.means_[:, OBSERVABLE_COLUMNS.index("daily_return")]
-        self._state_order = np.argsort(mean_return_per_state)
+        self._mu = mu
+        self._sigma = sigma
+
+        # Label anchoring: rank states by REAL-SPACE (unscaled) mean daily return
+        # so "bullish" always = highest mean return state, regardless of EM permutation.
+        # This is the critical fix for the non-reproducible label problem.
+        daily_return_idx = OBSERVABLE_COLUMNS.index("daily_return")
+        real_means = best_model.means_[:, daily_return_idx] * sigma[daily_return_idx] + mu[daily_return_idx]
+        self._state_order = np.argsort(real_means)
 
     def predict_regime(self, X: pd.DataFrame) -> Tuple[pd.Series, Optional[pd.DataFrame]]:
         """
@@ -155,10 +191,10 @@ class HMMRegimeDetector(IRegimeModel):
         -------
         (regimes, probabilities)
             regimes : pd.Series, index-aligned to X. Float dtype (NaN
-                where undecodable), values in {0.0, 1.0, 2.0, 3.0} = the
-                bearish->bullish rank elsewhere.
+                where undecodable), values in {0.0, 1.0, 2.0} = the
+                bearish->bullish rank.
             probabilities : pd.DataFrame (n, n_states), columns
-                'state_prob_0' (bearish) .. 'state_prob_3' (bullish),
+                'state_prob_0' (bearish) .. 'state_prob_2' (bullish),
                 index-aligned to X.
 
         Raises
@@ -176,8 +212,11 @@ class HMMRegimeDetector(IRegimeModel):
 
         if valid.any():
             obs = X.loc[valid, OBSERVABLE_COLUMNS].to_numpy(dtype=np.float64)
-            raw_states = self._model.predict(obs)
-            raw_probs = self._model.predict_proba(obs)
+            # Apply the SAME z-score standardization used during fit()
+            obs_scaled = (obs - self._mu) / self._sigma
+
+            raw_states = self._model.predict(obs_scaled)
+            raw_probs = self._model.predict_proba(obs_scaled)
 
             rank_of_state = np.empty(self.n_states, dtype=int)
             rank_of_state[self._state_order] = np.arange(self.n_states)
@@ -190,7 +229,10 @@ class HMMRegimeDetector(IRegimeModel):
 
 def compute_hmm_observables(ohlcv: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute the 5 per-ticker observables M-01 trains on (02_models.md).
+    Compute the 3 per-ticker observables for the HMM regime detector.
+
+    Redesigned 2026-08-07: dropped log_return (r=0.9998 with daily_return)
+    and atr_pct (redundant with realized_vol; degenerate under circuit caps).
 
     Parameters
     ----------
@@ -200,7 +242,7 @@ def compute_hmm_observables(ohlcv: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        `ohlcv` plus OBSERVABLE_COLUMNS (5 new float64 columns).
+        `ohlcv` plus OBSERVABLE_COLUMNS (3 new float64 columns).
 
     Spec References
     ----------------
@@ -215,32 +257,21 @@ def compute_hmm_observables(ohlcv: pd.DataFrame) -> pd.DataFrame:
     grouped_close = df.groupby("ticker", sort=False)["close"]
     prev_close = grouped_close.shift(1)
     df["daily_return"] = df["close"] / prev_close - 1
-    df["log_return"] = np.log(df["close"] / prev_close)
 
+    # realized_vol_10d: 10-day rolling std of daily_return (annualized)
     df["realized_vol_10d"] = (
-        df.groupby("ticker", sort=False)["log_return"]
+        df.groupby("ticker", sort=False)["daily_return"]
         .rolling(10, min_periods=10)
         .std()
         .reset_index(level=0, drop=True)
         * np.sqrt(252)
     )
 
+    # volume_ratio_20d: volume relative to 20-day SMA
     vol_sma20 = (
         df.groupby("ticker", sort=False)["volume"].rolling(20, min_periods=20).mean().reset_index(level=0, drop=True)
     )
     df["volume_ratio_20d"] = df["volume"] / vol_sma20
-
-    atr_parts = []
-    for _, g in df.groupby("ticker", sort=False):
-        atr = talib.ATR(
-            g["high"].to_numpy(dtype=np.float64),
-            g["low"].to_numpy(dtype=np.float64),
-            g["close"].to_numpy(dtype=np.float64),
-            timeperiod=14,
-        )
-        atr_parts.append(pd.Series(atr, index=g.index))
-    atr14 = pd.concat(atr_parts)
-    df["atr_pct"] = atr14 / df["close"] * 100
 
     return df
 
@@ -261,7 +292,7 @@ def _fit_and_decode_one_ticker(ticker: str, g: pd.DataFrame, n_restarts: int, n_
 
     regimes, probs = detector.predict_regime(g)
     out["hmm_regime"] = regimes.to_numpy()
-    out["hmm_regime_prob_bullish"] = probs["state_prob_3"].to_numpy()
+    out["hmm_regime_prob_bullish"] = probs["state_prob_2"].to_numpy()  # rank 2 = bullish (3-state)
     out["hmm_regime_prob_bearish"] = probs["state_prob_0"].to_numpy()
     out["hmm_regime_stability"] = probs.max(axis=1).to_numpy()
 

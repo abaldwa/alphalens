@@ -896,3 +896,194 @@ class TestQualityGatedMomentum:
         engine.run()
 
         assert "A" in engine.positions
+
+
+class TestOneLegCostSmallCapSlippage:
+    """Tier 0 (2026-08-08): `_one_leg_cost` must thread `adtv_cr` through to
+    costs.py so SMALL_CAP_SLIPPAGE_PCT (0.30%) activates for names with
+    ADTV < Rs 1Cr. Previously the arg was dropped, so every sub-1Cr name
+    was costed at the liquid 0.09% default — a 3.3x cost understatement
+    concentrated exactly in the small-cap names this momentum strategy
+    trades. The math below is exact: round-trip slippage is 2*slip_pct, and
+    `_one_leg_cost` halves the round-trip pct, so the per-leg slippage delta
+    is turnover*(0.003 - 0.0009)."""
+
+    def _engine(self):
+        return mb.MomentumBacktester(
+            price_panel=_flat_price_panel(["A"], 3),
+            yearly_universes={},
+            lookback_days=1,
+            rebalance_every_n_trading_days=1,
+        )
+
+    def test_adtv_cr_raises_cost_for_sub_1cr_name(self):
+        engine = self._engine()
+        price, qty = 100.0, 100
+        turnover = price * qty
+        cost_default = engine._one_leg_cost(price, qty, adtv_cr=None)
+        cost_small = engine._one_leg_cost(price, qty, adtv_cr=0.5)
+        assert cost_small > cost_default
+        # Round-trip slippage is 2*slip_pct; _one_leg_cost halves the whole
+        # round-trip pct, so the per-leg slippage delta is slip_pct (no /2).
+        assert cost_small - cost_default == pytest.approx(turnover * (0.003 - 0.0009))
+
+    def test_adtv_cr_above_threshold_matches_default(self):
+        engine = self._engine()
+        price, qty = 100.0, 100
+        assert engine._one_leg_cost(price, qty, adtv_cr=50.0) == pytest.approx(
+            engine._one_leg_cost(price, qty, adtv_cr=None)
+        )
+
+    def test_adtv_cr_at_exactly_threshold_uses_default(self):
+        # Boundary: adtv_cr == 1.0 is NOT < 1.0, so the liquid rate applies.
+        engine = self._engine()
+        assert engine._one_leg_cost(100.0, 100, adtv_cr=1.0) == pytest.approx(
+            engine._one_leg_cost(100.0, 100, adtv_cr=None)
+        )
+
+    def test_zero_qty_or_price_is_free(self):
+        engine = self._engine()
+        assert engine._one_leg_cost(0.0, 100, adtv_cr=0.5) == 0.0
+        assert engine._one_leg_cost(100.0, 0, adtv_cr=0.5) == 0.0
+
+    def test_buy_path_threads_adtv_from_volume_panel(self):
+        # Integration: a low-ADTV volume_panel must make the buy cost higher
+        # than the same engine with no volume data (which uses the default).
+        # price 100, volume 50_000 -> ADTV = 100*50000/1e7 = 0.5 Cr (< 1).
+        dates = pd.date_range("2026-01-01", periods=2, freq="D")
+        price_panel = pd.DataFrame({"A": [100.0, 100.0]}, index=dates)
+        low_adtv_vol = pd.DataFrame({"A": [50_000, 50_000]}, index=dates)
+        liquid_vol = pd.DataFrame({"A": [5_000_000, 5_000_000]}, index=dates)  # ADTV 50 Cr
+
+        def run(volume_panel):
+            engine = mb.MomentumBacktester(
+                price_panel=price_panel,
+                yearly_universes={str(dates[0].date()): ["A"]},
+                lookback_days=1,
+                rebalance_every_n_trading_days=1,
+                top_n=1,
+                volume_panel=volume_panel,
+            )
+            engine.run()
+            # Cost incurred = buy cost (single position, no sell in 2 days).
+            buy_cost = engine.starting_capital - engine.cash
+            return buy_cost
+
+        assert run(low_adtv_vol) > run(None)
+        assert run(liquid_vol) == pytest.approx(run(None))
+
+
+class TestAsymmetricExitRank:
+    """Tier 1 (2026-08-08): `exit_rank` rides winners longer — a held name
+    stays core (never enters grace) as long as its raw momentum rank is
+    <= exit_rank, even when it has dropped out of the top_n buy set.
+    With top_n=1 and exit_rank=2, a name that slips to rank 2 is held;
+    with the symmetric default it starts its grace countdown."""
+
+    def _run(self, monkeypatch, exit_rank):
+        tickers = ["A", "B"]
+        dates = pd.date_range("2026-01-01", periods=2, freq="D")
+        panel = _flat_price_panel(tickers, 2)
+        # Day 1: A ranks #1 (bought). Day 2: B ranks #1, A slips to #2.
+        rankings = [
+            {"A": 0.20, "B": 0.10},
+            {"A": 0.05, "B": 0.10},
+        ]
+
+        class _Fake:
+            def __init__(self, seq):
+                self._seq = seq
+                self._i = 0
+
+            def __call__(self, *a, **kw):
+                r = self._seq[self._i]
+                self._i = min(self._i + 1, len(self._seq) - 1)
+                return pd.Series(r)
+
+        monkeypatch.setattr(mb, "trailing_momentum_from_panel", _Fake(rankings))
+        engine = mb.MomentumBacktester(
+            price_panel=panel,
+            yearly_universes={str(dates[0].date()): tickers},
+            lookback_days=1,
+            rebalance_every_n_trading_days=1,
+            top_n=1,
+            grace_cycles=0,
+            exit_rank=exit_rank,
+        )
+        engine.result = engine.run()
+        return engine
+
+    def test_winner_within_exit_rank_is_held(self, monkeypatch):
+        engine = self._run(monkeypatch, exit_rank=2)
+        # A slipped to rank 2 on day 2 but 2 <= exit_rank, so it stays core.
+        assert "A" in engine.positions
+        # No grace sell for A ever fired.
+        assert not any(
+            t["ticker"] == "A" and t["exit_reason"] == "grace" for t in engine.result.transactions
+        )
+
+    def test_symmetric_default_sells_out_of_top_n(self, monkeypatch):
+        engine = self._run(monkeypatch, exit_rank=None)
+        # Without the asymmetric band, A (rank 2, out of top_n=1) goes to
+        # grace_cycles=0 and is force-sold on day 2.
+        assert "A" not in engine.positions
+        assert any(t["ticker"] == "A" and t["exit_reason"] == "grace" for t in engine.result.transactions)
+
+
+class TestTrailingStop:
+    """Tier 1 (2026-08-08): trailing stop cuts a loser between rebalances —
+    when price falls to <= peak*(1 - trailing_stop_pct) on any trading day,
+    the position is sold at that day's close with exit_reason "stop"."""
+
+    def _run(self, monkeypatch, prices, stop_pct, momentum=0.10):
+        # rebalance_every=len(prices): only day 1 is a rebalance, so the
+        # trailing stop is exercised on the intervening non-rebalance days
+        # and there is no same-day re-entry to muddy the assertion.
+        tickers = ["A"]
+        dates = pd.date_range("2026-01-01", periods=len(prices), freq="D")
+        panel = pd.DataFrame({"A": prices}, index=dates)
+        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": momentum}))
+        engine = mb.MomentumBacktester(
+            price_panel=panel,
+            yearly_universes={str(dates[0].date()): tickers},
+            lookback_days=1,
+            rebalance_every_n_trading_days=len(prices),
+            top_n=1,
+            trailing_stop_pct=stop_pct,
+        )
+        engine.result = engine.run()
+        return engine
+
+    def test_stop_fires_on_inter_rebalance_drawdown(self, monkeypatch):
+        # Day 1 buys A at 100 (peak 100, floor 90). Day 2 price 80 <= 90, so
+        # the stop fires on a non-rebalance day -> sold at 80.
+        engine = self._run(monkeypatch, prices=[100.0, 80.0, 70.0], stop_pct=0.10)
+        assert "A" not in engine.positions
+        stops = [t for t in engine.result.transactions if t["exit_reason"] == "stop"]
+        assert len(stops) == 1
+        assert stops[0]["ticker"] == "A"
+        assert stops[0]["sell_price"] == pytest.approx(80.0)
+
+    def test_no_stop_within_floor(self, monkeypatch):
+        # Price stays above the 90 floor -> no stop.
+        engine = self._run(monkeypatch, prices=[100.0, 95.0, 95.0], stop_pct=0.10)
+        assert "A" in engine.positions
+        assert not any(t["exit_reason"] == "stop" for t in engine.result.transactions)
+
+    def test_peak_updates_so_trailing_holds_rally_pullback(self, monkeypatch):
+        # A rises to 110 (peak 110, floor 99) then pulls back to 100: the
+        # trailing peak is tracked, so 100 > 99 and no stop fires. Regression
+        # for stopping off a stale pre-rally peak.
+        engine = self._run(monkeypatch, prices=[100.0, 110.0, 100.0], stop_pct=0.10)
+        assert "A" in engine.positions
+        assert not any(t["exit_reason"] == "stop" for t in engine.result.transactions)
+
+    def test_stop_from_trailing_peak_cuts_deeper_pullback(self, monkeypatch):
+        # Peak 110 -> floor 99. A pullback to 95 (below 99) must stop even
+        # though it's above the entry price of 100. This is the trailing (not
+        # fixed-at-entry) behavior.
+        engine = self._run(monkeypatch, prices=[100.0, 110.0, 95.0], stop_pct=0.10)
+        assert "A" not in engine.positions
+        stops = [t for t in engine.result.transactions if t["exit_reason"] == "stop"]
+        assert len(stops) == 1
+        assert stops[0]["sell_price"] == pytest.approx(95.0)

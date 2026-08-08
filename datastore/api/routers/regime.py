@@ -19,6 +19,9 @@ regime_store.py. Built for the Backtest module's "which strategy works in
 which market phase" per-regime breakdown — the HMM regime above answers
 "what does today look like," this answers "what were the confirmed
 Bull/Bear/Sideways stretches over history." Do not conflate the two.
+
+GET /api/v1/macro/regime/per-ticker — per-ticker HMM regime snapshot for
+a single date, read from the daily feature parquet (not ml_signals).
 """
 
 import logging
@@ -144,3 +147,74 @@ async def get_market_regimes(
     return MarketRegimeSegmentListResponse(
         index_name=index_name, segments=[MarketRegimeSegmentResponse(**r) for r in rows]
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-ticker HMM regime (read from daily feature parquet)
+# ---------------------------------------------------------------------------
+
+HMM_REGIME_COLS = [
+    "hmm_regime", "hmm_regime_prob_bullish", "hmm_regime_prob_bearish",
+    "hmm_regime_duration", "hmm_regime_transition", "hmm_regime_stability",
+]
+_REGIME_NAMES = {0.0: "bearish", 1.0: "sideways", 2.0: "bullish"}
+
+
+class PerTickerRegimeRow(BaseModel):
+    ticker: str
+    hmm_regime: Optional[float] = None
+    hmm_regime_name: Optional[str] = None
+    hmm_regime_prob_bullish: Optional[float] = None
+    hmm_regime_prob_bearish: Optional[float] = None
+    hmm_regime_duration: Optional[float] = None
+    hmm_regime_transition: Optional[bool] = None
+    hmm_regime_stability: Optional[float] = None
+
+
+class PerTickerRegimeResponse(BaseModel):
+    date: str
+    tickers: List[PerTickerRegimeRow]
+
+
+@router.get("/regime/per-ticker", response_model=PerTickerRegimeResponse)
+async def get_per_ticker_regime(
+    as_of: Optional[date_type] = Query(None, description="Date (YYYY-MM-DD). Default: latest available."),
+) -> PerTickerRegimeResponse:
+    """Per-ticker HMM regime for a single date, read from the daily feature
+    parquet. Rows with all-NaN regime columns (undecodable tickers) are
+    excluded. The hmm_regime_name is a human-readable label derived from
+    the numeric rank (0=bearish, 1=sideways, 2=volatile, 3=bullish)."""
+    import pandas as pd
+    from config.settings import FEATURES_DAILY_DIR
+
+    if as_of is None:
+        parquets = sorted(FEATURES_DAILY_DIR.glob("*.parquet"))
+        if not parquets:
+            return PerTickerRegimeResponse(date="", tickers=[])
+        parquet_path = parquets[-1]
+    else:
+        parquet_path = FEATURES_DAILY_DIR / f"{as_of.isoformat()}.parquet"
+
+    if not parquet_path.exists():
+        return PerTickerRegimeResponse(date=str(as_of or ""), tickers=[])
+
+    date_str = parquet_path.stem
+    df = pd.read_parquet(parquet_path, columns=["ticker"] + HMM_REGIME_COLS)
+    df = df.dropna(subset=["hmm_regime"], how="all")
+    df = df.sort_values("hmm_regime_stability", ascending=False, na_position="last")
+
+    tickers = []
+    for _, row in df.iterrows():
+        regime_val = row["hmm_regime"]
+        tickers.append(PerTickerRegimeRow(
+            ticker=row["ticker"],
+            hmm_regime=regime_val if pd.notna(regime_val) else None,
+            hmm_regime_name=_REGIME_NAMES.get(regime_val) if pd.notna(regime_val) else None,
+            hmm_regime_prob_bullish=row["hmm_regime_prob_bullish"] if pd.notna(row["hmm_regime_prob_bullish"]) else None,
+            hmm_regime_prob_bearish=row["hmm_regime_prob_bearish"] if pd.notna(row["hmm_regime_prob_bearish"]) else None,
+            hmm_regime_duration=row["hmm_regime_duration"] if pd.notna(row["hmm_regime_duration"]) else None,
+            hmm_regime_transition=bool(row["hmm_regime_transition"]) if pd.notna(row["hmm_regime_transition"]) else None,
+            hmm_regime_stability=row["hmm_regime_stability"] if pd.notna(row["hmm_regime_stability"]) else None,
+        ))
+
+    return PerTickerRegimeResponse(date=date_str, tickers=tickers)

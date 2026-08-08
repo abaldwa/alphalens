@@ -47,6 +47,7 @@ import { MlSectorRotationPage } from '@/pages/ml/sector_rotation'
 import { MlExitUrgencyPage } from '@/pages/ml/exit_urgency'
 import { MlUniversePage } from '@/pages/ml/universe'
 import { MlToolsPage } from '@/pages/ml/tools'
+import { MlRegimePage } from '@/pages/ml/regime'
 
 import { MomentumUniversePage } from '@/pages/momentum/universe'
 import { MomentumPortfolioPage } from '@/pages/momentum/portfolio'
@@ -69,7 +70,7 @@ import { RegimesPage } from '@/pages/backtest/RegimesPage'
 
 /**
  * Single route tree for the SPA (replaces the former Vite multi-HTML-entry
- * MPA — one route per former `<section>-<sub>.html` page, same path
+ * MPA -- one route per former `<section>-<sub>.html` page, same path
  * strings so NAV_SECTIONS hrefs keep working). `/charts` is new: the
  * Symbol Overview route driven by the global ticker store rather than a
  * `?ticker=` query param.
@@ -122,6 +123,7 @@ export const router = createBrowserRouter([
   { path: '/ml-exit_urgency', element: <MlExitUrgencyPage /> },
   { path: '/ml-universe', element: <MlUniversePage /> },
   { path: '/ml-tools', element: <MlToolsPage /> },
+  { path: '/ml-regime', element: <MlRegimePage /> },
 
   { path: '/momentum', element: <MomentumUniversePage /> },
   { path: '/momentum-portfolio', element: <MomentumPortfolioPage /> },

@@ -41,15 +41,15 @@ strategy" call, not a black-box editorial pick):
     score = 0.30*z(sharpe) + 0.25*z(sortino) + 0.25*z(cagr)
             - 0.20*z(abs(max_drawdown))
 
-z-scored within each (band_id, category) group of 60 lump-sum variants —
-comparing across bands/categories on raw score would conflate "this band is
-just structurally choppier" with "this variant is worse", so every z-score
-is relative to its own band+category cohort. The top-scoring variant in
-each (band_id, category) group is flagged is_recommended=True — the
-"judgemental call on the best strategy in each category" per band. The
-single highest RAW score across the whole report (comparing best-in-cohort
-picks to each other, which is fair since each is already a per-cohort
-winner) is flagged is_most_important=True.
+Two scoring scopes (2026-08-08):
+
+- Per-(band, category): z-scored within each (band_id, category) cohort
+  of 60 variants -> "Recommended" (28 picks across 7 bands x 4 categories).
+- Per-band: z-scored across ALL 240 configs in a band -> "Most Important"
+  (one per band — the single best strategy the user deploys for that
+  universe). Cross-band / "Overall Best" is intentionally removed: the
+  user deploys different strategies per band and does not want an overall
+  portfolio CAGR.
 
 Trade books: each variant's lump-sum-pass transactions are written to
 backtest/reports/momentum/dynamic/<variant_id>.csv (see _export_trade_csv),
@@ -95,6 +95,7 @@ from scripts.run_momentum_filter_overlays import (
     QUALITY_GATE,
     _build_market_cap_panel,
     _load_beta_map,
+    _load_per_ticker_hmm_regime,
     _load_quality_scores,
     _load_regime_series,
     _load_static_shares_outstanding,
@@ -212,7 +213,7 @@ def _compute_variant(args):
                       exc_info=True)
         return None
 
-SCORE_WEIGHTS = {"sharpe": 0.30, "sortino": 0.25, "cagr": 0.25, "abs_max_drawdown": -0.20}
+SCORE_WEIGHTS = {"sharpe": 0.30, "sortino": 0.25, "post_tax_cagr": 0.25, "abs_max_drawdown": -0.20}
 
 
 def _run_variant(kwargs: Dict, price_panel, yearly_universes: Dict, lookback_days: int, rebalance_days: int, **extra):
@@ -274,25 +275,57 @@ def _zscore(values: List[float]) -> List[float]:
     return [float((v - mean) / std) if np.isfinite(v) else 0.0 for v in arr]
 
 
-def _score_cohort(variants: List[Dict]) -> None:
-    """Mutates each variant dict in-place: adds 'score' and, on exactly one
-    variant per (band_id, category) cohort, 'is_recommended': True."""
+def _zscore_scores(variants: List[Dict]) -> List[float]:
+    """Band/cohort-level weighted score for each variant, z-scored across
+    the given set (NOT per-category). Shared by _score_cohort (within a
+    (band, category) cohort) and _score_band (within a whole band) so the
+    exact SCORE_WEIGHTS formula never drifts between the two scopes.
+
+    2026-08-08 Tier 0 change: scores on post_tax_cagr (not pre-tax CAGR)
+    so that short-term churn's STCG drag is reflected in the ranking.
+    """
     sharpe_z = _zscore([v["sharpe"] if v["sharpe"] is not None else np.nan for v in variants])
     sortino_z = _zscore([v["sortino"] if v["sortino"] is not None else np.nan for v in variants])
-    cagr_z = _zscore([v["cagr"] if v["cagr"] is not None else np.nan for v in variants])
+    cagr_z = _zscore([v["post_tax_cagr"] if v.get("post_tax_cagr") is not None else np.nan for v in variants])
     mdd_z = _zscore([abs(v["max_drawdown"]) if v["max_drawdown"] is not None else np.nan for v in variants])
-
-    for i, v in enumerate(variants):
-        v["score"] = (
+    return [
+        (
             SCORE_WEIGHTS["sharpe"] * sharpe_z[i]
             + SCORE_WEIGHTS["sortino"] * sortino_z[i]
-            + SCORE_WEIGHTS["cagr"] * cagr_z[i]
+            + SCORE_WEIGHTS["post_tax_cagr"] * cagr_z[i]
             + SCORE_WEIGHTS["abs_max_drawdown"] * mdd_z[i]
         )
-        v["is_recommended"] = False
+        for i in range(len(variants))
+    ]
 
+
+def _score_cohort(variants: List[Dict]) -> None:
+    """Mutates each variant dict in-place: adds 'score' and, on exactly one
+    variant per (band_id, category) cohort, 'is_recommended': True. The
+    score is z-scored within this (band, category) cohort of 60 variants so
+    "Recommended" is a fair within-category comparison.
+    """
+    for i, v in enumerate(variants):
+        v["score"] = _zscore_scores(variants)[i]
+        v["is_recommended"] = False
     best_idx = max(range(len(variants)), key=lambda i: variants[i]["score"])
     variants[best_idx]["is_recommended"] = True
+
+
+def _score_band(band_variants: List[Dict]) -> None:
+    """Per-band best (2026-08-08 user request — one strategy per band, no
+    global pick): for each band, z-score ALL its variants (any category /
+    lookback / rebalance / top_n) together and mark the single top one
+    'is_band_most_important'. This is the "Best Strategy for this band" —
+    the user deploys different strategies per band and does not want one
+    cross-band winner. Per-category 'is_recommended' (set by _score_cohort)
+    is untouched and still drives the fuller Recommended table."""
+    scores = _zscore_scores(band_variants)
+    for i, v in enumerate(band_variants):
+        v["score"] = scores[i]
+        v["is_band_most_important"] = False
+    best_idx = max(range(len(band_variants)), key=lambda i: band_variants[i]["score"])
+    band_variants[best_idx]["is_band_most_important"] = True
 
 
 def run_dynamic_report(years_back: int = 10, workers: int = 8) -> Dict:
@@ -314,7 +347,17 @@ def run_dynamic_report(years_back: int = 10, workers: int = 8) -> Dict:
     regime_series = _load_regime_series()
     quality_scores = _load_quality_scores(candidate_tickers)
 
+    # Per-ticker HMM regime from daily feature parquets (for regime filter testing)
+    per_ticker_hmm_regime = _load_per_ticker_hmm_regime(
+        candidate_tickers, start_date.isoformat(), end_date.isoformat()
+    )
+
     strategies = _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, quality_scores)
+
+    # Add per-ticker HMM regime to all strategy configs (it's a filter, not a strategy variant)
+    for strategy_kwargs in strategies.values():
+        strategy_kwargs["per_ticker_hmm_regime"] = per_ticker_hmm_regime
+        strategy_kwargs["disable_hmm_regimes"] = {0.0}  # bearish only
 
     # Precompute momentum panels ONCE per lookback, reused across all 4
     # categories and both lump+SIP passes. Previously every one of the 3,360
@@ -369,33 +412,22 @@ def run_dynamic_report(years_back: int = 10, workers: int = 8) -> Dict:
         _score_cohort(cohort)
         variants.extend(cohort)
 
-    most_important_idx = max(
-        (i for i, v in enumerate(variants) if v["is_recommended"]),
-        key=lambda i: variants[i]["score"],
-        default=None,
-    )
+    # Reset flags before per-band scoring.  is_most_important is intentionally
+    # NOT set anywhere (2026-08-08: global pick removed; one strategy per band).
     for v in variants:
-        v["is_most_important"] = False
+        v["is_most_important"] = None
         v["is_band_most_important"] = False
         v["top_cagr_rank"] = None
-    if most_important_idx is not None:
-        variants[most_important_idx]["is_most_important"] = True
 
-    # Per-universe judgment calls (2026-07-30 user request): within each
-    # band, (a) the single best pick among that band's 4 category winners
-    # ("Most Important" for THIS universe, as distinct from the one overall
-    # is_most_important pick above), and (b) the top-2 variants by raw CAGR
-    # across ALL 240 configs in that band (any category/lookback/rebalance/
-    # top_n) — a pure-return comparison point alongside the risk-adjusted
-    # score-based picks.
+    # Per-band: (a) best strategy across all 240 configs via band-wide
+    # z-scored score — this is the "Best Strategy for this band" the user
+    # deploys; (b) top-2 variants by raw CAGR for comparison.
     by_band: Dict[int, List[Dict]] = {}
     for v in variants:
         by_band.setdefault(v["band_id"], []).append(v)
 
     for band_variants in by_band.values():
-        recommended_in_band = [v for v in band_variants if v["is_recommended"]]
-        if recommended_in_band:
-            max(recommended_in_band, key=lambda v: v["score"])["is_band_most_important"] = True
+        _score_band(band_variants)
 
         with_cagr = [v for v in band_variants if v["cagr"] is not None]
         top2_cagr = sorted(with_cagr, key=lambda v: v["cagr"], reverse=True)[:2]
@@ -405,8 +437,9 @@ def run_dynamic_report(years_back: int = 10, workers: int = 8) -> Dict:
     report = {
         "generated_at": now_ist().isoformat(),
         "score_formula": (
-            "0.30*z(sharpe) + 0.25*z(sortino) + 0.25*z(cagr) - 0.20*z(abs(max_drawdown)), "
-            "z-scored within each (band_id, category) cohort of 60 variants"
+            "0.30*z(sharpe) + 0.25*z(sortino) + 0.25*z(post_tax_cagr) - 0.20*z(abs(max_drawdown)). "
+            "Per-(band, category) z-scores drive Recommended picks; "
+            "per-band z-scores (all 240 configs in a band) drive Most Important."
         ),
         "strategies": {
             "all_risk": {"filters": []},
