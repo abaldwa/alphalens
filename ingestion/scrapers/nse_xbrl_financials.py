@@ -207,6 +207,11 @@ _BALANCE_SHEET_LABEL_MAP = {
     # NSE's own real figure is at least as authoritative; map it here too so
     # this pipeline can supersede Screener's for companies it covers.
     "Cash and cash equivalents": "cash_and_equivalents",
+    # [2026-08-08] Additional NSE XBRL raw line items for derived forensic/working capital columns
+    "Contingent liabilities": "contingent_liabilities",
+    "Number of subsidiaries": "subsidiary_count_raw",
+    "Loans to related parties": "loans_to_related_parties",
+    "Director remuneration": "director_remuneration",
 }
 
 

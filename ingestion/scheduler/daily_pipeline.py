@@ -1462,16 +1462,20 @@ _SANITY_MIN_SIGNAL_ROWS_FRACTION = 0.8
 # Added benford_mad after fixing forensic_classical.py's panel-level
 # blanket except-to-NaN bug (same class as A52) — its remaining nulls are
 # legitimate new-listing warmup (needs >=5 quarterly revenue values).
+# [2026-08-08] Removed inventory_days, receivable_days, payable_days,
+# cash_conversion_cycle (now computed from NSE XBRL Inventories/Trade
+# Receivables/Trade Payables/Revenue in _FUNDAMENTALS_DERIVE_UPDATE_SQL).
+# Removed contingent_liability_ratio, subsidiary_count, loans_to_related,
+# off_balance_sheet_proxy, salary_to_pat (now computed from NSE XBRL
+# ContingentLiabilities/SubsidiaryCount/LoansToRelatedParties/DirectorRemuneration
+# and PAT).
 _SANITY_KNOWN_SPARSE_COLUMNS = {
-    "inventory_days", "receivable_days", "payable_days", "cash_conversion_cycle",
     "mf_pct", "mf_change_qoq", "mf_total_holding_change_1m", "mf_sip_inflow_proxy",
     "days_to_record_date", "buyback_price_spread", "buyback_acceptance_estimated",
     "index_inclusion_days", "dividend_yield_vs_fd_rate", "qip_dilution_impact",
     "iv_compression_flag", "gst_collection_growth", "pmi_manufacturing",
     "pmi_services", "iip_growth", "auto_monthly_sales_growth",
     "rail_freight_growth", "upi_transaction_growth", "bank_credit_growth",
-    "contingent_liability_ratio", "subsidiary_count", "loans_to_related",
-    "off_balance_sheet_proxy", "salary_to_pat",
     "rpt_intensity", "auditor_change_flag", "cfo_tenure_months",
     "board_independence", "director_resignation_count_4q",
     "whistle_blower_policy", "gst_revenue_divergence", "peer_outlier_score",
@@ -1556,6 +1560,65 @@ _FUNDAMENTALS_DERIVE_UPDATE_SQL = [
     UPDATE fundamentals SET
         ebit = ebitda - depreciation
     WHERE ebit IS NULL AND ebitda IS NOT NULL AND depreciation IS NOT NULL
+    """,
+    # Working capital days from NSE XBRL raw line items (Inventories,
+    # Trade receivables, Trade payables, Revenue from Operations).
+    # 1 Lakh = 0.01 Crore; NSE XBRL stores in Lakh, fundamentals table in Crore.
+    # inventory_days = Inventories / RevenueFromOperations * 365
+    """
+    UPDATE fundamentals SET
+        inventory_days = (inventories * 0.01) / revenue * 365
+    WHERE inventory_days IS NULL AND inventories IS NOT NULL AND revenue IS NOT NULL AND revenue != 0
+    """,
+    # receivable_days = TradeReceivables / RevenueFromOperations * 365
+    """
+    UPDATE fundamentals SET
+        receivable_days = (trade_receivables_current * 0.01) / revenue * 365
+    WHERE receivable_days IS NULL AND trade_receivables_current IS NOT NULL AND revenue IS NOT NULL AND revenue != 0
+    """,
+    # payable_days = TradePayables / RevenueFromOperations * 365
+    # (using Revenue as COGS proxy since COGS not separately available)
+    """
+    UPDATE fundamentals SET
+        payable_days = (trade_payables_current * 0.01) / revenue * 365
+    WHERE payable_days IS NULL AND trade_payables_current IS NOT NULL AND revenue IS NOT NULL AND revenue != 0
+    """,
+    # cash_conversion_cycle = inventory_days + receivable_days - payable_days
+    """
+    UPDATE fundamentals SET
+        cash_conversion_cycle = inventory_days + receivable_days - payable_days
+    WHERE cash_conversion_cycle IS NULL
+      AND inventory_days IS NOT NULL AND receivable_days IS NOT NULL AND payable_days IS NOT NULL
+    """,
+    # Forensic Group D: contingent_liability_ratio = ContingentLiabilities / TotalAssets
+    """
+    UPDATE fundamentals SET
+        contingent_liability_ratio = contingent_liabilities / total_assets
+    WHERE contingent_liability_ratio IS NULL AND contingent_liabilities IS NOT NULL AND total_assets IS NOT NULL AND total_assets != 0
+    """,
+    # Forensic Group D: subsidiary_count (direct copy from NSE XBRL)
+    """
+    UPDATE fundamentals SET
+        subsidiary_count = subsidiary_count_raw
+    WHERE subsidiary_count IS NULL AND subsidiary_count_raw IS NOT NULL
+    """,
+    # Forensic Group D: loans_to_related = LoansToRelatedParties / TotalAssets
+    """
+    UPDATE fundamentals SET
+        loans_to_related = loans_to_related_parties / total_assets
+    WHERE loans_to_related IS NULL AND loans_to_related_parties IS NOT NULL AND total_assets IS NOT NULL AND total_assets != 0
+    """,
+    # Forensic Group D: off_balance_sheet_proxy = ContingentLiabilities / (TotalAssets + ContingentLiabilities)
+    """
+    UPDATE fundamentals SET
+        off_balance_sheet_proxy = contingent_liabilities / (total_assets + contingent_liabilities)
+    WHERE off_balance_sheet_proxy IS NULL AND contingent_liabilities IS NOT NULL AND total_assets IS NOT NULL
+    """,
+    # Forensic Group E: salary_to_pat = DirectorRemuneration / PAT
+    """
+    UPDATE fundamentals SET
+        salary_to_pat = director_remuneration / pat
+    WHERE salary_to_pat IS NULL AND director_remuneration IS NOT NULL AND pat IS NOT NULL AND pat != 0
     """,
 ]
 

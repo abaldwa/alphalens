@@ -311,6 +311,26 @@ _CREATE_FUNDAMENTALS = """
         trade_payables_current DOUBLE,
         total_liabilities DOUBLE,
         audit_qualified_flag BOOLEAN,
+        -- [2026-08-08] Derived working capital and forensic columns from NSE XBRL raw line items.
+        -- inventory_days = Inventories / RevenueFromOperations * 365 (computed by step_derive_fundamentals_ratios)
+        -- receivable_days = TradeReceivablesCurrent / RevenueFromOperations * 365
+        -- payable_days = TradePayablesCurrent / RevenueFromOperations * 365
+        -- cash_conversion_cycle = inventory_days + receivable_days - payable_days
+        -- contingent_liability_ratio = ContingentLiabilities / TotalAssets
+        -- subsidiary_count = SubsidiaryCount (direct copy)
+        -- loans_to_related = LoansToRelatedParties / TotalAssets
+        -- off_balance_sheet_proxy = ContingentLiabilities / (TotalAssets + ContingentLiabilities)
+        -- salary_to_pat = DirectorRemuneration / PAT
+        contingent_liabilities DOUBLE,
+        subsidiary_count_raw DOUBLE,
+        loans_to_related_parties DOUBLE,
+        director_remuneration DOUBLE,
+        cash_conversion_cycle DOUBLE,
+        contingent_liability_ratio DOUBLE,
+        subsidiary_count DOUBLE,
+        loans_to_related DOUBLE,
+        off_balance_sheet_proxy DOUBLE,
+        salary_to_pat DOUBLE,
         -- 2026-07-07 (same-day follow-up, per explicit operator instruction
         -- "add additional columns as necessary, do not skip any datapoints,
         -- it might be required for some calculations"): the rest of the
