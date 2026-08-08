@@ -878,7 +878,10 @@ async def get_dynamic_report() -> DynamicReport:
     pick, and a year-on-year (Apr-Mar) breakdown. Reads the most recently
     written momentum_dynamic_report_*.json report file directly; 404 until
     that script has been run at least once."""
-    files = sorted(_EXPERIMENTATION_REPORTS_DIR.glob("momentum_dynamic_report_*.json"))
+    files = sorted(
+        [p for p in _EXPERIMENTATION_REPORTS_DIR.glob("momentum_dynamic_report_*.json") if "BASELINE" not in p.name],
+        key=lambda p: p.stat().st_mtime,
+    )
     if not files:
         raise HTTPException(status_code=404, detail="No momentum dynamic report found yet")
     latest = files[-1]
