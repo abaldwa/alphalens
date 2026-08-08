@@ -187,16 +187,41 @@ def turnover_ratio(trade_values: List[float], avg_portfolio_value: float) -> Opt
 
 def benchmark_metrics(
     strategy_cagr: Optional[float], benchmark_equity_curve: Optional[pd.Series],
-    start_date, end_date, index_ohlcv_min_date: date = date(2023, 7, 3),
+    start_date, end_date, index_ohlcv_min_date: Optional[date] = None,
 ) -> Tuple[Optional[float], Optional[float], str]:
     """
-    Returns (benchmark_cagr, excess_return, status). Per the 2026-07-20
-    user-confirmed decision, the index_ohlcv gap (real Nifty history only
-    from 2023-07-03) is an ACCEPTED gap, not backfilled — this function's
-    job is to make that gap explicit (benchmark_status flagged) rather
-    than silently returning None with no explanation.
+    Returns (benchmark_cagr, excess_return, status).
+
+    The 2026-07-20 note here recorded index_ohlcv as holding real Nifty
+    history only from 2023-07-03, and this function hard-coded that date as
+    a floor: any run starting earlier got (None, None,
+    "insufficient_benchmark_history") REGARDLESS of whether real benchmark
+    data covered it.
+
+    [BUG FIX 2026-08-08] That floor is stale. index_ohlcv now holds Nifty
+    500 continuously from 2012-03-13 — 3,549 distinct trading dates with no
+    gap wider than 7 days (verified directly against the table). The cutoff
+    was therefore silently nulling benchmark_cagr/excess_return for every
+    run starting before mid-2023: a 5-year 2021-start Technical sweep
+    reported NO benchmark comparison at all, on 46 strategies, even though
+    the full Nifty 500 series for that window was sitting in the DB.
+
+    The cutoff was also redundant as a safety mechanism. The only source of
+    benchmark_equity_curve is BacktestEngine._build_benchmark_curve(), which
+    already returns None when the index has no real overlap with the run's
+    dates, and the None branch below already reports
+    "insufficient_benchmark_history". Real coverage is thus decided by the
+    data itself rather than by a date constant that has to be maintained by
+    hand — so the default is now None (no floor), and CLAUDE.md Absolute
+    Rule 6 still holds: absent real index data, this returns None, never a
+    synthetic benchmark.
+
+    index_ohlcv_min_date is retained (default None = no floor) so a caller
+    with a genuine reason to assert a coverage floor can still pass one.
     """
-    if pd.Timestamp(start_date) < pd.Timestamp(index_ohlcv_min_date) or benchmark_equity_curve is None:
+    if benchmark_equity_curve is None:
+        return None, None, "insufficient_benchmark_history"
+    if index_ohlcv_min_date is not None and pd.Timestamp(start_date) < pd.Timestamp(index_ohlcv_min_date):
         return None, None, "insufficient_benchmark_history"
     bench_cagr = calendar_cagr(
         benchmark_equity_curve.iloc[0], benchmark_equity_curve.iloc[-1], start_date, end_date

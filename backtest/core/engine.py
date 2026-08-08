@@ -668,6 +668,46 @@ class BacktestOrchestrator:
             execution_timing=config.execution_timing,
         )
 
+    def _build_benchmark_curve(
+        self, start_date: date_type, end_date: date_type, starting_capital: float,
+    ) -> Optional[pd.Series]:
+        """Real buy-and-hold equity curve for self._regime_index_name over
+        [start_date, end_date], normalised to `starting_capital` at the
+        first real index bar in the window — the orchestrator's counterpart
+        to BacktestEngine._build_benchmark_curve() (backtest/engine.py),
+        which the ML walk-forward path has always had and this one lacked.
+
+        Reads index_ohlcv through self._regime_conn (already open, read-only,
+        pointing at the normalised-schema DB that hosts both market_regimes
+        and index_ohlcv). Returns None — never a synthetic or interpolated
+        stand-in — when there is no connection, no real rows for the window,
+        or a non-positive entry price.
+        """
+        if self._regime_conn is None or starting_capital <= 0:
+            return None
+        try:
+            rows = self._regime_conn.execute(
+                """
+                SELECT date, close FROM index_ohlcv
+                WHERE index_name = ? AND date BETWEEN ? AND ? AND close > 0
+                ORDER BY date
+                """,
+                [self._regime_index_name, start_date, end_date],
+            ).fetchall()
+        except Exception:
+            logger.warning("benchmark curve unavailable; benchmark_cagr/excess_return stay unset", exc_info=True)
+            return None
+        if len(rows) < 2:
+            return None
+        entry_price = float(rows[0][1])
+        if entry_price <= 0:
+            return None
+        shares = starting_capital / entry_price
+        return pd.Series(
+            [float(close) * shares for _, close in rows],
+            index=pd.DatetimeIndex([pd.Timestamp(d) for d, _ in rows]),
+        )
+
     def _regime_for_date(self, as_of: date_type) -> Optional[str]:
         """Bull/Bear/Sideways label (lowercase, systems.regime.market_regime.
         Regime's own convention) confirmed as of `as_of`, or None with no
@@ -863,9 +903,25 @@ class BacktestOrchestrator:
             (run_end_ts - pd.Timestamp(pos.entry_date)).days for pos in portfolio.positions.values()
         ]
 
+        # [BUG FIX 2026-08-08] The orchestrator never built a benchmark curve
+        # at all, so compute_metrics defaulted benchmark_equity_curve=None and
+        # EVERY orchestrator run (technical/fundamental/momentum) reported
+        # benchmark_cagr/excess_return as null — the Backtest page has never
+        # shown an index comparison for this channel. Real Nifty 500 history
+        # lives in index_ohlcv in the same normalised-schema DB self._regime_conn
+        # already points at, so this needs no new connection or data source.
+        # Buy-and-hold, normalised to the run's own starting capital, so the
+        # two curves are directly comparable. None (no regime_conn, or no real
+        # index rows for the window) leaves the metrics null exactly as before
+        # — never a synthetic benchmark (CLAUDE.md Absolute Rule 6).
+        benchmark_curve = self._build_benchmark_curve(
+            start_date, end_date, float(equity_curve.iloc[0]) if len(equity_curve) else 0.0
+        )
+
         metrics = compute_metrics(
             equity_curve=equity_curve, cash_flows=cash_flows, trade_pnls=trade_pnls,
             trade_values=trade_values, distinct_tickers=distinct_tickers,
+            benchmark_equity_curve=benchmark_curve,
             start_date=start_date, end_date=end_date, total_contributed=portfolio.total_contributed,
             cash_position_series=portfolio.cash_position_series,
             holding_days=holding_days,
