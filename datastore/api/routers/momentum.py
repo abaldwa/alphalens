@@ -1034,6 +1034,31 @@ async def create_strategy_config(config: MomentumStrategyConfigCreate) -> Moment
     """Create a new momentum strategy configuration."""
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
+        # The table's UNIQUE constraint can't catch duplicates on its own: the
+        # tier-1/2 params are nullable and SQL treats NULLs as distinct, so two
+        # configs differing only in unset optional params would both insert.
+        # IS NOT DISTINCT FROM makes NULL compare equal here.
+        dup = conn.execute(
+            """
+            SELECT config_id FROM momentum_strategy_configs
+            WHERE band_id = ? AND category = ? AND lookback_months = ? AND top_n = ?
+              AND grace_period = ? AND rebalance_frequency = ?
+              AND exit_rank IS NOT DISTINCT FROM ?
+              AND trailing_stop_pct IS NOT DISTINCT FROM ?
+              AND downtrend_filter_pct IS NOT DISTINCT FROM ?
+              AND hmm_regime_filter IS NOT DISTINCT FROM ?
+            """,
+            [
+                config.band_id, config.category, config.lookback_months, config.top_n,
+                config.grace_period, config.rebalance_frequency, config.exit_rank,
+                config.trailing_stop_pct, config.downtrend_filter_pct, config.hmm_regime_filter,
+            ],
+        ).fetchone()
+        if dup is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"A strategy config with these parameters already exists (config_id={dup[0]})",
+            )
         new_id = conn.execute(
             """
             INSERT INTO momentum_strategy_configs

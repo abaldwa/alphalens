@@ -141,6 +141,13 @@ export const NAV_SECTIONS: NavSection[] = [
         label: 'Strategy Report',
         href: '/momentum-dynamic-report',
       },
+      // 2026-08-08: Live Strategy Configuration & Deployment Page
+      {
+        id: 'strategy_deploy',
+        label: 'Strategy Deploy',
+        href: '/momentum-deploy',
+        group: 'Live',
+      },
     ],
   },
   {

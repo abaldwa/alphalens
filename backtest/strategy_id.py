@@ -80,6 +80,18 @@ STYLE_DEFAULT_HORIZON = {
     "Momentum": HorizonBucket.D21,
     "Volatility": HorizonBucket.D21,
     "Trend Following": HorizonBucket.D63,
+    # [BUG FIX 2026-08-08] "Regime" is a real TEMPLATE_STYLE value (R1-R4 in
+    # systems/technical_analysis/screener/templates.py) that was never added
+    # here — so every Regime-style template raised ValueError at horizon
+    # resolution and could not be backtested at all, via the CLI or a queue.
+    # NOT in the Explainer's published table (which predates the R category),
+    # so this is a reasoned extension in the same spirit as the Fundamental/
+    # Momentum defaults below: STYLE_EXIT_PARAMS gives Regime the longest
+    # max_hold of any style (30 days, vs Trend Following's 25) on the
+    # rationale that a regime thesis plays out over weeks — so it takes the
+    # same 63-day bucket Trend Following uses, the longest available short of
+    # a full year.
+    "Regime": HorizonBucket.D63,
 }
 
 # The Explainer doesn't cover Fundamental/Momentum (Technical-only), so
