@@ -241,6 +241,74 @@ def exit_reason_breakdown(trades: pd.DataFrame) -> Dict[str, Dict[str, float]]:
     return out
 
 
+ROLLING_WINDOW_YEARS = (2, 3, 4, 5)
+
+
+def rolling_returns(
+    equity_curve: List[Dict[str, Any]], windows: tuple = ROLLING_WINDOW_YEARS,
+) -> Dict[str, Any]:
+    """Rolling N-year returns over the run's daily mark-to-market equity
+    curve, for each N in `windows`.
+
+    Unlike everything else in this module, this is TIME-WEIGHTED and
+    mark-to-market, not realized: it compares portfolio value on date D to
+    value on D minus N years, so open positions count at their marked value.
+    That is the only honest way to answer "what would 3 years starting
+    anywhere in this run have returned" — a realized-P&L version would
+    silently omit whatever was still held at each window's end.
+
+    Every trading day that has a real bar N years earlier starts one window
+    (a daily-overlapping population, standard for rolling-return analysis).
+    Windows are anchored on CALENDAR dates offset by N years, resolved to
+    the nearest earlier trading day, so a "3-year return" spans three real
+    calendar years regardless of holiday placement.
+
+    Returns per-window: count, min/median/max, mean, and the share of
+    windows that were positive — plus the annualized (CAGR-equivalent)
+    median, since a raw 5-year total return isn't comparable to a 2-year one.
+    Windows shorter than N years produce an empty result for that N rather
+    than a partial-window figure.
+    """
+    if not equity_curve or len(equity_curve) < 2:
+        return {}
+    series = pd.Series(
+        [float(p["equity"]) for p in equity_curve],
+        index=pd.DatetimeIndex([pd.Timestamp(p["date"]) for p in equity_curve]),
+    ).sort_index()
+
+    out: Dict[str, Any] = {}
+    for years in windows:
+        # For each end date, the value N years before it — reindex with
+        # method="ffill" resolves an offset landing on a holiday/weekend
+        # back to the most recent real trading day, never interpolating.
+        start_targets = series.index - pd.DateOffset(years=years)
+        start_values = series.reindex(start_targets, method="ffill")
+        valid = start_targets >= series.index[0]
+        rets = []
+        for end_value, start_value, ok in zip(series.to_numpy(), start_values.to_numpy(), valid):
+            if not ok or start_value is None or pd.isna(start_value) or start_value <= 0:
+                continue
+            rets.append(end_value / start_value - 1.0)
+        key = f"{years}y"
+        if not rets:
+            out[key] = {"n_windows": 0}
+            continue
+        s = pd.Series(rets)
+        median = float(s.median())
+        out[key] = {
+            "n_windows": int(len(s)),
+            "min": float(s.min()),
+            "median": median,
+            "max": float(s.max()),
+            "mean": float(s.mean()),
+            "positive_share": float((s > 0).mean()),
+            # Annualized equivalent of the median window, so 2y/3y/4y/5y
+            # figures sit on one comparable scale.
+            "median_annualized": float((1.0 + median) ** (1.0 / years) - 1.0),
+        }
+    return out
+
+
 def compute_comprehensive_metrics(
     report: Dict[str, Any], trade_log_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -283,6 +351,10 @@ def compute_comprehensive_metrics(
         "avg_holding_days": float(trades["holding_days"].mean()) if not trades.empty else None,
         "median_holding_days": float(trades["holding_days"].median()) if not trades.empty else None,
         "yearly": [asdict(b) for b in yearly_returns(trades)],
+        # Empty for a run predating the equity_curve field on
+        # BacktestRunResult (2026-08-08) — reported as absent, never faked
+        # from realized P&L, which would not be the same quantity.
+        "rolling": rolling_returns(report.get("equity_curve") or []),
         "taxes": taxes,
         "holdings": holdings_profile(trades),
         "entries": signals_per_month(trades),

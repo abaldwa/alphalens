@@ -1000,4 +1000,11 @@ class BacktestOrchestrator:
             exit_policy_variant=self._exit_policy_variant,
             regime_label=regime_label,
             trade_log_path=str(trade_log_path),
+            # Post-tax equity curve (the same series compute_metrics scored),
+            # so a rolling-window return computed downstream matches the
+            # run's own reported CAGR/drawdown rather than a parallel series.
+            equity_curve=[
+                {"date": ts.date().isoformat(), "equity": float(value)}
+                for ts, value in equity_curve.items()
+            ],
         )

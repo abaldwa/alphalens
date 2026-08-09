@@ -53,6 +53,18 @@ _CSV_COLUMNS = [
     ("post_tax_return_on_capital", "post_tax_return"),
     ("holdings.avg_concurrent_positions_calendar", "avg_stocks_held"),
     ("entries.avg_entries_per_month", "entries_per_month"),
+    # Rolling N-year windows (mark-to-market, not realized — see
+    # ta_comprehensive_metrics.rolling_returns). Median total return per
+    # window plus the share of windows that were positive; the annualized
+    # median is in the JSON for anyone comparing 2y against 5y directly.
+    ("rolling.2y.median", "roll2y_median"),
+    ("rolling.2y.positive_share", "roll2y_pos_share"),
+    ("rolling.3y.median", "roll3y_median"),
+    ("rolling.3y.positive_share", "roll3y_pos_share"),
+    ("rolling.4y.median", "roll4y_median"),
+    ("rolling.4y.positive_share", "roll4y_pos_share"),
+    ("rolling.5y.median", "roll5y_median"),
+    ("rolling.5y.positive_share", "roll5y_pos_share"),
 ]
 
 
@@ -211,6 +223,7 @@ def render_html(comparison: Dict[str, Any]) -> str:
             value = _dig(r, dotted)
             kind = (
                 "pct" if header in {"cagr", "max_drawdown", "win_rate", "benchmark_cagr", "excess_return", "post_tax_return"}
+                or header.startswith("roll")
                 else "inr" if header.endswith("_inr")
                 else "num"
             )

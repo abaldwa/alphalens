@@ -121,6 +121,19 @@ class BacktestRunResult:
     # joined back to its trade-level detail without recomputing the path
     # convention. None only if trade-log writing itself failed.
     trade_log_path: Optional[str] = None
+    # (2026-08-08) Daily mark-to-market portfolio value —
+    # [{"date": "YYYY-MM-DD", "equity": float}, ...], one entry per trading
+    # day. Previously the equity curve existed only inside run() and was
+    # discarded after compute_metrics consumed it, so nothing downstream
+    # could compute a genuine time-weighted return over an arbitrary window:
+    # rolling 2/3/4/5-year returns, drawdown recovery, or any "what was this
+    # worth on date X" question had to be approximated from realized trade
+    # P&L, which ignores open positions entirely. Carried on the RESULT
+    # (and so into the report JSON) rather than into metrics_json, because
+    # run_store deliberately strips the similarly-sized cash_position_series
+    # from list_runs() to keep that table's rows small — this belongs with
+    # the same treatment, not in the hot listing path.
+    equity_curve: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)

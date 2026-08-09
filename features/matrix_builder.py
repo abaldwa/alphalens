@@ -37,7 +37,7 @@ datastore/normalised/mf_holdings/*.parquet directly).
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -240,18 +240,88 @@ def _fetch_ohlcv_panel(
     return panel
 
 
-def _build_benchmark_wide(benchmark_panel: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """Pivot the long-format benchmark OHLCV panel into the wide shape technical.py expects."""
-    if benchmark_panel.empty:
+# [BUG FIX 2026-08-09] Category 7 (relative strength) proxies each index
+# with a tradeable ETF (BENCHMARK_TICKERS) because no raw NSE index series
+# was ingested in Phase 1. That is no longer true — index_ohlcv now carries
+# real NSE index history — and the ETF proxies have a hard, unfixable
+# history limit that silently emptied the features:
+#
+#     MONIFTY500 (nifty500) lists only from 2023-10-06
+#     NIF100BEES (nifty100) lists only from 2015-01-01
+#     NIFTYBEES  (nifty50)  lists from 2006-01-02
+#
+# so rs_vs_nifty500_21d was 0% populated for every date before 2024 — not a
+# backfill gap but a security that did not exist yet. Recomputation could
+# never fill it. The real Nifty 500 series in index_ohlcv starts 2006-04-03,
+# covering the full 2007-2026 window, so these names now resolve from
+# index_ohlcv first and fall back to the ETF proxy only where the index has
+# no rows. Real data either way (CLAUDE.md Absolute Rule 6) — never a
+# synthesized or interpolated benchmark.
+_BENCHMARK_INDEX_NAMES = {
+    "nifty50": "Nifty 50",
+    "nifty500": "Nifty 500",
+    # No "Nifty 100" in index_ohlcv's TRACKED_INDICES — nifty100 keeps using
+    # the NIF100BEES proxy alone (unchanged behavior for that one column).
+}
+
+
+def _fetch_benchmark_index_closes(
+    client, from_date, to_date,
+) -> Dict[str, pd.Series]:
+    """Real per-index close series from index_ohlcv, keyed by the same
+    short names BENCHMARK_TICKERS uses. An index with no rows (or a failed
+    fetch) is simply absent from the result, leaving the ETF proxy in
+    place — this never raises into the feature build."""
+    out: Dict[str, pd.Series] = {}
+    for name, index_name in _BENCHMARK_INDEX_NAMES.items():
+        try:
+            df = client.get_index_ohlcv(index_name, from_date, to_date)
+        except Exception as exc:  # noqa: BLE001 — fall back to the ETF proxy
+            logger.warning("index_ohlcv fetch failed for %s (%s); falling back to ETF proxy", index_name, exc)
+            continue
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        series = pd.Series(df["close"].to_numpy(), index=pd.to_datetime(df["date"]))
+        out[name] = series[~series.index.duplicated(keep="last")].sort_index()
+    return out
+
+
+def _build_benchmark_wide(
+    benchmark_panel: pd.DataFrame, index_closes: Optional[Dict[str, pd.Series]] = None,
+) -> Optional[pd.DataFrame]:
+    """Pivot the long-format benchmark OHLCV panel into the wide shape
+    technical.py expects, preferring real index_ohlcv closes over the ETF
+    proxy for any index supplied in `index_closes` (see the note above).
+
+    index_closes=None reproduces the original ETF-only behavior exactly, so
+    existing callers/tests that don't pass it are unaffected."""
+    if benchmark_panel.empty and not index_closes:
         return None
 
-    wide = benchmark_panel.pivot_table(index="date", columns="ticker", values="close").reset_index()
-    rename = {ticker: f"{name}_close" for name, ticker in BENCHMARK_TICKERS.items()}
-    wide = wide.rename(columns=rename)
+    if benchmark_panel.empty:
+        # Every proxy missing but real index data present — build the frame
+        # off the index dates alone rather than returning None (which would
+        # blank Category 7 entirely).
+        all_dates = sorted({d for s in index_closes.values() for d in s.index})
+        wide = pd.DataFrame({"date": pd.to_datetime(all_dates)})
+    else:
+        wide = benchmark_panel.pivot_table(index="date", columns="ticker", values="close").reset_index()
+        rename = {ticker: f"{name}_close" for name, ticker in BENCHMARK_TICKERS.items()}
+        wide = wide.rename(columns=rename)
+
     for name in BENCHMARK_TICKERS:
         col = f"{name}_close"
         if col not in wide.columns:
             wide[col] = np.nan
+
+    for name, series in (index_closes or {}).items():
+        col = f"{name}_close"
+        if col not in wide.columns:
+            continue
+        mapped = pd.to_datetime(wide["date"]).map(series)
+        # Real index value wherever one exists; the ETF proxy stays only
+        # where it doesn't (e.g. an index-holiday row the ETF still traded).
+        wide[col] = mapped.where(mapped.notna(), wide[col])
     return wide
 
 
@@ -1088,7 +1158,9 @@ def build_feature_matrix(
     benchmark_panel = _fetch_ohlcv_panel(
         client, list(BENCHMARK_TICKERS.values()), from_date, to_date, _bulk_panel=bulk_panel
     )
-    benchmark_wide = _build_benchmark_wide(benchmark_panel)
+    benchmark_wide = _build_benchmark_wide(
+        benchmark_panel, _fetch_benchmark_index_closes(client, from_date, to_date)
+    )
 
     if universe_panel.empty:
         # 2026-07-07 incident: this branch used to degrade to an all-NaN
