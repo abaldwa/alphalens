@@ -735,10 +735,9 @@ class BacktestOrchestrator:
             except Exception:
                 logger.warning("regime segments unavailable; exit_ctx rows will have no `regime`", exc_info=True)
                 self._regime_segments_cache = []
-        for seg in self._regime_segments_cache:
-            if seg["start_date"] <= as_of <= seg["end_date"]:
-                return seg["regime"]
-        return None
+        from systems.regime.regime_store import regime_known_as_of
+
+        return regime_known_as_of(self._regime_segments_cache, as_of)
 
     def _apply_exit_policy(
         self, portfolio: StrategyPortfolio, prices: Dict[str, float], as_of: date_type, executed_tickers: set,

@@ -397,7 +397,17 @@ class TestRegimeConditioning:
         )
         adapter._regime_conn = object()  # non-None so _regime_for_date consults the cache
         adapter._regime_segments_cache = [
-            {"start_date": panel.index[0].date(), "end_date": panel.index[-1].date(), "regime": regime},
+            # confirmed_date is NOT NULL in market_regimes and is what the PIT
+            # gate (regime_store.regime_known_as_of) keys on — a fixture
+            # without it isn't a shape the real table can produce. Set to the
+            # panel start so the segment counts as already-confirmed for every
+            # date these tests exercise.
+            {
+                "start_date": panel.index[0].date(),
+                "end_date": panel.index[-1].date(),
+                "confirmed_date": panel.index[0].date(),
+                "regime": regime,
+            },
         ]
         return adapter
 

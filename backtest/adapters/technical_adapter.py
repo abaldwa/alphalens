@@ -66,6 +66,7 @@ class TechnicalAdapter:
         regime_method: Optional[str] = None,
         disable_buys_in_regime: Optional[Set[str]] = None,
         precomputed_matches_dir: Optional[Union[str, Path]] = None,
+        regime_labels: Optional[Dict[date_type, str]] = None,
     ) -> None:
         """
         template_name : one of the 42 pre-built screener templates
@@ -167,6 +168,22 @@ class TechnicalAdapter:
         self.min_adtv_cr = min_adtv_cr
         self.quality_scores = quality_scores or {}
         self.quality_gate = quality_gate or {}
+        # 2026-08-09: a quality_gate with no quality_scores to evaluate it
+        # against is not a permissive gate, it is a DEAD one — every ticker
+        # takes _passes_quality_gate's "scores is None -> True" branch, so a
+        # run configured with min_f_score=4 silently applies no filter at
+        # all and reports results as if it had. That is exactly how the
+        # 2026-08-09 Category-T sweep ran 120 jobs whose stated F-score floor
+        # never once executed. run_orchestrator_backtest.py passes
+        # quality_gate but has never passed quality_scores, so this raises
+        # rather than letting the caller keep believing a filter ran.
+        if self.quality_gate and not self.quality_scores:
+            raise ValueError(
+                "TechnicalAdapter: quality_gate="
+                f"{self.quality_gate} was requested but quality_scores is empty — the gate would "
+                "silently pass every ticker and the run would misreport itself as quality-filtered. "
+                "Pass real per-ticker quality_scores, or drop the quality_gate from this run."
+            )
         self.downtrend_filter_pct = downtrend_filter_pct
         self.downtrend_lookback_days = downtrend_lookback_days
         self.circuit_band_pct = circuit_band_pct
@@ -174,6 +191,10 @@ class TechnicalAdapter:
         self._regime_index_name = regime_index_name
         self._regime_method = regime_method
         self.disable_buys_in_regime = disable_buys_in_regime or set()
+        # None (not {}) means "no precomputed labels — fall back to the
+        # segment store"; an empty dict would wrongly read as "labels
+        # supplied, every date unknown" and silently disable the gate.
+        self._regime_labels = regime_labels
         self._regime_segments_cache: Optional[List[dict]] = None
         self._currently_held: set = set()
         self._last_results: Dict[str, Any] = {}  # ticker -> ScreenerResult, from the most recent generate_signals() call
@@ -265,6 +286,15 @@ class TechnicalAdapter:
         duplicated rather than shared because StrategyAdapter has no
         reference back to the orchestrator instance; both read the same
         systems.regime.regime_store segments so they can never disagree."""
+        # 2026-08-09: precomputed running-peak-drawdown labels take priority
+        # over the segment store when supplied. See market_regime.
+        # bear_by_running_peak_drawdown for why a buy-gate must not use the
+        # segment classifier: its start_date is backdated to the anchoring
+        # peak (lookahead) while its confirmed_date lands after the drawdown
+        # is already over (useless). These labels have no confirmation lag,
+        # so the same rule runs here and in live trading.
+        if self._regime_labels is not None:
+            return self._regime_labels.get(as_of)
         if self._regime_conn is None:
             return None
         if self._regime_segments_cache is None:
@@ -279,10 +309,9 @@ class TechnicalAdapter:
             except Exception:
                 logger.warning("TechnicalAdapter: regime segments unavailable; disable_buys_in_regime inert", exc_info=True)
                 self._regime_segments_cache = []
-        for seg in self._regime_segments_cache:
-            if seg["start_date"] <= as_of <= seg["end_date"]:
-                return seg["regime"]
-        return None
+        from systems.regime.regime_store import regime_known_as_of
+
+        return regime_known_as_of(self._regime_segments_cache, as_of)
 
     def _is_buys_disabled(self, as_of_date: date_type) -> bool:
         if not self.disable_buys_in_regime:

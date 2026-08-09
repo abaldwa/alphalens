@@ -109,3 +109,45 @@ def list_regime_segments(
     ).fetchall()
     cols = ["index_name", "regime", "start_date", "end_date", "confirmed_date", "method", "move_pct"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def regime_known_as_of(segments: List[dict], as_of: date_type) -> Optional[str]:
+    """The regime label a real-time observer would hold on `as_of`, given
+    `segments` (any list_regime_segments() output for ONE index+method).
+
+    2026-08-09 — this exists because three call sites (BacktestOrchestrator.
+    _regime_for_date, MomentumAdapter._regime_for_date, TechnicalAdapter.
+    _regime_for_date) each open-coded the same lookup as
+
+        if seg["start_date"] <= as_of <= seg["end_date"]: return seg["regime"]
+
+    which is a real lookahead bug, not a nuance. market_regime.classify_
+    regimes() BACKDATES start_date to the peak/trough that anchors a
+    segment, while confirmed_date is the day the threshold rule actually
+    fired — and the gap between them is enormous. Measured on the real
+    Nifty 500 series at a 12% threshold, every single bear segment in
+    2021-2026 confirmed AFTER that segment had already ended (lookahead of
+    109-228 days each, 620 days total). A backtest matching on start_date
+    therefore "knew" a bear market had begun up to 7 months before the rule
+    could have said so, which made a bear-gated strategy look excellent and
+    be entirely unimplementable live.
+
+    Correct real-time semantics: on `as_of` an observer knows exactly those
+    segments already confirmed, and believes the most recently confirmed one
+    is in force (it stays in force until a later segment confirms — the
+    classifier's own end_date is itself only knowable in hindsight, so it
+    deliberately does NOT bound this). Returns None when nothing has
+    confirmed yet, same "no opinion" contract the old code had for an
+    uncovered date.
+
+    NOTE for live/PIT callers: pass segments fetched WITHOUT an `as_of`
+    filter, or with one no earlier than the date you're asking about —
+    this function does the confirmed_date gating itself so a single
+    fetched-once cache can serve every date in a backtest loop.
+    """
+    latest: Optional[dict] = None
+    for seg in segments:
+        if seg["confirmed_date"] <= as_of:
+            if latest is None or seg["confirmed_date"] > latest["confirmed_date"]:
+                latest = seg
+    return latest["regime"] if latest is not None else None

@@ -371,10 +371,9 @@ class MomentumAdapter:
             except Exception:
                 logger.warning("MomentumAdapter: regime segments unavailable; disable_buys_in_regime inert", exc_info=True)
                 self._regime_segments_cache = []
-        for seg in self._regime_segments_cache:
-            if seg["start_date"] <= as_of <= seg["end_date"]:
-                return seg["regime"]
-        return None
+        from systems.regime.regime_store import regime_known_as_of
+
+        return regime_known_as_of(self._regime_segments_cache, as_of)
 
     def _is_buys_disabled(self, as_of_date: date_type) -> bool:
         if not self.disable_buys_in_regime:

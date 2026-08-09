@@ -14,8 +14,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable } from '@/lib/ui'
-import { API_BASE_URL, apiGet } from '@/shared/api/client'
-import type { TABacktestVariant, TARecommendedStrategiesReport } from './types'
+import { apiGet } from '@/shared/api/client'
+import type {
+  TABacktestVariant,
+  TALeaderboardEntry,
+  TARecommendedStrategiesReport,
+  TATemplateLeaderboard,
+} from './types'
 import { SweepTriggerButton } from './SweepTriggerButton'
 
 function fmtPct(v: number | null | undefined) {
@@ -31,6 +36,51 @@ const FILTER_LABELS: Record<string, string> = {
   max_defensive: 'Max-Defensive',
 }
 
+
+const LEADERBOARD_COLUMNS: ColumnDef<TALeaderboardEntry>[] = [
+  { accessorKey: 'template', header: 'Template' },
+  { accessorKey: 'category', header: 'Cat' },
+  { accessorKey: 'cagr', header: 'CAGR', cell: ({ row }) => fmtPct(row.original.cagr) },
+  {
+    accessorKey: 'benchmark_cagr',
+    header: 'Benchmark',
+    cell: ({ row }) => fmtPct(row.original.benchmark_cagr),
+  },
+  {
+    accessorKey: 'excess_return',
+    header: 'Excess',
+    cell: ({ row }) => {
+      const v = row.original.excess_return
+      // null is UNKNOWN (no benchmark for this window), not a loss — it must
+      // not render as a red negative number.
+      if (v == null) return <span className="text-muted-foreground">unknown</span>
+      return (
+        <Badge variant={v > 0 ? 'success' : 'destructive'}>
+          {v > 0 ? '+' : ''}
+          {(v * 100).toFixed(2)}%
+        </Badge>
+      )
+    },
+  },
+  { accessorKey: 'sharpe', header: 'Sharpe', cell: ({ row }) => fmtNum(row.original.sharpe, 2) },
+  {
+    accessorKey: 'max_drawdown',
+    header: 'Max DD',
+    cell: ({ row }) => fmtPct(row.original.max_drawdown),
+  },
+  { accessorKey: 'win_rate', header: 'Win Rate', cell: ({ row }) => fmtPct(row.original.win_rate) },
+  { accessorKey: 'n_trades', header: 'Trades', cell: ({ row }) => row.original.n_trades ?? '—' },
+  {
+    accessorKey: 'integrity_passed',
+    header: 'Integrity',
+    cell: ({ row }) => {
+      const v = row.original.integrity_passed
+      if (v == null) return <span className="text-muted-foreground">—</span>
+      return <Badge variant={v ? 'success' : 'destructive'}>{v ? 'passed' : 'FAILED'}</Badge>
+    },
+  },
+]
+
 export function TechnicalBatchBacktestPage() {
   const [strategyFilter, setStrategyFilter] = useState<string>('')
   const [topNFilter, setTopNFilter] = useState<string>('')
@@ -42,6 +92,14 @@ export function TechnicalBatchBacktestPage() {
     queryFn: () => apiGet<TARecommendedStrategiesReport>('/api/v1/technical_backtest/recommended_strategies'),
   })
 
+  // All 66 screener templates' best stored run (46 original + 20 Category T),
+  // grouped by date window. Separate from `report` above, which only covers the
+  // recommended-strategies sweep's own variants.
+  const leaderboard = useQuery({
+    queryKey: ['technical-template-leaderboard'],
+    queryFn: () => apiGet<TATemplateLeaderboard>('/api/v1/technical_backtest/template_leaderboard'),
+  })
+
   const allRows = report.data?.variants ?? []
 
   // Derive the top variant (by Sharpe) per template — these are the
@@ -50,9 +108,13 @@ export function TechnicalBatchBacktestPage() {
     const byTemplate = new Map<string, TABacktestVariant>()
     for (const r of allRows) {
       if (r.variant_kind !== 'single' || r.sharpe == null) continue
-      const existing = byTemplate.get(r.template)
+      // template is optional on TABacktestVariant (combo rows carry
+      // template_name instead) — skip rather than index by undefined.
+      const key = r.template ?? r.template_name
+      if (!key) continue
+      const existing = byTemplate.get(key)
       if (!existing || (r.sharpe ?? -Infinity) > (existing.sharpe ?? -Infinity)) {
-        byTemplate.set(r.template, r)
+        byTemplate.set(key, r)
       }
     }
     return new Set(Array.from(byTemplate.values()).map((r) => r.template))
@@ -231,13 +293,52 @@ export function TechnicalBatchBacktestPage() {
         <Badge variant="default">Best CAGR</Badge>.
       </div>
 
+      {/* All-templates leaderboard (46 original + 20 Category T) */}
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>All Templates — Benchmark-Relative Leaderboard</CardTitle>
+          <CardDescription>
+            {leaderboard.isLoading
+              ? 'Loading…'
+              : leaderboard.error
+                ? 'Failed to load'
+                : `${leaderboard.data?.n_templates ?? 0} templates across ${
+                    leaderboard.data?.windows.length ?? 0
+                  } date windows, from ${leaderboard.data?.n_runs_considered ?? 0} stored runs`}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="mb-4 rounded-[var(--radius-token)] border border-warning bg-accent-soft px-3 py-2 text-xs">
+            <strong className="text-foreground">Read within a window, never across.</strong> Each group below
+            was swept over a different period — the 46 original templates over 2016-2026, Category T over
+            2021-2026 — with different benchmark CAGRs and very different market character. A strategy is only
+            deployable evidence if it beats its OWN window&apos;s benchmark <em>and</em> passes integrity.
+          </div>
+          {(leaderboard.data?.windows ?? []).map((w) => (
+            <details key={w.window} className="mb-3 rounded-[var(--radius-token)] border border-border p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                {w.start_date} → {w.end_date} · {w.n_templates} templates · benchmark{' '}
+                {fmtPct(w.benchmark_cagr)} ·{' '}
+                <Badge variant={w.n_beating_benchmark > 0 ? 'success' : 'destructive'}>
+                  {w.n_beating_benchmark} beat benchmark
+                </Badge>{' '}
+                <Badge variant="default">{w.n_integrity_passed} passed integrity</Badge>
+              </summary>
+              <div className="mt-3">
+                <DataTable columns={LEADERBOARD_COLUMNS} data={w.entries} />
+              </div>
+            </details>
+          ))}
+        </CardContent>
+      </Card>
+
       {/* Hero card */}
       {bestVariant ? (
         <Card className="mb-4 border-accent">
           <CardHeader>
             <CardTitle>Best Strategy (by Sharpe)</CardTitle>
             <CardDescription>
-              {bestVariant.template} · {FILTER_LABELS[bestVariant.strategy] ?? bestVariant.strategy} ·
+              {bestVariant.template} · {(bestVariant.strategy ? FILTER_LABELS[bestVariant.strategy] : undefined) ?? bestVariant.strategy} ·
               {' '}Top {bestVariant.top_n} · CAGR {fmtPct(bestVariant.cagr)} · Sharpe {fmtNum(bestVariant.sharpe, 2)} ·
               {' '}Sortino {fmtNum(bestVariant.sortino, 2)} · Win Rate {fmtPct(bestVariant.win_rate)} ·
               {' '}{bestVariant.total_trades ?? '—'} trades
@@ -279,7 +380,7 @@ export function TechnicalBatchBacktestPage() {
               <option value="">All filter tiers</option>
               {strategyOptions.map((s) => (
                 <option key={s} value={s}>
-                  {FILTER_LABELS[s] ?? s}
+                  {(s ? FILTER_LABELS[s] : undefined) ?? s}
                 </option>
               ))}
             </select>
@@ -362,7 +463,7 @@ export function TechnicalBatchBacktestPage() {
           <Card>
             <CardHeader>
               <CardTitle>
-                Signal Failures — {selectedVariant.template} / {FILTER_LABELS[selectedVariant.strategy] ?? selectedVariant.strategy}
+                Signal Failures — {selectedVariant.template} / {(selectedVariant.strategy ? FILTER_LABELS[selectedVariant.strategy] : undefined) ?? selectedVariant.strategy}
               </CardTitle>
               <CardDescription>
                 {selectedFailures.n_losing_trades} losing trade{selectedFailures.n_losing_trades === 1 ? '' : 's'} of{' '}

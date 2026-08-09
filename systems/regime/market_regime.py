@@ -174,3 +174,55 @@ def classify_regimes(prices: pd.Series, threshold_pct: float = BULL_BEAR_THRESHO
 
 def _to_date(d) -> date:
     return d.date() if hasattr(d, "date") else d
+
+
+DRAWDOWN_METHOD_NAME_TEMPLATE = "{pct}pct_drawdown_from_running_peak_v1"
+
+
+def drawdown_method_name(threshold_pct: float) -> str:
+    """Method string for running-peak-drawdown labels, deliberately distinct
+    from method_name()'s "{n}pct_threshold_v1" so the two can never be
+    confused in market_regimes (they answer different questions)."""
+    return DRAWDOWN_METHOD_NAME_TEMPLATE.format(pct=int(round(threshold_pct * 100)))
+
+
+def bear_by_running_peak_drawdown(
+    prices: pd.Series, threshold_pct: float = BULL_BEAR_THRESHOLD_PCT
+) -> pd.Series:
+    """Point-in-time bear/bull label per date: bear on day t iff the close on
+    t is at least `threshold_pct` below the highest close observed UP TO AND
+    INCLUDING t. Returns a Series of "bear"/"bull" indexed like `prices`.
+
+    2026-08-09, added for live-deployable regime gating. This is a different
+    instrument from classify_regimes() and exists because that one cannot be
+    used as a trading gate:
+
+      - classify_regimes() produces SEGMENTS whose start_date is backdated to
+        the anchoring peak, and whose confirmed_date (the day the rule could
+        actually fire) lags that start by months. On the real Nifty 500 at a
+        12% threshold, all four 2021-2026 bear segments confirmed AFTER they
+        had already ended. Gating trades on it means either lookahead (match
+        on start_date) or a signal that arrives past the trough (match on
+        confirmed_date) — useless in both directions.
+      - This function has ZERO confirmation lag by construction: it uses a
+        running (expanding) max, so the value for day t depends only on data
+        through t. The identical rule runs in a backtest and in live trading,
+        which is the whole point — the backtest must test what gets deployed.
+
+    Deliberately binary (no "sideways"): as a buy-gate the only question is
+    "is the index far enough off its own high to stop buying," and a third
+    state would need a second, separately-justified threshold.
+
+    Note this labels the DRAWDOWN state, not a market cycle — the label flips
+    back to bull as soon as price recovers to within threshold_pct of the
+    running peak, which may be well before a cycle-based classifier would
+    call the bear over. That responsiveness is the intent.
+    """
+    prices = prices.dropna()
+    if prices.empty:
+        return pd.Series(dtype=object)
+    running_peak = prices.astype(float).cummax()
+    drawdown = prices.astype(float) / running_peak - 1.0
+    return pd.Series(
+        ["bear" if d <= -threshold_pct else "bull" for d in drawdown], index=prices.index, dtype=object
+    )

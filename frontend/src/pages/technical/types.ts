@@ -310,6 +310,54 @@ export interface TARecommendedStrategiesReport extends TAExperimentationReport {
   combo_templates?: string[][]
 }
 
+// GET /api/v1/technical_backtest/template_leaderboard — every screener
+// template's best stored run, grouped by date window. Windows are separate
+// groups because runs swept over different periods (the 46 original
+// templates on 2016-2026, Category T on 2021-2026) are not comparable;
+// the UI must never rank them in one list.
+export interface TALeaderboardEntry {
+  template: string
+  window: string
+  start_date: string
+  end_date: string
+  cagr: number | null
+  benchmark_cagr: number | null
+  /** null = benchmark unavailable for this window (UNKNOWN), not a loss. */
+  excess_return: number | null
+  sharpe: number | null
+  sortino: number | null
+  max_drawdown: number | null
+  win_rate: number | null
+  profit_factor: number | null
+  n_trades: number | null
+  turnover_ratio: number | null
+  top_n: number | null
+  exit_variant: string | null
+  /** false = failed integrity_checker.py; treat the row as unvalidated. */
+  integrity_passed: boolean | null
+  dsr: number | null
+  category: string
+}
+
+export interface TALeaderboardWindow {
+  window: string
+  start_date: string
+  end_date: string
+  benchmark_cagr: number | null
+  entries: TALeaderboardEntry[]
+  n_templates: number
+  n_beating_benchmark: number
+  n_integrity_passed: number
+}
+
+export interface TATemplateLeaderboard {
+  generated_at: string
+  n_templates: number
+  n_runs_considered: number
+  windows: TALeaderboardWindow[]
+  caveats: string[]
+}
+
 export interface TATriggerResponse {
   job_id: string
   status: string

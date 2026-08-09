@@ -79,6 +79,8 @@ _ORCHESTRATOR_FLAGS = {
     # --max-hold-days/--min-adtv-cr/etc.) — see that script's argparse block.
     "max_hold_days", "min_adtv_cr", "quality_gate_min_f_score", "quality_gate_max_m_score",
     "downtrend_filter_pct", "circuit_band_pct", "disable_buys_in_regime", "combo_templates",
+    # 2026-08-09 PIT bear gate (run_orchestrator_backtest.py --bear-drawdown-pct)
+    "bear_drawdown_pct",
     "defer_db_writes", "precomputed_matches_dir", "prefetch_feature_parquets", "ohlcv_snapshot_dir",
     # 2026-08-05 Momentum engine consolidation Phase 2: market-cap rank-band
     # universe selection (features/momentum_universe.py RANK_BANDS ids 1-5).

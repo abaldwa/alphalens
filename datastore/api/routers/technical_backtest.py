@@ -168,6 +168,135 @@ async def get_recommended_strategies() -> Dict[str, Any]:
     )
 
 
+@router.get("/template_leaderboard")
+async def get_template_leaderboard() -> Dict[str, Any]:
+    """Every technical screener template's BEST stored backtest run, ranked by
+    excess return over a real Nifty 500 buy-and-hold over that run's own window.
+
+    2026-08-09. Two things this deliberately does that a naive leaderboard
+    would get wrong:
+
+    1. Excess return is computed against the benchmark for EACH RUN'S OWN
+       date window, not one global number. The 46 original templates were
+       swept over 2016-2026 while Category T ran 2021-2026, and those windows
+       have materially different benchmark CAGRs (12.5% vs 13.7%) and very
+       different market character. Runs from different windows are returned
+       in separate `windows` groups and must not be ranked against each other.
+    2. Older runs have `benchmark_cagr` NULL in metrics_json (they predate
+       benchmark capture), so excess is recomputed here from real index_ohlcv
+       closes rather than being reported as a loss. A NULL benchmark means
+       "unknown", never "underperformed".
+    """
+    import duckdb
+    import pandas as pd
+
+    from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
+
+    try:
+        bt = duckdb.connect(str(BACKTEST_DUCKDB_PATH), read_only=True)
+        nm = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    except Exception as exc:  # pragma: no cover - depends on live DB state
+        raise HTTPException(status_code=503, detail=f"backtest store unavailable: {exc}") from exc
+
+    rows = bt.execute(
+        """
+        SELECT config_json, metrics_json, start_date, end_date, integrity_passed, dsr, exit_policy_variant
+        FROM backtest_runs WHERE channel = 'technical' AND metrics_json IS NOT NULL
+        """
+    ).fetchall()
+
+    _bench_cache: Dict[str, Optional[float]] = {}
+
+    def _benchmark(start, end) -> Optional[float]:
+        key = f"{start}->{end}"
+        if key in _bench_cache:
+            return _bench_cache[key]
+        df = nm.execute(
+            "SELECT close FROM index_ohlcv WHERE index_name = 'Nifty 500' "
+            "AND date BETWEEN ? AND ? AND close IS NOT NULL ORDER BY date",
+            [start, end],
+        ).df()
+        years = (pd.Timestamp(end) - pd.Timestamp(start)).days / 365.25
+        # <2 closes or a degenerate window can't produce a real CAGR — None
+        # (unknown), never 0.0, so it can't masquerade as a flat benchmark.
+        val = None
+        if len(df) >= 2 and years > 0 and df.close.iloc[0] > 0:
+            val = float((df.close.iloc[-1] / df.close.iloc[0]) ** (1 / years) - 1)
+        _bench_cache[key] = val
+        return val
+
+    best: Dict[tuple, Dict[str, Any]] = {}
+    for config_json, metrics_json, start, end, integrity, dsr, exit_variant in rows:
+        try:
+            cfg = json.loads(config_json) or {}
+            metrics = json.loads(metrics_json) or {}
+        except (TypeError, ValueError):
+            continue
+        template = cfg.get("template_name")
+        sharpe = metrics.get("sharpe")
+        if not template or sharpe is None:
+            continue
+        window = f"{start}->{end}"
+        bench = metrics.get("benchmark_cagr")
+        if bench is None:
+            bench = _benchmark(start, end)
+        cagr = metrics.get("cagr")
+        entry = {
+            "template": template,
+            "window": window,
+            "start_date": str(start),
+            "end_date": str(end),
+            "cagr": cagr,
+            "benchmark_cagr": bench,
+            "excess_return": (cagr - bench) if (cagr is not None and bench is not None) else None,
+            "sharpe": sharpe,
+            "sortino": metrics.get("sortino"),
+            "max_drawdown": metrics.get("max_drawdown"),
+            "win_rate": metrics.get("win_rate"),
+            "profit_factor": metrics.get("profit_factor"),
+            "n_trades": metrics.get("n_trades"),
+            "turnover_ratio": metrics.get("turnover_ratio"),
+            "top_n": cfg.get("top_n"),
+            "exit_variant": exit_variant,
+            "integrity_passed": bool(integrity) if integrity is not None else None,
+            "dsr": dsr,
+            "category": "T" if template.startswith("T") and template[1:].isdigit() else template[:1],
+        }
+        key = (template, window)
+        if key not in best or sharpe > best[key]["sharpe"]:
+            best[key] = entry
+
+    entries = list(best.values())
+    windows: Dict[str, Dict[str, Any]] = {}
+    for e in entries:
+        grp = windows.setdefault(
+            e["window"], {"window": e["window"], "start_date": e["start_date"],
+                          "end_date": e["end_date"], "benchmark_cagr": e["benchmark_cagr"], "entries": []},
+        )
+        grp["entries"].append(e)
+    for grp in windows.values():
+        grp["entries"].sort(key=lambda e: (e["excess_return"] is None, -(e["excess_return"] or 0)))
+        grp["n_templates"] = len(grp["entries"])
+        grp["n_beating_benchmark"] = sum(1 for e in grp["entries"] if (e["excess_return"] or 0) > 0)
+        grp["n_integrity_passed"] = sum(1 for e in grp["entries"] if e["integrity_passed"])
+
+    ordered = sorted(windows.values(), key=lambda g: (-g["n_templates"], g["window"]))
+    return {
+        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "n_templates": len({e["template"] for e in entries}),
+        "n_runs_considered": len(rows),
+        "windows": ordered,
+        "caveats": [
+            "Runs from different date windows are NOT comparable — the 46 original templates were "
+            "swept over 2016-2026, Category T over 2021-2026. Compare within a window group only.",
+            "integrity_passed=false means the run failed backtest/core/integrity_checker.py; treat "
+            "those rows as unvalidated regardless of how good the returns look.",
+            "excess_return=null means the benchmark could not be computed for that window, not that "
+            "the strategy underperformed.",
+        ],
+    }
+
+
 @router.post("/recommended_strategies/trigger", response_model=TriggerResponse)
 async def trigger_recommended_strategies(quick: bool = False) -> TriggerResponse:
     return _launch_trigger(

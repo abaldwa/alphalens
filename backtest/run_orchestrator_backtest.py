@@ -353,6 +353,34 @@ def _no_regime_conn():
     yield None
 
 
+def _build_drawdown_regime_labels(conn, index_name: str, bear_drawdown_pct: float) -> Dict[date_type, str]:
+    """date -> "bear"/"bull" from a running-peak drawdown on `index_name`'s
+    real closes in index_ohlcv (2026-08-09, see --bear-drawdown-pct).
+
+    Raises rather than returning empty when the index has no rows: a
+    disable-buys-in-bear run whose labels are all missing would silently
+    degrade into an unfiltered run and report itself as bear-gated, which is
+    the exact silent-no-op failure mode that made the first Category-T sweep
+    untrustworthy.
+    """
+    import pandas as pd
+
+    from systems.regime.market_regime import bear_by_running_peak_drawdown
+
+    rows = conn.execute(
+        "SELECT date, close FROM index_ohlcv WHERE index_name = ? AND close IS NOT NULL ORDER BY date",
+        [index_name],
+    ).fetchall()
+    if not rows:
+        raise ValueError(
+            f"--bear-drawdown-pct was requested but index_ohlcv has no rows for {index_name!r} — "
+            "the buy gate would match nothing and the run would misreport itself as bear-gated."
+        )
+    prices = pd.Series([r[1] for r in rows], index=pd.to_datetime([r[0] for r in rows]), dtype=float)
+    labels = bear_by_running_peak_drawdown(prices, threshold_pct=bear_drawdown_pct)
+    return {ts.date(): label for ts, label in labels.items()}
+
+
 def _persist_run_result(
     conn, run_id: str, channel: str, descriptor: str, run_date, result,
     template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
@@ -417,6 +445,7 @@ def _run_immediate(
     template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
     exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
+    bear_drawdown_pct,
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
@@ -474,6 +503,22 @@ def _run_immediate(
             _shared_screener_engine = ScreenerEngine()
             if prefetch_feature_parquets:
                 _shared_screener_engine.preload_dates([d.date().isoformat() for d in config.trading_days])
+            # 2026-08-09: point-in-time bear labels for --bear-drawdown-pct. Built
+            # here (own short-lived read-only connection — DUCKDB_PATH allows many
+            # concurrent readers) because the adapter kwargs below are assembled
+            # before regime_cm opens. None when the flag wasn't passed, which leaves
+            # TechnicalAdapter on the segment-store path unchanged.
+            _drawdown_regime_labels = None
+            if bear_drawdown_pct is not None:
+                with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as _dd_conn:
+                    _drawdown_regime_labels = _build_drawdown_regime_labels(
+                        _dd_conn, regime_index_name or "Nifty 500", bear_drawdown_pct,
+                    )
+                logger.info(
+                    f"bear gate: running-peak drawdown >= {bear_drawdown_pct:.0%} on "
+                    f"{regime_index_name or 'Nifty 500'} — {sum(1 for v in _drawdown_regime_labels.values() if v == 'bear')}"
+                    f"/{len(_drawdown_regime_labels)} dates labelled bear"
+                )
             _shared_adapter_kwargs = dict(
                 top_n=top_n, sector_lookup=sector_map, screener_engine=_shared_screener_engine,
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
@@ -482,6 +527,7 @@ def _run_immediate(
                 downtrend_filter_pct=downtrend_filter_pct,
                 circuit_band_pct=circuit_band_pct,
                 disable_buys_in_regime=set(disable_buys_in_regime) if disable_buys_in_regime else None,
+                regime_labels=_drawdown_regime_labels,
                 regime_index_name=regime_index_name or "Nifty 500",
                 regime_method=regime_method,
                 precomputed_matches_dir=precomputed_matches_dir,
@@ -681,6 +727,7 @@ def _run_deferred(
     template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
     exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
+    bear_drawdown_pct,
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
@@ -727,6 +774,22 @@ def _run_deferred(
         _shared_screener_engine = ScreenerEngine()
         if prefetch_feature_parquets:
             _shared_screener_engine.preload_dates([d.date().isoformat() for d in config.trading_days])
+        # 2026-08-09: point-in-time bear labels for --bear-drawdown-pct. Built
+        # here (own short-lived read-only connection — DUCKDB_PATH allows many
+        # concurrent readers) because the adapter kwargs below are assembled
+        # before regime_cm opens. None when the flag wasn't passed, which leaves
+        # TechnicalAdapter on the segment-store path unchanged.
+        _drawdown_regime_labels = None
+        if bear_drawdown_pct is not None:
+            with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as _dd_conn:
+                _drawdown_regime_labels = _build_drawdown_regime_labels(
+                    _dd_conn, regime_index_name or "Nifty 500", bear_drawdown_pct,
+                )
+            logger.info(
+                f"bear gate: running-peak drawdown >= {bear_drawdown_pct:.0%} on "
+                f"{regime_index_name or 'Nifty 500'} — {sum(1 for v in _drawdown_regime_labels.values() if v == 'bear')}"
+                f"/{len(_drawdown_regime_labels)} dates labelled bear"
+            )
         _shared_adapter_kwargs = dict(
             top_n=top_n, sector_lookup=sector_map, screener_engine=_shared_screener_engine,
             price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
@@ -735,6 +798,7 @@ def _run_deferred(
             downtrend_filter_pct=downtrend_filter_pct,
             circuit_band_pct=circuit_band_pct,
             disable_buys_in_regime=set(disable_buys_in_regime) if disable_buys_in_regime else None,
+            regime_labels=_drawdown_regime_labels,
             regime_index_name=regime_index_name or "Nifty 500",
             regime_method=regime_method,
             precomputed_matches_dir=precomputed_matches_dir,
@@ -883,6 +947,7 @@ def run_orchestrator_backtest(
     downtrend_filter_pct: Optional[float] = None,
     circuit_band_pct: Optional[float] = None,
     disable_buys_in_regime: Optional[List[str]] = None,
+    bear_drawdown_pct: Optional[float] = None,
     combo_templates: Optional[List[str]] = None,
     defer_db_writes: bool = False,
     precomputed_matches_dir: Optional[str] = None,
@@ -998,6 +1063,7 @@ def run_orchestrator_backtest(
         template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
         exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
         quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
+        bear_drawdown_pct,
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
     )
 
@@ -1053,6 +1119,16 @@ def main() -> None:
     parser.add_argument(
         "--regime-index", default="Nifty 500",
         help="Index (in market_regimes) for the per-Bull/Bear/Sideways performance breakdown. Pass '' to skip it.",
+    )
+    parser.add_argument(
+        "--bear-drawdown-pct", type=float, default=None,
+        help=(
+            "Use a point-in-time running-peak drawdown rule for --disable-buys-in-regime instead "
+            "of the market_regimes segment store: a date is 'bear' iff --regime-index closed at "
+            "least this fraction (e.g. 0.12) below its highest close UP TO that date. Unlike the "
+            "segment classifier this has no confirmation lag, so the identical rule runs in "
+            "backtest and live — see systems/regime/market_regime.py::bear_by_running_peak_drawdown."
+        ),
     )
     parser.add_argument(
         "--exit-variant", default="baseline", choices=list(EXIT_POLICY_VARIANTS),
@@ -1188,6 +1264,7 @@ def main() -> None:
         quality_gate_max_m_score=args.quality_gate_max_m_score,
         downtrend_filter_pct=args.downtrend_filter_pct, circuit_band_pct=args.circuit_band_pct,
         disable_buys_in_regime=args.disable_buys_in_regime.split(",") if args.disable_buys_in_regime else None,
+        bear_drawdown_pct=args.bear_drawdown_pct,
         combo_templates=args.combo_templates.split(",") if args.combo_templates else None,
         defer_db_writes=args.defer_db_writes,
         precomputed_matches_dir=args.precomputed_matches_dir,
