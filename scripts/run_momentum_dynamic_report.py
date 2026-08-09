@@ -69,7 +69,7 @@ import logging
 import multiprocessing
 from datetime import date
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import duckdb
 import numpy as np
@@ -376,9 +376,23 @@ def _score_band(band_variants: List[Dict]) -> None:
     band_variants[best_idx]["is_band_most_important"] = True
 
 
-def run_dynamic_report(years_back: int = 10, workers: int = 8) -> Dict:
-    end_date = now_ist().date()
-    start_date = date(end_date.year - years_back, end_date.month, end_date.day)
+def run_dynamic_report(
+    years_back: int = 10,
+    workers: int = 8,
+    start_date_override: Optional[str] = None,
+    end_date_override: Optional[str] = None,
+) -> Dict:
+    # 2026-08-09: explicit start/end date args, for a fixed historical
+    # window (e.g. "2007-04-01 through 2026-06-30") instead of always a
+    # rolling years_back-from-today window -- years_back stays the default
+    # so every other existing caller keeps its prior behavior unless it
+    # opts in to a fixed window.
+    end_date = date.fromisoformat(end_date_override) if end_date_override else now_ist().date()
+    start_date = (
+        date.fromisoformat(start_date_override)
+        if start_date_override
+        else date(end_date.year - years_back, end_date.month, end_date.day)
+    )
 
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         yearly_rankings = all_yearly_full_rankings(
@@ -520,12 +534,18 @@ def run_dynamic_report(years_back: int = 10, workers: int = 8) -> Dict:
 
 def main():
     parser = argparse.ArgumentParser(description="ML38 momentum dynamic report (7 bands x 4 categories x 60 configs x 2 passes)")
-    parser.add_argument("--years-back", type=int, default=10)
+    parser.add_argument("--years-back", type=int, default=10,
+                        help="rolling window size, ignored if --start-date/--end-date are given")
+    parser.add_argument("--start-date", type=str, default=None, help="e.g. 2007-04-01 -- overrides --years-back")
+    parser.add_argument("--end-date", type=str, default=None, help="e.g. 2026-06-30 -- defaults to today")
     parser.add_argument("--workers", type=int, default=8,
                         help="number of parallel fork workers for the backtest grid")
     args = parser.parse_args()
 
-    report = run_dynamic_report(years_back=args.years_back, workers=args.workers)
+    report = run_dynamic_report(
+        years_back=args.years_back, workers=args.workers,
+        start_date_override=args.start_date, end_date_override=args.end_date,
+    )
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = REPORTS_DIR / f"momentum_dynamic_report_{now_ist().strftime('%Y%m%d_%H%M%S')}.json"
