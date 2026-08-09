@@ -45,6 +45,15 @@ MAX_RETRIES = 3
 # them).
 TRACKED_INDICES = [
     "Nifty 50",
+    # [2026-08-09] "Nifty 100" was missing from this list, so the daily
+    # ind_close_all filter silently dropped it every single day and
+    # index_ohlcv had ZERO Nifty 100 rows. features/technical.py's
+    # rs_vs_nifty100_21d therefore fell back to the NIF100BEES ETF proxy,
+    # which only lists from 2015-01-01 — leaving that feature empty for
+    # 2006-2015 with no error anywhere. Adding it here is what keeps
+    # FUTURE dates populated; the 2006-2026 history itself came from
+    # NSE's own historical PR CSVs (scripts/ingest_index_csv.py).
+    "Nifty 100",
     "Nifty 500",
     "Nifty Auto",
     "Nifty Bank",
@@ -79,6 +88,10 @@ TRACKED_INDICES = [
 # they simply have no data before their real launch date, same as today.
 HISTORICAL_INDEX_ALIASES = {
     "Nifty 50": ["CNX Nifty", "S&P CNX Nifty"],
+    # Same CNX-era rename pattern as its siblings (see the note above);
+    # included so the archive's pre-2016 rows are captured under the
+    # current name rather than silently dropped.
+    "Nifty 100": ["CNX 100", "S&P CNX 100"],
     "Nifty 500": ["CNX 500", "S&P CNX 500"],
     "Nifty Auto": ["CNX Auto"],
     "Nifty Bank": ["CNX Bank"],
