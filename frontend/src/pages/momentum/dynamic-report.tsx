@@ -330,6 +330,24 @@ export function MomentumDynamicReportPage() {
         cell: (i) => fmtPct(i.getValue<number | null>()),
       },
       {
+        accessorKey: 'total_tax_paid',
+        header: 'Tax Paid (YoY)',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtInr(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'avg_winner_return_pct',
+        header: 'Avg Gain (Winners)',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'avg_loser_return_pct',
+        header: 'Avg Loss (Losers)',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtPct(i.getValue<number | null>()),
+      },
+      {
         accessorKey: 'sip_cagr',
         header: 'SIP CAGR',
         meta: { align: 'right', priority: 'medium' },
@@ -469,6 +487,56 @@ export function MomentumDynamicReportPage() {
     [columns, avgHoldingQuery.data, avgHoldingQuery.isLoading],
   )
 
+  // 2026-08-09 user request: 2/3/4-year rolling-window return consistency
+  // per (universe, category) -- reuses recommendedRows (28 recommended
+  // picks + per-band Most Important) so "for each of the categories" is
+  // satisfied without a second data fetch.
+  const rollingColumns = useMemo<ColumnDef<MomentumDynamicReportVariant, unknown>[]>(
+    () => [
+      {
+        id: 'universe',
+        accessorFn: (row) => row.rank_start,
+        header: 'Universe (rank)',
+        cell: (i) => bandLabel(i.row.original.rank_start, i.row.original.rank_end),
+      },
+      { accessorKey: 'strategy', header: 'Category' },
+      {
+        id: 'rolling_2y',
+        header: '2Y Rolling (min / median / max)',
+        meta: { align: 'right' },
+        cell: (i) => {
+          const v = i.row.original
+          return `${fmtPct(v.rolling_2y_min_cagr)} / ${fmtPct(v.rolling_2y_median_cagr)} / ${fmtPct(v.rolling_2y_max_cagr)}`
+        },
+      },
+      {
+        id: 'rolling_3y',
+        header: '3Y Rolling (min / median / max)',
+        meta: { align: 'right' },
+        cell: (i) => {
+          const v = i.row.original
+          return `${fmtPct(v.rolling_3y_min_cagr)} / ${fmtPct(v.rolling_3y_median_cagr)} / ${fmtPct(v.rolling_3y_max_cagr)}`
+        },
+      },
+      {
+        id: 'rolling_4y',
+        header: '4Y Rolling (min / median / max)',
+        meta: { align: 'right' },
+        cell: (i) => {
+          const v = i.row.original
+          return `${fmtPct(v.rolling_4y_min_cagr)} / ${fmtPct(v.rolling_4y_median_cagr)} / ${fmtPct(v.rolling_4y_max_cagr)}`
+        },
+      },
+      {
+        accessorKey: 'rolling_4y_n_windows',
+        header: 'Windows (4Y)',
+        meta: { align: 'right', priority: 'low' },
+        cell: (i) => i.getValue<number | null>() ?? '—',
+      },
+    ],
+    [],
+  )
+
   const yoyColumns = useMemo<ColumnDef<MomentumDynamicReportYoyRow, unknown>[]>(
     () => [
       {
@@ -558,6 +626,26 @@ export function MomentumDynamicReportPage() {
             data={recommendedRows}
             isLoading={report.isLoading}
             emptyMessage="No recommended picks yet — run the sweep above."
+          />
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6" id="rolling-returns-section">
+        <CardHeader>
+          <CardTitle>Rolling Return Consistency</CardTitle>
+          <CardDescription>
+            2/3/4-year rolling-window CAGR (min / median / max across every window in the backtest period) for each
+            Recommended/Most Important pick, by universe and category — pre-tax, same basis as the Strategy Sweep
+            CAGR. A tight min-max spread means the strategy's return doesn't depend heavily on when you started
+            investing.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            columns={rollingColumns}
+            data={recommendedRows}
+            isLoading={report.isLoading}
+            emptyMessage="No rolling-return data yet — run the sweep above."
           />
         </CardContent>
       </Card>
