@@ -19,6 +19,12 @@ import { SweepTriggerButton } from './SweepTriggerButton'
 function fmtPct(v: number | null | undefined) {
   return typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—'
 }
+// avg_winner/loser_return_pct and rolling_*y_*_cagr are already percentage
+// points (e.g. 33.9 = 33.9%), unlike win_rate/cagr/etc which are fractions -- fmtPct
+// would double-apply the *100 scaling on these, so they use this instead.
+function fmtPctPoints(v: number | null | undefined) {
+  return typeof v === 'number' ? `${v.toFixed(1)}%` : '—'
+}
 function fmtNum(v: number | null | undefined, digits = 1) {
   return typeof v === 'number' ? v.toFixed(digits) : '—'
 }
@@ -339,13 +345,13 @@ export function MomentumDynamicReportPage() {
         accessorKey: 'avg_winner_return_pct',
         header: 'Avg Gain (Winners)',
         meta: { align: 'right', priority: 'medium' },
-        cell: (i) => fmtPct(i.getValue<number | null>()),
+        cell: (i) => fmtPctPoints(i.getValue<number | null>()),
       },
       {
         accessorKey: 'avg_loser_return_pct',
         header: 'Avg Loss (Losers)',
         meta: { align: 'right', priority: 'medium' },
-        cell: (i) => fmtPct(i.getValue<number | null>()),
+        cell: (i) => fmtPctPoints(i.getValue<number | null>()),
       },
       {
         accessorKey: 'sip_cagr',
@@ -506,7 +512,7 @@ export function MomentumDynamicReportPage() {
         meta: { align: 'right' },
         cell: (i) => {
           const v = i.row.original
-          return `${fmtPct(v.rolling_2y_min_cagr)} / ${fmtPct(v.rolling_2y_median_cagr)} / ${fmtPct(v.rolling_2y_max_cagr)}`
+          return `${fmtPctPoints(v.rolling_2y_min_cagr)} / ${fmtPctPoints(v.rolling_2y_median_cagr)} / ${fmtPctPoints(v.rolling_2y_max_cagr)}`
         },
       },
       {
@@ -515,7 +521,7 @@ export function MomentumDynamicReportPage() {
         meta: { align: 'right' },
         cell: (i) => {
           const v = i.row.original
-          return `${fmtPct(v.rolling_3y_min_cagr)} / ${fmtPct(v.rolling_3y_median_cagr)} / ${fmtPct(v.rolling_3y_max_cagr)}`
+          return `${fmtPctPoints(v.rolling_3y_min_cagr)} / ${fmtPctPoints(v.rolling_3y_median_cagr)} / ${fmtPctPoints(v.rolling_3y_max_cagr)}`
         },
       },
       {
@@ -524,7 +530,7 @@ export function MomentumDynamicReportPage() {
         meta: { align: 'right' },
         cell: (i) => {
           const v = i.row.original
-          return `${fmtPct(v.rolling_4y_min_cagr)} / ${fmtPct(v.rolling_4y_median_cagr)} / ${fmtPct(v.rolling_4y_max_cagr)}`
+          return `${fmtPctPoints(v.rolling_4y_min_cagr)} / ${fmtPctPoints(v.rolling_4y_median_cagr)} / ${fmtPctPoints(v.rolling_4y_max_cagr)}`
         },
       },
       {
