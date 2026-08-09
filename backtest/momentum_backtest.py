@@ -43,6 +43,11 @@ import pandas as pd
 
 from backtest.costs import IndianTransactionCosts
 from features.momentum_signal import orthogonalize_momentum_vs_factors, trailing_momentum_from_panel
+from features.momentum_strategy import (
+    compute_fy_net_tax,
+    fy_end_dates_through,
+    select_forced_sell_for_shortfall,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +160,7 @@ class MomentumBacktestResult:
     cash_flows: List[Dict] = field(default_factory=list)  # [{"date","amount"}], SIP contributions if sip_amount set
     total_contributed: float = 0.0  # starting_capital + every SIP contribution (== starting_capital if no SIP)
     total_signals: int = 0  # sum of |target_set| across every rebalance — post-filter buy signals generated
+    tax_payments: List[Dict] = field(default_factory=list)  # [{"date","fy_label","tax_due","tax_paid"}], only if withhold_fy_tax=True
 
 
 class MomentumBacktester:
@@ -207,6 +213,7 @@ class MomentumBacktester:
         trailing_stop_pct: Optional[float] = None,
         per_ticker_hmm_regime: Optional[Dict[str, pd.DataFrame]] = None,
         disable_hmm_regimes: Optional[Set[float]] = None,
+        withhold_fy_tax: bool = False,
     ):
         """
         price_panel : wide close-price DataFrame (index=date, columns=ticker),
@@ -459,6 +466,7 @@ class MomentumBacktester:
         self.trailing_stop_pct = trailing_stop_pct
         self.per_ticker_hmm_regime = per_ticker_hmm_regime or {}
         self.disable_hmm_regimes = disable_hmm_regimes or {0.0}  # default: bearish only
+        self.withhold_fy_tax = withhold_fy_tax
 
         self.cash = starting_capital
         self.positions: Dict[str, Position] = {}
@@ -708,6 +716,16 @@ class MomentumBacktester:
         total_contributed = self.starting_capital
         injection_dates = self._monthly_injection_dates(trading_days) if self.sip_amount else []
         injection_idx = 0
+        # 2026-08-09 user requirement: post-tax CAGR must reflect REAL
+        # year-on-year cash tax withdrawal (STCG/LTCG netted per FY, see
+        # features.momentum_strategy.compute_fy_net_tax), not a lump-sum
+        # approximation subtracted from the final ending value. Withheld
+        # tax reduces self.cash at each FY boundary, so every subsequent
+        # rebalance genuinely redistributes less capital -- the compounding
+        # drag of paying tax annually is a real engine effect, not a
+        # post-hoc adjustment.
+        fy_boundaries = fy_end_dates_through(trading_days[0], trading_days[-1]) if self.withhold_fy_tax else []
+        fy_boundary_idx = 0
 
         # When trailing_stop_pct is active, iterate every trading day so
         # the stop can fire between rebalance dates (the real "cut losers
@@ -825,8 +843,43 @@ class MomentumBacktester:
             result.total_signals += len(target_set)
 
             prices = self._price_row(date)
-            total_value = self._mark_to_market(date, prices)
             date_str = str(date.date())
+
+            if self.withhold_fy_tax:
+                while fy_boundary_idx < len(fy_boundaries) and fy_boundaries[fy_boundary_idx] <= date:
+                    fy_end = fy_boundaries[fy_boundary_idx]
+                    fy_start = pd.Timestamp(year=fy_end.year - 1, month=4, day=1)
+                    fy_start_str, fy_end_str = str(fy_start.date()), str(fy_end.date())
+                    closed_this_fy = [
+                        t for t in result.transactions
+                        if t["status"] == "closed" and fy_start_str <= t["sell_date"] <= fy_end_str
+                    ]
+                    tax_due = compute_fy_net_tax(closed_this_fy)
+                    if tax_due > 0:
+                        sold_for_tax: Set[str] = set()
+                        while tax_due - self.cash > 0:
+                            candidate = select_forced_sell_for_shortfall(self.positions, prices, exclude=sold_for_tax)
+                            if candidate is None:
+                                break
+                            pos = self.positions[candidate]
+                            price = prices[candidate]
+                            tax_cost_adtv = self._adtv_cost_lookup(date, [candidate])
+                            proceeds = pos.qty * price
+                            self.cash += proceeds - self._one_leg_cost(price, pos.qty, tax_cost_adtv.get(candidate))
+                            self._record_sell(result, candidate, date_str, price, None, exit_reason="tax")
+                            del self.positions[candidate]
+                            sold_for_tax.add(candidate)
+                        actual_tax_paid = min(tax_due, self.cash)
+                        self.cash -= actual_tax_paid
+                        result.tax_payments.append({
+                            "date": date_str,
+                            "fy_label": f"FY{fy_start.year % 100:02d}-{fy_end.year % 100:02d}",
+                            "tax_due": tax_due,
+                            "tax_paid": actual_tax_paid,
+                        })
+                    fy_boundary_idx += 1
+
+            total_value = self._mark_to_market(date, prices)
 
             # --- Asymmetric exit band (Tier 1, 2026-08-08) ---------------------
             # With exit_rank set, a held position stays "core" (doesn't enter

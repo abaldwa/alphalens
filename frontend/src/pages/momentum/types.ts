@@ -118,17 +118,32 @@ export interface MomentumDynamicReportVariant {
   top_n: number
   cagr: number | null
   post_tax_cagr: number | null
+  total_tax_paid: number | null
   sharpe: number | null
   sortino: number | null
   calmar: number | null
   max_drawdown: number | null
   churn_avg_transactions_per_year: number | null
   win_rate: number | null
+  avg_winner_return_pct: number | null
+  avg_loser_return_pct: number | null
   total_signals: number | null
   n_closed_trades: number | null
   n_open_trades: number | null
   total_trades: number | null
   avg_days_held: number | null
+  rolling_2y_min_cagr: number | null
+  rolling_2y_median_cagr: number | null
+  rolling_2y_max_cagr: number | null
+  rolling_2y_n_windows: number | null
+  rolling_3y_min_cagr: number | null
+  rolling_3y_median_cagr: number | null
+  rolling_3y_max_cagr: number | null
+  rolling_3y_n_windows: number | null
+  rolling_4y_min_cagr: number | null
+  rolling_4y_median_cagr: number | null
+  rolling_4y_max_cagr: number | null
+  rolling_4y_n_windows: number | null
   value_10L: number | null
   value_10k_sip: number | null
   sip_cagr: number | null

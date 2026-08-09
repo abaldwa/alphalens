@@ -195,6 +195,102 @@ def win_rate(transactions: List[Dict]) -> Optional[float]:
     return wins / len(closed)
 
 
+def _closed_trade_returns_pct(transactions: List[Dict]) -> List[float]:
+    """Simple (non-annualized) per-trade % return -- sell_price/buy_price
+    - 1, as a percentage -- for every closed transaction with real
+    buy/sell prices. Distinct from trade_cagr (annualized); this is what
+    avg_winner_return_pct/avg_loser_return_pct average over."""
+    out = []
+    for t in transactions:
+        if t["status"] != "closed" or t["sell_price"] is None or not t["buy_price"]:
+            continue
+        out.append((t["sell_price"] / t["buy_price"] - 1.0) * 100.0)
+    return out
+
+
+def avg_winner_return_pct(transactions: List[Dict]) -> Optional[float]:
+    """Mean simple % return across closed trades that sold ABOVE their buy
+    price (2026-08-09, "average % gain for stocks with positive return").
+    None if there are no winning closed trades."""
+    winners = [r for r in _closed_trade_returns_pct(transactions) if r > 0]
+    return sum(winners) / len(winners) if winners else None
+
+
+def avg_loser_return_pct(transactions: List[Dict]) -> Optional[float]:
+    """Mean simple % return across closed trades that sold AT/BELOW their
+    buy price (2026-08-09, "average % loss for stocks with negative
+    return"). Reported as a negative number (a loss), consistent with
+    return_pct's sign convention elsewhere in this codebase. None if there
+    are no losing closed trades."""
+    losers = [r for r in _closed_trade_returns_pct(transactions) if r <= 0]
+    return sum(losers) / len(losers) if losers else None
+
+
+def rolling_window_returns(
+    equity_curve: List[Dict], window_years: int, step_months: int = 3,
+) -> List[Dict]:
+    """Every window_years-long rolling-window CAGR from an equity curve,
+    window start stepped every step_months (2026-08-09, rolling-return
+    consistency reporting -- distinct from the single whole-period CAGR).
+
+    equity_curve : MomentumBacktestResult.equity_curve -- [{"date",
+        "total_value"}], one row per trading day. Window starts are taken
+        at day-level granularity every ~step_months (approximated as
+        21 trading days/month) so this stays O(n) instead of re-scanning
+        per calendar month.
+
+    Returns [{"window_start", "window_end", "cagr_pct"}, ...] -- only
+    windows that reach a real trading day at/after start + window_years
+    are included (the tail of the curve shorter than one window is
+    dropped, not padded/extrapolated).
+    """
+    if len(equity_curve) < 2:
+        return []
+    df = pd.DataFrame(equity_curve)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    step_days = max(1, step_months * 21)
+    window_delta = pd.DateOffset(years=window_years)
+
+    out = []
+    for start_idx in range(0, len(df), step_days):
+        start_date = df["date"].iloc[start_idx]
+        start_value = df["total_value"].iloc[start_idx]
+        target_end = start_date + window_delta
+        end_candidates = df[df["date"] >= target_end]
+        if end_candidates.empty:
+            break
+        end_row = end_candidates.iloc[0]
+        end_date, end_value = end_row["date"], end_row["total_value"]
+        if start_value <= 0 or end_value <= 0:
+            continue
+        years = (end_date - start_date).days / 365.25
+        cagr_pct = ((end_value / start_value) ** (1.0 / years) - 1.0) * 100.0
+        out.append({
+            "window_start": start_date.date().isoformat(),
+            "window_end": end_date.date().isoformat(),
+            "cagr_pct": cagr_pct,
+        })
+    return out
+
+
+def rolling_window_summary(equity_curve: List[Dict], window_years: int) -> Dict[str, Optional[float]]:
+    """min/median/max CAGR across all rolling window_years windows -- the
+    at-a-glance consistency figures (worst case, typical, best case) shown
+    per (band, category) rather than the full window-by-window series."""
+    windows = rolling_window_returns(equity_curve, window_years)
+    if not windows:
+        return {"min_cagr_pct": None, "median_cagr_pct": None, "max_cagr_pct": None, "n_windows": 0}
+    values = [w["cagr_pct"] for w in windows]
+    return {
+        "min_cagr_pct": min(values),
+        "median_cagr_pct": float(np.median(values)),
+        "max_cagr_pct": max(values),
+        "n_windows": len(values),
+    }
+
+
 def return_population_zscores(
     returns_pct: List[Optional[float]], outlier_threshold: float = 3.0,
 ) -> Dict:

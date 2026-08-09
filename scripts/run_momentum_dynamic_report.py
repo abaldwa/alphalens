@@ -75,8 +75,16 @@ import duckdb
 import numpy as np
 
 from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, win_rate, xirr
-from backtest.momentum_tax import post_tax_ending_value
+from backtest.momentum_metrics import (
+    avg_loser_return_pct,
+    avg_winner_return_pct,
+    cagr,
+    churn_factor,
+    rolling_window_summary,
+    sharpe_sortino_calmar,
+    win_rate,
+    xirr,
+)
 from config.settings import DUCKDB_PATH, MAX_ORDER_VS_ADTV
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
@@ -152,6 +160,19 @@ def _compute_variant(args):
             starting_capital=STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
             top_n=top_n, momentum_panel=momentum_panel,
         )
+        # 2026-08-09 user correction: post-tax CAGR is no longer a lump-sum
+        # tax netted off the final ending value (that ignored the
+        # compounding drag of paying tax annually) — it's a SEPARATE full
+        # engine run with withhold_fy_tax=True, which actually withdraws
+        # each FY's real STCG/LTCG net tax as cash at that FY's boundary,
+        # so subsequent rebalances invest with genuinely less capital. See
+        # features/momentum_strategy.py::compute_fy_net_tax /
+        # fy_end_dates_through / select_forced_sell_for_shortfall.
+        post_tax_result = _run_variant(
+            strategy_kwargs, price_panel, yearly_universes, lookback_days, rebalance_days,
+            starting_capital=STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
+            top_n=top_n, momentum_panel=momentum_panel, withhold_fy_tax=True,
+        )
         sip_result = _run_variant(
             strategy_kwargs, price_panel, yearly_universes, lookback_days, rebalance_days,
             starting_capital=SIP_STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
@@ -159,14 +180,24 @@ def _compute_variant(args):
         )
 
         churn = churn_factor(result.rebalance_events)
-        post_tax_value = post_tax_ending_value(result.ending_value, result.transactions)
         closed = [t for t in result.transactions if t["status"] == "closed"]
         avg_days_held = (
             sum(t["holding_days"] for t in closed) / len(closed) if closed else None
         )
         variant_cagr = cagr(result.starting_capital, result.ending_value, result.start_date, result.end_date)
-        post_tax_cagr = cagr(result.starting_capital, post_tax_value, result.start_date, result.end_date)
+        post_tax_cagr = cagr(
+            post_tax_result.starting_capital, post_tax_result.ending_value,
+            post_tax_result.start_date, post_tax_result.end_date,
+        )
         ratios = sharpe_sortino_calmar(result.equity_curve, variant_cagr)
+        # 2026-08-09 user request: 2/3/4-year rolling-window return
+        # consistency, computed on the pre-tax lump-sum equity curve (same
+        # basis as `cagr`/`sharpe` above) -- min/median/max CAGR across
+        # every rolling window_years window in the backtest, not just the
+        # single whole-period CAGR.
+        rolling_2y = rolling_window_summary(result.equity_curve, 2)
+        rolling_3y = rolling_window_summary(result.equity_curve, 3)
+        rolling_4y = rolling_window_summary(result.equity_curve, 4)
 
         sip_cash_flows = [(cf["date"], cf["amount"]) for cf in sip_result.cash_flows]
         sip_cash_flows.append((sip_result.end_date, sip_result.ending_value))
@@ -189,17 +220,34 @@ def _compute_variant(args):
             "start_date": result.start_date, "end_date": result.end_date,
             "cagr": variant_cagr,
             "post_tax_cagr": post_tax_cagr,
+            "post_tax_ending_value": post_tax_result.ending_value,
+            "total_tax_paid": sum(p["tax_paid"] for p in post_tax_result.tax_payments),
+            "tax_payments": post_tax_result.tax_payments,
             "sharpe": ratios["sharpe"],
             "sortino": ratios["sortino"],
             "calmar": ratios["calmar"],
             "max_drawdown": ratios["max_drawdown"],
             "churn_avg_transactions_per_year": churn["avg_transactions_per_year"],
             "win_rate": win_rate(result.transactions),
+            "avg_winner_return_pct": avg_winner_return_pct(result.transactions),
+            "avg_loser_return_pct": avg_loser_return_pct(result.transactions),
             "total_signals": result.total_signals,
             "n_closed_trades": len(closed),
             "n_open_trades": len(result.transactions) - len(closed),
             "total_trades": len(result.transactions),
             "avg_days_held": avg_days_held,
+            "rolling_2y_min_cagr": rolling_2y["min_cagr_pct"],
+            "rolling_2y_median_cagr": rolling_2y["median_cagr_pct"],
+            "rolling_2y_max_cagr": rolling_2y["max_cagr_pct"],
+            "rolling_2y_n_windows": rolling_2y["n_windows"],
+            "rolling_3y_min_cagr": rolling_3y["min_cagr_pct"],
+            "rolling_3y_median_cagr": rolling_3y["median_cagr_pct"],
+            "rolling_3y_max_cagr": rolling_3y["max_cagr_pct"],
+            "rolling_3y_n_windows": rolling_3y["n_windows"],
+            "rolling_4y_min_cagr": rolling_4y["min_cagr_pct"],
+            "rolling_4y_median_cagr": rolling_4y["median_cagr_pct"],
+            "rolling_4y_max_cagr": rolling_4y["max_cagr_pct"],
+            "rolling_4y_n_windows": rolling_4y["n_windows"],
             "value_10L": result.ending_value,
             "value_10k_sip": sip_result.ending_value,
             "sip_cagr": sip_cagr,
