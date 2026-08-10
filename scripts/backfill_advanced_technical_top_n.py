@@ -96,7 +96,14 @@ DEFERRED_COLUMNS: List[str] = [
 DEFAULT_TOP_N = 800
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_WORKERS = 2
-MAX_WORKERS = 4
+# [2026-08-09] Raised 4 -> 8 for the 2007-2026 PIT-union backfill on a
+# 14-core / 14GB host. Each worker holds one batch's OHLCV panel plus its
+# derived frame, so peak memory scales with workers x ticker_batch_size,
+# NOT with the universe — keep batches small when raising this. 8 is the
+# ceiling deliberately: this box has a documented history of systemd-oomd
+# kills, and leaving headroom matters more than the last increment of
+# throughput.
+MAX_WORKERS = 8
 
 
 # ── Stage 1: compute (module-level worker for spawn-pool picklability) ──────
@@ -114,7 +121,7 @@ def _compute_batch(args: Tuple) -> Tuple[str, int, int]:
     this batch's tickers. Peak resident memory is bounded by this batch's
     panel + compute frame, not the whole universe.
     """
-    batch_index, tickers, from_date, to_date, staging_dir = args
+    batch_index, tickers, from_date, to_date, staging_dir, snapshot_path = args
     out_path = Path(staging_dir) / f"batch_{batch_index:05d}.parquet"
     if out_path.exists():
         return ("skipped", batch_index, len(tickers))
@@ -124,7 +131,6 @@ def _compute_batch(args: Tuple) -> Tuple[str, int, int]:
     from features.matrix_builder import LOOKBACK_CALENDAR_DAYS, _fetch_ohlcv_panel
     from features.advanced_technical import compute_advanced_technical_features
 
-    client = DataStoreClient()
     ts_from = pd.Timestamp(from_date)
     ts_to = pd.Timestamp(to_date)
     # Fetch the 760-day warmup before from_date so all_rows=True can fill the
@@ -133,19 +139,40 @@ def _compute_batch(args: Tuple) -> Tuple[str, int, int]:
     fetch_from = (ts_from - pd.Timedelta(days=LOOKBACK_CALENDAR_DAYS)).to_pydatetime()
     fetch_to = ts_to.to_pydatetime()
 
-    bulk_panel = None
-    loader = getattr(client, "get_ohlcv_bulk", None)
-    if callable(loader):
-        try:
-            bulk_panel = loader(fetch_from, fetch_to)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                f"batch {batch_index}: bulk OHLCV fetch failed, falling back to "
-                f"per-ticker: {exc}"
-            )
+    if snapshot_path:
+        # [OOM FIX 2026-08-10] Every worker used to issue its OWN
+        # GET /ohlcv/_bulk for the whole window and materialize the entire
+        # full-universe panel before filtering to its 40 tickers. That
+        # made peak memory scale with the WINDOW, not with
+        # --ticker-batch-size: on a 2007-2026 (21-year) run, 4 concurrent
+        # workers each holding a full 21-year panel exhausted a 14GB host
+        # in ~90 seconds and the kernel OOM killer took out the desktop
+        # session along with the job. Reading the prewarmed snapshot with
+        # a pushed-down ticker filter means a worker only ever
+        # materializes ITS OWN tickers' rows, so batch size genuinely
+        # bounds memory and the bulk fetch happens exactly once (in the
+        # parent, before any worker starts).
+        panel = pd.read_parquet(
+            snapshot_path,
+            filters=[("ticker", "in", set(tickers))],
+        )
+        if not panel.empty:
+            panel = panel[(panel["date"] >= ts_from - pd.Timedelta(days=LOOKBACK_CALENDAR_DAYS)) & (panel["date"] <= ts_to)]
+    else:
+        client = DataStoreClient()
+        bulk_panel = None
+        loader = getattr(client, "get_ohlcv_bulk", None)
+        if callable(loader):
+            try:
+                bulk_panel = loader(fetch_from, fetch_to)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"batch {batch_index}: bulk OHLCV fetch failed, falling back to "
+                    f"per-ticker: {exc}"
+                )
 
-    panel = _fetch_ohlcv_panel(client, tickers, fetch_from, fetch_to, _bulk_panel=bulk_panel)
-    del bulk_panel
+        panel = _fetch_ohlcv_panel(client, tickers, fetch_from, fetch_to, _bulk_panel=bulk_panel)
+        del bulk_panel
     if panel.empty:
         logger.warning(f"batch {batch_index}: no OHLCV for {len(tickers)} tickers — skipping")
         return ("empty", batch_index, len(tickers))
@@ -169,15 +196,23 @@ def _compute_batch(args: Tuple) -> Tuple[str, int, int]:
 
 def run_compute(
     tickers: List[str], from_date: date_type, to_date: date_type,
-    batch_size: int, workers: int, staging_dir: str,
+    batch_size: int, workers: int, staging_dir: str, snapshot_path: str = None,
 ) -> dict:
-    """Chunk `tickers` into batches and compute them (parallel, checkpointed)."""
+    """Chunk `tickers` into batches and compute them (parallel, checkpointed).
+
+    snapshot_path : prewarmed full-window OHLCV Parquet (see
+        _prewarm_snapshot). When set, workers read their own tickers'
+        rows from it with a pushed-down filter instead of each issuing a
+        full-window bulk fetch — the difference between peak memory
+        scaling with the WINDOW and scaling with --ticker-batch-size (see
+        the OOM note in _compute_batch).
+    """
     from features.matrix_builder import _run_pool_over_chunks
 
     batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
     worker_args = [
         (idx, batch_tickers, datetime.combine(from_date, datetime.min.time()),
-         datetime.combine(to_date, datetime.min.time()), staging_dir)
+         datetime.combine(to_date, datetime.min.time()), staging_dir, snapshot_path)
         for idx, batch_tickers in enumerate(batches)
     ]
     logger.info(
@@ -213,6 +248,41 @@ def _already_covers(parquet_path: Path, top_tickers: List[str]) -> bool:
     if sub.empty:
         return False
     return bool(sub["wavelet_trend"].notna().any())
+
+
+def _prewarm_snapshot(from_date: date_type, to_date: date_type, snapshot_dir: str) -> str:
+    """Fetch the full-window OHLCV panel ONCE, in the parent, before any
+    worker starts, and write it as a Parquet partitioned by ticker.
+
+    Partitioning matters: pd.read_parquet(..., filters=[("ticker","in",...)])
+    can then skip whole row groups instead of reading the entire file, so a
+    worker's resident set is proportional to its own batch, not to the
+    21-year full-universe panel. Reuses backtest/core/ohlcv_prewarm.py's
+    already-reviewed read-through cache for the fetch itself so this shares
+    one snapshot with the backtest sweep rather than keeping a second copy.
+    """
+    from backtest.core.ohlcv_prewarm import get_or_fetch_ohlcv_bulk
+    from datastore.client import DataStoreClient
+    from features.matrix_builder import LOOKBACK_CALENDAR_DAYS
+
+    fetch_from = (pd.Timestamp(from_date) - pd.Timedelta(days=LOOKBACK_CALENDAR_DAYS)).date()
+    out_dir = Path(snapshot_dir) / f"panel_{fetch_from.isoformat()}_{to_date.isoformat()}"
+    if (out_dir / "_SUCCESS").exists():
+        logger.info(f"prewarm: reusing existing partitioned panel at {out_dir}")
+        return str(out_dir)
+
+    logger.info(f"prewarm: fetching OHLCV {fetch_from}..{to_date} ONCE (parent process)")
+    bulk = get_or_fetch_ohlcv_bulk(
+        DataStoreClient(), fetch_from, to_date, Path(snapshot_dir),
+    )
+    bulk = bulk[(bulk["date"] >= pd.Timestamp(fetch_from)) & (bulk["date"] <= pd.Timestamp(to_date))]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bulk.to_parquet(out_dir, partition_cols=["ticker"], index=False)
+    (out_dir / "_SUCCESS").write_text(f"{len(bulk)} rows\n")
+    logger.info(f"prewarm: wrote {len(bulk)} rows, {bulk['ticker'].nunique()} tickers -> {out_dir}")
+    del bulk
+    gc.collect()
+    return str(out_dir)
 
 
 def merge_into_dates(
@@ -327,6 +397,30 @@ def main() -> None:
         "--stage", choices=["compute", "merge", "both"], default="both",
         help="Which stage(s) to run (default: both).",
     )
+    parser.add_argument(
+        "--ticker-file", default=None,
+        help=(
+            "Newline-delimited ticker list to backfill INSTEAD of the current "
+            "top-N-by-ADTV snapshot (scripts/build_pit_adtv_universe.py's "
+            "--out-union). Required for a point-in-time historical backfill: "
+            "get_top_adtv_tickers ranks TODAY's universe, so using it for a "
+            "2007-2026 window is survivorship-biased (measured: only 239 of "
+            "2007's real top-800 are in today's top-800). Mutually exclusive "
+            "with --start-rank, which indexes into the snapshot this replaces."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-dir", default="backtest/cache/ohlcv_snapshots",
+        help="Where the one-time prewarmed OHLCV panel lives (shared with the backtest sweep).",
+    )
+    parser.add_argument(
+        "--no-prewarm", action="store_true",
+        help=(
+            "Skip the shared snapshot and let each worker issue its own full-window "
+            "bulk fetch (the pre-2026-08-10 behavior). Only safe for short windows "
+            "with 1-2 workers — see the OOM note in _compute_batch."
+        ),
+    )
     args = parser.parse_args()
 
     workers = min(max(args.workers, 1), MAX_WORKERS)
@@ -336,25 +430,36 @@ def main() -> None:
     if args.from_date > args.to_date:
         parser.error("--from-date must be <= --to-date")
 
-    logger.info(f"Resolving Top-{args.top_n_adtv} ADTV universe (current basis)")
-    all_top_n: List[str] = get_top_adtv_tickers(args.top_n_adtv)
-    if not all_top_n:
-        sys.exit("get_top_adtv_tickers returned an empty universe — aborting")
-    if args.start_rank >= len(all_top_n):
-        parser.error(
-            f"--start-rank {args.start_rank} >= resolved universe size "
-            f"{len(all_top_n)} — nothing to do"
+    if args.ticker_file:
+        if args.start_rank:
+            parser.error("--start-rank indexes the current-ADTV snapshot and is meaningless with --ticker-file")
+        tickers = [t.strip() for t in Path(args.ticker_file).read_text().splitlines() if t.strip()]
+        if not tickers:
+            sys.exit(f"--ticker-file {args.ticker_file} is empty — aborting")
+        logger.info(f"Using explicit ticker list: {len(tickers)} tickers from {args.ticker_file}")
+    else:
+        logger.info(f"Resolving Top-{args.top_n_adtv} ADTV universe (current basis)")
+        all_top_n: List[str] = get_top_adtv_tickers(args.top_n_adtv)
+        if not all_top_n:
+            sys.exit("get_top_adtv_tickers returned an empty universe — aborting")
+        if args.start_rank >= len(all_top_n):
+            parser.error(
+                f"--start-rank {args.start_rank} >= resolved universe size "
+                f"{len(all_top_n)} — nothing to do"
+            )
+        tickers = all_top_n[args.start_rank:]
+        logger.info(
+            f"ADTV ranks {args.start_rank + 1}..{args.start_rank + len(tickers)} "
+            f"({len(tickers)} tickers) resolved"
         )
-    tickers: List[str] = all_top_n[args.start_rank:]
-    logger.info(
-        f"ADTV ranks {args.start_rank + 1}..{args.start_rank + len(tickers)} "
-        f"({len(tickers)} tickers) resolved"
-    )
 
     if args.stage in ("compute", "both"):
+        snapshot_path = None
+        if not args.no_prewarm:
+            snapshot_path = _prewarm_snapshot(args.from_date, args.to_date, args.snapshot_dir)
         run_compute(
             tickers, args.from_date, args.to_date,
-            args.ticker_batch_size, workers, args.staging_dir,
+            args.ticker_batch_size, workers, args.staging_dir, snapshot_path,
         )
     if args.stage in ("merge", "both"):
         n_updated, n_skipped = run_merge(
