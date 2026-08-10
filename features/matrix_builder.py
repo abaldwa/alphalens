@@ -259,9 +259,16 @@ def _fetch_ohlcv_panel(
 # synthesized or interpolated benchmark.
 _BENCHMARK_INDEX_NAMES = {
     "nifty50": "Nifty 50",
+    # [2026-08-10] Added once Nifty 100 actually existed in index_ohlcv. The
+    # note here previously read "No Nifty 100 in TRACKED_INDICES" — true when
+    # written, because the daily scraper's filter had silently dropped it
+    # since inception, leaving the table with zero rows. Both the scraper
+    # (ingestion/scrapers/nse_indices.py) and the 2006-2026 history
+    # (scripts/ingest_index_csv.py, 5,017 rows) were fixed the same day, so
+    # nifty100 no longer has to fall back to the NIF100BEES ETF proxy, which
+    # only lists from 2015-01-01.
+    "nifty100": "Nifty 100",
     "nifty500": "Nifty 500",
-    # No "Nifty 100" in index_ohlcv's TRACKED_INDICES — nifty100 keeps using
-    # the NIF100BEES proxy alone (unchanged behavior for that one column).
 }
 
 

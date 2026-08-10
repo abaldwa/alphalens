@@ -103,9 +103,17 @@ def _merge_ohlcv_features(
     ohlcv: pd.DataFrame,
     benchmark_wide: Optional[pd.DataFrame],
     compute_hmm: bool,
+    skip_fracdiff: bool = False,
 ) -> pd.DataFrame:
     """
     Compute all OHLCV-derived features (rolling windows, HMM) for one ticker.
+
+    skip_fracdiff : [2026-08-10] forwarded to
+        compute_advanced_technical_features — see its docstring. Profiled at
+        98 pct of that module's cost (0.502s of a 0.507s bar on a 21-year
+        panel), for 3 columns read by exactly one screener template (T19).
+        A historical hybrid backfill over a 2007-2026 window is not viable
+        without this: ~41 min/ticker with fracdiff vs ~0.5 min without.
 
     Returns a DataFrame with one row per date in all_dates; dates that have
     no OHLCV (e.g., before listing) get NaN for all OHLCV-based features.
@@ -122,7 +130,10 @@ def _merge_ohlcv_features(
     technical = _safe(compute_technical_features, CORE_TECHNICAL_FEATURES, ohlcv, benchmark_wide)
     intraday = _safe(compute_intraday_features, INTRADAY_FEATURES, ohlcv)
     pnd = _safe(compute_pnd_features, PND_FEATURES, ohlcv)
-    adv_tech = _safe(compute_advanced_technical_features, ADVANCED_TECHNICAL_FEATURES, ohlcv)
+    adv_tech = _safe(
+        compute_advanced_technical_features, ADVANCED_TECHNICAL_FEATURES, ohlcv,
+        skip_fracdiff=skip_fracdiff,
+    )
     patterns = _safe(compute_pattern_scores, PATTERN_FEATURES, ohlcv)
     if compute_hmm:
         # n_restarts=1, n_iter=50: ~10× faster than defaults (5×200) for backfill.
@@ -182,6 +193,7 @@ def compute_per_ticker(
     mf_for_ticker: pd.DataFrame,
     listing_date: Optional[datetime],
     compute_hmm: bool = True,
+    skip_fracdiff: bool = False,
 ) -> pd.DataFrame:
     """
     Stage 1: compute all per-ticker features for all dates.
@@ -230,7 +242,9 @@ def compute_per_ticker(
     ohlcv = ohlcv.sort_values("date").reset_index(drop=True)
 
     # ── OHLCV-based features (rolling windows computed ONCE for all dates) ──
-    spine = _merge_ohlcv_features(all_dates, ticker, ohlcv, benchmark_wide, compute_hmm)
+    spine = _merge_ohlcv_features(
+        all_dates, ticker, ohlcv, benchmark_wide, compute_hmm, skip_fracdiff=skip_fracdiff,
+    )
 
     # ── Pre-sort cache data; build numpy arrays for O(log n) searchsorted slicing ──
     fundamentals_raw = cache._fundamentals.get(ticker, [])
@@ -402,22 +416,40 @@ def compute_per_ticker(
 
 def build_benchmark_wide(benchmark_ohlcv: pd.DataFrame) -> Optional[pd.DataFrame]:
     """
-    Pivot long-format benchmark OHLCV into the wide shape compute_technical_features
-    expects (date, nifty50_close, nifty100_close, nifty500_close).
+    Pivot long-format benchmark OHLCV into the wide shape
+    compute_technical_features expects (date, nifty50_close, nifty100_close,
+    nifty500_close), preferring REAL index history from index_ohlcv over the
+    tradeable-ETF proxies.
 
-    Same logic as matrix_builder._build_benchmark_wide — reproduced here to
-    avoid importing a private function from matrix_builder.
+    [BUG FIX 2026-08-10] This used to be a standalone copy of
+    matrix_builder._build_benchmark_wide ("reproduced here to avoid importing
+    a private function"). That duplication is exactly why the ETF-proxy fix
+    applied to matrix_builder on 2026-08-09 did NOT reach the hybrid backfill:
+    one copy was corrected, the other silently was not. A hybrid run would
+    have kept using MONIFTY500 (lists 2023-10-06) and NIF100BEES (lists
+    2015-01-01), leaving rs_vs_nifty500_21d / rs_vs_nifty100_21d / beta_63d /
+    alpha_21d empty across most of a 2007-2026 window — the precise gap the
+    backfill exists to close, on templates T04/T14/T15/T16.
+
+    Now delegates to the single implementation in matrix_builder so the two
+    paths cannot drift again. The leading underscore is a module-internal
+    convention, not a reason to keep a second copy of load-bearing logic.
     """
+    from features.matrix_builder import _build_benchmark_wide, _fetch_benchmark_index_closes
+
     if benchmark_ohlcv.empty:
         return None
-    wide = benchmark_ohlcv.pivot_table(index="date", columns="ticker", values="close").reset_index()
-    rename = {ticker_sym: f"{name}_close" for name, ticker_sym in BENCHMARK_TICKERS.items()}
-    wide = wide.rename(columns=rename)
-    for name in BENCHMARK_TICKERS:
-        col = f"{name}_close"
-        if col not in wide.columns:
-            wide[col] = np.nan
-    return wide
+    dates = pd.to_datetime(benchmark_ohlcv["date"])
+    index_closes = {}
+    try:
+        from datastore.client import DataStoreClient
+
+        index_closes = _fetch_benchmark_index_closes(
+            DataStoreClient(), dates.min().to_pydatetime(), dates.max().to_pydatetime(),
+        )
+    except Exception:  # noqa: BLE001 — fall back to the ETF proxies, never fail the backfill
+        logger.warning("index_ohlcv unavailable; benchmark falls back to ETF proxies", exc_info=True)
+    return _build_benchmark_wide(benchmark_ohlcv, index_closes)
 
 
 def assemble_date(

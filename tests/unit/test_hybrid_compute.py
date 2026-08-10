@@ -18,6 +18,7 @@ network access):
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from features.backfill_cache import BackfillDataCache
 from features.hybrid_compute import (
@@ -81,6 +82,22 @@ class TestEmptyStaging:
 
 
 class TestBuildBenchmarkWide:
+    """build_benchmark_wide now prefers REAL index_ohlcv closes over the ETF
+    proxies (2026-08-10 fix — the ETFs list only from 2015/2023 and left the
+    relative-strength features empty across most of a 2007-2026 backfill).
+    These tests exercise the pivot/rename/missing-column contract on the
+    proxy inputs alone, so the index lookup is patched out — otherwise they
+    would assert synthetic 100.0 prices against real Nifty values pulled
+    from the live DB, and would also silently depend on that DB being
+    present and populated."""
+
+    @pytest.fixture(autouse=True)
+    def _no_index_lookup(self, monkeypatch):
+        monkeypatch.setattr(
+            "features.matrix_builder._fetch_benchmark_index_closes",
+            lambda *a, **k: {},
+        )
+
     def test_pivots_long_to_wide_with_renamed_columns(self):
         rows = []
         for name, sym in BENCHMARK_TICKERS.items():
