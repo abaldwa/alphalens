@@ -80,13 +80,15 @@ logger = logging.getLogger(__name__)
 # never dirties forked copy-on-write pages for the heavy structures.
 _G_BENCHMARK_WIDE: Optional[pd.DataFrame] = None  # ~50 KB
 _G_ALL_DATES: List[pd.Timestamp] = []             # ~300 KB
+_G_SKIP_FRACDIFF: bool = False                    # see --skip-fracdiff
 
 
-def _worker_init(benchmark_wide: "pd.DataFrame", all_dates: list) -> None:
+def _worker_init(benchmark_wide: "pd.DataFrame", all_dates: list, skip_fracdiff: bool = False) -> None:
     """Pool initializer — sets globals in each spawned worker process."""
-    global _G_BENCHMARK_WIDE, _G_ALL_DATES
+    global _G_BENCHMARK_WIDE, _G_ALL_DATES, _G_SKIP_FRACDIFF
     _G_BENCHMARK_WIDE = benchmark_wide
     _G_ALL_DATES = all_dates
+    _G_SKIP_FRACDIFF = skip_fracdiff
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -136,6 +138,23 @@ def _parse_args() -> argparse.Namespace:
             "per-ticker cache data (~150 KB) as pickle args — peak memory is "
             "~150–250 MB per worker regardless of universe size. "
             "On a 14-core machine, --workers 10 is recommended."
+        ),
+    )
+    p.add_argument(
+        "--ticker-file", default=None,
+        help=(
+            "Newline-delimited ticker list to run Stage 1 for, instead of today's "
+            "universe CSV or --all-db-tickers. Required for a point-in-time historical "
+            "backfill — see scripts/build_pit_adtv_universe.py."
+        ),
+    )
+    p.add_argument(
+        "--skip-fracdiff", action="store_true",
+        help=(
+            "Skip fracdiff_d_optimal/fracdiff_price/fracdiff_volume. Profiled at 98 pct of "
+            "advanced_technical's cost (0.502s of a 0.507s bar on a 21-year panel) for 3 "
+            "columns read by one screener template (T19). A 2007-2026 backfill is not "
+            "viable without it: ~41 min/ticker vs ~0.5 min/ticker."
         ),
     )
     p.add_argument(
@@ -457,6 +476,7 @@ def _stage1_ticker(args: Tuple) -> Tuple[str, str]:
             mf_for_ticker=mf_df,
             listing_date=listing_dt,
             compute_hmm=compute_hmm,
+            skip_fracdiff=_G_SKIP_FRACDIFF,
         )
         _save_staging(staging_dir, ticker, df)
         return ticker, "done"
@@ -479,6 +499,7 @@ def run_stage1(
     duckdb_path: Path,
     n_workers: int = 1,
     load_for_stage2: bool = True,
+    skip_fracdiff: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """
     Stage 1: per-ticker feature computation.
@@ -548,7 +569,7 @@ def run_stage1(
         with _spawn_ctx.Pool(
             processes=n_workers,
             initializer=_worker_init,
-            initargs=(benchmark_wide, all_dates),
+            initargs=(benchmark_wide, all_dates, skip_fracdiff),
         ) as pool:
             for i, (ticker, status) in enumerate(
                 pool.imap_unordered(_stage1_ticker, worker_args), start=1
@@ -629,6 +650,7 @@ def run_stage1(
                         mf_for_ticker=mf_tk,
                         listing_date=listing_dt,
                         compute_hmm=compute_hmm,
+                        skip_fracdiff=skip_fracdiff,
                     )
                     staging[ticker] = df
                     _save_staging(staging_dir, ticker, df)
@@ -1021,7 +1043,37 @@ def main() -> None:
     sector_map = dict(zip(universe_meta["ticker"], universe_meta["sector"]))
     tier_map = dict(zip(universe_meta["ticker"], universe_meta["tier"].fillna("UNKNOWN")))
 
-    if args.all_db_tickers:
+    if args.ticker_file:
+        # [2026-08-10] Explicit ticker list — required for a point-in-time
+        # historical backfill. Neither existing option is right for that:
+        # get_tickers_for_feature_engineering() returns TODAY's universe
+        # (survivorship-biased applied to 2007 — measured, only 239 of 2007's
+        # real top-800 are in today's top-800), and --all-db-tickers expands
+        # to every ticker ever seen (~4,150), most of which no backtest will
+        # ever screen. scripts/build_pit_adtv_universe.py emits the union of
+        # each year's real top-N by trailing ADTV; that is what belongs here.
+        # Sector/tier fall back to UNKNOWN and listing dates are derived from
+        # first-OHLCV, exactly as --all-db-tickers already does for tickers
+        # outside the universe CSV.
+        tickers = [t.strip() for t in Path(args.ticker_file).read_text().splitlines() if t.strip()]
+        if not tickers:
+            sys.exit(f"--ticker-file {args.ticker_file} is empty — aborting")
+        for t in tickers:
+            sector_map.setdefault(t, "UNKNOWN")
+            tier_map.setdefault(t, "UNKNOWN")
+        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+            ld_rows = conn.execute(
+                "SELECT ticker, CAST(MIN(date) AS VARCHAR) FROM ohlcv_adjusted GROUP BY ticker"
+            ).fetchall()
+        listing_dates: Dict[str, Optional[object]] = {
+            r[0]: pd.Timestamp(r[1]).to_pydatetime() for r in ld_rows
+        }
+        already_done = sum(1 for t in tickers if (staging_dir / f"{t}.parquet").exists())
+        logger.info(
+            "Universe (--ticker-file %s): %d tickers (%d already staged, %d to compute)",
+            args.ticker_file, len(tickers), already_done, len(tickers) - already_done,
+        )
+    elif args.all_db_tickers:
         # Expand to every ticker in ohlcv_adjusted; use UNKNOWN for sector/tier
         # if the ticker is not in the universe CSV.
         with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
@@ -1154,6 +1206,7 @@ def main() -> None:
         duckdb_path=DUCKDB_PATH,
         n_workers=args.workers,
         load_for_stage2=not skip_stage2,
+        skip_fracdiff=args.skip_fracdiff,
     )
 
     # Release per-ticker OHLCV cache — no longer needed after Stage 1

@@ -130,11 +130,20 @@ def _merge_ohlcv_features(
     technical = _safe(compute_technical_features, CORE_TECHNICAL_FEATURES, ohlcv, benchmark_wide)
     intraday = _safe(compute_intraday_features, INTRADAY_FEATURES, ohlcv)
     pnd = _safe(compute_pnd_features, PND_FEATURES, ohlcv)
+    # [BUG FIX 2026-08-10] all_rows=True is REQUIRED for both of these and was
+    # missing. Their default (all_rows=False) fills only each ticker's LAST bar
+    # — correct for the live daily pipeline, silently wrong here, where Stage 1
+    # computes a ticker's whole history in one call. Symptom: every
+    # advanced_technical and pattern_scores column came out ~0% populated for
+    # every date except the final one, with no error. Verified against a real
+    # 4,376-bar panel: nonnull 0.00 with the default, ~1.00 with all_rows=True.
+    # This is the same defect FeatureBacklog records for these two categories
+    # on 2026-08-01 in panel_staging.py — it was fixed there but never here.
     adv_tech = _safe(
         compute_advanced_technical_features, ADVANCED_TECHNICAL_FEATURES, ohlcv,
-        skip_fracdiff=skip_fracdiff,
+        all_rows=True, skip_fracdiff=skip_fracdiff,
     )
-    patterns = _safe(compute_pattern_scores, PATTERN_FEATURES, ohlcv)
+    patterns = _safe(compute_pattern_scores, PATTERN_FEATURES, ohlcv, all_rows=True)
     if compute_hmm:
         # n_restarts=1, n_iter=50: ~10× faster than defaults (5×200) for backfill.
         # Regime labels are stable with 1 restart on long history (4785 days);
