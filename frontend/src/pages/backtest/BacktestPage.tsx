@@ -48,6 +48,7 @@ import {
   acceptPendingAction,
   rejectPendingAction,
 } from '@/shared/api/paper_trading'
+import { TaComparisonPanel } from './TaComparisonPanel'
 
 const CHANNELS: BacktestChannel[] = ['technical', 'fundamental', 'ml', 'momentum']
 const MODES: BacktestMode[] = ['backtest', 'walk_forward', 'paper']
@@ -1699,6 +1700,11 @@ export function BacktestPage() {
       </Card>
 
       <RunsStatusBoard jobs={activeJobs} onDismiss={dismissJob} />
+
+      {/* Collated TA strategy comparison (backtest/ta_comparison_report.py).
+          Placed above the trigger panels so results are the first thing seen
+          on the page, rather than buried under the controls that produce them. */}
+      <TaComparisonPanel />
 
       {selectedRun ? <RunDetail run={selectedRun} /> : null}
 

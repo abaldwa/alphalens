@@ -432,3 +432,98 @@ export function listBacktestExperiments(filters?: {
 export function experimentTradeLogUrl(runId: string): string {
   return `${API_BASE_URL}/api/v1/backtest/experiments/${runId}/trade_log`
 }
+
+// ---------------------------------------------------------------------------
+// TA strategy comparison reports (backtest/ta_comparison_report.py, served by
+// datastore/api/routers/backtest_reports.py). One report collates a whole
+// queue — up to 65 screener templates over 2007-2026 — on a REALIZED basis:
+// realised P&L from the trade books, not mark-to-market, except `rolling`
+// which is explicitly mark-to-market off the equity curve.
+// ---------------------------------------------------------------------------
+
+export interface TaComparisonListItem {
+  name: string
+  queue_suffix: string | null
+  tax_regime: string | null
+  generated_at: string | null
+  n_strategies: number | null
+  n_failed: number
+}
+
+export interface TaEngineMetrics {
+  cagr: number | null
+  sharpe: number | null
+  sortino: number | null
+  calmar: number | null
+  max_drawdown: number | null
+  volatility: number | null
+  win_rate: number | null
+  profit_factor: number | null
+  benchmark_cagr: number | null
+  excess_return: number | null
+  [key: string]: number | null | undefined
+}
+
+/** One Indian financial year (Apr 1 - Mar 31), e.g. "FY2007-08". */
+export interface TaYearlyRow {
+  trading_year: string
+  realized_pnl_inr: number | null
+  n_trades: number | null
+  return_on_capital: number | null
+}
+
+/** Mark-to-market rolling-window stats, keyed "2y" | "3y" | "4y" | "5y". */
+export interface TaRollingStats {
+  n_windows: number | null
+  min: number | null
+  median: number | null
+  max: number | null
+  mean: number | null
+  positive_share: number | null
+  median_annualized: number | null
+}
+
+export interface TaTaxBreakdown {
+  stcg_tax_inr: number | null
+  ltcg_tax_inr: number | null
+  total_tax_inr: number | null
+  post_tax_pnl_inr: number | null
+}
+
+export interface TaComparisonStrategy {
+  template_name: string
+  style: string
+  start_date: string | null
+  end_date: string | null
+  initial_capital: number | null
+  engine_metrics: TaEngineMetrics
+  yearly: TaYearlyRow[]
+  rolling: Record<string, TaRollingStats>
+  taxes: Record<string, TaTaxBreakdown>
+  post_tax_pnl_inr: number | null
+  total_tax_inr: number | null
+  post_tax_return_on_capital: number | null
+  n_trades: number | null
+  avg_holding_days: number | null
+  avg_positions_held: number | null
+  signals_per_month: number | null
+  [key: string]: unknown
+}
+
+export interface TaComparisonReport {
+  generated_at: string
+  queue_suffix: string
+  tax_regime: string
+  basis: string
+  n_strategies: number
+  failed_reports: Array<{ report: string; error: string }>
+  strategies: TaComparisonStrategy[]
+}
+
+export function listTaComparisons() {
+  return apiGet<{ comparisons: TaComparisonListItem[] }>('/api/v1/backtest/ta-comparisons')
+}
+
+export function getTaComparison(name: string) {
+  return apiGet<TaComparisonReport>(`/api/v1/backtest/ta-comparisons/${name}`)
+}
