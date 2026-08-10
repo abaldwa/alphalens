@@ -161,3 +161,77 @@ class TestFrontendFieldContract:
         assert set(m["taxes"]) == {"ltcg_10pct_1L", "ltcg_12_5pct_1_25L"}
         for regime in m["taxes"].values():
             assert "post_tax_pnl_inr" in regime and "total_tax_inr" in regime
+
+
+class TestPerYearTaxIsExposed:
+    """[2026-08-10] tax_liability() computed a per-financial-year breakdown and
+    then dropped it: TaxResult(...) was constructed without per_year=, so the
+    dataclass default_factory produced an empty dict in every report ever
+    written. Totals were always correct (they accumulate the per-year figures,
+    so each year got its own LTCG allowance), but the year-by-year liability
+    was invisible and unqueryable.
+
+    Tax MUST be assessed per year, not once on the whole period — pooling 19
+    years would grant the LTCG exemption once instead of 19 times.
+    """
+
+    def _trades(self):
+        rows = [
+            # FY2007-08: short-term gain
+            _trade("2007-05-02", "2007-06-02", 200000.0),
+            # FY2008-09: short-term loss (no tax that year, not carried forward)
+            _trade("2008-05-02", "2008-09-02", -50000.0),
+            # FY2010-11: long-term gain (held > 365d)
+            _trade("2009-05-02", "2010-09-02", 400000.0),
+        ]
+        return pd.DataFrame(rows, columns=TRADE_COLUMNS)
+
+    def _loaded(self, tmp_path):
+        from backtest.ta_comprehensive_metrics import load_trade_book
+
+        p = tmp_path / "t.csv"
+        self._trades().to_csv(p, index=False)
+        return load_trade_book(p)
+
+    def test_per_year_is_populated(self, tmp_path):
+        from backtest.ta_comprehensive_metrics import tax_liability
+
+        r = tax_liability(self._loaded(tmp_path), "ltcg_12_5pct_1_25L")
+        assert r.per_year, "per_year must be returned, not dropped on the floor"
+        assert {"FY2007-08", "FY2008-09", "FY2010-11"} <= set(r.per_year)
+
+    def test_per_year_totals_reconcile_to_the_headline(self, tmp_path):
+        from backtest.ta_comprehensive_metrics import tax_liability
+
+        r = tax_liability(self._loaded(tmp_path), "ltcg_12_5pct_1_25L")
+        assert round(sum(v["total_tax_inr"] for v in r.per_year.values()), 2) == round(r.total_tax_inr, 2)
+
+    def test_a_loss_year_pays_no_tax(self, tmp_path):
+        from backtest.ta_comprehensive_metrics import tax_liability
+
+        r = tax_liability(self._loaded(tmp_path), "ltcg_12_5pct_1_25L")
+        assert r.per_year["FY2008-09"]["total_tax_inr"] == 0.0
+
+    def test_ltcg_exemption_applied_per_year_not_once(self, tmp_path):
+        """Two separate years of long-term gains must each get the allowance."""
+        from backtest.ta_comprehensive_metrics import LTCG_REGIMES, tax_liability
+        from backtest.ta_comprehensive_metrics import load_trade_book
+
+        rate, exemption = LTCG_REGIMES["ltcg_12_5pct_1_25L"]
+        gain = exemption + 100_000.0
+        p = tmp_path / "two_years.csv"
+        pd.DataFrame(
+            [
+                _trade("2010-01-02", "2011-06-02", gain),  # FY2011-12, long-term
+                _trade("2012-01-02", "2013-06-03", gain),  # FY2013-14, long-term
+            ],
+            columns=TRADE_COLUMNS,
+        ).to_csv(p, index=False)
+
+        r = tax_liability(load_trade_book(p), "ltcg_12_5pct_1_25L")
+        # Each year taxed on (gain - exemption); pooling would tax
+        # (2*gain - exemption) and cost strictly more.
+        expected = 2 * (gain - exemption) * rate
+        pooled = (2 * gain - exemption) * rate
+        assert round(r.total_tax_inr, 2) == round(expected, 2)
+        assert r.total_tax_inr < pooled

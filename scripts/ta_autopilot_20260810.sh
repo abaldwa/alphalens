@@ -136,6 +136,16 @@ commit_stage "TA autopilot: 65-strategy queue finished" \
   "backtest/reports/orchestrator_${SUFFIX}"*.json \
   "backtest/reports/strategy_queue_progress_${SUFFIX}.json"
 
+# --------------------------------------------------- [4a] trades -> database
+# [2026-08-10, user request] Individual trades were NOT queryable: runs landed
+# in backtest_runs, but the trades themselves lived only as loose per-run CSVs
+# because export_trade_book() opens the DB read-only. This loads THIS run's
+# trade logs into backtest_trades so every trade across all 65 strategies is
+# SQL-queryable (joined to strategy/style via backtest_trades_enriched).
+# Scoped to this suffix by user instruction — older runs are not backfilled.
+say "[4a] loading trades into backtest_trades"
+$PY scripts/load_trade_books_to_db.py --suffix "$SUFFIX" 2>&1 | tail -8
+
 # ------------------------------------------------------- [4b] DB persistence
 # The generated data is expensive; prove it reached backtest.duckdb rather
 # than assuming it. Each job commits its own run/catalog/trade-book in a short
@@ -166,6 +176,13 @@ if missing:
     print('WARNING: these produced report files but no DB row — results are NOT durable for them.')
 else:
     print('ALL templates persisted to backtest.duckdb')
+
+# Trades must be queryable too, not just run-level summaries.
+n_trades = c.execute("SELECT COUNT(*) FROM backtest_trades").fetchone()[0]
+n_runs = c.execute("SELECT COUNT(DISTINCT run_id) FROM backtest_trades").fetchone()[0]
+print(f'backtest_trades: {n_trades} trades across {n_runs} runs')
+if n_trades == 0:
+    print('WARNING: no trades loaded — individual trades are NOT queryable')
 PYEOF
 
 # --------------------------------------------------------------- [5] the report

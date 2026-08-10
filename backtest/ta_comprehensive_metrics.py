@@ -172,6 +172,13 @@ def tax_liability(trades: pd.DataFrame, regime: str = "ltcg_12_5pct_1_25L") -> T
         total_tax_inr=stcg_tax + ltcg_tax,
         pre_tax_pnl_inr=pre_tax,
         post_tax_pnl_inr=pre_tax - (stcg_tax + ltcg_tax),
+        # [2026-08-10] Was omitted, so the per-financial-year breakdown this
+        # function carefully builds above was computed and then silently
+        # thrown away — TaxResult's default_factory produced an empty dict in
+        # every report. The totals were always right (they accumulate the
+        # per-year figures, so each year got its own LTCG allowance), but
+        # there was no way to SEE or query the year-by-year liability.
+        per_year=per_year,
     )
 
 
