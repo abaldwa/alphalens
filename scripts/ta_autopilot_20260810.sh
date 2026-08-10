@@ -59,6 +59,44 @@ if [ "$RESULT" != "success" ]; then
   exit 1
 fi
 
+# ------------------------------------------------------- [1b] chunked Stage 2
+# Stage 1 now runs with --skip-stage2, and the per-date parquets are rebuilt
+# here instead.
+#
+# [2026-08-11] The in-process Stage 2 (run_stage2) takes the whole staging set
+# as an in-memory dict of per-ticker DataFrames. The script's own comment says
+# loading 4000+ staging parquets at once would OOM; this run has 3,180 tickers
+# and 5.4 GB of COMPRESSED staging, which decompresses far past the 12 GB cgroup
+# cap — and the unit had already peaked at 11.14 GB during Stage 1. It would
+# have been OOM-killed after ~6 hours of Stage 1 work.
+#
+# run_stage2_chunked (via --rebuild-daily) instead loads staging filtered to
+# --stage2-chunk-size dates at a time using parquet predicate pushdown, holding
+# ~500 MB per chunk. Chunk size 150 rather than the 400 default: a weekend job
+# at 400 was the real cause of an earlier OOM (see pipeline_scheduler.py).
+say "[1b] Stage 2 — rebuilding per-date parquets (chunked)"
+systemd-run --user --unit=alphalens-stage2 --property=MemoryMax=10G \
+  --setenv=PYTHONPATH=/home/amit/projects/AlphaLens \
+  --setenv=OMP_NUM_THREADS=1 --setenv=OPENBLAS_NUM_THREADS=1 \
+  --setenv=MKL_NUM_THREADS=1 --setenv=VECLIB_MAXIMUM_THREADS=1 \
+  --setenv=NUMEXPR_NUM_THREADS=1 \
+  --working-directory=/home/amit/projects/AlphaLens \
+  .venv/bin/python scripts/feature_backfill_hybrid.py \
+  --from-date 2007-04-01 --to-date 2026-08-10 \
+  --ticker-file logs/full_compute_tickers.txt \
+  --rebuild-daily --stage2-chunk-size 150 --force \
+  --staging-dir logs/full_compute_staging
+
+sleep 20
+while systemctl --user is-active --quiet alphalens-stage2; do sleep 120; done
+S2=$(systemctl --user show alphalens-stage2 -p Result --value)
+say "[1b] Stage 2 ended result=$S2"
+if [ "$S2" != "success" ]; then
+  echo "AUTOPILOT ABORT: Stage 2 failed (result=$S2). Staging on disk is intact —" >&2
+  echo "re-run with --rebuild-daily (optionally a smaller --stage2-chunk-size)." >&2
+  exit 1
+fi
+
 # ----------------------------------------------------------- [2] coverage gate
 say "[2/5] coverage gate"
 $PY - <<'PYEOF'
