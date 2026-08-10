@@ -234,10 +234,15 @@ def rolling_window_returns(
     consistency reporting -- distinct from the single whole-period CAGR).
 
     equity_curve : MomentumBacktestResult.equity_curve -- [{"date",
-        "total_value"}], one row per trading day. Window starts are taken
-        at day-level granularity every ~step_months (approximated as
-        21 trading days/month) so this stays O(n) instead of re-scanning
-        per calendar month.
+        "total_value"}], one row PER REBALANCE (not per trading day --
+        MomentumBacktester.run() only appends on rebalance dates unless a
+        trailing stop is active). Window starts are therefore stepped by
+        CALENDAR time (every step_months, via pd.DateOffset), not by row
+        index -- a quarterly-rebalance curve has ~63 trading days between
+        consecutive rows, so index-based stepping under-samples by ~60x
+        and silently produces only 1-2 windows over a multi-year backtest
+        (2026-08-10 bug fix -- caught when band-most-important variants
+        with 16+ years of history showed only 1-2 rolling windows).
 
     Returns [{"window_start", "window_end", "cagr_pct"}, ...] -- only
     windows that reach a real trading day at/after start + window_years
@@ -250,28 +255,34 @@ def rolling_window_returns(
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
 
-    step_days = max(1, step_months * 21)
     window_delta = pd.DateOffset(years=window_years)
+    step_delta = pd.DateOffset(months=step_months)
 
     out = []
-    for start_idx in range(0, len(df), step_days):
-        start_date = df["date"].iloc[start_idx]
-        start_value = df["total_value"].iloc[start_idx]
+    cursor = df["date"].iloc[0]
+    last_date = df["date"].iloc[-1]
+    while cursor <= last_date:
+        start_candidates = df[df["date"] >= cursor]
+        if start_candidates.empty:
+            break
+        start_row = start_candidates.iloc[0]
+        start_date, start_value = start_row["date"], start_row["total_value"]
+
         target_end = start_date + window_delta
         end_candidates = df[df["date"] >= target_end]
         if end_candidates.empty:
             break
         end_row = end_candidates.iloc[0]
         end_date, end_value = end_row["date"], end_row["total_value"]
-        if start_value <= 0 or end_value <= 0:
-            continue
-        years = (end_date - start_date).days / 365.25
-        cagr_pct = ((end_value / start_value) ** (1.0 / years) - 1.0) * 100.0
-        out.append({
-            "window_start": start_date.date().isoformat(),
-            "window_end": end_date.date().isoformat(),
-            "cagr_pct": cagr_pct,
-        })
+        if start_value > 0 and end_value > 0:
+            years = (end_date - start_date).days / 365.25
+            cagr_pct = ((end_value / start_value) ** (1.0 / years) - 1.0) * 100.0
+            out.append({
+                "window_start": start_date.date().isoformat(),
+                "window_end": end_date.date().isoformat(),
+                "cagr_pct": cagr_pct,
+            })
+        cursor = cursor + step_delta
     return out
 
 
