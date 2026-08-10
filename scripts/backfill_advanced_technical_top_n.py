@@ -254,35 +254,48 @@ def _prewarm_snapshot(from_date: date_type, to_date: date_type, snapshot_dir: st
     """Fetch the full-window OHLCV panel ONCE, in the parent, before any
     worker starts, and write it as a Parquet partitioned by ticker.
 
-    Partitioning matters: pd.read_parquet(..., filters=[("ticker","in",...)])
-    can then skip whole row groups instead of reading the entire file, so a
-    worker's resident set is proportional to its own batch, not to the
-    21-year full-universe panel. Reuses backtest/core/ohlcv_prewarm.py's
-    already-reviewed read-through cache for the fetch itself so this shares
-    one snapshot with the backtest sweep rather than keeping a second copy.
+    Written as ONE file SORTED BY TICKER, not as a partitioned dataset.
+    Sorting is what makes the filter cheap: each row group then covers a
+    contiguous ticker span, so pd.read_parquet(..., filters=[("ticker","in",
+    ...)]) prunes by row-group min/max statistics and a worker's resident
+    set is proportional to its own batch, not to the 21-year full-universe
+    panel. partition_cols=["ticker"] was tried first and fails outright at
+    this scale — pyarrow's write_dataset caps concurrently-open files at
+    1024 and this universe has ~3,800 tickers ("[Errno 24] Too many open
+    files"), and it would also leave thousands of tiny files behind.
+
+    Reuses backtest/core/ohlcv_prewarm.py's already-reviewed read-through
+    cache for the fetch itself, so this shares one snapshot with the
+    backtest sweep rather than keeping a second copy.
     """
     from backtest.core.ohlcv_prewarm import get_or_fetch_ohlcv_bulk
     from datastore.client import DataStoreClient
     from features.matrix_builder import LOOKBACK_CALENDAR_DAYS
 
     fetch_from = (pd.Timestamp(from_date) - pd.Timedelta(days=LOOKBACK_CALENDAR_DAYS)).date()
-    out_dir = Path(snapshot_dir) / f"panel_{fetch_from.isoformat()}_{to_date.isoformat()}"
-    if (out_dir / "_SUCCESS").exists():
-        logger.info(f"prewarm: reusing existing partitioned panel at {out_dir}")
-        return str(out_dir)
+    out_path = Path(snapshot_dir) / f"panel_sorted_{fetch_from.isoformat()}_{to_date.isoformat()}.parquet"
+    done_marker = out_path.with_suffix(".parquet.done")
+    if done_marker.exists():
+        logger.info(f"prewarm: reusing existing sorted panel at {out_path}")
+        return str(out_path)
 
     logger.info(f"prewarm: fetching OHLCV {fetch_from}..{to_date} ONCE (parent process)")
     bulk = get_or_fetch_ohlcv_bulk(
         DataStoreClient(), fetch_from, to_date, Path(snapshot_dir),
     )
     bulk = bulk[(bulk["date"] >= pd.Timestamp(fetch_from)) & (bulk["date"] <= pd.Timestamp(to_date))]
-    out_dir.mkdir(parents=True, exist_ok=True)
-    bulk.to_parquet(out_dir, partition_cols=["ticker"], index=False)
-    (out_dir / "_SUCCESS").write_text(f"{len(bulk)} rows\n")
-    logger.info(f"prewarm: wrote {len(bulk)} rows, {bulk['ticker'].nunique()} tickers -> {out_dir}")
+    bulk = bulk.sort_values(["ticker", "date"]).reset_index(drop=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(".parquet.tmp")
+    # Modest row groups so a filtered read pulls only the spans it needs;
+    # too large and pruning degenerates to reading most of the file.
+    bulk.to_parquet(tmp_path, index=False, row_group_size=50_000)
+    os.replace(tmp_path, out_path)
+    done_marker.write_text(f"{len(bulk)} rows\n")
+    logger.info(f"prewarm: wrote {len(bulk)} rows, {bulk['ticker'].nunique()} tickers -> {out_path}")
     del bulk
     gc.collect()
-    return str(out_dir)
+    return str(out_path)
 
 
 def merge_into_dates(
