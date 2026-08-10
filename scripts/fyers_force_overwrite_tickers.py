@@ -43,14 +43,22 @@ TO_DATE = None  # filled with today at runtime
 CHECKPOINT_PATH = Path("datastore/raw/fyers/force_overwrite_spotcheck_tickers_done.txt")
 IST = ZoneInfo("Asia/Kolkata")
 
+# [2026-08-10] adj_factor/vol_adj_factor are the literal 1.0 on both the
+# INSERT and the UPDATE arm — a FYERS row is already adjusted at source, so
+# our factors must always be 1.0, no exceptions (same invariant as
+# daily_pipeline.py::step_download_fyers_daily and fyers_staged_backfill.py).
+# source is now stamped 'fyers' too: without it a row previously written by
+# bhavcopy kept source='bhavcopy' after being overwritten with FYERS prices,
+# which made the gap detector (MAX(date) WHERE source='fyers') and
+# fyers_health_check both under-report real FYERS coverage.
 _FORCE_UPSERT_SQL = """
     INSERT INTO ohlcv_adjusted
-        (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, 1.0)
+        (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, 1.0, 'fyers')
     ON CONFLICT (date, ticker) DO UPDATE SET
         open = excluded.open, high = excluded.high, low = excluded.low,
         close = excluded.close, volume = excluded.volume,
-        adj_factor = 1.0, vol_adj_factor = 1.0
+        adj_factor = 1.0, vol_adj_factor = 1.0, source = 'fyers'
 """
 
 
@@ -113,12 +121,38 @@ def _wait_for_fresh_token(poll_seconds: int = 300) -> FYERSBackfill:
 
 
 def main() -> None:
+    import argparse
     from datetime import date
 
-    to_date = TO_DATE or date.today().isoformat()
+    global CHECKPOINT_PATH, FROM_DATE
+
+    # [2026-08-10] --tickers/--checkpoint make this reusable for later
+    # spot_check findings instead of requiring the module constants to be
+    # edited each time (which also silently reused the previous run's
+    # checkpoint file and skipped the new tickers).
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--tickers",
+        help="Comma-separated tickers to re-pull. Defaults to the module's TICKERS list.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        help="Path to the done-marker file. Defaults to the module's CHECKPOINT_PATH. "
+             "Use a fresh path whenever --tickers changes.",
+    )
+    parser.add_argument("--from-date", default=FROM_DATE)
+    parser.add_argument("--to-date", default=TO_DATE)
+    args = parser.parse_args()
+
+    if args.checkpoint:
+        CHECKPOINT_PATH = Path(args.checkpoint)
+    FROM_DATE = args.from_date
+    tickers = [t.strip().upper() for t in args.tickers.split(",")] if args.tickers else TICKERS
+
+    to_date = args.to_date or date.today().isoformat()
     done = _load_done()
-    remaining = [t for t in TICKERS if t not in done]
-    logger.info(f"{len(TICKERS)} tickers total, {len(done)} already done, {len(remaining)} remaining")
+    remaining = [t for t in tickers if t not in done]
+    logger.info(f"{len(tickers)} tickers total, {len(done)} already done, {len(remaining)} remaining")
 
     client = FYERSBackfill(non_interactive=True)
     i = 0

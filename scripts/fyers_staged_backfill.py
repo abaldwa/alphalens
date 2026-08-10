@@ -383,7 +383,11 @@ def backfill_year(conn, fb: FYERSBackfill, year: int, dry_run: bool = False) -> 
                 """
                 INSERT INTO ohlcv_adjusted
                     (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, source)
-                SELECT date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, 'fyers'
+                -- [2026-08-10] Literal 1.0, not staging's adj_factor: a FYERS
+                -- row is already adjusted at source, so our factors must
+                -- always be 1.0. Same rule as daily_pipeline.py's
+                -- step_download_fyers_daily UPSERT — see the note there.
+                SELECT date, ticker, open, high, low, close, volume, 1.0, 1.0, 'fyers'
                 FROM staging.ohlcv_fyers
                 """
             )

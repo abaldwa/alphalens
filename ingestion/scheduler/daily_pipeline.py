@@ -395,11 +395,24 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
                 #       distribution vs real reference)
                 # With UPSERT, only Fyers columns (prices, source, factors)
                 # are updated; existing delivery values are untouched.
+                # [2026-08-10] adj_factor/vol_adj_factor are written as the
+                # LITERAL 1.0, not passed through from staging. FYERS serves
+                # prices already adjusted as-of-fetch-time, so a FYERS row is
+                # by definition unadjusted-by-us and its factors must be 1.0 —
+                # no exceptions. Previously these came from
+                # `excluded.adj_factor`, which is 1.0 only *implicitly*: the
+                # ADD COLUMN IF NOT EXISTS ... DEFAULT 1.0 above is a no-op if
+                # the staged DataFrame ever carries its own adj_factor, and
+                # any non-1.0 value would then flow through. Worse, on the
+                # UPSERT path a row previously adjusted by
+                # scripts/run_price_adjuster.py keeps its stale factor while
+                # its prices are replaced by FYERS' already-adjusted ones — a
+                # later adjuster pass would then double-adjust it.
                 conn.execute(
                     """
                     INSERT INTO ohlcv_adjusted
                         (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, source)
-                    SELECT date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, 'fyers'
+                    SELECT date, ticker, open, high, low, close, volume, 1.0, 1.0, 'fyers'
                     FROM staging.ohlcv_fyers_daily
                     ON CONFLICT (date, ticker) DO UPDATE SET
                         open           = excluded.open,
@@ -407,8 +420,8 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
                         low            = excluded.low,
                         close          = excluded.close,
                         volume         = excluded.volume,
-                        adj_factor     = excluded.adj_factor,
-                        vol_adj_factor = excluded.vol_adj_factor,
+                        adj_factor     = 1.0,
+                        vol_adj_factor = 1.0,
                         source         = excluded.source
                     """
                 )
@@ -1497,6 +1510,18 @@ _SANITY_KNOWN_SPARSE_COLUMNS = {
     # each is verified non-empty in real feature parquets.
     "contingent_liability_ratio", "subsidiary_count", "loans_to_related",
     "off_balance_sheet_proxy", "salary_to_pat",
+    # [2026-08-10] The RAW fundamentals columns these ratios derive FROM.
+    # The 08-08 change exempted the derived ratios but not their sources, so
+    # datastore/integrity/checks.py::check_null_sweep — which imports this
+    # same set and scans the fundamentals table directly, not the feature
+    # parquets — still raised 4 *critical* findings and failed
+    # data_integrity_check, cascading skips into compute_features,
+    # run_models, write_signals and paper_trade for the whole day.
+    # Measured 2026-08-10: 0 non-null out of 53,182 rows for each, across
+    # all history — no scraper populates them at all. De-exempt only once
+    # ingestion/scrapers/screener.py actually fills them.
+    "contingent_liabilities", "subsidiary_count_raw",
+    "loans_to_related_parties", "director_remuneration",
     "inventory_days", "receivable_days", "payable_days", "cash_conversion_cycle",
     "mf_pct", "mf_change_qoq", "mf_total_holding_change_1m", "mf_sip_inflow_proxy",
     "days_to_record_date", "buyback_price_spread", "buyback_acceptance_estimated",

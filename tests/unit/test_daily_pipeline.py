@@ -13,6 +13,7 @@ real network calls.
 """
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -871,6 +872,77 @@ class TestSanityKnownSparseColumns:
         # column, but it is now 90.9% populated in feature parquets, so it must
         # no longer be exempted from the all-NaN hard-floor.
         assert "benford_mad" not in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS
+
+    def test_raw_fundamentals_source_columns_are_exempted(self):
+        """[2026-08-10] The raw fundamentals columns behind the exempted
+        derived ratios must be exempted too. datastore/integrity/checks.py::
+        check_null_sweep imports this same set but scans the *fundamentals
+        table* rather than feature parquets, so exempting only the derived
+        ratios left these 4 raising critical findings — which failed
+        data_integrity_check and cascade-skipped compute_features,
+        run_models, write_signals and paper_trade for a whole day.
+
+        Measured 2026-08-10: 0 non-null of 53,182 rows for each, all history.
+        """
+        for col in (
+            "contingent_liabilities",
+            "subsidiary_count_raw",
+            "loans_to_related_parties",
+            "director_remuneration",
+        ):
+            assert col in daily_pipeline._SANITY_KNOWN_SPARSE_COLUMNS, (
+                f"{col} is 100% NaN in the fundamentals table; de-exempting it "
+                "makes check_null_sweep fail data_integrity_check every day"
+            )
+
+
+class TestFyersAdjFactorInvariant:
+    """[2026-08-10, user decision] Every FYERS write path must set
+    adj_factor/vol_adj_factor to the literal 1.0 — no exceptions.
+
+    FYERS serves prices already adjusted as-of-fetch-time, so a FYERS row is
+    by definition unadjusted-by-us. Passing the factors through from staging
+    made 1.0 merely implicit (via ADD COLUMN IF NOT EXISTS ... DEFAULT 1.0,
+    a no-op when the staged frame already has the column), and on the UPSERT
+    path let a stale non-1.0 factor survive a FYERS price overwrite — which
+    a later scripts/run_price_adjuster.py pass would double-adjust.
+    """
+
+    def _sql_of(self, path):
+        return Path(path).read_text()
+
+    def test_daily_fyers_upsert_writes_literal_one(self):
+        sql = self._sql_of("ingestion/scheduler/daily_pipeline.py")
+        # The FYERS publish statement, identified by its SELECT ... FROM
+        # staging line (the file's first INSERT INTO ohlcv_adjusted is the
+        # bhavcopy upsert, and the staging table name also appears in
+        # earlier ALTER statements).
+        assert (
+            "SELECT date, ticker, open, high, low, close, volume, 1.0, 1.0, 'fyers'\n"
+            "                    FROM staging.ohlcv_fyers_daily"
+        ) in sql, (
+            "step_download_fyers_daily must INSERT literal 1.0 factors, "
+            "not pass staging's adj_factor through"
+        )
+        conflict = sql.split("FROM staging.ohlcv_fyers_daily\n")[1].split('"""')[0]
+        assert "adj_factor     = 1.0" in conflict
+        assert "vol_adj_factor = 1.0" in conflict
+        assert "excluded.adj_factor" not in conflict
+
+    def test_bhavcopy_upsert_also_writes_literal_one(self):
+        """Bhavcopy stores raw NSE prices, so its factors are 1.0 too — and
+        it must never downgrade a row FYERS already owns."""
+        sql = self._sql_of("ingestion/scheduler/daily_pipeline.py")
+        insert = sql.split("INSERT INTO ohlcv_adjusted")[1].split('"""')[0]
+        assert "1.0, 1.0, 'bhavcopy'" in insert
+        assert "adj_factor     = 1.0" in insert
+        assert "WHEN ohlcv_adjusted.source = 'fyers'" in insert
+
+    def test_staged_backfill_publish_writes_literal_one(self):
+        sql = self._sql_of("scripts/fyers_staged_backfill.py")
+        insert = sql.split("INSERT INTO ohlcv_adjusted")[1].split('"""')[0]
+        assert "volume, 1.0, 1.0, 'fyers'" in insert
+        assert "excluded.adj_factor" not in insert
 
 
 class TestStepSanityCheck:
