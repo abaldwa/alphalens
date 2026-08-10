@@ -136,6 +136,38 @@ commit_stage "TA autopilot: 65-strategy queue finished" \
   "backtest/reports/orchestrator_${SUFFIX}"*.json \
   "backtest/reports/strategy_queue_progress_${SUFFIX}.json"
 
+# ------------------------------------------------------- [4b] DB persistence
+# The generated data is expensive; prove it reached backtest.duckdb rather
+# than assuming it. Each job commits its own run/catalog/trade-book in a short
+# locked tail (defer_db_writes only changes WHEN the lock is taken, not
+# whether the write happens), so a crash should cost at most one in-flight job.
+say "[4b] verifying DB persistence"
+$PY - <<'PYEOF'
+import duckdb, json, sys
+from datetime import date
+q = json.load(open('backtest/reports/queue_defs/ta_full_2007_2026.json'))
+expected = {j['template_name'] for j in q['jobs']}
+c = duckdb.connect('datastore/backtest_store/backtest.duckdb', read_only=True)
+rows = c.execute("""
+    SELECT strategy_id, run_id, created_at FROM backtest_runs
+    WHERE start_date = DATE'2007-04-01' AND end_date = DATE'2026-08-10'
+      AND created_at >= CURRENT_DATE - 2
+""").fetchall()
+print(f'runs persisted for this window: {len(rows)} (expected ~{len(expected)})')
+got = set()
+for sid, rid, _ in rows:
+    for t in expected:
+        if f'_{t.lower()}_' in sid.lower():
+            got.add(t)
+missing = sorted(expected - got)
+print(f'templates present in DB: {len(got)}/{len(expected)}')
+if missing:
+    print('MISSING from DB:', ', '.join(missing))
+    print('WARNING: these produced report files but no DB row — results are NOT durable for them.')
+else:
+    print('ALL templates persisted to backtest.duckdb')
+PYEOF
+
 # --------------------------------------------------------------- [5] the report
 say "[5/5] comparison report"
 for regime in ltcg_12_5pct_1_25L ltcg_10pct_1L; do
