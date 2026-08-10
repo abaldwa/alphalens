@@ -678,7 +678,7 @@ def _compute_one_chunk_panels(
     """
     (
         chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories,
-        advanced_technical_used_only,
+        advanced_technical_used_only, advanced_technical_skip_fracdiff,
     ) = args
 
     if skip_batch_categories:
@@ -691,7 +691,10 @@ def _compute_one_chunk_panels(
         technical = compute_technical_features(chunk_panel, benchmark_wide)
         intraday = compute_intraday_features(chunk_panel)
         pnd = compute_pnd_features(chunk_panel)
-        adv_tech = compute_advanced_technical_features(chunk_panel, used_only=advanced_technical_used_only)
+        adv_tech = compute_advanced_technical_features(
+            chunk_panel, used_only=advanced_technical_used_only,
+            skip_fracdiff=advanced_technical_skip_fracdiff,
+        )
         pat_scores = compute_pattern_scores(chunk_panel)
 
     hmm = (
@@ -722,6 +725,7 @@ def _compute_chunked_ticker_independent_panels(
     panel_workers: int = 1,
     skip_batch_categories: bool = False,
     advanced_technical_used_only: bool = False,
+    advanced_technical_skip_fracdiff: bool = False,
 ) -> "tuple":
     """
     A47 (2026-07-10): computes technical/intraday/hmm/pnd/adv_tech/patterns
@@ -813,7 +817,7 @@ def _compute_chunked_ticker_independent_panels(
             results = _compute_one_chunk_panels(
                 (
                     chunk_panel, benchmark_wide, target_date, compute_hmm, hmm_workers, skip_batch_categories,
-                    advanced_technical_used_only,
+                    advanced_technical_used_only, advanced_technical_skip_fracdiff,
                 )
             )
             technical, intraday, hmm, pnd, adv_tech, pat_scores = results
@@ -834,7 +838,7 @@ def _compute_chunked_ticker_independent_panels(
         worker_args = [
             (
                 chunk_panel, benchmark_wide, target_date, compute_hmm, 1, skip_batch_categories,
-                advanced_technical_used_only,
+                advanced_technical_used_only, advanced_technical_skip_fracdiff,
             )
             for chunk_panel in chunk_panels
         ]
@@ -872,6 +876,7 @@ def _compute_chunked_ticker_independent_panels(
 def compute_full_range_chunk_panels(
     chunk_panel: pd.DataFrame, benchmark_wide: Optional[pd.DataFrame],
     advanced_technical_used_only: bool = False,
+    advanced_technical_skip_fracdiff: bool = False,
 ) -> "tuple":
     """
     [2026-07-29, batch feature-backfill staging] The batch counterpart of
@@ -934,6 +939,7 @@ def compute_full_range_chunk_panels(
     # despite completing with 0 failures.
     adv_tech = compute_advanced_technical_features(
         chunk_panel, all_rows=True, used_only=advanced_technical_used_only,
+        skip_fracdiff=advanced_technical_skip_fracdiff,
     )
     pat_scores = compute_pattern_scores(chunk_panel, all_rows=True)
     return technical, intraday, pnd, adv_tech, pat_scores
@@ -953,8 +959,10 @@ def _compute_full_range_chunk_panels_worker(args: "tuple") -> "tuple":
     panel — where the old always-last-row-only behavior had made it look
     nearly free).
     """
-    chunk_panel, benchmark_wide, advanced_technical_used_only = args
-    return compute_full_range_chunk_panels(chunk_panel, benchmark_wide, advanced_technical_used_only)
+    chunk_panel, benchmark_wide, advanced_technical_used_only, advanced_technical_skip_fracdiff = args
+    return compute_full_range_chunk_panels(
+        chunk_panel, benchmark_wide, advanced_technical_used_only, advanced_technical_skip_fracdiff,
+    )
 
 
 def _save_feature_matrix(matrix: pd.DataFrame, target_date: pd.Timestamp) -> Path:
@@ -999,6 +1007,7 @@ def build_feature_matrix(
     staged_panel: Optional[pd.DataFrame] = None,
     skip_slow_categories: bool = False,
     advanced_technical_used_only: bool = False,
+    advanced_technical_skip_fracdiff: bool = False,
 ) -> pd.DataFrame:
     """
     Build the full daily feature matrix for `tickers` on `date`.
@@ -1192,6 +1201,7 @@ def build_feature_matrix(
                 universe_panel, benchmark_wide, active_tickers, target_date, compute_hmm, hmm_workers,
                 panel_workers=panel_workers, skip_batch_categories=staged_panel is not None,
                 advanced_technical_used_only=advanced_technical_used_only,
+                advanced_technical_skip_fracdiff=advanced_technical_skip_fracdiff,
             )
         )
         # [2026-07-29] staged_panel already has this date's rows for the 5

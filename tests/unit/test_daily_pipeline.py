@@ -635,14 +635,20 @@ class TestStepComputeFeatures:
         saved = pd.read_parquet(pnd_dir / "2026-01-05.parquet")
         assert sorted(saved["ticker"].to_list()) == ["AAA", "BBB"]
 
-    def test_advanced_technical_used_only_defaults_true_on_live_daily_path(self, monkeypatch, tmp_path):
-        """[2026-08-04] Of advanced_technical's 18 features, only
-        hurst_exp_21d is used downstream — the live daily pipeline
-        defaults advanced_technical_used_only=True (unlike every other
-        skip flag on this function, which default False/full) so the
-        other 17's expensive per-row computations aren't paid for daily.
-        scripts/backfill_deferred_advanced_technical.py fills them back in
-        asynchronously."""
+    def test_advanced_technical_computed_daily_except_fracdiff(self, monkeypatch, tmp_path):
+        """[2026-08-10] Default flipped: the live daily pipeline now computes
+        the advanced_technical block (used_only=False) but skips the 3
+        fracdiff columns (skip_fracdiff=True).
+
+        The 2026-08-04 default of used_only=True rested on "only
+        hurst_exp_21d is used downstream", which Category-T templates
+        falsified — they read hurst_exp_63d, the wavelet and entropy
+        columns, rqa_rec_rate, lyapunov_exponent_proxy,
+        time_series_complexity and nonlinear_trend_strength by name.
+        Profiling also showed the cost was never spread across those 17:
+        _optimal_fracdiff_d alone is 98 pct of the module (0.502s of a
+        0.507s bar on a 21-year panel), so the expensive part is excluded
+        specifically instead of the whole block."""
         import features.matrix_builder as matrix_builder_mod
         from config import settings
         from config import universe as universe_mod
@@ -663,7 +669,8 @@ class TestStepComputeFeatures:
 
         daily_pipeline.step_compute_features(date(2026, 1, 5))
 
-        assert captured_kwargs["advanced_technical_used_only"] is True
+        assert captured_kwargs["advanced_technical_used_only"] is False
+        assert captured_kwargs["advanced_technical_skip_fracdiff"] is True
 
     def test_advanced_technical_used_only_can_be_overridden_false(self, monkeypatch, tmp_path):
         import features.matrix_builder as matrix_builder_mod
