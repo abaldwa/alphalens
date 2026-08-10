@@ -226,10 +226,10 @@ export function TaComparisonPanel() {
                     <TableCell className="text-right">{num(m.calmar)}</TableCell>
                     <TableCell className="text-right text-red-600 dark:text-red-400">{pct(m.max_drawdown)}</TableCell>
                     <TableCell className="text-right">{pct(m.win_rate)}</TableCell>
-                    <TableCell className="text-right">{s.n_trades ?? '—'}</TableCell>
+                    <TableCell className="text-right">{s.closed_trades ?? '—'}</TableCell>
                     <TableCell className="text-right">{num(s.avg_holding_days, 1)}</TableCell>
-                    <TableCell className="text-right">{num(s.avg_positions_held, 1)}</TableCell>
-                    <TableCell className="text-right">{num(s.signals_per_month, 1)}</TableCell>
+                    <TableCell className="text-right">{num(s.holdings?.avg_concurrent_positions_calendar, 1)}</TableCell>
+                    <TableCell className="text-right">{num(s.entries?.avg_entries_per_month, 1)}</TableCell>
                   </TableRow>
                 )
               })}
@@ -268,7 +268,7 @@ export function TaComparisonPanel() {
                 <TableRow key={s.template_name}>
                   <TableCell className="font-medium">{s.template_name}</TableCell>
                   {ROLLING_WINDOWS.map((w) => {
-                    const r = s.rolling?.[w]
+                    const r = s.rolling?.[w] ?? undefined
                     return [
                       <TableCell key={`${w}-m`} className={cnRight(signClass(r?.median_annualized))}>
                         {pct(r?.median_annualized)}
@@ -352,8 +352,8 @@ export function TaComparisonPanel() {
                     {years.map((y) => {
                       const row = byYear.get(y)
                       return (
-                        <TableCell key={y} className={cnRight(signClass(row?.return_on_capital))}>
-                          {pct(row?.return_on_capital)}
+                        <TableCell key={y} className={cnRight(signClass(row?.return_pct))}>
+                          {pct(row?.return_pct)}
                         </TableCell>
                       )
                     })}

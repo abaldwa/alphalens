@@ -456,9 +456,14 @@ export interface TaEngineMetrics {
   sortino: number | null
   calmar: number | null
   max_drawdown: number | null
-  volatility: number | null
   win_rate: number | null
   profit_factor: number | null
+  turnover_ratio: number | null
+  xirr: number | null
+  final_capital: number | null
+  n_trades: number | null
+  n_distinct_tickers_traded: number | null
+  avg_days_held: number | null
   benchmark_cagr: number | null
   excess_return: number | null
   [key: string]: number | null | undefined
@@ -468,8 +473,26 @@ export interface TaEngineMetrics {
 export interface TaYearlyRow {
   trading_year: string
   realized_pnl_inr: number | null
+  invested_inr: number | null
   n_trades: number | null
-  return_on_capital: number | null
+  /** Realised return for the year. NOTE: the field is `return_pct`, not
+   *  `return_on_capital` — the latter exists only at strategy level. */
+  return_pct: number | null
+  win_rate: number | null
+  avg_holding_days: number | null
+}
+
+/** Concurrent-position stats — "average stocks held". */
+export interface TaHoldings {
+  avg_concurrent_positions_calendar: number | null
+  peak_concurrent_positions: number | null
+  n_days_spanned: number | null
+}
+
+/** Entry-signal frequency — "signals per month". */
+export interface TaEntries {
+  avg_entries_per_month: number | null
+  by_month: Record<string, number>
 }
 
 /** Mark-to-market rolling-window stats, keyed "2y" | "3y" | "4y" | "5y". */
@@ -496,17 +519,28 @@ export interface TaComparisonStrategy {
   start_date: string | null
   end_date: string | null
   initial_capital: number | null
+  strategy_id: string | null
+  run_id: string | null
+  basis: string | null
   engine_metrics: TaEngineMetrics
   yearly: TaYearlyRow[]
-  rolling: Record<string, TaRollingStats>
+  /** Null on runs predating the equity_curve addition — rolling stats are
+   *  derived from it, so older reports legitimately have no rolling block. */
+  rolling: Record<string, TaRollingStats> | null
   taxes: Record<string, TaTaxBreakdown>
+  holdings: TaHoldings | null
+  entries: TaEntries | null
+  exit_reasons: Record<string, number> | null
+  /** Count of CLOSED trades. Note the top-level field is `closed_trades`;
+   *  `n_trades` lives under engine_metrics. */
+  closed_trades: number | null
+  avg_holding_days: number | null
+  median_holding_days: number | null
+  realized_pnl_inr: number | null
+  realized_return_on_capital: number | null
   post_tax_pnl_inr: number | null
   total_tax_inr: number | null
   post_tax_return_on_capital: number | null
-  n_trades: number | null
-  avg_holding_days: number | null
-  avg_positions_held: number | null
-  signals_per_month: number | null
   [key: string]: unknown
 }
 
