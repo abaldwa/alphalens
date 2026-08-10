@@ -1479,7 +1479,25 @@ _SANITY_MIN_SIGNAL_ROWS_FRACTION = 0.8
 # off_balance_sheet_proxy, salary_to_pat (now computed from NSE XBRL
 # ContingentLiabilities/SubsidiaryCount/LoansToRelatedParties/DirectorRemuneration
 # and PAT).
+#
+# [2026-08-10] RE-EXEMPTED all 9 of those. The 2026-08-08 removal was
+# premature: it assumed the new NSE XBRL derivation would populate them,
+# but measured against real feature parquets every one is still 0.000
+# non-null (checked 2026-07-15, 2026-08-05, 2026-08-07). De-exempting a
+# column that is genuinely all-NaN makes step_sanity_check's Check 3 raise
+# on EVERY daily run — a hard pipeline failure, not a warning. The
+# derivation SQL exists (_FUNDAMENTALS_DERIVE_UPDATE_SQL) but its source
+# columns are not being filled, so the right fix is to make that
+# derivation actually produce data and THEN de-exempt; until it does,
+# these belong here. tests/unit/test_daily_pipeline.py::
+# test_genuinely_unsourceable_columns_are_still_exempted asserts exactly
+# this and was failing against the 08-08 state.
 _SANITY_KNOWN_SPARSE_COLUMNS = {
+    # Re-exempted 2026-08-10 — see the note above; remove again only once
+    # each is verified non-empty in real feature parquets.
+    "contingent_liability_ratio", "subsidiary_count", "loans_to_related",
+    "off_balance_sheet_proxy", "salary_to_pat",
+    "inventory_days", "receivable_days", "payable_days", "cash_conversion_cycle",
     "mf_pct", "mf_change_qoq", "mf_total_holding_change_1m", "mf_sip_inflow_proxy",
     "days_to_record_date", "buyback_price_spread", "buyback_acceptance_estimated",
     "index_inclusion_days", "dividend_yield_vs_fd_rate", "qip_dilution_impact",
