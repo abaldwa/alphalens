@@ -121,6 +121,7 @@ export function TaComparisonPanel() {
   }
 
   const meta = report.data
+  const activeRegime = meta?.tax_regime ?? 'ltcg_12_5pct_1_25L'
 
   return (
     <div className="space-y-4">
@@ -326,6 +327,61 @@ export function TaComparisonPanel() {
               })}
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+
+      {/* Tax by financial year */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Tax by Financial Year</CardTitle>
+          <CardDescription>
+            Assessed per year, not once on the whole period — the LTCG exemption is a
+            per-year allowance, so pooling {years.length} years would grant it once instead of{' '}
+            {years.length} times and overstate the liability. A loss-making year pays nil and is
+            not carried forward.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          {strategies.some((s) => Object.keys(s.taxes?.[activeRegime]?.per_year ?? {}).length) ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="sticky left-0 bg-background">Template</TableHead>
+                  {years.map((y) => (
+                    <TableHead key={y} className="text-right whitespace-nowrap">{y}</TableHead>
+                  ))}
+                  <TableHead className="text-right whitespace-nowrap">Total</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {strategies.map((s) => {
+                  const regime = s.taxes?.[activeRegime]
+                  const py = regime?.per_year ?? {}
+                  return (
+                    <TableRow key={s.template_name}>
+                      <TableCell className="sticky left-0 bg-background font-medium">
+                        {s.template_name}
+                      </TableCell>
+                      {years.map((y) => (
+                        <TableCell key={y} className="text-right text-muted-foreground">
+                          {inr(py[y]?.total_tax_inr)}
+                        </TableCell>
+                      ))}
+                      <TableCell className="text-right font-medium">
+                        {inr(regime?.total_tax_inr)}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No per-year tax detail in this report. Reports generated before 2026-08-10 omit it —
+              <code className="mx-1 rounded bg-muted px-1 py-0.5">tax_liability()</code>
+              computed the breakdown but did not return it. Headline totals were unaffected.
+            </p>
+          )}
         </CardContent>
       </Card>
 

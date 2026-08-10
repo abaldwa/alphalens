@@ -506,11 +506,29 @@ export interface TaRollingStats {
   median_annualized: number | null
 }
 
-export interface TaTaxBreakdown {
+/** Per-financial-year tax detail, keyed "FY2007-08". */
+export interface TaTaxYear {
+  short_term_gain_inr: number | null
+  long_term_gain_inr: number | null
   stcg_tax_inr: number | null
   ltcg_tax_inr: number | null
   total_tax_inr: number | null
+}
+
+export interface TaTaxBreakdown {
+  regime: string | null
+  short_term_gain_inr: number | null
+  long_term_gain_inr: number | null
+  stcg_tax_inr: number | null
+  ltcg_tax_inr: number | null
+  total_tax_inr: number | null
+  pre_tax_pnl_inr: number | null
   post_tax_pnl_inr: number | null
+  /** Tax is assessed PER FINANCIAL YEAR — the LTCG exemption is a per-year
+   *  allowance, so pooling the whole period would grant it once instead of
+   *  once per year. Empty on reports written before 2026-08-10, when
+   *  tax_liability() was dropping this breakdown on the floor. */
+  per_year: Record<string, TaTaxYear>
 }
 
 export interface TaComparisonStrategy {

@@ -307,6 +307,103 @@ async def download_experiment_trade_log(run_id: str) -> FileResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# Cross-strategy trade queries (backtest_trades, loaded by
+# scripts/load_trade_books_to_db.py).
+#
+# /experiments/{run_id}/trade_log above streams ONE run's CSV. These endpoints
+# answer the different question "every trade across all strategies", which
+# previously required globbing ~3,800 CSV files because nothing wrote trades to
+# a table. Strategy identity is denormalised onto each row, so filtering by
+# strategy/template needs no join.
+# ---------------------------------------------------------------------------
+
+_TRADE_COLUMNS = (
+    "run_id, strategy_id, template_name, exit_variant, ticker, qty, "
+    "buy_date, buy_price, sale_date, sale_price, stock_rank, "
+    "pnl_inr, pnl_pct, exit_reason, holding_days, buy_value, sale_value, financial_year"
+)
+
+
+def _trades_table_missing(conn) -> bool:
+    """True when backtest_trades has not been created yet (fresh DB, or no
+    queue has run). Callers return an empty result rather than a 500."""
+    return not conn.execute(
+        "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = 'backtest_trades'"
+    ).fetchone()[0]
+
+
+@router.get("/trades")
+async def list_trades(
+    strategy_id: Optional[str] = Query(None),
+    template_name: Optional[str] = Query(None),
+    ticker: Optional[str] = Query(None),
+    financial_year: Optional[str] = Query(None, description="e.g. FY2007-08"),
+    run_id: Optional[str] = Query(None),
+    exit_reason: Optional[str] = Query(None),
+    limit: int = Query(500, le=10_000),
+    offset: int = Query(0, ge=0),
+) -> Dict[str, Any]:
+    """Individual trades, filterable and paginated. `total` is the unpaginated
+    count so the caller can page without re-querying."""
+    filters, params = [], []
+    for col, val in (
+        ("strategy_id", strategy_id), ("template_name", template_name),
+        ("ticker", ticker), ("financial_year", financial_year),
+        ("run_id", run_id), ("exit_reason", exit_reason),
+    ):
+        if val:
+            filters.append(f"{col} = ?")
+            params.append(val)
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
+        if _trades_table_missing(conn):
+            return {"trades": [], "total": 0, "limit": limit, "offset": offset}
+        total = conn.execute(f"SELECT COUNT(*) FROM backtest_trades {where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT {_TRADE_COLUMNS} FROM backtest_trades {where} "
+            "ORDER BY sale_date DESC, ticker LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchdf()
+    return {
+        "trades": json.loads(rows.to_json(orient="records", date_format="iso")),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/trades/summary")
+async def trades_summary(
+    group_by: str = Query("strategy", pattern="^(strategy|financial_year|exit_reason|ticker)$"),
+    strategy_id: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    """Aggregate P&L/trade counts. `group_by=financial_year` gives the
+    year-by-year realised picture that matches the per-year tax treatment."""
+    column = {
+        "strategy": "strategy_id", "financial_year": "financial_year",
+        "exit_reason": "exit_reason", "ticker": "ticker",
+    }[group_by]
+    where, params = ("WHERE strategy_id = ?", [strategy_id]) if strategy_id else ("", [])
+
+    with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:
+        if _trades_table_missing(conn):
+            return {"group_by": group_by, "rows": []}
+        rows = conn.execute(
+            f"""SELECT {column} AS key,
+                       COUNT(*) AS n_trades,
+                       SUM(pnl_inr) AS pnl_inr,
+                       AVG(pnl_pct) AS avg_pnl_pct,
+                       AVG(holding_days) AS avg_holding_days,
+                       AVG(CASE WHEN pnl_inr > 0 THEN 1.0 ELSE 0.0 END) AS win_rate
+                FROM backtest_trades {where}
+                GROUP BY 1 ORDER BY 1""",
+            params,
+        ).fetchdf()
+    return {"group_by": group_by, "rows": json.loads(rows.to_json(orient="records"))}
+
+
 class IterativeRetrainTriggerResponse(BaseModel):
     job_id: str
     status: str = "started"
