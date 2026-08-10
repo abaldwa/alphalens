@@ -93,6 +93,15 @@ DEFERRED_COLUMNS: List[str] = [
     "lyapunov_exponent_proxy", "rqa_rec_rate", "time_series_complexity", "nonlinear_trend_strength",
 ]
 
+# The 3 fracdiff columns, split out so --skip-fracdiff can drop exactly
+# these. Profiled 2026-08-10 on a real 21-year panel: _optimal_fracdiff_d
+# is 0.502s of a 0.507s bar (98% of the module's entire cost) because it
+# runs a 12-step bisection, each step an adfuller that refits ~24 OLS
+# regressions on 1,500-4,000 rows just to pick a lag by AIC. Excluding
+# them takes a ticker from ~41 min to ~0.5 min (measured 88x). Only
+# template T19 reads them.
+_FRACDIFF_COLUMNS = {"fracdiff_d_optimal", "fracdiff_price", "fracdiff_volume"}
+
 DEFAULT_TOP_N = 800
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_WORKERS = 2
@@ -121,7 +130,7 @@ def _compute_batch(args: Tuple) -> Tuple[str, int, int]:
     this batch's tickers. Peak resident memory is bounded by this batch's
     panel + compute frame, not the whole universe.
     """
-    batch_index, tickers, from_date, to_date, staging_dir, snapshot_path = args
+    batch_index, tickers, from_date, to_date, staging_dir, snapshot_path, skip_fracdiff = args
     out_path = Path(staging_dir) / f"batch_{batch_index:05d}.parquet"
     if out_path.exists():
         return ("skipped", batch_index, len(tickers))
@@ -177,9 +186,12 @@ def _compute_batch(args: Tuple) -> Tuple[str, int, int]:
         logger.warning(f"batch {batch_index}: no OHLCV for {len(tickers)} tickers — skipping")
         return ("empty", batch_index, len(tickers))
 
-    adv = compute_advanced_technical_features(panel, all_rows=True, used_only=False)
+    adv = compute_advanced_technical_features(
+        panel, all_rows=True, used_only=False, skip_fracdiff=skip_fracdiff,
+    )
     del panel
-    adv = adv[["date", "ticker"] + DEFERRED_COLUMNS]
+    cols = [c for c in DEFERRED_COLUMNS if not (skip_fracdiff and c in _FRACDIFF_COLUMNS)]
+    adv = adv[["date", "ticker"] + cols]
     # all_rows=True fills every bar with >=16 bars of trailing history,
     # including the warmup window before from_date — keep only the target range.
     adv = adv[adv["date"] >= ts_from].reset_index(drop=True)
@@ -197,6 +209,7 @@ def _compute_batch(args: Tuple) -> Tuple[str, int, int]:
 def run_compute(
     tickers: List[str], from_date: date_type, to_date: date_type,
     batch_size: int, workers: int, staging_dir: str, snapshot_path: str = None,
+    skip_fracdiff: bool = False,
 ) -> dict:
     """Chunk `tickers` into batches and compute them (parallel, checkpointed).
 
@@ -212,7 +225,7 @@ def run_compute(
     batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
     worker_args = [
         (idx, batch_tickers, datetime.combine(from_date, datetime.min.time()),
-         datetime.combine(to_date, datetime.min.time()), staging_dir, snapshot_path)
+         datetime.combine(to_date, datetime.min.time()), staging_dir, snapshot_path, skip_fracdiff)
         for idx, batch_tickers in enumerate(batches)
     ]
     logger.info(
@@ -427,6 +440,15 @@ def main() -> None:
         help="Where the one-time prewarmed OHLCV panel lives (shared with the backtest sweep).",
     )
     parser.add_argument(
+        "--skip-fracdiff", action="store_true",
+        help=(
+            "Skip fracdiff_d_optimal/fracdiff_price/fracdiff_volume — 98 pct of this "
+            "job's cost for 3 of 17 columns, read by exactly one template (T19). "
+            "Turns a ~50-day full-universe 21-year backfill into well under a day. "
+            "The other 14 columns are bit-identical either way (verified 180/180)."
+        ),
+    )
+    parser.add_argument(
         "--no-prewarm", action="store_true",
         help=(
             "Skip the shared snapshot and let each worker issue its own full-window "
@@ -473,6 +495,7 @@ def main() -> None:
         run_compute(
             tickers, args.from_date, args.to_date,
             args.ticker_batch_size, workers, args.staging_dir, snapshot_path,
+            skip_fracdiff=args.skip_fracdiff,
         )
     if args.stage in ("merge", "both"):
         n_updated, n_skipped = run_merge(

@@ -519,6 +519,7 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
 
 def _compute_row_features(
     prices: np.ndarray, volumes: np.ndarray, log_prices: np.ndarray, end: int, used_only: bool = False,
+    skip_fracdiff: bool = False,
 ) -> dict:
     """
     Compute advanced technical features "as of" bar index `end - 1` (i.e.
@@ -543,6 +544,20 @@ def _compute_row_features(
         already means NaN downstream (same "not yet computed" convention
         used elsewhere in this codebase, e.g. `market_cap_cr == 0`).
         Default False preserves original, unchanged behavior.
+    skip_fracdiff : bool
+        [2026-08-10] Skip the 3 fracdiff features (fracdiff_d_optimal,
+        fracdiff_price, fracdiff_volume). Profiled on a real 21-year
+        RELIANCE panel, `_optimal_fracdiff_d` alone is 0.502s of a 0.507s
+        bar — 98% of this function's entire cost — because it runs a
+        12-step bisection, each step calling statsmodels' adfuller, which
+        refits ~24 OLS regressions on 1,500-4,000 rows purely to pick a
+        lag by AIC. The other 15 features together cost 0.005s/bar.
+        Skipping them turns a ~108 min/ticker job into ~2 min/ticker,
+        which is the difference between a 50-day and a half-day
+        full-universe backfill. The 3 columns are simply absent from
+        `out` (NaN downstream, same convention as used_only). Only
+        template T19 reads them. Default False preserves original,
+        unchanged behavior.
     """
     n = end
     out: dict = {}
@@ -571,14 +586,15 @@ def _compute_row_features(
         out["spectral_entropy"] = _spectral_entropy(np.diff(log_prices[end - min(63, n):end]))
         out["fractal_dimension"] = _fractal_dimension(prices[:end])
 
-    d_opt = _optimal_fracdiff_d(log_prices[:end])
-    out["fracdiff_d_optimal"] = d_opt
-    fd_price = _apply_fracdiff(log_prices[:end], d_opt)
-    out["fracdiff_price"] = fd_price[-1] if not np.isnan(fd_price[-1]) else np.nan
+    if not skip_fracdiff:
+        d_opt = _optimal_fracdiff_d(log_prices[:end])
+        out["fracdiff_d_optimal"] = d_opt
+        fd_price = _apply_fracdiff(log_prices[:end], d_opt)
+        out["fracdiff_price"] = fd_price[-1] if not np.isnan(fd_price[-1]) else np.nan
 
-    log_vol = np.log(np.maximum(volumes[:end], 1e-6))
-    fd_vol = _apply_fracdiff(log_vol, d_opt)
-    out["fracdiff_volume"] = fd_vol[-1] if not np.isnan(fd_vol[-1]) else np.nan
+        log_vol = np.log(np.maximum(volumes[:end], 1e-6))
+        fd_vol = _apply_fracdiff(log_vol, d_opt)
+        out["fracdiff_volume"] = fd_vol[-1] if not np.isnan(fd_vol[-1]) else np.nan
 
     complexity_window = min(63, n)
     recent_prices = prices[end - complexity_window:end]
@@ -590,7 +606,9 @@ def _compute_row_features(
     return out
 
 
-def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False, used_only: bool = False) -> pd.DataFrame:
+def _compute_for_ticker(
+    grp: pd.DataFrame, all_rows: bool = False, used_only: bool = False, skip_fracdiff: bool = False,
+) -> pd.DataFrame:
     """
     Compute advanced technical features for a single ticker's panel.
 
@@ -641,7 +659,9 @@ def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False, used_only: bo
 
     row_positions = range(15, n) if all_rows else [n - 1]
     for i in row_positions:
-        feats = _compute_row_features(prices, volumes, log_prices, end=i + 1, used_only=used_only)
+        feats = _compute_row_features(
+            prices, volumes, log_prices, end=i + 1, used_only=used_only, skip_fracdiff=skip_fracdiff,
+        )
         for col, val in feats.items():
             result.loc[result.index[i], col] = val
 
@@ -653,6 +673,7 @@ def _compute_for_ticker(grp: pd.DataFrame, all_rows: bool = False, used_only: bo
 
 def compute_advanced_technical_features(
     ohlcv_panel: pd.DataFrame, all_rows: bool = False, used_only: bool = False,
+    skip_fracdiff: bool = False,
 ) -> pd.DataFrame:
     """
     Compute advanced technical features for the full universe OHLCV panel.
@@ -705,6 +726,8 @@ def compute_advanced_technical_features(
         raise ValueError(f"ohlcv_panel missing columns: {missing}")
 
     result = ohlcv_panel.groupby("ticker", group_keys=False).apply(
-        lambda grp: _compute_for_ticker(grp, all_rows=all_rows, used_only=used_only)
+        lambda grp: _compute_for_ticker(
+            grp, all_rows=all_rows, used_only=used_only, skip_fracdiff=skip_fracdiff,
+        )
     )
     return result[["date", "ticker"] + ADVANCED_TECHNICAL_FEATURES].reset_index(drop=True)
