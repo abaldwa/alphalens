@@ -71,10 +71,11 @@ Usage
 
 import argparse
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -104,6 +105,30 @@ _BACKUP_TARGETS: List[Tuple[Path, str]] = [
     (CONFIG_DIR, "config"),
 ]
 
+# Per-target rclone --exclude patterns.
+#
+# [AS BUILT, 2026-08-10] normalised/ has grown from ~3.5GB to 40GB since
+# this job was written, and every added GB is non-authoritative — exactly
+# the class of file the raw/ and features/ exclusions already refuse to
+# carry. Uploading all 40GB blows well past B2's 10GB free tier and turns
+# a nightly job into an all-day one, for zero recovery value:
+#
+#   *.bak*  / *.tmp                : point-in-time copies of the very DB
+#                                    sitting next to them (16.6GB as of
+#                                    2026-08-10, oldest dating to 07-04).
+#                                    The backup IS the off-machine copy;
+#                                    mirroring local copies of it is
+#                                    circular.
+#   feature_panel_staging.duckdb   : 18GB, re-derivable from normalised/
+#                                    via the hybrid backfill — same
+#                                    argument as datastore/features/.
+#
+# Excluded here rather than by pruning the local files, so that a stale
+# .bak nobody has cleaned up yet can never silently re-enter the archive.
+_BACKUP_EXCLUDES: Dict[str, List[str]] = {
+    "normalised": ["*.bak*", "*.tmp", "feature_panel_staging.duckdb"],
+}
+
 # Per-directory timeout — generous for a home-connection upload of a few
 # GB; DuckDB WAL files mid-write are the only thing that could make a
 # source directory large/unstable, and the pipeline never writes at the
@@ -113,12 +138,31 @@ _RCLONE_TIMEOUT_SECONDS = 1800
 
 def _b2_remote(remote_name: str) -> str:
     """
-    Build an rclone on-the-fly B2 connection string — no saved remote, no
-    config file, no interactive `rclone config` step. rclone's b2 backend
-    takes `account` (the Application Key ID) and `key` (the Application
-    Key itself) as plain connection-string parameters.
+    Build an rclone on-the-fly B2 remote path — no saved remote, no config
+    file, no interactive `rclone config` step.
+
+    [AS BUILT, 2026-08-10] Credentials are NOT inlined here any more.
+    They used to be passed as connection-string parameters
+    (`:b2,account=...,key=...:`), which put BACKBLAZE_APPLICATION_KEY into
+    the rclone process's argv — world-readable via /proc for the whole
+    duration of the nightly sync, so `ps` on a shared box leaked the key
+    even though nothing was ever written to a log (SPEC-SEC-001 covers
+    logs, but argv is the same exposure). They now travel in the
+    subprocess environment as RCLONE_B2_ACCOUNT/RCLONE_B2_KEY, which
+    rclone reads for its b2 backend — see _rclone_env().
     """
-    return f":b2,account={BACKBLAZE_KEY_ID},key={BACKBLAZE_APPLICATION_KEY}:{BACKBLAZE_BUCKET}/{BACKUP_REMOTE_PATH}/{remote_name}"
+    return f":b2:{BACKBLAZE_BUCKET}/{BACKUP_REMOTE_PATH}/{remote_name}"
+
+
+def _rclone_env() -> dict:
+    """
+    Environment for the rclone subprocess, carrying the B2 credentials
+    out of argv and into env vars rclone picks up for its b2 backend.
+    """
+    env = dict(os.environ)
+    env["RCLONE_B2_ACCOUNT"] = BACKBLAZE_KEY_ID or ""
+    env["RCLONE_B2_KEY"] = BACKBLAZE_APPLICATION_KEY or ""
+    return env
 
 
 def run_backup(dry_run: bool = False) -> dict:
@@ -163,16 +207,23 @@ def run_backup(dry_run: bool = False) -> dict:
             continue
 
         cmd = ["rclone", "sync", str(local_dir), _b2_remote(remote_name), "--fast-list"]
+        for pattern in _BACKUP_EXCLUDES.get(remote_name, []):
+            cmd += ["--exclude", pattern]
         if dry_run:
             cmd.append("--dry-run")
 
-        # Never log the full command/remote string — it embeds
-        # BACKBLAZE_APPLICATION_KEY in plain text (SPEC-SEC-001: no
-        # credentials in logs, even on-the-fly ones passed via CLI args).
-        logger.info(f"backup: syncing {local_dir} -> b2:{BACKBLAZE_BUCKET}/{BACKUP_REMOTE_PATH}/{remote_name}")
+        excluded = _BACKUP_EXCLUDES.get(remote_name, [])
+        logger.info(
+            f"backup: syncing {local_dir} -> b2:{BACKBLAZE_BUCKET}/{BACKUP_REMOTE_PATH}/{remote_name}"
+            + (f" (excluding {', '.join(excluded)})" if excluded else "")
+        )
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=_RCLONE_TIMEOUT_SECONDS
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_RCLONE_TIMEOUT_SECONDS,
+                env=_rclone_env(),
             )
             if result.returncode != 0:
                 logger.error(f"backup: rclone failed for {remote_name}: {result.stderr[-2000:]}")
