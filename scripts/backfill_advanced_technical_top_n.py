@@ -244,7 +244,7 @@ def run_compute(
 # ── Stage 2: merge (per-date, atomic, idempotent) ───────────────────────────
 
 
-def _already_covers(parquet_path: Path, top_tickers: List[str]) -> bool:
+def _already_covers(parquet_path: Path, top_tickers: List[str], probe_column: str = "wavelet_trend") -> bool:
     """
     True if the date's parquet already has a non-NaN wavelet_trend for ANY of
     the Top-N tickers — proves this date was already backfilled for the
@@ -254,7 +254,7 @@ def _already_covers(parquet_path: Path, top_tickers: List[str]) -> bool:
     if not parquet_path.exists():
         return False
     try:
-        df = pd.read_parquet(parquet_path, columns=["ticker", "wavelet_trend"])
+        df = pd.read_parquet(parquet_path, columns=["ticker", probe_column])
     except Exception:
         return False
     sub = df[df["ticker"].isin(top_tickers)]
@@ -313,14 +313,27 @@ def _prewarm_snapshot(from_date: date_type, to_date: date_type, snapshot_dir: st
 
 def merge_into_dates(
     master: pd.DataFrame, from_date: date_type, to_date: date_type,
-    top_tickers: List[str],
+    top_tickers: List[str], columns: List[str] = None,
 ) -> Tuple[int, int]:
-    """Merge the master deferred frame into each date's existing parquet.
+    """Merge the master staged frame into each date's existing parquet.
 
-    Only the 17 deferred columns are replaced; all other columns and all
-    non-Top-N rows are left byte-for-byte untouched. Writes atomically via
-    a .tmp file + os.replace. Returns (n_updated, n_skipped).
+    Only `columns` are replaced; all other columns and all non-listed
+    tickers are left byte-for-byte untouched. Writes atomically via a .tmp
+    file + os.replace. Returns (n_updated, n_skipped).
+
+    columns : which feature columns this merge owns. Defaults to
+        DEFERRED_COLUMNS (the advanced_technical set) so existing callers
+        are unchanged; scripts/backfill_pattern_scores.py passes its own
+        PATTERN_FEATURES so the two backfills can share this one reviewed
+        merge implementation instead of duplicating the additive-merge and
+        atomic-write logic.
     """
+    columns = list(columns) if columns else list(DEFERRED_COLUMNS)
+    # Probe with a column this merge actually owns — using the default
+    # wavelet_trend for a pattern-scores merge would report "already
+    # covered" based on an unrelated backfill's work and silently skip
+    # every date.
+    probe_column = columns[0]
     from config.settings import FEATURES_DAILY_DIR
 
     d = from_date
@@ -330,7 +343,7 @@ def merge_into_dates(
         if not parquet_path.exists():
             d += timedelta(days=1)
             continue
-        if _already_covers(parquet_path, top_tickers):
+        if _already_covers(parquet_path, top_tickers, probe_column):
             n_skipped += 1
             d += timedelta(days=1)
             continue
@@ -344,7 +357,7 @@ def merge_into_dates(
         # Merge with suffixes and combine_first so we only overwrite where THIS
         # run provides a value; other rows keep whatever they already had.
         merged = existing.merge(day, on="ticker", how="left", suffixes=("", "_new"))
-        for col in DEFERRED_COLUMNS:
+        for col in columns:
             new_col = col + "_new"
             merged[col] = merged[new_col].combine_first(merged[col])
             merged = merged.drop(columns=[new_col])
