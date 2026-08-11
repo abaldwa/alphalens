@@ -1,2 +1,0 @@
-ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank,pnl_inr,pnl_pct,exit_reason
-ANDHRAPAP,430,2024-01-23,116.06,2024-02-09,105.03,,-4943.625718933603,-0.09905914180182669,exit_model_urgent

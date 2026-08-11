@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-11T09:26:58.409319",
+  "generated_at": "2026-08-11T10:02:36.498636",
   "jobs": [
     {
       "job_index": 0,
@@ -11,7 +11,7 @@
       "job_index": 1,
       "kind": "orchestrator",
       "label": "technical \u00b7 A2 [unconstrained]",
-      "status": "failed"
+      "status": "completed"
     },
     {
       "job_index": 2,
@@ -29,25 +29,25 @@
       "job_index": 4,
       "kind": "orchestrator",
       "label": "technical \u00b7 B1 [unconstrained]",
-      "status": "running"
+      "status": "completed"
     },
     {
       "job_index": 5,
       "kind": "orchestrator",
       "label": "technical \u00b7 B2 [unconstrained]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 6,
       "kind": "orchestrator",
       "label": "technical \u00b7 B3 [unconstrained]",
-      "status": "queued"
+      "status": "completed"
     },
     {
       "job_index": 7,
       "kind": "orchestrator",
       "label": "technical \u00b7 B4 [unconstrained]",
-      "status": "queued"
+      "status": "running"
     },
     {
       "job_index": 8,

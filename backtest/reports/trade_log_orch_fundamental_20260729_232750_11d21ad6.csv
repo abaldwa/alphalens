@@ -1,4 +1,0 @@
-ticker,qty,buy_date,buy_price,sale_date,sale_price,stock_rank,pnl_inr,pnl_pct,exit_reason
-ADVENTHTL,265,2026-05-13,150.71,2026-05-29,136.64,7,-3889.1849136098026,-0.09738019696980962,exit_model_urgent
-AEROENTER,391,2026-05-13,102.21,2026-06-01,94.07,6,-3343.479327118126,-0.08366204895137477,exit_model_urgent
-ACI,71,2026-05-13,560.0,2026-06-05,518.3,4,-3120.6183779200073,-0.0784863777142859,exit_model_urgent
