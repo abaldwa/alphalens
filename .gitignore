@@ -2,7 +2,14 @@
 #
 # Specs: SPEC-SEC-001 (credentials never in VCS), SPEC-DS-007 (gitignored stores)
 
+# SPEC-SEC-001: bare `.env` alone did NOT cover sidecars. A real
+# `.env.bak_before_backup_enable_20260810_184856` holding 13 credential lines
+# sat untracked in the repo root on 2026-08-11, one `git add -A` from being
+# committed. Cover every .env sidecar (.bak, .local, .prod, dated copies) and
+# re-include only the committed template.
 .env
+.env.*
+!.env.example
 *.db
 *.duckdb
 datastore/raw/
