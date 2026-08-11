@@ -275,7 +275,18 @@ def write_reports(
     suffix: str, reports_dir: Path = REPORTS_DIR, tax_regime: str = "ltcg_12_5pct_1_25L",
 ) -> Dict[str, Path]:
     comparison = build_comparison(suffix, reports_dir, tax_regime)
-    base = reports_dir / f"ta_comparison_{suffix}"
+    # [2026-08-11] The tax regime is part of the FILENAME. It used to be absent,
+    # so generating both regimes for one queue wrote the same three files twice
+    # and the second silently overwrote the first — only ever one regime
+    # survived on disk, and the UI's report picker (which labels entries
+    # "<suffix> · <tax_regime>") could only ever offer one of them.
+    #
+    # Every report already carries BOTH regimes under strategies[].taxes; what
+    # the regime selects is the HEADLINE post_tax_pnl_inr /
+    # post_tax_return_on_capital, which is exactly what the comparison table
+    # sorts and ranks on. So the two files are genuinely different documents,
+    # not cosmetic variants.
+    base = reports_dir / f"ta_comparison_{suffix}__{tax_regime}"
     json_path = base.with_suffix(".json")
     csv_path = base.with_suffix(".csv")
     html_path = base.with_suffix(".html")
