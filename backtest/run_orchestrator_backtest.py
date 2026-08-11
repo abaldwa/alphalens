@@ -45,6 +45,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -97,6 +98,28 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
+
+# Feature-log spill lives on DISK, deliberately not in tempfile.gettempdir().
+#
+# [2026-08-11] On this host /tmp is a RAM-backed tmpfs (7.3G), so spilling
+# there defeated the entire point of spill mode: the writer exists to keep
+# backtest_feature_log rows OUT of RAM, and tmpfs put them straight back in
+# while also competing with the running job for the same memory. Worse, /tmp
+# is shared with every other process on the box — when it filled, job[1] of
+# the 65-job TA queue died mid-run with OSError [Errno 122] Disk quota
+# exceeded from feature_log.flush(). A spill target must be somewhere a
+# long backtest cannot be starved out of.
+#
+# backtest/cache/ is on the root fs (~450G free) and already gitignored.
+# ALPHALENS_SPILL_DIR overrides it for hosts laid out differently.
+_SPILL_DIR = Path(__file__).resolve().parent / "cache" / "spill"
+
+
+def _feature_log_spill_dir() -> Path:
+    d = Path(os.environ.get("ALPHALENS_SPILL_DIR") or _SPILL_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 
 HORIZON_BUCKET_MAP = {b.value: b for b in HorizonBucket}
 
@@ -737,8 +760,6 @@ def _run_deferred(
     FeatureLogWriter spills to a local temp file and TechnicalAdapter's
     screener_cache is skipped. Only the short tail (schema + spill-load +
     save + catalog + trade-book) reacquires the lock."""
-    import tempfile
-
     from backtest.core.feature_log import load_spill_file
 
     ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
@@ -852,7 +873,7 @@ def _run_deferred(
         },
     )
 
-    spill_path = Path(tempfile.gettempdir()) / f"backtest_feature_log_spill_{run_id}.jsonl"
+    spill_path = _feature_log_spill_dir() / f"backtest_feature_log_spill_{run_id}.jsonl"
     feature_log_writer = FeatureLogWriter(spill_path=spill_path)
 
     # regime_conn/fundamentals_conn are READ-ONLY connections to DUCKDB_PATH
