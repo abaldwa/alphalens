@@ -49,6 +49,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" 2>&1 | tail -3 || true
 }
 
 # ---------------------------------------------------------------- [1] compute
+if [ "${SKIP_COMPUTE:-0}" = "1" ]; then
+  say "[1/5] SKIPPED — Stage 1 + Stage 2 already complete and verified this run"
+else
 say "[1/5] waiting for alphalens-full-compute (Stage 1 + Stage 2)"
 while systemctl --user is-active --quiet alphalens-full-compute; do sleep 120; done
 RESULT=$(systemctl --user show alphalens-full-compute -p Result --value)
@@ -57,6 +60,7 @@ if [ "$RESULT" != "success" ]; then
   echo "AUTOPILOT ABORT: feature compute did not succeed (result=$RESULT)." >&2
   echo "Staging is checkpointed — re-running the same command resumes." >&2
   exit 1
+fi
 fi
 
 # ------------------------------------------------------- [1b] chunked Stage 2
@@ -74,6 +78,9 @@ fi
 # --stage2-chunk-size dates at a time using parquet predicate pushdown, holding
 # ~500 MB per chunk. Chunk size 150 rather than the 400 default: a weekend job
 # at 400 was the real cause of an earlier OOM (see pipeline_scheduler.py).
+if [ "${SKIP_COMPUTE:-0}" = "1" ]; then
+  say "[1b] SKIPPED — per-date parquets already rebuilt this run"
+else
 say "[1b] Stage 2 — rebuilding per-date parquets (chunked)"
 systemd-run --user --unit=alphalens-stage2 --property=MemoryMax=10G \
   --setenv=PYTHONPATH=/home/amit/projects/AlphaLens \
@@ -95,6 +102,7 @@ if [ "$S2" != "success" ]; then
   echo "AUTOPILOT ABORT: Stage 2 failed (result=$S2). Staging on disk is intact —" >&2
   echo "re-run with --rebuild-daily (optionally a smaller --stage2-chunk-size)." >&2
   exit 1
+fi
 fi
 
 # ----------------------------------------------------------- [2] coverage gate
