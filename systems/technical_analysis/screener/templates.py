@@ -29,7 +29,14 @@ Column reference rationale (key mappings from strategy concept → stored column
   - "breakout_prob"   → base_breakout_score    (close vs prior 21d high breakout)
   - "reversal_prob"   → double_bottom_score    (double-bottom reversal pattern)
   - "trend_strength"  → flag_pattern_score     (flag/continuation pattern)
-  - "close/52w_high"  → base_breakout_ratio    (close/prior_21d_high; nearest proxy)
+  - "close/52w_high"  → dist_from_52w_high     ((close-52w_high)/52w_high; 0 = at
+                                               the high, negative = below it).
+                                               NOT base_breakout_ratio, which is
+                                               close/prior_21d_high — a 21-day
+                                               high is a far weaker condition
+                                               (77.8% of rows passing it are not
+                                               within 1% of the 52-week high).
+                                               Corrected in C5/S004 2026-08-11.
   - "EMA ribbon"      → ema_ribbon_alignment   (composite: +1 = all EMAs in order)
   - "supertrend bull" → supertrend_dir > 0     (direction; signal is only on-flip)
   - "ichimoku bull"   → ichimoku_cloud_position > 0 (above cloud)
@@ -283,14 +290,23 @@ _C5 = ScreenerTemplate(
     category="C",
     description="52-Week High Proximity",
     conditions=[
-        # Near recent high (base_breakout_ratio = close/prior_21d_high; 52w proxy)
-        {"feature": "base_breakout_ratio", "op": "gt", "value": 0.99},
+        # Within 1% of the 52-week high.
+        #
+        # [2026-08-11] Was `base_breakout_ratio > 0.99`, i.e. close/prior_21d_high
+        # — a stand-in from when no 52-week feature was stored. dist_from_52w_high
+        # exists now (T02 already uses it), and the two are not close: over a
+        # 94,537-row sample, the 21-day test admitted 2,589 rows against 305 for
+        # the real one, and 77.8% of what it selected was NOT within 1% of the
+        # 52-week high. Being near a 21-day high is ordinary in any short
+        # uptrend; being near a 52-week high is the actual signal this template
+        # is named for.
+        {"feature": "dist_from_52w_high", "op": "gte", "value": -0.01},
         # Volume surge (institutional accumulation at highs)
         {"feature": "volume_ratio_21d", "op": "gt", "value": 2.0},
         # ADX confirms trending
         {"feature": "adx_14", "op": "gte", "value": 20},
     ],
-    key_display_features=["base_breakout_ratio", "volume_ratio_21d", "adx_14", "rsi_14"],
+    key_display_features=["dist_from_52w_high", "volume_ratio_21d", "adx_14", "rsi_14"],
 )
 
 _C6 = ScreenerTemplate(
@@ -668,12 +684,17 @@ _S004 = ScreenerTemplate(
     category="S",
     description="52-Week High Breakout",
     conditions=[
-        # At or just above recent 21-day high (proxy for 52w high breakout)
-        {"feature": "base_breakout_ratio", "op": "gt", "value": 0.995},
+        # Within 0.5% of the 52-week high.
+        #
+        # [2026-08-11] Was `base_breakout_ratio > 0.995` (close/prior_21d_high),
+        # the same stand-in corrected in C5 — see the note there for the
+        # measurement. A 21-day high is not a 52-week high, and this template is
+        # named for the latter.
+        {"feature": "dist_from_52w_high", "op": "gte", "value": -0.005},
         # High volume confirming the breakout
         {"feature": "volume_ratio_21d", "op": "gt", "value": 2.0},
     ],
-    key_display_features=["base_breakout_ratio", "volume_ratio_21d", "adx_14", "rsi_14"],
+    key_display_features=["dist_from_52w_high", "volume_ratio_21d", "adx_14", "rsi_14"],
 )
 
 _S005 = ScreenerTemplate(
