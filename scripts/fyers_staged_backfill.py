@@ -303,8 +303,22 @@ def backfill_year(conn, fb: FYERSBackfill, year: int, dry_run: bool = False) -> 
     cache_glob = str(_year_cache_dir(year) / "*.parquet")
     ticker_list = list(per_ticker_range)
     placeholders = ",".join("?" for _ in ticker_list)
+    # union_by_name=True is REQUIRED, not a nicety. read_parquet infers the
+    # schema from the FIRST file only, and a ticker that FYERS had no data for
+    # is cached as an empty frame whose `ticker` column can serialize as
+    # INTEGER rather than VARCHAR. If such a file sorts first, every real
+    # ticker after it fails to cast:
+    #
+    #   Conversion Error: failed to cast column "ticker" from VARCHAR to
+    #   INTEGER: Could not convert string 'AARTIDRUGS' to INT32
+    #
+    # [2026-08-12] Hit on year 2007 — the year with by far the most empty
+    # results (996 of 1,704 tickers had no FYERS history that far back), which
+    # is why nine later years staged cleanly first. The fetch had completed
+    # fine; only the load blew up, so the whole year's downloads were still on
+    # disk and cost nothing to redo.
     year_df = conn.execute(
-        f"SELECT * FROM read_parquet(?) WHERE ticker IN ({placeholders})",
+        f"SELECT * FROM read_parquet(?, union_by_name=true) WHERE ticker IN ({placeholders})",
         [cache_glob] + ticker_list,
     ).df()
 
