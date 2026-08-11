@@ -402,3 +402,40 @@ class TestConcurrentQueue:
 
         assert summary["all_passed"] is False
         assert summary["jobs_run"] == 5  # every job still ran despite job 2 failing
+
+
+class TestMaxWorkersCli:
+    """[2026-08-11] --max-workers must reach run_queue().
+
+    max_workers had existed as a run_queue() parameter since the 2026-08-02
+    Technical sweep work, but nothing exposed it: the CLI never defined the
+    flag and main() called run_queue() without it, so every queue ran serial
+    no matter what. The capability was present and unreachable.
+    """
+
+    def test_flag_is_defined_and_reaches_run_queue(self):
+        """Both halves matter: the flag existing but not being passed through
+        is exactly the failure mode this guards."""
+        import inspect
+
+        import backtest.run_strategy_queue as rsq
+
+        src = inspect.getsource(rsq.main)
+        assert "--max-workers" in src, "CLI must define --max-workers"
+        assert "max_workers=args.max_workers" in src, "the flag must reach run_queue()"
+
+    def test_default_is_one_so_existing_callers_are_unchanged(self):
+        import inspect
+
+        import backtest.run_strategy_queue as rsq
+
+        assert inspect.signature(rsq.run_queue).parameters["max_workers"].default == 1
+
+    def test_concurrent_path_is_only_taken_above_one(self):
+        """max_workers=1 must stay on the serial path exactly as before."""
+        import inspect
+
+        import backtest.run_strategy_queue as rsq
+
+        src = inspect.getsource(rsq.run_queue)
+        assert "if max_workers > 1:" in src

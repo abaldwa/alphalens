@@ -661,6 +661,17 @@ def main() -> None:
     )
     parser.add_argument("--report-suffix", default=None)
     parser.add_argument(
+        "--max-workers", type=int, default=1,
+        help=(
+            "Run this many jobs concurrently (default 1 = the long-standing serial "
+            "behaviour). Each job is its own OS subprocess, so this is real "
+            "process-level parallelism. Jobs MUST set defer_db_writes, otherwise they "
+            "serialize on BACKTEST_DUCKDB_PATH's single writer and nothing is gained. "
+            "Pin BLAS to 1 thread per worker (OMP_NUM_THREADS=1 etc.) or the workers "
+            "will oversubscribe the CPU and run slower than serial."
+        ),
+    )
+    parser.add_argument(
         "--no-resume", action="store_true",
         help=(
             "Ignore any existing progress file for this --report-suffix and re-run every job from "
@@ -674,10 +685,23 @@ def main() -> None:
         queue_def = json.load(fh)
     jobs = queue_def["jobs"]
 
+    # Guard the footgun the run_queue docstring warns about: >1 worker without
+    # defer_db_writes doesn't fail, it just quietly serializes on the write
+    # lock and buys nothing — the kind of "it ran, so it must have worked"
+    # outcome that is easy to miss in a multi-hour sweep.
+    if args.max_workers > 1:
+        n_deferred = sum(1 for j in jobs if j.get("defer_db_writes"))
+        if n_deferred < len(jobs):
+            logger.warning(
+                "run_strategy_queue: --max-workers=%d but only %d/%d jobs set "
+                "defer_db_writes — the rest will serialize on the DuckDB writer",
+                args.max_workers, n_deferred, len(jobs),
+            )
+
     summary = run_queue(
         jobs=jobs, min_free_mb=args.min_free_mb, wait_timeout_s=args.wait_timeout_s,
         stop_on_failure=not args.continue_on_failure, report_suffix=args.report_suffix,
-        resume=not args.no_resume,
+        resume=not args.no_resume, max_workers=args.max_workers,
     )
     print(json.dumps(summary, indent=2, default=str))
     sys.exit(0 if summary["all_passed"] else 1)

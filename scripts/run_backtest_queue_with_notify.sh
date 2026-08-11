@@ -33,9 +33,30 @@ fi
 cd "$REPO_DIR"
 export PYTHONPATH="$REPO_DIR"
 
+# Parallelism. Default stays 1 (the long-standing serial behaviour); override
+# per-invocation with BACKTEST_QUEUE_WORKERS.
+#
+# [2026-08-11] Measured before enabling: the cgroup showed 7 GB "in use", which
+# looked like a memory wall and was the reason parallelism was rejected earlier
+# that day. memory.stat showed the truth -- anon 1.82 GB, file 5.15 GB, i.e.
+# 73% reclaimable page cache -- with memory.pressure some/full avg10 = 0.00.
+# The jobs were never memory-bound; CPU sat 80% idle across 14 cores.
+#
+# BLAS PINNING IS NOT OPTIONAL HERE. Each worker's numpy/scipy would otherwise
+# spawn one BLAS thread per core, so N workers oversubscribe the CPU N-fold and
+# run SLOWER than serial. Pinning to 1 thread per worker was worth +62% on the
+# feature-compute side for exactly this reason.
+BACKTEST_QUEUE_WORKERS="${BACKTEST_QUEUE_WORKERS:-1}"
+if [ "$BACKTEST_QUEUE_WORKERS" -gt 1 ]; then
+  export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+         VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+  echo "run_backtest_queue_with_notify: ${BACKTEST_QUEUE_WORKERS} workers, BLAS pinned to 1 thread each"
+fi
+
 "$REPO_DIR/.venv/bin/python" -m backtest.run_strategy_queue \
   --queue-file "$QUEUE_FILE" \
   --continue-on-failure \
+  --max-workers "$BACKTEST_QUEUE_WORKERS" \
   --report-suffix "$REPORT_SUFFIX"
 run_exit=$?
 
