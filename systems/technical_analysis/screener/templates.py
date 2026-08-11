@@ -332,12 +332,27 @@ _D1 = ScreenerTemplate(
     category="D",
     description="RSI-2 Mean Reversion",
     conditions=[
-        # Connors RSI(2) oversold: use rsi_14 < 10 as proxy (rsi_2 not stored separately)
-        {"feature": "rsi_14", "op": "lt", "value": 10},
+        # Connors RSI(2) oversold.
+        #
+        # [2026-08-11] Was `rsi_14 < 10`, a stand-in from when rsi_2 genuinely
+        # wasn't stored. rsi_2 IS in the feature store now, and the proxy was
+        # never equivalent: RSI-2 is a 2-period oscillator that routinely dips
+        # under 10, while RSI-14 smooths over 14 periods and almost never does
+        # — least of all in a stock trading above its 200-day SMA, which the
+        # second condition requires.
+        #
+        # Measured over 15,400,703 ticker-days (2007-04-01..2026-08-10):
+        #     rsi_14 < 10 AND above SMA200 ->        7 matches
+        #     rsi_2  < 10 AND above SMA200 ->  355,123 matches
+        #
+        # So D1 screened ~nothing for its whole life and its 19-year backtest
+        # produced zero trades (flat equity curve; integrity checks 05/06/08/12
+        # failed, correctly). This is the template it was always described as.
+        {"feature": "rsi_2", "op": "lt", "value": 10},
         # Long-term uptrend (above SMA200)
         {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
     ],
-    key_display_features=["rsi_14", "sma_200_ratio", "macd_hist", "volume_ratio_21d"],
+    key_display_features=["rsi_2", "sma_200_ratio", "macd_hist", "volume_ratio_21d"],
 )
 
 _D2 = ScreenerTemplate(
