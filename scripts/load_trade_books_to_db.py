@@ -91,8 +91,21 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
 # An open-at-end position has no sale_date and no realised P&L; it must not be
 # loaded as a zero-return trade (same rule as
 # ta_comprehensive_metrics.load_trade_book).
+#
+# Columns are named EXPLICITLY rather than relying on SELECT order. The
+# migration that introduced channel/backtest_* used ALTER TABLE ADD COLUMN,
+# which appends to the END of the table, so a positional INSERT built in the
+# logical column order silently lined backtest_run_at up against qty and failed
+# with "Unimplemented type for cast (TIMESTAMP -> DOUBLE)". A named list is
+# order-independent and cannot drift as columns are added.
 _INSERT = """
-INSERT INTO backtest_trades
+INSERT INTO backtest_trades (
+    run_id, strategy_id, template_name, exit_variant, channel,
+    backtest_run_at, backtest_start_date, backtest_end_date,
+    ticker, qty, buy_date, buy_price, sale_date, sale_price, stock_rank,
+    pnl_inr, pnl_pct, exit_reason, holding_days, buy_value, sale_value,
+    financial_year
+)
 SELECT
     ? AS run_id,
     ? AS strategy_id,
