@@ -8,6 +8,7 @@ replaced a static "same ticker list for every date" simplification.
 """
 
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -360,3 +361,40 @@ class TestMomentumRankBandWiring:
     def test_unknown_band_id_is_rejected(self, seeded_db):
         with pytest.raises(ValueError, match="unknown rank_band_id"):
             _momentum_rank_band_wiring(99, date(2026, 1, 1), date(2026, 12, 31))
+
+
+class TestFeatureLogSpillIsNotOnTmpfs:
+    """[2026-08-11] The feature-log spill must NOT live in
+    tempfile.gettempdir().
+
+    On this host /tmp is a RAM-backed tmpfs, which makes spilling
+    self-defeating — FeatureLogWriter exists precisely to keep
+    backtest_feature_log rows out of RAM, and tmpfs puts them straight back
+    in. It also leaves the spill target starvable by unrelated processes: a
+    stray 6.19GB file in /tmp filled the tmpfs and killed a running 19-year
+    backtest with OSError [Errno 122] from feature_log.flush().
+    """
+
+    def test_spill_dir_is_not_under_the_system_temp_dir(self):
+        import tempfile
+
+        spill = ro._feature_log_spill_dir().resolve()
+        tmp = Path(tempfile.gettempdir()).resolve()
+        assert tmp not in spill.parents and spill != tmp, (
+            f"spill dir {spill} is under the system temp dir {tmp} — on a tmpfs "
+            "host this silently puts the spill back into RAM"
+        )
+
+    def test_spill_dir_is_created_and_writable(self):
+        spill = ro._feature_log_spill_dir()
+        assert spill.is_dir()
+        probe = spill / "_pytest_write_probe.tmp"
+        probe.write_text("ok")
+        assert probe.read_text() == "ok"
+        probe.unlink()
+
+    def test_env_var_overrides_the_default_location(self, tmp_path, monkeypatch):
+        override = tmp_path / "custom_spill"
+        monkeypatch.setenv("ALPHALENS_SPILL_DIR", str(override))
+        assert ro._feature_log_spill_dir() == override
+        assert override.is_dir()
