@@ -25,15 +25,25 @@ say() { echo "=== $* ($(date +%H:%M:%S)) ==="; }
 # `git add -A` would sweep up their half-finished edits (and `git stash` has
 # already stranded changes here once). Empty commits are skipped, and a
 # failure to commit must never abort the pipeline — hence `|| true`.
-# NOTE ON -f: backtest/reports/ and logs/ are in .gitignore, but 11,046 files
-# under backtest/reports are already tracked — force-adding results is the
-# established pattern in this repo. These runs are expensive (a 19-year,
-# 65-strategy sweep is many hours of compute), so the OUTPUT DATA is committed,
-# not just the code that produced it. Scope is always this run's own files
-# (suffix-matched globs), never the whole 4.7 GB directory.
+# [2026-08-11] NO MORE -f. This used to force-add backtest/reports on the
+# grounds that ~11k files there were already tracked, so force-adding "matched
+# the established pattern". That pattern was itself the bug: backtest/reports/
+# has been in .gitignore since the initial commit, and gitignore does not apply
+# to already-tracked files — so every `git add -f` quietly re-entrenched 1.6 GB
+# of generated output in git history.
+#
+# It also made cleanup dangerous rather than merely tedious: deleting those
+# files on disk left unstaged tracked deletions, and pre-commit's
+# stash-then-rollback restored 6,067 of them when the patch exceeded git
+# apply's size limit, silently undoing a completed cleanup.
+#
+# Durability of expensive runs comes from the DATABASE (backtest_runs /
+# backtest_trades), which is where results are queried from anyway — not from
+# committing report JSON. Plain `git add` here respects .gitignore, so report
+# paths passed by callers are simply skipped.
 commit_stage() {
   local msg="$1"; shift
-  git add -f -- "$@" 2>/dev/null || true
+  git add -- "$@" 2>/dev/null || true
   if git diff --cached --quiet 2>/dev/null; then
     echo "  (nothing new to commit for: $msg)"
     return 0
