@@ -318,8 +318,12 @@ async def download_experiment_trade_log(run_id: str) -> FileResponse:
 # strategy/template needs no join.
 # ---------------------------------------------------------------------------
 
+# channel + backtest_* added 2026-08-11: a trade row now says which ENGINE
+# produced it and when the backtest ran, so neither question needs a join to
+# backtest_runs (which is the whole point of this table's denormalisation).
 _TRADE_COLUMNS = (
-    "run_id, strategy_id, template_name, exit_variant, ticker, qty, "
+    "run_id, strategy_id, template_name, exit_variant, channel, "
+    "backtest_run_at, backtest_start_date, backtest_end_date, ticker, qty, "
     "buy_date, buy_price, sale_date, sale_price, stock_rank, "
     "pnl_inr, pnl_pct, exit_reason, holding_days, buy_value, sale_value, financial_year"
 )
@@ -337,6 +341,9 @@ def _trades_table_missing(conn) -> bool:
 async def list_trades(
     strategy_id: Optional[str] = Query(None),
     template_name: Optional[str] = Query(None),
+    channel: Optional[str] = Query(
+        None, description="technical | momentum | fundamental | ml"
+    ),
     ticker: Optional[str] = Query(None),
     financial_year: Optional[str] = Query(None, description="e.g. FY2007-08"),
     run_id: Optional[str] = Query(None),
@@ -349,6 +356,7 @@ async def list_trades(
     filters, params = [], []
     for col, val in (
         ("strategy_id", strategy_id), ("template_name", template_name),
+        ("channel", channel),
         ("ticker", ticker), ("financial_year", financial_year),
         ("run_id", run_id), ("exit_reason", exit_reason),
     ):
@@ -376,14 +384,14 @@ async def list_trades(
 
 @router.get("/trades/summary")
 async def trades_summary(
-    group_by: str = Query("strategy", pattern="^(strategy|financial_year|exit_reason|ticker)$"),
+    group_by: str = Query("strategy", pattern="^(strategy|financial_year|exit_reason|ticker|channel)$"),
     strategy_id: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     """Aggregate P&L/trade counts. `group_by=financial_year` gives the
     year-by-year realised picture that matches the per-year tax treatment."""
     column = {
         "strategy": "strategy_id", "financial_year": "financial_year",
-        "exit_reason": "exit_reason", "ticker": "ticker",
+        "exit_reason": "exit_reason", "ticker": "ticker", "channel": "channel",
     }[group_by]
     where, params = ("WHERE strategy_id = ?", [strategy_id]) if strategy_id else ("", [])
 

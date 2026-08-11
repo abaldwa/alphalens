@@ -55,6 +55,19 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
     strategy_id   VARCHAR,
     template_name VARCHAR,
     exit_variant  VARCHAR,
+    -- [2026-08-11] Which engine produced this trade — 'technical',
+    -- 'momentum', 'fundamental' or 'ml'. Same denormalisation rationale:
+    -- "show me every Technical trade" must not depend on backtest_runs
+    -- still holding the parent row.
+    channel       VARCHAR,
+    -- WHEN the backtest was executed (backtest_runs.created_at), as distinct
+    -- from when the trade happened (buy_date/sale_date) and from the window
+    -- the backtest covered (backtest_start_date/backtest_end_date). All three
+    -- are different questions and all three get asked; keeping only buy/sale
+    -- made "which run produced this?" unanswerable without a join.
+    backtest_run_at     TIMESTAMP,
+    backtest_start_date DATE,
+    backtest_end_date   DATE,
     ticker        VARCHAR NOT NULL,
     qty           DOUBLE,
     buy_date      DATE,
@@ -85,6 +98,10 @@ SELECT
     ? AS strategy_id,
     ? AS template_name,
     ? AS exit_variant,
+    ? AS channel,
+    TRY_CAST(? AS TIMESTAMP) AS backtest_run_at,
+    TRY_CAST(? AS DATE) AS backtest_start_date,
+    TRY_CAST(? AS DATE) AS backtest_end_date,
     ticker,
     TRY_CAST(qty AS DOUBLE),
     TRY_CAST(buy_date AS DATE),
@@ -113,11 +130,12 @@ WHERE TRY_CAST(sale_date AS DATE) IS NOT NULL
 
 # Convenience view: trades joined to their run's identity, so slicing by
 # strategy/channel/window needs no manual join.
+# channel / start_date / end_date / created_at are NOT re-selected from r:
+# they now live on backtest_trades itself, and selecting both sides would
+# produce duplicate column names in the view.
 _CREATE_VIEW = """
 CREATE OR REPLACE VIEW backtest_trades_enriched AS
-SELECT t.*, r.channel, r.mode,
-       r.start_date AS run_start_date, r.end_date AS run_end_date,
-       r.initial_capital, r.created_at AS run_created_at
+SELECT t.*, r.mode, r.initial_capital
 FROM backtest_trades t
 LEFT JOIN backtest_runs r USING (run_id)
 """
@@ -136,13 +154,14 @@ def load(paths, db_path: Path) -> int:
             meta = conn.execute(
                 """SELECT strategy_id,
                           json_extract_string(config_json, '$.template_name'),
-                          exit_policy_variant
+                          exit_policy_variant,
+                          channel, created_at, start_date, end_date
                    FROM backtest_runs WHERE run_id = ?""",
                 [run_id],
-            ).fetchone() or (None, None, None)
+            ).fetchone() or (None,) * 7
             conn.execute("DELETE FROM backtest_trades WHERE run_id = ?", [run_id])
             try:
-                conn.execute(_INSERT, [run_id, meta[0], meta[1], meta[2], str(path)])
+                conn.execute(_INSERT, [run_id, *meta, str(path)])
             except duckdb.Error as exc:
                 # One malformed CSV must not sink the whole load.
                 logger.warning("skipping %s — %s", path.name, exc)
