@@ -390,6 +390,54 @@ export interface TARollingWindow {
   positive_windows: number
 }
 
+export interface TATradeStats {
+  n_closed: number
+  n_wins: number
+  n_losses: number
+  win_rate_pct: number | null
+  avg_win_pct: number | null
+  avg_loss_pct: number | null
+  payoff_ratio: number | null
+  avg_hold_days: number | null
+  avg_win_hold_days: number | null
+  avg_loss_hold_days: number | null
+  best_trade_pct: number | null
+  worst_trade_pct: number | null
+  expectancy_pct: number | null
+}
+
+export interface TAEquityPoint {
+  date: string
+  index: number
+}
+
+/** pnl_pct is a FRACTION (-0.05 == -5%). Convert once, at render. */
+export interface TATrade {
+  ticker: string
+  qty: number
+  buy_date: string
+  buy_price: number
+  sale_date: string
+  sale_price: number
+  pnl_inr: number
+  pnl_pct: number
+  exit_reason: string
+  holding_days: number
+  financial_year: string
+}
+
+export interface TATradeBook {
+  run_id: string
+  total: number
+  wins: number
+  losses: number
+  net_pnl_inr: number
+  limit: number
+  offset: number
+  pnl_pct_is_fraction: boolean
+  trades: TATrade[]
+}
+
 export interface TAComparisonLump {
   run_id: string
   start_date: string
@@ -407,6 +455,9 @@ export interface TAComparisonLump {
   avg_days_held: number | null
   fy_returns: TAFyReturn[]
   rolling_returns: Record<string, TARollingWindow>
+  trade_log_path: string | null
+  trade_stats: TATradeStats
+  equity_monthly: TAEquityPoint[]
 }
 
 /** Annual-reset ("income") figures. `unverified` is currently always true —

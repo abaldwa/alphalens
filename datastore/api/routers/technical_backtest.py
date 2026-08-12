@@ -189,6 +189,77 @@ async def get_comparison() -> Dict[str, Any]:
     return data
 
 
+@router.get("/trade_book")
+async def get_trade_book(
+    run_id: str,
+    limit: int = 500,
+    offset: int = 0,
+    outcome: Optional[str] = None,
+    financial_year: Optional[str] = None,
+) -> Dict[str, Any]:
+    """One run's trades, paginated, straight from backtest_trades.
+
+    Paginated rather than whole because the store holds 1.85M rows and a single
+    run can carry 18,000 — enough to hang a browser tab. `outcome` filters to
+    "win"/"loss"; `financial_year` narrows to one FY label (e.g. "FY2019-20").
+
+    Read-only connection, opened per request and closed immediately: DuckDB is
+    single-writer and a long-lived reader here is what starved job tails during
+    the August sweep ("16 retries exhausted"). A short read is safe; a held one
+    is not.
+    """
+    import duckdb
+
+    from config.settings import BACKTEST_DUCKDB_PATH
+
+    limit = max(1, min(limit, 2000))
+    where = ["run_id = ?"]
+    params: list = [run_id]
+    if outcome == "win":
+        where.append("pnl_inr > 0")
+    elif outcome == "loss":
+        where.append("pnl_inr <= 0")
+    if financial_year:
+        where.append("financial_year = ?")
+        params.append(financial_year)
+    clause = " AND ".join(where)
+
+    try:
+        conn = duckdb.connect(str(BACKTEST_DUCKDB_PATH), read_only=True)
+    except Exception as exc:  # pragma: no cover - depends on live DB state
+        raise HTTPException(status_code=503, detail=f"backtest store unavailable: {exc}") from exc
+    try:
+        total, wins, gross = conn.execute(
+            f"SELECT COUNT(*), COUNT(*) FILTER (WHERE pnl_inr > 0), COALESCE(SUM(pnl_inr), 0) "
+            f"FROM backtest_trades WHERE {clause}", params,
+        ).fetchone()
+        if total == 0 and offset == 0:
+            raise HTTPException(status_code=404, detail=f"no trades stored for run {run_id}")
+        cols = ["ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price",
+                "pnl_inr", "pnl_pct", "exit_reason", "holding_days", "financial_year"]
+        rows = conn.execute(
+            f"SELECT {', '.join(cols)} FROM backtest_trades WHERE {clause} "
+            f"ORDER BY sale_date, ticker LIMIT ? OFFSET ?", [*params, limit, offset],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        "run_id": run_id,
+        "total": total,
+        "wins": wins,
+        "losses": total - wins,
+        "net_pnl_inr": gross,
+        "limit": limit,
+        "offset": offset,
+        # pnl_pct is stored as a FRACTION (-0.05 == -5%); the client converts
+        # once, on render. Flagged here because reading it as a percentage has
+        # already caused one wrong analysis in this project.
+        "pnl_pct_is_fraction": True,
+        "trades": [dict(zip(cols, r)) for r in rows],
+    }
+
+
 # --------------------------------------------------------- recommended strategies
 
 @router.get("/recommended_strategies")

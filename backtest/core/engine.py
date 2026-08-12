@@ -92,7 +92,14 @@ def _build_default_exit_model(max_hold_days: int = _NO_MAX_HOLD_DAYS_SENTINEL):
 
 
 EXIT_POLICY_VARIANTS = (
-    "baseline", "condition", "combined", "trailing", "atr_adaptive", "regime_conditional", "unconstrained",
+    # "risk_managed" (2026-08-12): the per-template stop/target/max-hold exits
+    # the strategy spec asked for, using RiskManagedExitPolicy so every trigger
+    # actually clears EXIT_URGENT_THRESHOLD. "baseline" nominally has the same
+    # three barriers but emits urgency bands that cannot reach the threshold for
+    # max-hold or momentum-exhaustion, so across 65 baseline runs and 108,762
+    # model-driven exits 0.00% were time exits — see risk_managed_exit_policy.py.
+    "baseline", "condition", "combined", "trailing", "atr_adaptive", "regime_conditional",
+    "risk_managed", "unconstrained",
 )
 
 # Effectively-disabled stop/target bounds for the "unconstrained" variant
@@ -137,6 +144,7 @@ def build_exit_model_for_variant(
     from systems.ml_signal_engine.models.exit.composite_exit_policy import CompositeExitPolicy
     from systems.ml_signal_engine.models.exit.condition_based_exit_policy import ConditionBasedExitPolicy
     from systems.ml_signal_engine.models.exit.per_template_exit_policy import (
+        PerTemplateExitPolicy,
         build_default_template_params,
     )
     from systems.ml_signal_engine.models.exit.regime_conditional_exit_policy import RegimeConditionalExitPolicy
@@ -169,6 +177,22 @@ def build_exit_model_for_variant(
             for name, params in build_default_template_params().items()
         }
         return RegimeConditionalExitPolicy(template_params)
+
+    if variant == "risk_managed":
+        # Per-template stop/target/max-hold, all reachable. Uses the same
+        # template params as "baseline" so the two are directly comparable:
+        # the only difference is whether the barriers can fire at all.
+        from systems.ml_signal_engine.models.exit.risk_managed_exit_policy import RiskManagedExitPolicy
+
+        template_params = {
+            name: {**params, "max_hold_days": hold_days if max_hold_days is not None else params["max_hold_days"]}
+            for name, params in build_default_template_params().items()
+        }
+        return PerTemplateExitPolicy(
+            template_params,
+            default_policy=RiskManagedExitPolicy(),
+            policy_cls=RiskManagedExitPolicy,
+        )
 
     if variant == "unconstrained":
         # 2026-07-27: control variant for the CAGR-regression investigation

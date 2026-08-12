@@ -78,6 +78,7 @@ class PerTemplateExitPolicy:
         template_params: Dict[str, Dict[str, float]],
         default_policy: Optional[RuleBasedExitPolicy] = None,
         pillar_params: Optional[Dict[str, Dict[str, float]]] = None,
+        policy_cls: type = RuleBasedExitPolicy,
     ) -> None:
         """
         Parameters
@@ -96,15 +97,24 @@ class PerTemplateExitPolicy:
             template_params but its pillar does — one level more specific
             than the global default_policy, one level less specific than
             a template match.
+        policy_cls : type, optional
+            Per-template policy class to construct. Defaults to
+            RuleBasedExitPolicy, so every existing caller is unaffected.
+            Added 2026-08-12 for the "risk_managed" exit variant, which needs
+            the same per-template routing but a policy whose triggers can
+            actually reach the portfolio's exit threshold (see
+            risk_managed_exit_policy.py). Any class accepting
+            (target_pct, stop_pct, max_hold_days) works; the router itself
+            cares only about predict_full().
         """
         self._template_policies: Dict[str, RuleBasedExitPolicy] = {
-            name: RuleBasedExitPolicy(
+            name: policy_cls(
                 target_pct=p["target_pct"], stop_pct=-abs(p["stop_pct"]), max_hold_days=int(p["max_hold_days"]),
             )
             for name, p in template_params.items()
         }
         self._pillar_policies: Dict[str, RuleBasedExitPolicy] = {
-            name: RuleBasedExitPolicy(
+            name: policy_cls(
                 target_pct=p["target_pct"], stop_pct=-abs(p["stop_pct"]), max_hold_days=int(p["max_hold_days"]),
             )
             for name, p in (pillar_params or {}).items()
