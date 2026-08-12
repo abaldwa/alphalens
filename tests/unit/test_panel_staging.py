@@ -103,6 +103,23 @@ _BATCHED_CATEGORY_COLUMNS = (
 
 
 class TestBatchStagingMatchesPerDateSequential:
+    @pytest.mark.skip(
+        reason=(
+            "QUARANTINED 2026-08-12. Two independent reasons, neither a regression:\n"
+            "(1) The subsystem is retired. features/panel_staging.py was removed from "
+            "scripts/feature_backfill.py's path after measurement showed it was net "
+            "negative (19.1s/date with staging vs 9.0s without — load_staged_panel_for_date "
+            "reopened an 18.9GB DuckDB per date). The module is left on disk deprecated, "
+            "so this asserts equivalence for a path production no longer takes.\n"
+            "(2) It was already failing before that. Confirmed 2026-08-04 by stashing all "
+            "local changes and re-running against unmodified code: it fails there too, so "
+            "the byte-identical comparison itself is unreliable rather than something the "
+            "surrounding work broke.\n"
+            "Skipped rather than deleted because the equivalence property is the right one "
+            "to keep if staging is ever revived. Delete this class along with "
+            "features/panel_staging.py when the deprecation is finished."
+        )
+    )
     def test_staged_panel_byte_identical_to_sequential_for_each_date(
         self, multi_ticker_client, monkeypatch, tmp_path
     ):

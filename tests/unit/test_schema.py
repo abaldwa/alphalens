@@ -85,6 +85,16 @@ NORMALISED_TABLE_COLUMNS = {
         # versioning audit trail — see create_normalised.py's column
         # comment and features/fundamental_source_priority.py.
         "as_of_ingested",
+        # [AS BUILT, 2026-08-08] Working-capital and forensic columns derived
+        # from NSE XBRL raw line items by step_derive_fundamentals_ratios; see
+        # create_normalised.py's block comment for each formula. The DDL gained
+        # these but this doc set was not updated with it, so the table has been
+        # failing its own column contract since — the test was right and the
+        # list was stale, which is the direction this check exists to catch.
+        "cash_conversion_cycle", "contingent_liabilities",
+        "contingent_liability_ratio", "director_remuneration",
+        "loans_to_related", "loans_to_related_parties", "off_balance_sheet_proxy",
+        "salary_to_pat", "subsidiary_count", "subsidiary_count_raw",
     },
     "shareholding": {
         "ticker", "quarter_end_date", "filing_date", "promoter_pct",

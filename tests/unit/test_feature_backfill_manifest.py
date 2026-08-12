@@ -68,11 +68,30 @@ def patched_backfill_env(monkeypatch, tmp_path):
     fake_pipeline = SimpleNamespace(step_compute_features=fake_step_compute_features)
     monkeypatch.setitem(sys.modules, "ingestion.scheduler.daily_pipeline", fake_pipeline)
 
-    fake_client_module = SimpleNamespace(DataStoreClient=MagicMock())
+    # enable/disable_bulk_ohlcv_cache are imported by feature_backfill's
+    # per-date loop (2026-08-12 bulk OHLCV window cache). The real functions are
+    # module-level because step_compute_features builds a fresh DataStoreClient
+    # per date, so the cache cannot live on the instance. This fake must expose
+    # them or the import fails outright and every test in this file errors —
+    # which is exactly what happened when the cache landed.
+    fake_client_module = SimpleNamespace(
+        DataStoreClient=MagicMock(),
+        enable_bulk_ohlcv_cache=MagicMock(return_value=0),
+        disable_bulk_ohlcv_cache=MagicMock(),
+    )
     monkeypatch.setitem(sys.modules, "datastore.client", fake_client_module)
 
     fake_cache_module = SimpleNamespace(BackfillDataCache=MagicMock())
     monkeypatch.setitem(sys.modules, "features.backfill_cache", fake_cache_module)
+
+    # main() reads LOOKBACK_CALENDAR_DAYS to size the bulk OHLCV cache window.
+    # Faked rather than imported for real: features.matrix_builder pulls a large
+    # dependency graph (it needs DELIVERY_PCT_RANGE and more from config.settings,
+    # which is itself stubbed above), and this file's contract is that nothing
+    # here touches the real DataStore, DuckDB or API. The value only has to be a
+    # positive int — the manifest behaviour under test does not depend on it.
+    fake_matrix_builder = SimpleNamespace(LOOKBACK_CALENDAR_DAYS=760)
+    monkeypatch.setitem(sys.modules, "features.matrix_builder", fake_matrix_builder)
 
     monkeypatch.setattr(fb, "logger", fb.logging.getLogger("test_feature_backfill"))
 
