@@ -1087,3 +1087,78 @@ class TestTrailingStop:
         stops = [t for t in engine.result.transactions if t["exit_reason"] == "stop"]
         assert len(stops) == 1
         assert stops[0]["sell_price"] == pytest.approx(95.0)
+
+
+class TestAnnualCapitalReset:
+    """2026-08-10 user requirement: "income mode" -- pay real YoY tax, then
+    withdraw any surplus above a fixed target back to the investor (or
+    inject a top-up on a loss year), so the strategy always starts each
+    FY at the same capital. Distinct from withhold_fy_tax (which pays tax
+    but lets the capital keep compounding)."""
+
+    def _growth_panel(self, n_years=6):
+        dates = pd.bdate_range("2016-04-01", periods=n_years * 252)
+        drift = 1 + 0.0006 * (1 + 0.3 * (pd.Series(range(len(dates))).values % 50 - 25) / 25)
+        prices = 100.0 * pd.Series(drift).cumprod().values
+        return pd.DataFrame({"A": prices, "B": prices * 0.97}, index=dates)
+
+    def _run(self, target=1_000_000.0):
+        panel = self._growth_panel()
+        yearly_universes = {str(panel.index[0].date()): ["A", "B"]}
+        engine = mb.MomentumBacktester(
+            price_panel=panel, yearly_universes=yearly_universes, lookback_days=20,
+            rebalance_every_n_trading_days=21, starting_capital=1_000_000.0, top_n=2,
+            annual_capital_reset_target=target,
+        )
+        return engine.run()
+
+    def test_disabled_by_default_no_capital_resets(self):
+        panel = self._growth_panel()
+        yearly_universes = {str(panel.index[0].date()): ["A", "B"]}
+        result = mb.MomentumBacktester(
+            price_panel=panel, yearly_universes=yearly_universes, lookback_days=20,
+            rebalance_every_n_trading_days=21, starting_capital=1_000_000.0, top_n=2,
+        ).run()
+        assert result.capital_resets == []
+
+    def test_growth_year_records_a_withdrawal_and_rebases_capital(self):
+        result = self._run()
+        assert len(result.capital_resets) >= 1
+        withdrawal_years = [c for c in result.capital_resets if c["withdrawal"] > 0]
+        assert withdrawal_years, "expected at least one FY with a surplus to withdraw"
+        for c in withdrawal_years:
+            # withdrawing the surplus should land pre_reset_value - withdrawal
+            # back near the 1,000,000 target (net of any tax already paid).
+            assert c["pre_reset_value"] - c["withdrawal"] == pytest.approx(1_000_000.0, rel=0.02)
+
+    def test_ending_value_stays_near_target_not_fully_compounded(self):
+        # With everything above target withdrawn every year, the terminal
+        # value should be close to the target, NOT the multi-year compounded
+        # value a reinvested run would reach.
+        result = self._run()
+        assert result.ending_value == pytest.approx(1_000_000.0, rel=0.15)
+
+    def test_total_withdrawn_plus_ending_value_exceeds_starting_capital(self):
+        # Sanity: for a genuinely profitable strategy, cash withdrawn over
+        # the years plus what's left in the pot should exceed what went in
+        # (starting capital + any injected top-ups) -- i.e. real profit was
+        # generated, not just capital shuffled around.
+        result = self._run()
+        total_withdrawn = sum(c["withdrawal"] for c in result.capital_resets)
+        total_injected = sum(c["injection"] for c in result.capital_resets)
+        assert (total_withdrawn + result.ending_value) > (1_000_000.0 + total_injected)
+
+    def test_loss_year_injects_top_up_not_withdrawal(self):
+        dates = pd.bdate_range("2016-04-01", periods=300)
+        declining = 100.0 * (0.999 ** pd.Series(range(len(dates))).values)
+        panel = pd.DataFrame({"A": declining, "B": declining * 0.98}, index=dates)
+        yearly_universes = {str(panel.index[0].date()): ["A", "B"]}
+        result = mb.MomentumBacktester(
+            price_panel=panel, yearly_universes=yearly_universes, lookback_days=20,
+            rebalance_every_n_trading_days=21, starting_capital=1_000_000.0, top_n=2,
+            annual_capital_reset_target=1_000_000.0,
+        ).run()
+        for c in result.capital_resets:
+            if c["pre_reset_value"] < 1_000_000.0:
+                assert c["injection"] > 0
+                assert c["withdrawal"] == 0.0
