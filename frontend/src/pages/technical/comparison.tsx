@@ -43,6 +43,26 @@ const SERIES_COLOURS = ['#3f56c9', '#0f7a52', '#b0344a', '#96660b', '#7a3fb0', '
 
 const key = (s: TAComparisonStrategy) => `${s.template}·${s.exit_variant}`
 
+// Profit take-out table. Amounts are right-aligned so digits line up for
+// scanning; the losing-FY count is centred because it is a small ratio, not a
+// magnitude to compare down the column.
+type IncomeSortKey =
+  | 'template' | 'regime' | 'withdrawn_pretax_total' | 'withdrawn_post_tax_total'
+  | 'tax_paid_total' | 'topped_up_total' | 'net_extracted' | 'losing_years'
+
+const INCOME_COLUMNS: { key: IncomeSortKey; label: string; align: 'left' | 'right' | 'center' }[] = [
+  { key: 'template', label: 'Strategy', align: 'left' },
+  { key: 'regime', label: 'Regime', align: 'left' },
+  { key: 'withdrawn_pretax_total', label: 'Withdrawn pre-tax', align: 'right' },
+  { key: 'withdrawn_post_tax_total', label: 'Withdrawn post-tax', align: 'right' },
+  { key: 'tax_paid_total', label: 'Tax', align: 'right' },
+  { key: 'topped_up_total', label: 'Topped up', align: 'right' },
+  { key: 'net_extracted', label: 'Net extracted', align: 'right' },
+  { key: 'losing_years', label: 'Losing FYs', align: 'center' },
+]
+
+const ALIGN_CLASS = { left: 'text-left', right: 'text-right', center: 'text-center' } as const
+
 function pct(v: number | null | undefined, d = 2) {
   return typeof v === 'number' ? `${v.toFixed(d)}%` : '—'
 }
@@ -64,6 +84,9 @@ export function TechnicalComparisonPage() {
   const [tradeRunKey, setTradeRunKey] = useState<string>('')
   const [tradeOutcome, setTradeOutcome] = useState<string>('')
   const [tradePage, setTradePage] = useState(0)
+  const [incomeSort, setIncomeSort] = useState<{ key: IncomeSortKey; dir: 'asc' | 'desc' }>(
+    { key: 'net_extracted', dir: 'desc' },
+  )
 
   const report = useQuery({
     queryKey: ['technical-comparison'],
@@ -147,6 +170,39 @@ export function TechnicalComparisonPage() {
     })
     return Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)))
   }, [compareSeries])
+
+  // ----------------------------------------------------------------- income
+  // Flattened first (one row per strategy x regime) so sorting is over the rows
+  // actually rendered — sorting the nested structure would only order
+  // strategies and leave each strategy's two regimes in map order.
+  const incomeRows = useMemo(
+    () => filtered.flatMap((s) =>
+      Object.entries(s.annual_reset ?? {}).map(([regime, ar]) => ({
+        rowKey: `${key(s)}-${regime}`, template: s.template, regime, ...ar,
+      })),
+    ),
+    [filtered],
+  )
+  const sortedIncomeRows = useMemo(() => {
+    const { key: k, dir } = incomeSort
+    return [...incomeRows].sort((a, b) => {
+      const av = a[k as keyof typeof a]
+      const bv = b[k as keyof typeof b]
+      const cmp = typeof av === 'string' && typeof bv === 'string'
+        ? av.localeCompare(bv)
+        : Number(av ?? 0) - Number(bv ?? 0)
+      return dir === 'asc' ? cmp : -cmp
+    })
+  }, [incomeRows, incomeSort])
+
+  const toggleIncomeSort = (k: IncomeSortKey) =>
+    setIncomeSort((prev) => ({
+      key: k,
+      // New column starts descending for amounts (largest first is what you
+      // want from a leaderboard) and ascending for the text columns.
+      dir: prev.key === k ? (prev.dir === 'asc' ? 'desc' : 'asc')
+        : (k === 'template' || k === 'regime') ? 'asc' : 'desc',
+    }))
 
   const toggleCompare = (k: string) =>
     setCompareKeys((prev) => (prev.includes(k) ? prev.filter((x) => x !== k)
@@ -546,28 +602,40 @@ export function TechnicalComparisonPage() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm tabular-nums">
                     <thead>
-                      <tr className="border-b text-left text-muted-foreground">
-                        <th className="py-1 pr-3">Strategy</th><th className="py-1 pr-3">Regime</th>
-                        <th className="py-1 pr-3">Withdrawn pre-tax</th><th className="py-1 pr-3">Withdrawn post-tax</th>
-                        <th className="py-1 pr-3">Tax</th><th className="py-1 pr-3">Topped up</th>
-                        <th className="py-1 pr-3">Net extracted</th><th className="py-1">Losing FYs</th>
+                      <tr className="border-b text-muted-foreground">
+                        {INCOME_COLUMNS.map((col) => {
+                          const active = incomeSort.key === col.key
+                          return (
+                            <th key={col.key} className={`py-1 pr-3 ${ALIGN_CLASS[col.align]}`}
+                                aria-sort={active ? (incomeSort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                              <button
+                                type="button" onClick={() => toggleIncomeSort(col.key)}
+                                className={`inline-flex items-center gap-1 hover:text-foreground ${
+                                  active ? 'font-semibold text-foreground' : ''}`}
+                              >
+                                {col.label}
+                                <span aria-hidden="true" className="text-xs">
+                                  {active ? (incomeSort.dir === 'asc' ? '▲' : '▼') : '↕'}
+                                </span>
+                              </button>
+                            </th>
+                          )
+                        })}
                       </tr>
                     </thead>
                     <tbody>
-                      {filtered.flatMap((s) =>
-                        Object.entries(s.annual_reset ?? {}).map(([regime, ar]) => (
-                          <tr key={`${key(s)}-${regime}`} className="border-b last:border-0">
-                            <td className="py-1 pr-3 font-medium">{s.template}</td>
-                            <td className="py-1 pr-3 text-muted-foreground">{regime}</td>
-                            <td className="py-1 pr-3">{inr(ar.withdrawn_pretax_total)}</td>
-                            <td className="py-1 pr-3">{inr(ar.withdrawn_post_tax_total)}</td>
-                            <td className="py-1 pr-3 text-rose-600 dark:text-rose-400">{inr(ar.tax_paid_total)}</td>
-                            <td className="py-1 pr-3">{inr(ar.topped_up_total)}</td>
-                            <td className="py-1 pr-3 font-medium text-emerald-600 dark:text-emerald-400">{inr(ar.net_extracted)}</td>
-                            <td className="py-1">{ar.losing_years} / {ar.n_financial_years}</td>
-                          </tr>
-                        )),
-                      )}
+                      {sortedIncomeRows.map((r) => (
+                        <tr key={r.rowKey} className="border-b last:border-0">
+                          <td className="py-1 pr-3 font-medium">{r.template}</td>
+                          <td className="py-1 pr-3 text-muted-foreground">{r.regime}</td>
+                          <td className="py-1 pr-3 text-right">{inr(r.withdrawn_pretax_total)}</td>
+                          <td className="py-1 pr-3 text-right">{inr(r.withdrawn_post_tax_total)}</td>
+                          <td className="py-1 pr-3 text-right text-rose-600 dark:text-rose-400">{inr(r.tax_paid_total)}</td>
+                          <td className="py-1 pr-3 text-right">{inr(r.topped_up_total)}</td>
+                          <td className="py-1 pr-3 text-right font-medium text-emerald-600 dark:text-emerald-400">{inr(r.net_extracted)}</td>
+                          <td className="py-1 text-center">{r.losing_years} / {r.n_financial_years}</td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
