@@ -12,6 +12,7 @@ import { TechnicalDeepDivePage } from '@/pages/technical/deep_dive'
 import { TechnicalPortfolioPage } from '@/pages/technical/portfolio'
 import { TechnicalExperimentationPage } from '@/pages/technical/experimentation'
 import { TechnicalRecommendedStrategiesPage } from '@/pages/technical/recommended-strategies'
+import { TechnicalComparisonPage } from '@/pages/technical/comparison'
 import { TechnicalBatchBacktestPage } from '@/pages/technical/batch-backtest'
 
 import { FundamentalPage } from '@/pages/fundamental/FundamentalPage'
@@ -89,6 +90,7 @@ export const router = createBrowserRouter([
   { path: '/technical-portfolio', element: <TechnicalPortfolioPage /> },
   { path: '/technical-experimentation', element: <TechnicalExperimentationPage /> },
   { path: '/technical-recommended-strategies', element: <TechnicalRecommendedStrategiesPage /> },
+  { path: '/technical-comparison', element: <TechnicalComparisonPage /> },
   { path: '/technical-batch-backtest', element: <TechnicalBatchBacktestPage /> },
 
   { path: '/fundamental', element: <FundamentalPage /> },

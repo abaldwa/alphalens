@@ -154,6 +154,41 @@ async def get_filter_overlays_trigger_status(job_id: str) -> TriggerStatusRespon
     return _trigger_status(job_id, "technical_filter_overlays_*.json")
 
 
+# ------------------------------------------------------------ long-history comparison
+
+# Written by scripts/build_ta_comparison_report.py. Note this one lives in
+# backtest/reports/ rather than backtest/reports/technical/ (where the three
+# sweep reports above live), because it is built from the orchestrator run
+# reports that the queue writes there — hence its own path rather than
+# _read_latest_report.
+_COMPARISON_REPORT = Path(__file__).resolve().parents[3] / "backtest" / "reports" / "ta_comparison_2009.json"
+
+
+@router.get("/comparison")
+async def get_comparison() -> Dict[str, Any]:
+    """The 2009-2026 Technical comparison dataset: every template x exit variant
+    with CAGR/Sharpe/Sortino/Calmar, per-FY year-on-year returns, rolling
+    2/3/4/5-year return distributions, and the annual-reset (income) ledger for
+    both LTCG regimes.
+
+    CONSUMERS MUST HONOUR `measure_3_status`. The annual-reset figures are
+    provisional: FY tax is reported but not actually debited from the portfolio,
+    so equity compounds tax-free (see backtest/ta_comparison_report.py). Every
+    annual_reset entry additionally carries `unverified: true` so that a client
+    reading past the top-level flag still cannot render them as final by
+    accident. The lump measures carry no such caveat.
+    """
+    if not _COMPARISON_REPORT.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=("No comparison report yet — run scripts/build_ta_comparison_report.py "
+                    "'backtest/reports/orchestrator_ta2009_*_job*.json'"),
+        )
+    data = json.loads(_COMPARISON_REPORT.read_text())
+    data["report_file"] = _COMPARISON_REPORT.name
+    return data
+
+
 # --------------------------------------------------------- recommended strategies
 
 @router.get("/recommended_strategies")

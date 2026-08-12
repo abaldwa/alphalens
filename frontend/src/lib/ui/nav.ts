@@ -63,6 +63,7 @@ export const NAV_SECTIONS: NavSection[] = [
         href: '/technical-recommended-strategies',
       },
       { id: 'batch_backtest', label: 'Batch Backtest', href: '/technical-batch-backtest' },
+      { id: 'comparison', label: 'Strategy Comparison', href: '/technical-comparison' },
       {
         id: 'indicators',
         label: 'Indicators',

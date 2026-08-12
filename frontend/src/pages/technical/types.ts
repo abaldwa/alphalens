@@ -369,3 +369,75 @@ export interface TATriggerStatus {
   log_tail: string | null
   report_file: string | null
 }
+
+// --------------------------------------------------- 2009-2026 comparison
+// backtest/ta_comparison_report.py -> /api/v1/technical_backtest/comparison
+
+export interface TAFyReturn {
+  fy_end: string
+  fy_label: string
+  opening_equity: number
+  closing_equity: number
+  return_pct: number | null
+  partial: boolean
+}
+
+export interface TARollingWindow {
+  n_windows: number
+  best_pct: number
+  median_pct: number
+  worst_pct: number
+  positive_windows: number
+}
+
+export interface TAComparisonLump {
+  run_id: string
+  start_date: string
+  end_date: string
+  cagr_pct: number
+  benchmark_cagr_pct: number
+  sharpe: number | null
+  sortino: number | null
+  calmar: number | null
+  max_drawdown_pct: number
+  total_trades: number | null
+  win_rate_pct: number
+  profit_factor: number | null
+  final_capital: number | null
+  avg_days_held: number | null
+  fy_returns: TAFyReturn[]
+  rolling_returns: Record<string, TARollingWindow>
+}
+
+/** Annual-reset ("income") figures. `unverified` is currently always true —
+ *  see measure_3_status on the report. Render the caveat, never bare numbers. */
+export interface TAComparisonAnnualReset {
+  run_id: string
+  ltcg_rate: number | null
+  ltcg_exemption: number | null
+  n_financial_years: number
+  withdrawn_pretax_total: number
+  withdrawn_post_tax_total: number
+  tax_paid_total: number
+  topped_up_total: number
+  net_extracted: number
+  losing_years: number
+  unverified: boolean
+  unverified_reason: string
+}
+
+export interface TAComparisonStrategy {
+  template: string
+  exit_variant: string
+  lump: TAComparisonLump | null
+  annual_reset: Record<string, TAComparisonAnnualReset>
+}
+
+export interface TAComparisonReport {
+  n_runs: number
+  n_strategies: number
+  rolling_windows_years: number[]
+  measure_3_status: { status: string; reason: string; affects: string }
+  strategies: TAComparisonStrategy[]
+  report_file?: string
+}
