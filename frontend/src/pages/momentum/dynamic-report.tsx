@@ -543,6 +543,53 @@ export function MomentumDynamicReportPage() {
     [],
   )
 
+  // 2026-08-10 user request: "income mode" -- start each strategy at 10L,
+  // pay real YoY tax, withdraw any surplus back to the investor each FY
+  // (or top up a loss year), so capital always resets to the same base.
+  // Reuses recommendedRows for the same reason rollingColumns does.
+  const incomeColumns = useMemo<ColumnDef<MomentumDynamicReportVariant, unknown>[]>(
+    () => [
+      {
+        id: 'universe',
+        accessorFn: (row) => row.rank_start,
+        header: 'Universe (rank)',
+        cell: (i) => bandLabel(i.row.original.rank_start, i.row.original.rank_end),
+      },
+      { accessorKey: 'strategy', header: 'Category' },
+      {
+        accessorKey: 'income_total_withdrawn',
+        header: 'Total Withdrawn',
+        meta: { align: 'right' },
+        cell: (i) => fmtInr(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'income_total_injected',
+        header: 'Total Injected (top-ups)',
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => fmtInr(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'income_avg_annual_yield_pct',
+        header: 'Avg Annual Yield',
+        meta: { align: 'right' },
+        cell: (i) => fmtPctPoints(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'income_years_survived_pct',
+        header: 'Years Survived (no top-up)',
+        meta: { align: 'right' },
+        cell: (i) => fmtPctPoints(i.getValue<number | null>()),
+      },
+      {
+        accessorKey: 'income_n_years',
+        header: 'FYs',
+        meta: { align: 'right', priority: 'low' },
+        cell: (i) => i.getValue<number | null>() ?? '—',
+      },
+    ],
+    [],
+  )
+
   const yoyColumns = useMemo<ColumnDef<MomentumDynamicReportYoyRow, unknown>[]>(
     () => [
       {
@@ -747,6 +794,26 @@ export function MomentumDynamicReportPage() {
             data={yoyRows}
             isLoading={report.isLoading}
             emptyMessage="No year-on-year rows yet."
+          />
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6" id="income-mode-section">
+        <CardHeader>
+          <CardTitle>Income Mode (Annual Capital Reset)</CardTitle>
+          <CardDescription>
+            Each strategy starts every fiscal year at ₹10,00,000. After real YoY tax is paid, any surplus is
+            withdrawn as cash back to the investor; a loss year is topped back up to ₹10L instead. "Total Withdrawn"
+            is real lifetime cash paid out on this fixed base — not a growth/reinvestment figure, so it isn't
+            comparable to CAGR above. "Years Survived" is the % of fiscal years that didn't need a top-up.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            columns={incomeColumns}
+            data={recommendedRows}
+            isLoading={report.isLoading}
+            emptyMessage="No income-mode data yet — run the sweep above."
           />
         </CardContent>
       </Card>

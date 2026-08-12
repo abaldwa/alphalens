@@ -848,6 +848,11 @@ class DynamicReportVariant(BaseModel):
     rolling_4y_median_cagr: Optional[float] = None
     rolling_4y_max_cagr: Optional[float] = None
     rolling_4y_n_windows: Optional[int] = None
+    income_total_withdrawn: Optional[float] = None
+    income_total_injected: Optional[float] = None
+    income_avg_annual_yield_pct: Optional[float] = None
+    income_years_survived_pct: Optional[float] = None
+    income_n_years: Optional[int] = None
     value_10L: Optional[float] = None
     value_10k_sip: Optional[float] = None
     sip_cagr: Optional[float] = None

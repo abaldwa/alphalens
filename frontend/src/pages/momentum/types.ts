@@ -144,6 +144,11 @@ export interface MomentumDynamicReportVariant {
   rolling_4y_median_cagr: number | null
   rolling_4y_max_cagr: number | null
   rolling_4y_n_windows: number | null
+  income_total_withdrawn: number | null
+  income_total_injected: number | null
+  income_avg_annual_yield_pct: number | null
+  income_years_survived_pct: number | null
+  income_n_years: number | null
   value_10L: number | null
   value_10k_sip: number | null
   sip_cagr: number | null
