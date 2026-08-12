@@ -302,6 +302,44 @@ def rolling_window_summary(equity_curve: List[Dict], window_years: int) -> Dict[
     }
 
 
+def income_mode_summary(capital_resets: List[Dict], target_capital: float) -> Dict[str, Optional[float]]:
+    """Headline figures for MomentumBacktester's annual_capital_reset_target
+    ("income mode") -- 2026-08-10 user request. capital_resets is
+    MomentumBacktestResult.capital_resets: [{"date","fy_label",
+    "pre_reset_value","withdrawal","injection"}], one entry per FY boundary.
+
+    total_withdrawn : lifetime sum of cash actually paid out to the investor
+        (surplus-above-target years only -- injections are top-ups, not
+        withdrawals, and don't net against this).
+    total_injected : lifetime sum of top-ups needed on loss years -- a
+        measure of how often/how much the strategy needed replenishing.
+    avg_annual_yield_pct : mean over every FY of (withdrawal - injection) /
+        target_capital, as a percentage -- a loss year (injection, no
+        withdrawal) pulls this down, consistent with "average annual income
+        yield" rather than only counting the good years.
+    years_survived_pct : percentage of FYs that ended with a withdrawal
+        (stayed above target without needing a top-up) -- a sustainability/
+        reliability measure, distinct from the yield figure.
+    """
+    n_years = len(capital_resets)
+    if n_years == 0 or target_capital <= 0:
+        return {
+            "total_withdrawn": None, "total_injected": None,
+            "avg_annual_yield_pct": None, "years_survived_pct": None, "n_years": 0,
+        }
+    total_withdrawn = sum(c["withdrawal"] for c in capital_resets)
+    total_injected = sum(c["injection"] for c in capital_resets)
+    net_per_year = [(c["withdrawal"] - c["injection"]) / target_capital * 100.0 for c in capital_resets]
+    n_survived = sum(1 for c in capital_resets if c["withdrawal"] > 0)
+    return {
+        "total_withdrawn": total_withdrawn,
+        "total_injected": total_injected,
+        "avg_annual_yield_pct": sum(net_per_year) / n_years,
+        "years_survived_pct": n_survived / n_years * 100.0,
+        "n_years": n_years,
+    }
+
+
 def return_population_zscores(
     returns_pct: List[Optional[float]], outlier_threshold: float = 3.0,
 ) -> Dict:

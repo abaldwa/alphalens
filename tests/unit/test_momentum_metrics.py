@@ -2,7 +2,7 @@
 
 import pytest
 
-from backtest.momentum_metrics import cagr, churn_factor, total_return, xirr
+from backtest.momentum_metrics import cagr, churn_factor, income_mode_summary, total_return, xirr
 
 
 class TestXirr:
@@ -82,3 +82,32 @@ class TestChurnFactor:
     def test_empty_events(self):
         result = churn_factor([])
         assert result == {"per_rebalance": [], "avg_transactions_per_year": 0.0}
+
+
+class TestIncomeModeSummary:
+    def test_empty_resets_returns_none_fields(self):
+        result = income_mode_summary([], 1_000_000.0)
+        assert result["n_years"] == 0
+        assert result["total_withdrawn"] is None
+
+    def test_all_withdrawal_years_100pct_survived(self):
+        resets = [
+            {"withdrawal": 100_000.0, "injection": 0.0},
+            {"withdrawal": 200_000.0, "injection": 0.0},
+        ]
+        result = income_mode_summary(resets, 1_000_000.0)
+        assert result["total_withdrawn"] == pytest.approx(300_000.0)
+        assert result["total_injected"] == pytest.approx(0.0)
+        assert result["years_survived_pct"] == pytest.approx(100.0)
+        assert result["avg_annual_yield_pct"] == pytest.approx(15.0)
+
+    def test_loss_year_pulls_down_yield_and_survival(self):
+        resets = [
+            {"withdrawal": 100_000.0, "injection": 0.0},
+            {"withdrawal": 0.0, "injection": 50_000.0},
+        ]
+        result = income_mode_summary(resets, 1_000_000.0)
+        assert result["total_withdrawn"] == pytest.approx(100_000.0)
+        assert result["total_injected"] == pytest.approx(50_000.0)
+        assert result["years_survived_pct"] == pytest.approx(50.0)
+        assert result["avg_annual_yield_pct"] == pytest.approx(2.5)
