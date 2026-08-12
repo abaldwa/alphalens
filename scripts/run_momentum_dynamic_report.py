@@ -80,6 +80,7 @@ from backtest.momentum_metrics import (
     avg_winner_return_pct,
     cagr,
     churn_factor,
+    income_mode_summary,
     rolling_window_summary,
     sharpe_sortino_calmar,
     win_rate,
@@ -178,6 +179,19 @@ def _compute_variant(args):
             starting_capital=SIP_STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
             top_n=top_n, sip_amount=SIP_AMOUNT, momentum_panel=momentum_panel,
         )
+        # 2026-08-10 user requirement: "income mode" -- a THIRD full engine
+        # pass that pays real YoY tax then withdraws any surplus above
+        # STARTING_CAPITAL back to the investor each FY (or tops up a loss
+        # year), so the strategy always starts every FY at the same base
+        # capital. See features.momentum_strategy / backtest.momentum_metrics
+        # ::income_mode_summary.
+        income_result = _run_variant(
+            strategy_kwargs, price_panel, yearly_universes, lookback_days, rebalance_days,
+            starting_capital=STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
+            top_n=top_n, momentum_panel=momentum_panel,
+            annual_capital_reset_target=STARTING_CAPITAL,
+        )
+        income_summary = income_mode_summary(income_result.capital_resets, STARTING_CAPITAL)
 
         churn = churn_factor(result.rebalance_events)
         closed = [t for t in result.transactions if t["status"] == "closed"]
@@ -248,6 +262,12 @@ def _compute_variant(args):
             "rolling_4y_median_cagr": rolling_4y["median_cagr_pct"],
             "rolling_4y_max_cagr": rolling_4y["max_cagr_pct"],
             "rolling_4y_n_windows": rolling_4y["n_windows"],
+            "income_total_withdrawn": income_summary["total_withdrawn"],
+            "income_total_injected": income_summary["total_injected"],
+            "income_avg_annual_yield_pct": income_summary["avg_annual_yield_pct"],
+            "income_years_survived_pct": income_summary["years_survived_pct"],
+            "income_n_years": income_summary["n_years"],
+            "income_capital_resets": income_result.capital_resets,
             "value_10L": result.ending_value,
             "value_10k_sip": sip_result.ending_value,
             "sip_cagr": sip_cagr,
