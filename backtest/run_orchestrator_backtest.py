@@ -87,6 +87,7 @@ from features.momentum_universe import (
     yearly_rank_lookup_from_rankings,
 )
 from config.universe import get_tickers, get_top_adtv_tickers
+from config.backtest_exclusions import apply_exclusions
 from datastore.api.db import get_duckdb_connection
 from backtest.export_trade_book import export_trade_book
 from datastore.client import DataStoreClient
@@ -159,6 +160,12 @@ def _fetch_real_ohlcv(
     """
     client = DataStoreClient()
     tickers = get_top_adtv_tickers(max_tickers) if max_tickers else get_tickers()
+    # [2026-08-12] Withhold any ticker whose price history has been reviewed
+    # and judged unverifiable (config/backtest_exclusions.py). Empty by
+    # default, so this is a no-op unless someone has deliberately populated
+    # the list; applied here rather than in config/universe.py so ingestion
+    # and feature computation still cover these tickers in full.
+    tickers = apply_exclusions(tickers, context="backtest OHLCV")
     ticker_set = set(tickers)
 
     if ohlcv_snapshot_dir:
@@ -470,6 +477,7 @@ def _run_immediate(
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
     bear_drawdown_pct,
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
+    *, annual_reset_spec=None,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -621,6 +629,9 @@ def _run_immediate(
             run_id=run_id, channel=channel, strategy_id=strategy_id, horizon_bucket=horizon,
             mode="backtest", universe_spec=universe_spec, start_date=start_date, end_date=end_date,
             capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
+            annual_reset_ltcg_rate=(annual_reset_spec or {}).get("ltcg_rate"),
+            annual_reset_ltcg_exemption=(annual_reset_spec or {}).get("ltcg_exemption"),
+            annual_reset_regime_label=(annual_reset_spec or {}).get("regime_label"),
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
                 "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
@@ -752,6 +763,7 @@ def _run_deferred(
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
     bear_drawdown_pct,
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
+    *, annual_reset_spec=None,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -862,6 +874,9 @@ def _run_deferred(
         run_id=run_id, channel=channel, strategy_id=strategy_id, horizon_bucket=horizon,
         mode="backtest", universe_spec=universe_spec, start_date=start_date, end_date=end_date,
         capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
+        annual_reset_ltcg_rate=(annual_reset_spec or {}).get("ltcg_rate"),
+        annual_reset_ltcg_exemption=(annual_reset_spec or {}).get("ltcg_exemption"),
+        annual_reset_regime_label=(annual_reset_spec or {}).get("regime_label"),
         config={
             "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
             "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
@@ -975,6 +990,11 @@ def run_orchestrator_backtest(
     prefetch_feature_parquets: bool = False,
     rank_band_id: Optional[int] = None,
     ohlcv_snapshot_dir: Optional[str] = None,
+    # capital_mode="annual_reset" only — the LTCG regime is a run-level input
+    # because it changes the FY withdrawal and therefore the trades taken.
+    annual_reset_ltcg_rate: Optional[float] = None,
+    annual_reset_ltcg_exemption: Optional[float] = None,
+    annual_reset_regime_label: Optional[str] = None,
 ) -> dict:
     """
     ohlcv_snapshot_dir : (2026-08-05, FeatureBacklog A73 remaining gap —
@@ -1077,6 +1097,17 @@ def run_orchestrator_backtest(
     # across the short final save (_run_deferred, defer_db_writes=True —
     # 2026-08-02 Technical sweep parallelization, see this function's
     # docstring above).
+    # capital_mode="annual_reset" (2026-08-12): bundle the LTCG regime into one
+    # optional spec rather than threading three more positionals through two
+    # already-long signatures. None for every other capital mode.
+    annual_reset_spec = None
+    if capital_mode == "annual_reset":
+        annual_reset_spec = {
+            "ltcg_rate": annual_reset_ltcg_rate,
+            "ltcg_exemption": annual_reset_ltcg_exemption,
+            "regime_label": annual_reset_regime_label,
+        }
+
     run_fn = _run_deferred if defer_db_writes else _run_immediate
     result = run_fn(
         channel, start_date, end_date, run_id, strategy_id, horizon, descriptor, run_date,
@@ -1086,6 +1117,7 @@ def run_orchestrator_backtest(
         quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
         bear_drawdown_pct,
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
+        annual_reset_spec=annual_reset_spec,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1117,7 +1149,23 @@ def main() -> None:
     )
     parser.add_argument("--start-date", required=True, type=date_type.fromisoformat)
     parser.add_argument("--end-date", required=True, type=date_type.fromisoformat)
-    parser.add_argument("--capital-mode", default="lump", choices=["lump", "sip"])
+    parser.add_argument("--capital-mode", default="lump", choices=["lump", "sip", "annual_reset"])
+    # capital_mode="annual_reset" only (2026-08-12). Unlike the lump run — where
+    # the report applies whichever LTCG regime it likes to a single trade book —
+    # the regime here changes the FY withdrawal, hence next year's capital, hence
+    # which trades execute. One run per regime; the engine refuses to guess.
+    parser.add_argument(
+        "--annual-reset-ltcg-rate", type=float, default=None,
+        help="LTCG rate for the annual-reset withdrawal, e.g. 0.10 or 0.125. Required for --capital-mode annual_reset.",
+    )
+    parser.add_argument(
+        "--annual-reset-ltcg-exemption", type=float, default=None,
+        help="Per-FY LTCG exemption in INR, e.g. 100000 or 125000. Applied to the year's NET long-term gain.",
+    )
+    parser.add_argument(
+        "--annual-reset-regime-label", default=None,
+        help="Regime name stamped on the run and its FY ledger, e.g. ltcg_10pct_1L. Required for annual_reset.",
+    )
     parser.add_argument("--initial-capital", type=float, default=1_000_000.0)
     parser.add_argument("--sip-amount", type=float, default=None)
     parser.add_argument("--universe-spec", default="curated")
@@ -1288,6 +1336,9 @@ def main() -> None:
         bear_drawdown_pct=args.bear_drawdown_pct,
         combo_templates=args.combo_templates.split(",") if args.combo_templates else None,
         defer_db_writes=args.defer_db_writes,
+        annual_reset_ltcg_rate=args.annual_reset_ltcg_rate,
+        annual_reset_ltcg_exemption=args.annual_reset_ltcg_exemption,
+        annual_reset_regime_label=args.annual_reset_regime_label,
         precomputed_matches_dir=args.precomputed_matches_dir,
         prefetch_feature_parquets=args.prefetch_feature_parquets,
         rank_band_id=args.rank_band_id,

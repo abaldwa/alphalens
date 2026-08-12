@@ -161,6 +161,7 @@ class MomentumBacktestResult:
     total_contributed: float = 0.0  # starting_capital + every SIP contribution (== starting_capital if no SIP)
     total_signals: int = 0  # sum of |target_set| across every rebalance — post-filter buy signals generated
     tax_payments: List[Dict] = field(default_factory=list)  # [{"date","fy_label","tax_due","tax_paid"}], only if withhold_fy_tax=True
+    capital_resets: List[Dict] = field(default_factory=list)  # [{"date","fy_label","pre_reset_value","withdrawal","injection"}], only if annual_capital_reset_target is set
 
 
 class MomentumBacktester:
@@ -214,6 +215,7 @@ class MomentumBacktester:
         per_ticker_hmm_regime: Optional[Dict[str, pd.DataFrame]] = None,
         disable_hmm_regimes: Optional[Set[float]] = None,
         withhold_fy_tax: bool = False,
+        annual_capital_reset_target: Optional[float] = None,
     ):
         """
         price_panel : wide close-price DataFrame (index=date, columns=ticker),
@@ -467,6 +469,14 @@ class MomentumBacktester:
         self.per_ticker_hmm_regime = per_ticker_hmm_regime or {}
         self.disable_hmm_regimes = disable_hmm_regimes or {0.0}  # default: bearish only
         self.withhold_fy_tax = withhold_fy_tax
+        # 2026-08-10 user requirement: "income mode" -- at each FY boundary,
+        # after paying real tax (same mechanism as withhold_fy_tax), rebase
+        # the strategy's capital back to this fixed target -- withdrawing
+        # any surplus as real cash (force-selling if the cash on hand isn't
+        # enough) or injecting a top-up if a loss year left it short. Implies
+        # withhold_fy_tax's tax-payment behavior even if that flag is False,
+        # since paying tax is the first step of every reset.
+        self.annual_capital_reset_target = annual_capital_reset_target
 
         self.cash = starting_capital
         self.positions: Dict[str, Position] = {}
@@ -724,7 +734,8 @@ class MomentumBacktester:
         # rebalance genuinely redistributes less capital -- the compounding
         # drag of paying tax annually is a real engine effect, not a
         # post-hoc adjustment.
-        fy_boundaries = fy_end_dates_through(trading_days[0], trading_days[-1]) if self.withhold_fy_tax else []
+        _fy_mechanics_active = self.withhold_fy_tax or self.annual_capital_reset_target is not None
+        fy_boundaries = fy_end_dates_through(trading_days[0], trading_days[-1]) if _fy_mechanics_active else []
         fy_boundary_idx = 0
 
         # When trailing_stop_pct is active, iterate every trading day so
@@ -845,20 +856,21 @@ class MomentumBacktester:
             prices = self._price_row(date)
             date_str = str(date.date())
 
-            if self.withhold_fy_tax:
+            if _fy_mechanics_active:
                 while fy_boundary_idx < len(fy_boundaries) and fy_boundaries[fy_boundary_idx] <= date:
                     fy_end = fy_boundaries[fy_boundary_idx]
                     fy_start = pd.Timestamp(year=fy_end.year - 1, month=4, day=1)
                     fy_start_str, fy_end_str = str(fy_start.date()), str(fy_end.date())
+                    fy_label = f"FY{fy_start.year % 100:02d}-{fy_end.year % 100:02d}"
                     closed_this_fy = [
                         t for t in result.transactions
                         if t["status"] == "closed" and fy_start_str <= t["sell_date"] <= fy_end_str
                     ]
                     tax_due = compute_fy_net_tax(closed_this_fy)
+                    sold_this_boundary: Set[str] = set()
                     if tax_due > 0:
-                        sold_for_tax: Set[str] = set()
                         while tax_due - self.cash > 0:
-                            candidate = select_forced_sell_for_shortfall(self.positions, prices, exclude=sold_for_tax)
+                            candidate = select_forced_sell_for_shortfall(self.positions, prices, exclude=sold_this_boundary)
                             if candidate is None:
                                 break
                             pos = self.positions[candidate]
@@ -868,15 +880,52 @@ class MomentumBacktester:
                             self.cash += proceeds - self._one_leg_cost(price, pos.qty, tax_cost_adtv.get(candidate))
                             self._record_sell(result, candidate, date_str, price, None, exit_reason="tax")
                             del self.positions[candidate]
-                            sold_for_tax.add(candidate)
+                            sold_this_boundary.add(candidate)
                         actual_tax_paid = min(tax_due, self.cash)
                         self.cash -= actual_tax_paid
                         result.tax_payments.append({
                             "date": date_str,
-                            "fy_label": f"FY{fy_start.year % 100:02d}-{fy_end.year % 100:02d}",
+                            "fy_label": fy_label,
                             "tax_due": tax_due,
                             "tax_paid": actual_tax_paid,
                         })
+
+                    if self.annual_capital_reset_target is not None:
+                        target = self.annual_capital_reset_target
+                        pre_reset_value = self._mark_to_market(date, prices)
+                        withdrawal = 0.0
+                        injection = 0.0
+                        if pre_reset_value > target:
+                            surplus = pre_reset_value - target
+                            while surplus - self.cash > 1e-6:
+                                candidate = select_forced_sell_for_shortfall(self.positions, prices, exclude=sold_this_boundary)
+                                if candidate is None:
+                                    break
+                                pos = self.positions[candidate]
+                                price = prices[candidate]
+                                reset_cost_adtv = self._adtv_cost_lookup(date, [candidate])
+                                proceeds = pos.qty * price
+                                self.cash += proceeds - self._one_leg_cost(price, pos.qty, reset_cost_adtv.get(candidate))
+                                self._record_sell(result, candidate, date_str, price, None, exit_reason="reset")
+                                del self.positions[candidate]
+                                sold_this_boundary.add(candidate)
+                            withdrawal = min(surplus, self.cash)
+                            self.cash -= withdrawal
+                            result.cash_flows.append({"date": date_str, "amount": withdrawal})
+                        elif pre_reset_value < target:
+                            injection = target - pre_reset_value
+                            self.cash += injection
+                            result.total_contributed += injection
+                            result.cash_flows.append({"date": date_str, "amount": -injection})
+
+                        result.capital_resets.append({
+                            "date": date_str,
+                            "fy_label": fy_label,
+                            "pre_reset_value": pre_reset_value,
+                            "withdrawal": withdrawal,
+                            "injection": injection,
+                        })
+
                     fy_boundary_idx += 1
 
             total_value = self._mark_to_market(date, prices)

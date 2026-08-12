@@ -30,7 +30,11 @@ from backtest.core.horizon import HorizonBucket
 
 RunMode = Literal["backtest", "walk_forward", "paper"]
 Channel = Literal["technical", "fundamental", "ml", "momentum"]
-CapitalMode = Literal["lump", "sip"]
+# "annual_reset" added 2026-08-12 — the user's third performance measure: each
+# Indian FY opens on `initial_capital`, booked profit is withdrawn after tax at
+# the FY boundary, and a losing year is topped back up. See
+# backtest/core/portfolio.py::AnnualResetConfig.
+CapitalMode = Literal["lump", "sip", "annual_reset"]
 
 # Phase 0 audit, 2026-07-20 (BacktestUmbrellaPlan.md "Known Data Gaps" #1): real
 # fundamentals coverage is a handful of rows total before 2020 (2005-2019 combined
@@ -60,6 +64,15 @@ class BacktestRun:
     initial_capital: float
     sip_amount: Optional[float] = None
     sip_cadence_days: Optional[int] = None
+    # capital_mode="annual_reset" only. The LTCG regime is a RUN-LEVEL input
+    # here, not a reporting choice, because the tax determines how much cash is
+    # withdrawn at each FY boundary, which changes the capital available next
+    # year, which changes which trades execute. The two regimes are therefore
+    # genuinely different simulations and cannot be derived from one trade book
+    # the way the lump run's regimes are.
+    annual_reset_ltcg_rate: Optional[float] = None
+    annual_reset_ltcg_exemption: Optional[float] = None
+    annual_reset_regime_label: Optional[str] = None
     random_seed: int = 0
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     parent_run_id: Optional[str] = None
@@ -104,6 +117,22 @@ class BacktestRunResult:
     # orchestrator wasn't given a regime_conn (regime breakdown is opt-in,
     # not required for every run).
     regime_breakdown: List[Dict[str, Any]] = field(default_factory=list)
+    # capital_mode="annual_reset" only (2026-08-12) — one row per Indian FY:
+    # opening_capital, closing_equity, realised_pnl, tax, withdrawn_pretax,
+    # withdrawn, withdrawal_tax_drag, topped_up, return_on_opening_pct,
+    # opened_above_base. Empty for lump/sip.
+    #
+    # This IS measure 3's deliverable. The engine computed it correctly in the
+    # first smoke test but nothing carried it out of the portfolio object, so
+    # the run produced trades under the right capital regime and then discarded
+    # the ledger — caught 2026-08-12 before the 390-job sweep launched.
+    #
+    # opening_capital is deliberately the capital the year ACTUALLY started
+    # with, which drifts above base_capital in good years (a near-fully-invested
+    # book cannot withdraw down to the base without selling positions the
+    # strategy never signalled). Never present these returns as fixed-base
+    # returns — see AnnualResetConfig's docstring.
+    fy_ledger: List[Dict[str, Any]] = field(default_factory=list)
     # Which of EXIT_POLICY_VARIANTS (backtest/core/engine.py) this run used —
     # threaded through from BacktestOrchestrator(exit_policy_variant=...) so
     # experiment comparison can group/filter runs by exit strategy. None for

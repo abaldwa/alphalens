@@ -327,12 +327,22 @@ class TestComputeFyNetTax:
         txns = [self._txn(100, 120, 10, 100), self._txn(100, 80, 10, 100)]
         assert ms.compute_fy_net_tax(txns) == pytest.approx(0.0)
 
-    def test_net_loss_bucket_floored_at_zero_not_credited(self):
-        # net STCG loss of -100 must not offset/credit the LTCG gain bucket
-        stcg_loss = self._txn(100, 90, 10, 50)  # -100
-        ltcg_gain = self._txn(100, 120, 10, 400)  # +200 gain -> tax 25.0
-        tax = ms.compute_fy_net_tax([stcg_loss, ltcg_gain])
-        assert tax == pytest.approx(25.0)
+    def test_short_term_loss_is_set_off_against_long_term_gain(self):
+        """[UPDATED 2026-08-12] Previously asserted that a net STCG loss must NOT
+        offset the LTCG bucket, which encoded the same bug as the (now fixed)
+        backtest/core/tax.py. A short-term loss DOES offset long-term gains under
+        s.70/s.74. compute_fy_net_tax now delegates the rule to
+        backtest.core.tax.apply_stcg_loss_setoff so the two channels cannot
+        diverge again."""
+        stcg_loss = self._txn(100, 90, 10, 50)  # -100 STCG
+        ltcg_gain = self._txn(100, 120, 10, 400)  # +200 LTCG
+        # -100 shelters 100 of the gain -> 100 taxable at 12.5% = 12.5
+        assert ms.compute_fy_net_tax([stcg_loss, ltcg_gain]) == pytest.approx(12.5)
+
+    def test_long_term_loss_does_not_shelter_short_term_gain(self):
+        stcg_gain = self._txn(100, 120, 10, 50)  # +200 STCG
+        ltcg_loss = self._txn(100, 90, 10, 400)  # -100 LTCG
+        assert ms.compute_fy_net_tax([stcg_gain, ltcg_loss]) == pytest.approx(200 * ms.STCG_RATE)
 
     def test_open_positions_without_sell_price_ignored(self):
         assert ms.compute_fy_net_tax([{"buy_price": 100, "sell_price": None, "qty": 10, "holding_days": None}]) == 0.0

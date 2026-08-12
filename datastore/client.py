@@ -38,6 +38,62 @@ _RETRYABLE_STATUS_CODES = {503}
 _RETRY_ATTEMPTS = 6
 _RETRY_BASE_DELAY_S = 2.0
 
+# ---------------------------------------------------------------------------
+# Opt-in bulk-OHLCV window cache (2026-08-12)
+#
+# DISABLED by default: only a caller that has explicitly declared the full date
+# span it will ask for may turn this on, because a stale cache would silently
+# serve yesterday's prices. The live daily pipeline never enables it.
+#
+# Module-level rather than instance state on purpose: the backfill's per-date
+# step (ingestion/scheduler/daily_pipeline.py::step_compute_features)
+# constructs a NEW DataStoreClient on every date, so instance state would be
+# thrown away between calls and never hit.
+# ---------------------------------------------------------------------------
+_BULK_CACHE: Dict[str, Any] = {"from": None, "to": None, "df": None}
+
+
+def enable_bulk_ohlcv_cache(from_date: datetime, to_date: datetime, client: "DataStoreClient" = None) -> int:
+    """Fetch [from_date, to_date] ONCE; serve any enclosed sub-range from memory.
+
+    Call before a loop that will request many overlapping windows inside this
+    span. Returns the number of rows cached.
+
+    The caller is responsible for declaring a span that actually covers every
+    window it will request — a request that is NOT fully enclosed falls through
+    to a live fetch (correct, just not cached), never to a truncated answer.
+    """
+    global _BULK_CACHE
+    c = client if client is not None else DataStoreClient()
+    _BULK_CACHE = {"from": None, "to": None, "df": None}  # ensure a miss while fetching
+    df = c.get_ohlcv_bulk(from_date, to_date)
+    _BULK_CACHE = {"from": pd.Timestamp(from_date), "to": pd.Timestamp(to_date), "df": df}
+    return len(df)
+
+
+def disable_bulk_ohlcv_cache() -> None:
+    """Drop the cache and go back to live fetches."""
+    global _BULK_CACHE
+    _BULK_CACHE = {"from": None, "to": None, "df": None}
+
+
+def _bulk_ohlcv_cache_lookup(from_date: datetime, to_date: datetime):
+    """Return the cached sub-range, or None to fall through to a live fetch."""
+    df = _BULK_CACHE.get("df")
+    if df is None:
+        return None
+    lo, hi = pd.Timestamp(from_date), pd.Timestamp(to_date)
+    # Strictly enclosed only. A partially-overlapping request would come back
+    # missing rows, which is far worse than a slow correct answer.
+    if lo < _BULK_CACHE["from"] or hi > _BULK_CACHE["to"]:
+        return None
+    if df.empty:
+        return df.copy()
+    # .copy() because callers mutate what they get back (matrix_builder adds
+    # columns to the panel it receives); handing out a view would corrupt the
+    # cache for every later date.
+    return df[(df["date"] >= lo) & (df["date"] <= hi)].copy()
+
 
 def _get_with_retry(client: httpx.Client, url: str, params: Optional[Dict[str, Any]] = None) -> httpx.Response:
     """GET with backoff retry on a transient 503 (see module docstring
@@ -178,6 +234,17 @@ class DataStoreClient:
         import json
 
         import pandas as pd
+
+        # [2026-08-12] Opt-in window cache — see enable_bulk_ohlcv_cache().
+        # scripts/feature_backfill.py walks one date at a time, and each date
+        # re-fetched its OWN ~760-day lookback window for all ~2,317 tickers.
+        # Consecutive dates' windows overlap by all but one day, so this was
+        # the same data pulled ~250 times per year (measured: 15-20s of each
+        # date's ~18s). An exact-args memo can never hit because the window
+        # slides; serving sub-ranges out of one wide fetch does.
+        cached = _bulk_ohlcv_cache_lookup(from_date, to_date)
+        if cached is not None:
+            return cached
 
         params: Dict[str, Any] = {
             "from": from_date.date().isoformat(),

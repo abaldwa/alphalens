@@ -256,60 +256,70 @@ def main() -> None:
     manifest_path = LOGS_DIR / f"feature_backfill_failed_{run_id}.txt"
     logger.info("Failed-dates manifest (if any): %s", manifest_path)
 
-    # [2026-07-29] Batch pre-computation + DuckDB staging (features/
-    # panel_staging.py): computes technical/intraday/pnd/advanced_technical/
-    # pattern_scores ONCE per ticker chunk across the FULL `pending` date
-    # range (instead of once per date with an overlapping 760-day window —
-    # see that module's docstring for the full root-cause/rationale), and
-    # stages each chunk's rows to a temporary DuckDB table as it finishes
-    # (never held in one in-memory structure spanning the whole run). Only
-    # after every chunk is staged does the per-date write loop below run,
-    # pulling each date's precomputed rows back out via a fast indexed
-    # lookup. HMM and the PIT/fundamental/governance/etc. categories are
-    # untouched — the per-date loop still computes those exactly as before.
+    # [2026-08-12] PANEL STAGING RETIRED (user decision).
     #
-    # A staging failure (e.g. the DataStore API genuinely unreachable) must
-    # not silently fall back to the (correct but ~760x slower) per-date
-    # path for a multi-thousand-date run — that defeats the whole point of
-    # this script existing. It DOES fail open per-date below: if a specific
-    # date's rows are missing from staging for any reason (e.g. --force
-    # combined with a `pending` set that grew after staging started), that
-    # one date's build_feature_matrix call falls back to recomputing those
-    # 5 categories itself (staged_panel=None), which is always correct,
-    # just not fast.
+    # features/panel_staging.py used to run here: it precomputed technical/
+    # intraday/pnd/advanced_technical/pattern_scores once per ticker chunk
+    # across the whole `pending` range into a DuckDB table, and the per-date
+    # loop below pulled each date's rows back out. Its docstring claimed the
+    # per-date path was ~760x slower.
+    #
+    # Measured on 2026-08-12, same script/flags/worker count, real run logs:
+    #
+    #     staging ON,  cache off                        19.1 s/date
+    #     staging off, cache off                        19.6 s/date
+    #     staging off, cache ON                         15.0 s/date
+    #     staging off, cache ON, staging DB shrunk       9.0 s/date
+    #
+    # Staging bought ~0.5 s/date for a 5-6 min fixed cost per year — and was
+    # NET NEGATIVE overall, because load_staged_panel_for_date opened and
+    # closed an 18.9 GB DuckDB file on EVERY date. (scripts/patch_advanced_
+    # technical_pattern_scores.py:116 had already noticed the open-close-per-
+    # call cost and worked around it by passing its own connection.) Removing
+    # it roughly halved per-date cost and, because staging was the only shared
+    # writer, also let recompute years run as independent parallel processes.
+    #
+    # The real win over the per-date path was never staging — it was the bulk
+    # OHLCV window cache prewarmed below, which removes the repeated ~760-day
+    # fetch that every date was re-issuing.
+    #
+    # features/panel_staging.py is left on disk (deprecated) only because the
+    # one-off repair script above imports it. Nothing in the production
+    # backfill path touches it any more, and staged_panel is always None.
     import pandas as pd
 
-    # Deliberately a distinct variable from `run_id` (manifest_path's id,
-    # already resolved above) — reusing that name would silently rename
-    # the failed-dates manifest file too, which is unrelated.
-    staging_run_id = f"feature_backfill_{run_id}"
-    panel_staging = None
-    pending_timestamps = [pd.Timestamp(d) for d in pending]
-    logger.info("panel_staging: staging %d dates under run_id=%s ...", len(pending_timestamps), staging_run_id)
-    t_stage0 = time.monotonic()
-    try:
-        # Imported here (not at module top) so an environment/test that
-        # fakes out config.settings/datastore.* wholesale (this script's
-        # own test suite does exactly that for the manifest-writing tests,
-        # which have nothing to do with panel staging) doesn't fail before
-        # even reaching this try/except — any import or runtime failure
-        # here is equally "batch staging unavailable, fall back per-date".
-        from features import panel_staging as _panel_staging
+    # [2026-08-12] Prewarm the bulk-OHLCV window cache for the WHOLE run.
+    # build_feature_matrix fetches each date's own [d - LOOKBACK_CALENDAR_DAYS,
+    # d] window, so a 246-date year re-pulled ~2 years x ~2,317 tickers 246
+    # times over. Staging already removed the redundant COMPUTE; this removes
+    # the redundant FETCH, which was the larger remaining cost (15-20s of each
+    # date's ~18s). One fetch here covers every date's window because the span
+    # below is the union of them all.
+    from datetime import timedelta as _timedelta
 
-        panel_staging = _panel_staging
-        panel_staging.stage_batch_panels(
-            client, tickers_for_cache, pending_timestamps, run_id=staging_run_id,
-            panel_workers=args.panel_workers,
-            advanced_technical_used_only=args.advanced_technical_used_only,
-        )
-        logger.info("panel_staging: staging complete in %.1f min", (time.monotonic() - t_stage0) / 60)
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "panel_staging: batch staging FAILED (%s) — falling back to the original per-date "
-            "computation path for this entire run (no staged_panel will be used)", exc,
-        )
-        staging_run_id = None
-        panel_staging = None
+    from datastore.client import disable_bulk_ohlcv_cache, enable_bulk_ohlcv_cache
+    from features.matrix_builder import LOOKBACK_CALENDAR_DAYS
+
+    cache_from = pd.Timestamp(min(pending)) - _timedelta(days=LOOKBACK_CALENDAR_DAYS)
+    cache_to = pd.Timestamp(max(pending))
+    if os.environ.get("ALPHALENS_DISABLE_BULK_CACHE"):
+        # Kill switch: lets a run be A/B'd against the uncached path to prove
+        # the cache is behaviour-preserving, and provides an escape hatch if it
+        # is ever suspected of serving wrong rows.
+        logger.info("ohlcv_cache: DISABLED via ALPHALENS_DISABLE_BULK_CACHE")
+        disable_bulk_ohlcv_cache()
+    else:
+        try:
+            t_cache0 = time.monotonic()
+            n_cached = enable_bulk_ohlcv_cache(cache_from, cache_to, client)
+            logger.info(
+                "ohlcv_cache: prewarmed %s..%s (%d rows) in %.1f min — per-date bulk fetches now served from memory",
+                cache_from.date(), cache_to.date(), n_cached, (time.monotonic() - t_cache0) / 60,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Purely an optimization: every date still fetches for itself.
+            logger.error("ohlcv_cache: prewarm FAILED (%s) — falling back to per-date fetches", exc, exc_info=True)
+            disable_bulk_ohlcv_cache()
 
     ok = err = 0
     elapsed_times: list = []
@@ -317,14 +327,10 @@ def main() -> None:
     for i, d in enumerate(pending, start=1):
         t0 = time.monotonic()
         try:
+            # panel staging retired 2026-08-12 (see the note above) — the five
+            # batched categories are computed per date, which measured FASTER
+            # than loading them back out of the staging DB.
             staged_panel = None
-            if staging_run_id is not None:
-                staged_panel = panel_staging.load_staged_panel_for_date(staging_run_id, d)
-                if staged_panel is None:
-                    logger.warning(
-                        "panel_staging: no staged rows for %s (run_id=%s) — falling back to "
-                        "recomputing the 5 batched categories for this date only", d, staging_run_id,
-                    )
 
             step_compute_features(
                 d, compute_hmm=compute_hmm, data_cache=backfill_cache,
@@ -356,8 +362,7 @@ def main() -> None:
     if err:
         logger.info("Failed dates written to %s — retry with those dates specifically", manifest_path)
 
-    if staging_run_id is not None:
-        panel_staging.drop_staging_run(staging_run_id)
+    # (panel-staging teardown removed 2026-08-12 — nothing is staged any more.)
 
 
 if __name__ == "__main__":

@@ -126,6 +126,19 @@ def _ensure_staging_table(conn) -> None:
         f'CREATE INDEX IF NOT EXISTS idx_{_TABLE_NAME}_run_date ON {_TABLE_NAME} (run_id, date)'
     )
 
+    # CREATE TABLE IF NOT EXISTS is a no-op against a table created by an
+    # earlier build, so a feature added to _STAGED_FEATURE_COLUMNS since then
+    # never appears in this long-lived staging DB and every _stage_chunk
+    # INSERT dies with "does not have a column with name ...". Reconcile
+    # explicitly instead. ADD COLUMN is additive and leaves already-staged
+    # rows (and therefore resumability) intact, backfilling NULL for the new
+    # column — correct, since those rows genuinely never had it computed.
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info('{_TABLE_NAME}')").fetchall()}
+    for c in _STAGED_FEATURE_COLUMNS:
+        if c not in existing:
+            logger.info("panel_staging: adding missing staging column %s", c)
+            conn.execute(f'ALTER TABLE {_TABLE_NAME} ADD COLUMN "{c}" DOUBLE')
+
 
 def _stage_chunk(conn, run_id: str, chunk_wide: pd.DataFrame) -> None:
     """Bulk-insert one chunk's wide (ticker, date) + feature-column rows.
@@ -358,8 +371,21 @@ def stage_batch_panels(
             pool_batch = panel_workers * 2  # a couple waves' worth in flight per dispatch
             for batch_start in range(0, len(pending_chunks), pool_batch):
                 batch = pending_chunks[batch_start:batch_start + pool_batch]
+                # Must match _compute_full_range_chunk_panels_worker's arity
+                # EXACTLY — it unpacks a fixed-length tuple, so a missing
+                # element raises ValueError inside the pool, which
+                # scripts/feature_backfill.py catches and turns into a silent
+                # fallback to the ~760x slower per-date path. That is what
+                # happened when `advanced_technical_skip_fracdiff` was added
+                # to the worker and this call site was not updated: every
+                # --panel-workers > 1 run since then quietly ran serially.
+                # The 4th element mirrors the panel_workers <= 1 branch above,
+                # which calls compute_full_range_chunk_panels without it and
+                # so takes its default of False — the two branches must stay
+                # behaviourally identical.
                 worker_args = [
-                    (chunk_panel, benchmark_wide, advanced_technical_used_only) for _, chunk_panel in batch
+                    (chunk_panel, benchmark_wide, advanced_technical_used_only, False)
+                    for _, chunk_panel in batch
                 ]
                 results = _run_pool_over_chunks(
                     _compute_full_range_chunk_panels_worker, worker_args, panel_workers

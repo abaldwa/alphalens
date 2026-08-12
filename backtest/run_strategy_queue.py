@@ -85,6 +85,12 @@ _ORCHESTRATOR_FLAGS = {
     # 2026-08-05 Momentum engine consolidation Phase 2: market-cap rank-band
     # universe selection (features/momentum_universe.py RANK_BANDS ids 1-5).
     "rank_band_id",
+    # 2026-08-12 capital_mode="annual_reset" (the user's third measure). The
+    # LTCG regime must be per-job: it changes the FY withdrawal, hence next
+    # year's capital, hence which trades execute, so the two regimes are
+    # separate runs and cannot be derived post-hoc from one trade book the way
+    # the lump run's regimes are.
+    "annual_reset_ltcg_rate", "annual_reset_ltcg_exemption", "annual_reset_regime_label",
 } | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",

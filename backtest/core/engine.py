@@ -39,7 +39,7 @@ import pandas as pd
 
 from backtest.core.horizon import HorizonBucket, sizing_for
 from backtest.core.metrics import compute_metrics
-from backtest.core.portfolio import SipConfig, StrategyPortfolio
+from backtest.core.portfolio import AnnualResetConfig, SipConfig, StrategyPortfolio
 from backtest.portfolio import Position, PortfolioSimulator
 from backtest.core.regime_breakdown import compute_regime_breakdown
 from backtest.core.run_context import BacktestRun, BacktestRunResult
@@ -430,10 +430,39 @@ class BacktestOrchestrator:
         rebalance_date_set = set(rebalance_dates)
 
         sip = SipConfig(amount=run.sip_amount) if run.capital_mode == "sip" and run.sip_amount else None
+        # capital_mode="annual_reset" (2026-08-12, the user's third measure) —
+        # see AnnualResetConfig's docstring. None for every other capital_mode,
+        # which keeps lump/sip on exactly their existing code path.
+        annual_reset = None
+        if run.capital_mode == "annual_reset":
+            _rate = getattr(run, "annual_reset_ltcg_rate", None)
+            _exempt = getattr(run, "annual_reset_ltcg_exemption", None)
+            _label = getattr(run, "annual_reset_regime_label", None)
+            # Fail loudly rather than defaulting. If this silently fell back to
+            # one rate, the two LTCG-regime sweeps would produce byte-identical
+            # results and look like a legitimate finding ("regime makes no
+            # difference") instead of a plumbing bug. The regime is what makes
+            # the two runs different, so an unspecified regime is never a
+            # sensible default here.
+            if _rate is None or _label is None:
+                raise ValueError(
+                    "capital_mode='annual_reset' requires annual_reset_ltcg_rate and "
+                    "annual_reset_regime_label to be set explicitly — the LTCG regime "
+                    "determines the FY withdrawal and therefore the trades taken, so it "
+                    "cannot be defaulted (both regimes would come out identical)."
+                )
+            annual_reset = AnnualResetConfig(
+                base_capital=run.initial_capital,
+                ltcg_rate=float(_rate),
+                ltcg_exemption=float(_exempt or 0.0),
+                regime_label=str(_label),
+            )
         portfolio = StrategyPortfolio(
             initial_capital=run.initial_capital, horizon_bucket=run.horizon_bucket, sip=sip,
+            annual_reset=annual_reset,
         )
         portfolio.prime_sip_schedule(config.trading_days)
+        portfolio.prime_annual_reset_schedule(config.trading_days)
 
         data_gaps: List[DataGap] = []
         distinct_tickers: List[str] = []
@@ -480,6 +509,12 @@ class BacktestOrchestrator:
                 refit_log.append(RefitEvent(as_of_date=as_of, model_version=str(model_version)))
 
             portfolio.apply_due_sip_injections(as_of)
+            # Annual-reset boundary handling runs BEFORE this date's sizing, so
+            # the year's first buys size against the adjusted capital rather
+            # than last year's. Needs prices (mark-to-market equity decides the
+            # withdrawal), unlike the SIP call above. No-op unless
+            # capital_mode="annual_reset".
+            portfolio.apply_due_annual_reset(as_of, prices)
 
             # Corporate-action/delisting reconciliation BEFORE new sizing (Standard
             # Backtesting Algorithm step 3b, Truthful Review Gap #4) — always runs,
@@ -997,6 +1032,10 @@ class BacktestOrchestrator:
             refit_log=[{"as_of_date": r.as_of_date.isoformat(), "model_version": r.model_version} for r in (refit_log or [])],
             execution_timing=execution_timing,
             regime_breakdown=regime_breakdown,
+            # capital_mode="annual_reset" only; empty list for lump/sip. This is
+            # measure 3's actual deliverable — without carrying it out of the
+            # portfolio here, an annual_reset run silently produces no ledger.
+            fy_ledger=list(portfolio.fy_ledger),
             exit_policy_variant=self._exit_policy_variant,
             regime_label=regime_label,
             trade_log_path=str(trade_log_path),

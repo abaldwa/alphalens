@@ -13,11 +13,14 @@ gross, at time of sale) into the FY-netted engine the user specified
     (holding >= 365 days is LTCG, per the existing LTCG_HOLDING_DAYS
     convention in momentum_tax.py).
   - Tax is computed once per Indian Financial Year (April 1 - March 31)
-    on that FY's NET realized profit — LTCG and STCG gains/losses are
-    each netted separately within the FY (losses in one bucket offset
-    gains in the same bucket; a net loss in a bucket pays zero tax for
-    that bucket, per real Indian capital-gains set-off treatment), then
-    charged as a single cash outflow on the FY's last day (March 31).
+    on that FY's NET realized profit, then charged as a single cash
+    outflow on the FY's last day (March 31). Netting follows the real
+    (asymmetric) set-off rules: losses offset gains within their own
+    bucket, AND a net short-term loss further offsets long-term gains,
+    while a net long-term loss may NOT offset short-term gains. A bucket
+    left in loss pays zero tax; losses are not carried into the next FY.
+    See net_buckets_after_setoff — this file claimed to implement these
+    rules but omitted the short-term-loss set-off until 2026-08-12.
   - This intentionally differs from momentum_tax.py's per-transaction
     gross-tax-on-winners-only approach (documented there as a
     conservative simplification); this module is the more accurate
@@ -83,22 +86,114 @@ def group_by_financial_year(transactions: List[Transaction]) -> Dict[date, List[
     return by_fy
 
 
-def fy_net_tax(transactions: List[Transaction]) -> float:
+def net_buckets_after_setoff(transactions: List[Transaction]) -> Tuple[float, float]:
     """
-    Tax owed (INR) for one Financial Year's realized transactions: LTCG
-    and STCG gains are each netted separately (losses offset gains within
-    the same bucket, per real Indian set-off rules), then taxed at their
-    respective fixed rate. A net loss in either bucket contributes zero
-    tax for that bucket (no refund modeled — this is a tax *paid* figure,
-    not a tax *credit* figure).
+    One FY's realized gains netted into (net_stcg, net_ltcg) with the Indian
+    inter-head set-off applied.
+
+    THE SET-OFF RULE (Income-tax Act s.70/s.74) IS ASYMMETRIC:
+      - A short-term capital LOSS may be set off against BOTH short-term and
+        long-term capital gains.
+      - A long-term capital LOSS may be set off ONLY against long-term gains.
+
+    [BUG FIX 2026-08-12] Both fy_net_tax and fy_net_tax_with_regime used to net
+    strictly within each bucket and never apply the first rule, while the
+    docstrings claimed to follow "real Indian set-off rules". That overstated
+    tax in every FY that combined a short-term loss with a long-term gain.
+    Found by scripts/validate_fy_ledger.py on the 2009-2026 technical sweep:
+    69 of 390 runs affected, tax overstated by ~Rs 31.25 lakh in aggregate.
+    The worst single case (template C6, FY2022-23) booked a Rs 10.11 lakh
+    short-term loss alongside a Rs 5.05 lakh long-term gain and was charged
+    Rs 40,818 of tax on a year whose correct liability was zero.
+
+    This matters beyond the reported tax number: under capital_mode="annual_reset"
+    the tax figure sets the FY withdrawal, which sets the next year's opening
+    capital, which changes which trades are affordable. An overstated tax
+    silently propagates into a different trade history.
+
+    Unused losses are NOT carried forward to later FYs. Real law allows an
+    8-year carry-forward, but these are tax-PAID figures for a self-contained
+    backtest, and a carry-forward would make each FY's number depend on the
+    run's start date. Modelling it is a deliberate non-goal; see the module
+    docstring's "no refund modeled" note, which follows the same reasoning.
     """
     net_ltcg = sum(t.gain for t in transactions if t.is_long_term)
     net_stcg = sum(t.gain for t in transactions if not t.is_long_term)
+    return apply_stcg_loss_setoff(net_stcg, net_ltcg)
+
+
+def apply_stcg_loss_setoff(net_stcg: float, net_ltcg: float) -> Tuple[float, float]:
+    """
+    The set-off itself, on already-netted bucket totals.
+
+    Split out from `net_buckets_after_setoff` so the momentum channel can share
+    it: features/momentum_strategy.py::compute_fy_net_tax works from plain dicts
+    rather than Transaction objects and had independently reimplemented — and
+    independently got wrong — the same rule. One rule, one implementation.
+    """
+    # Short-term loss shelters long-term gain. Deliberately NOT symmetric:
+    # net_ltcg < 0 must leave net_stcg untouched.
+    if net_stcg < 0 and net_ltcg > 0:
+        absorbed = min(-net_stcg, net_ltcg)
+        net_ltcg -= absorbed
+        net_stcg += absorbed
+    return net_stcg, net_ltcg
+
+
+def fy_net_tax(transactions: List[Transaction]) -> float:
+    """
+    Tax owed (INR) for one Financial Year's realized transactions: gains are
+    netted per `net_buckets_after_setoff` (including the short-term-loss
+    set-off against long-term gains), then each remaining positive bucket is
+    taxed at its fixed rate. A net loss in a bucket contributes zero tax (no
+    refund modeled — this is a tax *paid* figure, not a tax *credit* figure).
+    """
+    net_stcg, net_ltcg = net_buckets_after_setoff(transactions)
     tax = 0.0
     if net_ltcg > 0:
         tax += net_ltcg * LTCG_RATE
     if net_stcg > 0:
         tax += net_stcg * STCG_RATE
+    return tax
+
+
+def fy_net_tax_with_regime(
+    transactions: List[Transaction],
+    ltcg_rate: float = LTCG_RATE,
+    ltcg_exemption: float = 0.0,
+    stcg_rate: float = STCG_RATE,
+) -> float:
+    """
+    `fy_net_tax` generalised to a specific LTCG regime.
+
+    [2026-08-12] Added for capital_mode="annual_reset", where the amount of
+    cash withdrawn at each FY boundary is realised-profit-AFTER-TAX, so the
+    tax figure must be the same one the comparison report shows for that
+    regime — otherwise the withdrawal and the reported tax silently disagree.
+
+    The two regimes the reports carry:
+        ltcg_10pct_1L        -> ltcg_rate=0.10,  ltcg_exemption=100_000
+        ltcg_12_5pct_1_25L   -> ltcg_rate=0.125, ltcg_exemption=125_000
+
+    Netting is identical to `fy_net_tax` — both call `net_buckets_after_setoff`,
+    so the asymmetric short-term-loss set-off cannot drift between them (they
+    had already drifted from the law in exactly that way; see that function's
+    2026-08-12 bug-fix note).
+
+    The exemption applies to the NET long-term gain for the year AFTER set-off,
+    which is how the Indian exemption actually works — it is neither per
+    transaction nor applied to the pre-set-off figure.
+
+    With the defaults this returns exactly `fy_net_tax`, so existing callers
+    are unaffected.
+    """
+    net_stcg, net_ltcg = net_buckets_after_setoff(transactions)
+    tax = 0.0
+    if net_ltcg > 0:
+        taxable_ltcg = max(0.0, net_ltcg - ltcg_exemption)
+        tax += taxable_ltcg * ltcg_rate
+    if net_stcg > 0:
+        tax += net_stcg * stcg_rate
     return tax
 
 

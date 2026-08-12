@@ -69,6 +69,62 @@ class SipConfig:
             raise ValueError("only monthly SIP cadence is currently supported")
 
 
+@dataclass
+class AnnualResetConfig:
+    """capital_mode="annual_reset" — the user's third performance measure
+    (2026-08-12).
+
+    Intent, in the user's words: "Suppose I start the year with 10,00,000 for
+    every strategy. At the end of the year, I take all profits out after paying
+    the taxes out and leave the capital in there. If there has been a loss in
+    the Financial Year, I will pour the deficit into the strategy and start the
+    year again with 10,00,000."
+
+    This is a genuinely different simulation, not a re-scoring of the lump run.
+    Position sizing is a function of equity (see `position_size`, capped by
+    `self.cash`), and `can_buy` rejects when cash is short or integer-share
+    rounding gives qty 0 — so a portfolio held near a constant Rs 10L base takes
+    DIFFERENT trades from one that compounded to Rs 50L, not the same trades at
+    different sizes.
+
+    The awkward case, agreed with the user 2026-08-12, is the NORMAL case: a
+    template holding 10-20 equal-weight positions is near-fully invested at
+    31 March, so most of the year's gain is unrealised and cash is small. You
+    then cannot withdraw down to Rs 10L without selling positions the strategy
+    never signalled an exit for. The agreed rule keeps the strategy honest and
+    lets the base drift instead:
+
+        withdraw = min(realised_after_tax, cash, equity - base_capital)
+        top_up   = base_capital - equity            (only when equity < base)
+
+    so profits are taken out only to the extent they were actually BOOKED and
+    are actually LIQUID, exactly as a real fully-invested investor would find.
+    Losses are always topped back up to `base_capital`, which is always possible.
+
+    Consequence that must be reported, never hidden: opening capital is NOT
+    Rs 10L every year. It drifts above it in good years. Every FY's actual
+    opening capital is recorded in `fy_ledger` and must be shown alongside the
+    return, or the number reads as a fixed-base return and overstates the
+    strategy.
+    """
+
+    base_capital: float = 1_000_000.0
+    # LTCG regime the withdrawal's tax is computed under. Defaults match
+    # backtest/core/tax.py's constants (the 12.5% / no-exemption engine
+    # default); the sweep runs one job per regime.
+    ltcg_rate: float = 0.125
+    ltcg_exemption: float = 0.0
+    regime_label: str = "engine_default"
+
+    def __post_init__(self) -> None:
+        if self.base_capital <= 0:
+            raise ValueError("annual-reset base_capital must be positive")
+        if not (0.0 <= self.ltcg_rate < 1.0):
+            raise ValueError("ltcg_rate must be in [0, 1)")
+        if self.ltcg_exemption < 0:
+            raise ValueError("ltcg_exemption must be non-negative")
+
+
 class StrategyPortfolio:
     def __init__(
         self,
@@ -78,6 +134,7 @@ class StrategyPortfolio:
         n_target_positions: int = 10,
         costs: Optional[IndianTransactionCosts] = None,
         sip: Optional[SipConfig] = None,
+        annual_reset: Optional["AnnualResetConfig"] = None,
         adtv_cap_fraction: float = DEFAULT_ADTV_CAP_FRACTION,
     ) -> None:
         if initial_capital <= 0:
@@ -102,6 +159,21 @@ class StrategyPortfolio:
         self._sip_injection_dates: Optional[List[pd.Timestamp]] = None
         self._sip_injection_idx = 0
 
+        # ----- capital_mode="annual_reset" (2026-08-12) -----
+        # All inert when annual_reset is None, which is the lump/sip default —
+        # the existing paths must stay bit-identical.
+        self.annual_reset = annual_reset
+        self._annual_reset_dates: Optional[List[pd.Timestamp]] = None
+        self._annual_reset_idx = 0
+        self.fy_ledger: List[Dict] = []
+        # Post-tax total actually taken out (the real cash flow), and the
+        # gross-of-tax equivalent for comparison — see apply_due_annual_reset.
+        self.total_withdrawn = 0.0
+        self.total_withdrawn_pretax = 0.0
+        # Opening capital of the FY currently in progress. Seeded with the
+        # run's initial capital; each reset stamps the next year's value.
+        self._current_fy_opening_capital = initial_capital
+
     # ===== SIP injection (generalized from momentum_backtest.py's _monthly_injection_dates) =====
     def _monthly_injection_dates(self, trading_days: pd.DatetimeIndex) -> List[pd.Timestamp]:
         """First trading day of every calendar month in the run, excluding the
@@ -124,6 +196,163 @@ class StrategyPortfolio:
         if self.sip is not None:
             self._sip_injection_dates = self._monthly_injection_dates(trading_days)
             self._sip_injection_idx = 0
+
+    # ===== capital_mode="annual_reset" (2026-08-12) =====
+    def _fy_start_dates(self, trading_days: pd.DatetimeIndex) -> List[pd.Timestamp]:
+        """First trading day of every Indian FY (1 Apr - 31 Mar) in the run,
+        EXCLUDING the FY the run starts in — that year opens on
+        `initial_capital` and needs no adjustment."""
+        seen_fys = set()
+        dates: List[pd.Timestamp] = []
+        for d in trading_days:
+            # FY label = the calendar year the FY started in.
+            fy = d.year if d.month >= 4 else d.year - 1
+            if fy not in seen_fys:
+                seen_fys.add(fy)
+                dates.append(d)
+        return dates[1:]
+
+    def prime_annual_reset_schedule(self, trading_days: pd.DatetimeIndex) -> None:
+        """Call once at run start, alongside prime_sip_schedule. No-op unless
+        capital_mode="annual_reset"."""
+        if self.annual_reset is None:
+            return
+        if trading_days is None or len(trading_days) == 0:
+            return
+        self._annual_reset_dates = self._fy_start_dates(trading_days)
+        self._annual_reset_idx = 0
+        self._current_fy_opening_capital = self.annual_reset.base_capital
+
+    def _realised_tax_transactions_for_fy(self, fy_end: date_type) -> List[TaxTransaction]:
+        """Closed trades whose SELL landed in the FY closing on `fy_end`.
+        Sell-date drives the FY, matching core/tax.group_by_financial_year."""
+        from backtest.core.tax import financial_year_end
+
+        return [t for t in self.tax_transactions() if financial_year_end(t.sell_date) == fy_end]
+
+    def apply_due_annual_reset(self, as_of_date, prices: Dict[str, float]) -> None:
+        """At each FY boundary: withdraw booked-and-liquid profit after tax, or
+        top the base back up after a losing year. Positions are never touched —
+        see AnnualResetConfig's docstring for why the base is allowed to drift
+        upward instead of forcing liquidations.
+
+        Needs `prices` (unlike the SIP equivalent) because the decision is made
+        against mark-to-market equity, not cash alone.
+        """
+        if self.annual_reset is None or self._annual_reset_dates is None:
+            return
+
+        from backtest.core.tax import fy_net_tax_with_regime
+
+        cfg = self.annual_reset
+        as_of = pd.Timestamp(as_of_date)
+
+        while (
+            self._annual_reset_idx < len(self._annual_reset_dates)
+            and self._annual_reset_dates[self._annual_reset_idx] <= as_of
+        ):
+            reset_date = self._annual_reset_dates[self._annual_reset_idx]
+            self._annual_reset_idx += 1
+
+            # The FY that just CLOSED.
+            #
+            # [BUG FIX 2026-08-12, caught by the pre-sweep smoke test] This used
+            # to be financial_year_end(reset_date - 1 day). That breaks whenever
+            # 1 April is a weekend/holiday: the first trading day is then 2 or
+            # 3 April, so `reset_date - 1 day` still lands INSIDE the new FY and
+            # financial_year_end returns the NEXT close. The 17-year ledger came
+            # out with 2013-03-31 / 2019-03-31 / 2024-03-31 duplicated and
+            # 2012 / 2017 / 2023 missing — and because the label drives
+            # _realised_tax_transactions_for_fy, the mislabelled years pulled the
+            # wrong realised-P&L bucket and withdrew the wrong amount.
+            #
+            # reset_date is by construction the first trading day of the NEW FY
+            # (April or later), so the FY that just closed ends on 31 March of
+            # that same calendar year. Derive it directly rather than by walking
+            # back a day into calendar ambiguity.
+            rd = reset_date.date()
+            closed_fy_end = date_type(rd.year if rd.month >= 4 else rd.year - 1, 3, 31)
+
+            equity_before = self.total_equity(prices)
+            opening_capital = self._current_fy_opening_capital
+
+            fy_txns = self._realised_tax_transactions_for_fy(closed_fy_end)
+            realised = sum(t.gain for t in fy_txns)
+            tax = fy_net_tax_with_regime(
+                fy_txns, ltcg_rate=cfg.ltcg_rate, ltcg_exemption=cfg.ltcg_exemption,
+            )
+            realised_after_tax = realised - tax
+
+            # [2026-08-12, user request] Report the withdrawal both gross and
+            # net of tax. Only ONE of these can actually move cash — the
+            # post-tax figure does, because that is what the investor really
+            # gets to take out. `withdrawn_pretax` is the same calculation with
+            # the tax line removed, reported so the tax drag on withdrawals is
+            # visible per year. It is an informational figure within a post-tax
+            # simulation, NOT a separate pre-tax run: had the pre-tax amount
+            # actually been withdrawn, the following year would have started on
+            # less capital and taken different trades.
+            headroom = max(0.0, equity_before - cfg.base_capital)
+            withdrawn_pretax = (
+                max(0.0, min(realised, self.cash, headroom))
+                if equity_before >= cfg.base_capital else 0.0
+            )
+
+            withdrawn = 0.0
+            topped_up = 0.0
+            if equity_before < cfg.base_capital:
+                # Losing year: always fundable, so the base is genuinely restored.
+                topped_up = cfg.base_capital - equity_before
+                self.cash += topped_up
+                self.total_contributed += topped_up
+                self.cash_flows.append({"date": str(reset_date.date()), "amount": -topped_up})
+            elif realised_after_tax > 0:
+                # Take out only what was booked AND is liquid AND is genuinely
+                # above the base. Any of the three can bind; usually `cash` does.
+                withdrawn = min(realised_after_tax, self.cash, equity_before - cfg.base_capital)
+                withdrawn = max(withdrawn, 0.0)
+                if withdrawn > 0:
+                    self.cash -= withdrawn
+                    self.total_withdrawn += withdrawn
+                    self.cash_flows.append({"date": str(reset_date.date()), "amount": withdrawn})
+            self.total_withdrawn_pretax += withdrawn_pretax
+
+            equity_after = self.total_equity(prices)
+
+            self.fy_ledger.append({
+                "fy_end": str(closed_fy_end),
+                "opening_capital": round(opening_capital, 2),
+                "closing_equity": round(equity_before, 2),
+                "realised_pnl": round(realised, 2),
+                "tax": round(tax, 2),
+                "realised_after_tax": round(realised_after_tax, 2),
+                # Gross vs net withdrawal (user request 2026-08-12). Only
+                # `withdrawn` moved cash; `withdrawn_pretax` shows what would
+                # have left before tax, so the annual tax drag is explicit.
+                "withdrawn_pretax": round(withdrawn_pretax, 2),
+                "withdrawn": round(withdrawn, 2),
+                "withdrawal_tax_drag": round(withdrawn_pretax - withdrawn, 2),
+                "topped_up": round(topped_up, 2),
+                "opening_capital_next": round(equity_after, 2),
+                # The honest return for the year: growth of the capital the year
+                # actually STARTED with, before any boundary adjustment.
+                "return_on_opening_pct": (
+                    round(100.0 * (equity_before - opening_capital) / opening_capital, 4)
+                    if opening_capital > 0 else None
+                ),
+                "regime": cfg.regime_label,
+                # Makes the drift visible per row rather than only in aggregate.
+                "base_capital": cfg.base_capital,
+                "opened_above_base": bool(equity_after > cfg.base_capital + 1.0),
+            })
+
+            self._current_fy_opening_capital = equity_after
+
+            if self.cash < -1e-6:
+                raise AssertionError(
+                    f"annual_reset produced negative cash ({self.cash:.2f}) at {reset_date.date()} — "
+                    "withdrawal should be capped by available cash"
+                )
 
     def apply_due_sip_injections(self, as_of_date) -> None:
         """Apply every SIP contribution due on or before as_of_date. Contributions

@@ -63,11 +63,25 @@ class TestFyNetTax:
         loser = _txn("B", date(2020, 5, 1), date(2020, 9, 1), 100.0, 80.0, qty=10)
         assert fy_net_tax([loser]) == 0.0
 
-    def test_ltcg_and_stcg_netted_independently_not_combined(self):
+    def test_short_term_loss_is_set_off_against_long_term_gain(self):
+        """[UPDATED 2026-08-12] This test previously asserted the OPPOSITE — that
+        the two buckets never interact — and so locked in a real bug rather than
+        catching it. Under Income-tax Act s.70/s.74 a short-term capital loss may
+        be set off against long-term gains; only a long-term loss is confined to
+        its own bucket. The old expectation (500 * LTCG_RATE) overstated the tax.
+        Measured cost on the 2009-2026 technical sweep: 34 annual-reset runs
+        wrong enough to need re-running. See tests/unit/test_tax_setoff_rules.py
+        for the full rule, including the asymmetry this must NOT break."""
         stcg_loser = _txn("A", date(2020, 5, 1), date(2020, 8, 1), 100.0, 80.0, qty=10)  # -200 STCG
         ltcg_winner = _txn("B", date(2019, 1, 1), date(2020, 6, 1), 100.0, 150.0, qty=10)  # +500 LTCG
-        # STCG bucket nets to a loss (pays 0), LTCG bucket still pays full 12.5% on its own gain
-        assert fy_net_tax([stcg_loser, ltcg_winner]) == pytest.approx(500 * LTCG_RATE)
+        # -200 short-term loss shelters 200 of the long-term gain -> 300 taxable.
+        assert fy_net_tax([stcg_loser, ltcg_winner]) == pytest.approx(300 * LTCG_RATE)
+
+    def test_long_term_loss_does_not_shelter_short_term_gain(self):
+        """The asymmetry — guards against 'fixing' the above by pooling buckets."""
+        stcg_winner = _txn("A", date(2020, 5, 1), date(2020, 8, 1), 100.0, 150.0, qty=10)  # +500 STCG
+        ltcg_loser = _txn("B", date(2019, 1, 1), date(2020, 6, 1), 100.0, 60.0, qty=10)  # -400 LTCG
+        assert fy_net_tax([stcg_winner, ltcg_loser]) == pytest.approx(500 * STCG_RATE)
 
 
 class TestGroupByFinancialYear:

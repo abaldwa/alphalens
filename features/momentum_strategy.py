@@ -379,19 +379,34 @@ def sticky_promoted_holdings(
 
 
 def compute_fy_net_tax(closed_transactions_in_fy: List[Dict]) -> float:
-    """Net capital-gains tax owed for ONE fiscal year, per the user's
-    specified formula: tax = STCG_RATE * (total STCG gains - total STCG
-    losses) + LTCG_RATE * (total LTCG gains - total LTCG losses), each
-    bucket floored at 0 (a net loss in one holding-period bucket reduces
-    that bucket's own tax to zero but is not credited/carried against the
-    other bucket or into a future year — real Indian loss-carry-forward
-    rules are not modeled, same stated simplification as
-    backtest/momentum_tax.py).
+    """Net capital-gains tax owed for ONE fiscal year: gains are netted within
+    the STCG and LTCG buckets, the Indian inter-head set-off is applied, and
+    each remaining positive bucket is taxed at its rate.
+
+    [BUG FIX 2026-08-12] This used to floor each bucket at zero independently
+    and documented that as a deliberate simplification. It is not a
+    simplification — it is wrong. A net SHORT-TERM loss may be set off against
+    long-term gains (Income-tax Act s.70/s.74); only a long-term loss is
+    restricted to its own bucket. Flooring both independently overstates tax in
+    any FY that pairs a short-term loss with a long-term gain. The same defect
+    existed in backtest/core/tax.py and was measured there on the 2009-2026
+    technical sweep: 69 of 390 runs affected, ~Rs 31.25 lakh overstated.
+
+    The set-off now comes from backtest.core.tax.apply_stcg_loss_setoff rather
+    than being reimplemented here, because two independent copies of this rule
+    is exactly how the two channels came to disagree with the law in the same
+    way but at different call sites.
+
+    Loss carry-forward into a later FY remains unmodeled (real law allows 8
+    years); that IS a genuine simplification, and a shared one — see the note
+    in backtest/core/tax.py::net_buckets_after_setoff.
 
     `closed_transactions_in_fy` must already be filtered by the caller to
     trades whose sell_date falls within the target fiscal year — this
     function does no date filtering itself, only the STCG/LTCG netting.
     """
+    from backtest.core.tax import apply_stcg_loss_setoff
+
     stcg_net = 0.0
     ltcg_net = 0.0
     for t in closed_transactions_in_fy:
@@ -402,6 +417,7 @@ def compute_fy_net_tax(closed_transactions_in_fy: List[Dict]) -> float:
             ltcg_net += gain
         else:
             stcg_net += gain
+    stcg_net, ltcg_net = apply_stcg_loss_setoff(stcg_net, ltcg_net)
     return max(stcg_net, 0.0) * STCG_RATE + max(ltcg_net, 0.0) * LTCG_RATE
 
 
