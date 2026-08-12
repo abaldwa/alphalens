@@ -325,12 +325,26 @@ def _export_trade_csv(variant_id: str, transactions: List[Dict]) -> str:
     fields = [
         "ticker", "status", "buy_date", "buy_price", "buy_momentum_rank",
         "sell_date", "sell_price", "sell_momentum_rank", "holding_days",
+        # [AS BUILT 2026-08-09] return_pct: simple (non-annualized) %
+        # return, sell_price/buy_price - 1 -- distinct from the already-
+        # exported trade_cagr (annualized). exit_reason ("grace"/"stop"/
+        # "cash"/"tax"/"reset"/"open") was already on every transaction
+        # dict but wasn't exported before. Both feed the per-(strategy,
+        # year) trade drill-down and let a reader tell a genuine exit
+        # apart from a forced tax/reset sell (2026-08-10: "reset" added
+        # for the annual capital-reset income mode's forced withdrawals).
+        "return_pct", "exit_reason",
     ]
     with open(out_path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         for t in transactions:
-            writer.writerow(t)
+            row = dict(t)
+            if t.get("sell_price") is not None and t.get("buy_price"):
+                row["return_pct"] = (t["sell_price"] / t["buy_price"] - 1.0) * 100.0
+            else:
+                row["return_pct"] = None
+            writer.writerow(row)
     return out_path.name
 
 
