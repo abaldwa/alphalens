@@ -911,12 +911,12 @@ class MomentumBacktester:
                                 sold_this_boundary.add(candidate)
                             withdrawal = min(surplus, self.cash)
                             self.cash -= withdrawal
-                            result.cash_flows.append({"date": date_str, "amount": withdrawal})
+                            cash_flows.append({"date": date_str, "amount": withdrawal})
                         elif pre_reset_value < target:
                             injection = target - pre_reset_value
                             self.cash += injection
-                            result.total_contributed += injection
-                            result.cash_flows.append({"date": date_str, "amount": -injection})
+                            total_contributed += injection
+                            cash_flows.append({"date": date_str, "amount": -injection})
 
                         result.capital_resets.append({
                             "date": date_str,
