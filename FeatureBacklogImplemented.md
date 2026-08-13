@@ -6,7 +6,40 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 
 ## Status Matrix
 
-### Architectural
+### Frontend
+
+### FE2 — 1.5 MB single JS chunk — CLOSED 2026-08-13
+
+Every one of the 65 pages was statically imported into `src/app/router.tsx`,
+so the whole app plus recharts, lightweight-charts and TanStack compiled into
+one 1,503 kB chunk (418 kB gzipped). Opening the home page downloaded the DCF
+calculator, the TradingView widgets and the forensic screeners.
+
+Two changes, in that order:
+
+1. **Route-level lazy loading.** Routes use React Router's `lazy` instead of a
+   static import, so each page is its own chunk and a heavy dependency travels
+   only with the pages that use it. `HomePage` stays eager — it is the landing
+   route, and deferring it would show a blank frame on first paint for nothing.
+   This alone took the entry chunk to 744 kB and moved recharts (322 kB) and
+   lightweight-charts out of the initial download entirely.
+
+2. **Vendor chunks** (`vite.config.ts`, `advancedChunks`). This one is about
+   cache lifetime rather than bytes: React/TanStack/Radix change a few times a
+   year while app code changes daily, so bundling them together made every app
+   edit invalidate ~450 kB of unchanged framework for every user. Split, those
+   chunks keep their hashes across deploys. Deliberately coarse — one group per
+   family, not per library, since finer splitting trades a smaller invalidation
+   surface for more requests and these are upgraded together anyway.
+
+Result: entry chunk 1,503 kB -> 253 kB (418 -> 78 kB gzipped), 81 chunks, and
+Vite's >500 kB warning is gone. Initial payload for a cold visit is 775 kB raw
+across entry + three vendor chunks + CSS, against 1,503 kB before, and recharts
+is no longer fetched unless a chart page is opened.
+
+Verified: `tsc -b` 0 errors, `oxlint` 0 errors, build clean.
+
+## Architectural
 
 | ID | Item | Area | Status | Blocked On |
 |---|---|---|---|---|

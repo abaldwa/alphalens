@@ -2,160 +2,97 @@ import { createBrowserRouter } from 'react-router-dom'
 
 import { HomePage } from '@/pages/home/HomePage'
 
-import { TechnicalOverviewPage } from '@/pages/technical/overview'
-import { TechnicalWatchlistPage } from '@/pages/technical/watchlist'
-import { TechnicalScreenerPage } from '@/pages/technical/screener'
-import { TechnicalAlertsPage } from '@/pages/technical/alerts'
-import { TechnicalComparePage } from '@/pages/technical/compare'
-import { TechnicalChartPage } from '@/pages/technical/chart'
-import { TechnicalDeepDivePage } from '@/pages/technical/deep_dive'
-import { TechnicalPortfolioPage } from '@/pages/technical/portfolio'
-import { TechnicalExperimentationPage } from '@/pages/technical/experimentation'
-import { TechnicalRecommendedStrategiesPage } from '@/pages/technical/recommended-strategies'
-import { TechnicalComparisonPage } from '@/pages/technical/comparison'
-import { TechnicalBatchBacktestPage } from '@/pages/technical/batch-backtest'
-
-import { FundamentalPage } from '@/pages/fundamental/FundamentalPage'
-import { FundamentalScreenerPage } from '@/pages/fundamental/screener'
-import { FundamentalPeersPage } from '@/pages/fundamental/peers'
-import { FundamentalSectorPage } from '@/pages/fundamental/sector'
-import { FundamentalManagementPage } from '@/pages/fundamental/management'
-import { FundamentalThesisPage } from '@/pages/fundamental/thesis'
-import { FundamentalDeepDivePage } from '@/pages/fundamental/deep_dive'
-import { FundamentalStrategiesPage } from '@/pages/fundamental/strategies'
-
-import { ValuationPage } from '@/pages/valuation/ValuationPage'
-import { DcfPage } from '@/pages/valuation/dcf'
-import { RelativePage } from '@/pages/valuation/relative'
-import { BatchPage } from '@/pages/valuation/batch'
-import { AccuracyPage } from '@/pages/valuation/accuracy'
-
-import { ForensicPage } from '@/pages/forensic/ForensicPage'
-import { BenfordPage } from '@/pages/forensic/benford'
-import { CashflowPage } from '@/pages/forensic/cashflow'
-import { HeatmapPage } from '@/pages/forensic/heatmap'
-import { RedflagPage } from '@/pages/forensic/redflag'
-import { ReportPage } from '@/pages/forensic/report'
-import { UniversePage as ForensicUniversePage } from '@/pages/forensic/universe'
-
-import { MlPage } from '@/pages/ml/MlPage'
-import { MlSignalPage } from '@/pages/ml/signal'
-import { MlBacktestPage } from '@/pages/ml/backtest'
-import { MlHoldingsPage } from '@/pages/ml/holdings'
-import { MlPositionsPage } from '@/pages/ml/positions'
-import { MlMultibaggerPage } from '@/pages/ml/multibagger'
-import { MlSectorRotationPage } from '@/pages/ml/sector_rotation'
-import { MlExitUrgencyPage } from '@/pages/ml/exit_urgency'
-import { MlUniversePage } from '@/pages/ml/universe'
-import { MlToolsPage } from '@/pages/ml/tools'
-import { MlRegimePage } from '@/pages/ml/regime'
-
-import { MomentumUniversePage } from '@/pages/momentum/universe'
-import { MomentumPortfolioPage } from '@/pages/momentum/portfolio'
-import { MomentumRebalancePage } from '@/pages/momentum/rebalance'
-import { MomentumExperimentationPage } from '@/pages/momentum/experimentation'
-import { MomentumDynamicReportPage } from '@/pages/momentum/dynamic-report'
-import { MomentumRollingReturnsPage } from '@/pages/momentum/dynamic-report/rolling-returns'
-import { MomentumStrategySweepPage } from '@/pages/momentum/dynamic-report/strategy-sweep'
-import { MomentumYoyPage } from '@/pages/momentum/dynamic-report/yoy'
-import { MomentumIncomeModePage } from '@/pages/momentum/dynamic-report/income-mode'
-import { MomentumYoyMatrixPage } from '@/pages/momentum/dynamic-report/yoy-matrix'
-import { StrategyDeployPage } from '@/pages/momentum/StrategyDeployPage'
-
-import { BigInvestorsPage } from '@/pages/big_investors/BigInvestorsPage'
-import { BigInvestorsAnnouncementsPage } from '@/pages/big_investors/announcements'
-import { BigInvestorsMfHoldingsPage } from '@/pages/big_investors/mf_holdings'
-
-import { OpsPage } from '@/pages/ops/OpsPage'
-import { MacroPage } from '@/pages/macro/MacroPage'
-
-import { SymbolOverviewPage } from '@/pages/symbol/SymbolOverviewPage'
-
-import { BacktestPage } from '@/pages/backtest/BacktestPage'
-import { ExperimentsPage } from '@/pages/backtest/ExperimentsPage'
-import { RegimesPage } from '@/pages/backtest/RegimesPage'
-
 /**
  * Single route tree for the SPA (replaces the former Vite multi-HTML-entry
  * MPA -- one route per former `<section>-<sub>.html` page, same path
  * strings so NAV_SECTIONS hrefs keep working). `/charts` is new: the
  * Symbol Overview route driven by the global ticker store rather than a
  * `?ticker=` query param.
+ *
+ * [2026-08-13, FE2] Every page was statically imported here, which put all 65
+ * of them plus recharts, lightweight-charts and TanStack into ONE 1.5 MB
+ * chunk -- every visitor downloaded the DCF page, the TradingView charts and
+ * the forensic screeners to look at the home page.
+ *
+ * Routes now use React Router's `lazy`, so each page is its own chunk and a
+ * heavy dependency travels only with the pages that actually use it. HomePage
+ * stays eager: it is the landing route, and deferring it would show a blank
+ * frame on first paint for no benefit.
  */
 export const router = createBrowserRouter([
   { path: '/', element: <HomePage /> },
 
-  { path: '/technical-overview', element: <TechnicalOverviewPage /> },
-  { path: '/technical-watchlist', element: <TechnicalWatchlistPage /> },
-  { path: '/technical-screener', element: <TechnicalScreenerPage /> },
-  { path: '/technical-alerts', element: <TechnicalAlertsPage /> },
-  { path: '/technical-compare', element: <TechnicalComparePage /> },
-  { path: '/technical-chart', element: <TechnicalChartPage /> },
-  { path: '/technical-deep_dive', element: <TechnicalDeepDivePage /> },
-  { path: '/technical-portfolio', element: <TechnicalPortfolioPage /> },
-  { path: '/technical-experimentation', element: <TechnicalExperimentationPage /> },
-  { path: '/technical-recommended-strategies', element: <TechnicalRecommendedStrategiesPage /> },
-  { path: '/technical-comparison', element: <TechnicalComparisonPage /> },
-  { path: '/technical-batch-backtest', element: <TechnicalBatchBacktestPage /> },
+  { path: '/technical-overview', lazy: async () => ({ Component: (await import('@/pages/technical/overview')).TechnicalOverviewPage }) },
+  { path: '/technical-watchlist', lazy: async () => ({ Component: (await import('@/pages/technical/watchlist')).TechnicalWatchlistPage }) },
+  { path: '/technical-screener', lazy: async () => ({ Component: (await import('@/pages/technical/screener')).TechnicalScreenerPage }) },
+  { path: '/technical-alerts', lazy: async () => ({ Component: (await import('@/pages/technical/alerts')).TechnicalAlertsPage }) },
+  { path: '/technical-compare', lazy: async () => ({ Component: (await import('@/pages/technical/compare')).TechnicalComparePage }) },
+  { path: '/technical-chart', lazy: async () => ({ Component: (await import('@/pages/technical/chart')).TechnicalChartPage }) },
+  { path: '/technical-deep_dive', lazy: async () => ({ Component: (await import('@/pages/technical/deep_dive')).TechnicalDeepDivePage }) },
+  { path: '/technical-portfolio', lazy: async () => ({ Component: (await import('@/pages/technical/portfolio')).TechnicalPortfolioPage }) },
+  { path: '/technical-experimentation', lazy: async () => ({ Component: (await import('@/pages/technical/experimentation')).TechnicalExperimentationPage }) },
+  { path: '/technical-recommended-strategies', lazy: async () => ({ Component: (await import('@/pages/technical/recommended-strategies')).TechnicalRecommendedStrategiesPage }) },
+  { path: '/technical-comparison', lazy: async () => ({ Component: (await import('@/pages/technical/comparison')).TechnicalComparisonPage }) },
+  { path: '/technical-batch-backtest', lazy: async () => ({ Component: (await import('@/pages/technical/batch-backtest')).TechnicalBatchBacktestPage }) },
 
-  { path: '/fundamental', element: <FundamentalPage /> },
-  { path: '/fundamental-screener', element: <FundamentalScreenerPage /> },
-  { path: '/fundamental-peers', element: <FundamentalPeersPage /> },
-  { path: '/fundamental-sector', element: <FundamentalSectorPage /> },
-  { path: '/fundamental-management', element: <FundamentalManagementPage /> },
-  { path: '/fundamental-thesis', element: <FundamentalThesisPage /> },
-  { path: '/fundamental-deep_dive', element: <FundamentalDeepDivePage /> },
-  { path: '/fundamental-strategies', element: <FundamentalStrategiesPage /> },
+  { path: '/fundamental', lazy: async () => ({ Component: (await import('@/pages/fundamental/FundamentalPage')).FundamentalPage }) },
+  { path: '/fundamental-screener', lazy: async () => ({ Component: (await import('@/pages/fundamental/screener')).FundamentalScreenerPage }) },
+  { path: '/fundamental-peers', lazy: async () => ({ Component: (await import('@/pages/fundamental/peers')).FundamentalPeersPage }) },
+  { path: '/fundamental-sector', lazy: async () => ({ Component: (await import('@/pages/fundamental/sector')).FundamentalSectorPage }) },
+  { path: '/fundamental-management', lazy: async () => ({ Component: (await import('@/pages/fundamental/management')).FundamentalManagementPage }) },
+  { path: '/fundamental-thesis', lazy: async () => ({ Component: (await import('@/pages/fundamental/thesis')).FundamentalThesisPage }) },
+  { path: '/fundamental-deep_dive', lazy: async () => ({ Component: (await import('@/pages/fundamental/deep_dive')).FundamentalDeepDivePage }) },
+  { path: '/fundamental-strategies', lazy: async () => ({ Component: (await import('@/pages/fundamental/strategies')).FundamentalStrategiesPage }) },
 
-  { path: '/valuation', element: <ValuationPage /> },
-  { path: '/valuation-dcf', element: <DcfPage /> },
-  { path: '/valuation-relative', element: <RelativePage /> },
-  { path: '/valuation-batch', element: <BatchPage /> },
-  { path: '/valuation-accuracy', element: <AccuracyPage /> },
+  { path: '/valuation', lazy: async () => ({ Component: (await import('@/pages/valuation/ValuationPage')).ValuationPage }) },
+  { path: '/valuation-dcf', lazy: async () => ({ Component: (await import('@/pages/valuation/dcf')).DcfPage }) },
+  { path: '/valuation-relative', lazy: async () => ({ Component: (await import('@/pages/valuation/relative')).RelativePage }) },
+  { path: '/valuation-batch', lazy: async () => ({ Component: (await import('@/pages/valuation/batch')).BatchPage }) },
+  { path: '/valuation-accuracy', lazy: async () => ({ Component: (await import('@/pages/valuation/accuracy')).AccuracyPage }) },
 
-  { path: '/forensic', element: <ForensicPage /> },
-  { path: '/forensic-benford', element: <BenfordPage /> },
-  { path: '/forensic-cashflow', element: <CashflowPage /> },
-  { path: '/forensic-heatmap', element: <HeatmapPage /> },
-  { path: '/forensic-redflag', element: <RedflagPage /> },
-  { path: '/forensic-report', element: <ReportPage /> },
-  { path: '/forensic-universe', element: <ForensicUniversePage /> },
+  { path: '/forensic', lazy: async () => ({ Component: (await import('@/pages/forensic/ForensicPage')).ForensicPage }) },
+  { path: '/forensic-benford', lazy: async () => ({ Component: (await import('@/pages/forensic/benford')).BenfordPage }) },
+  { path: '/forensic-cashflow', lazy: async () => ({ Component: (await import('@/pages/forensic/cashflow')).CashflowPage }) },
+  { path: '/forensic-heatmap', lazy: async () => ({ Component: (await import('@/pages/forensic/heatmap')).HeatmapPage }) },
+  { path: '/forensic-redflag', lazy: async () => ({ Component: (await import('@/pages/forensic/redflag')).RedflagPage }) },
+  { path: '/forensic-report', lazy: async () => ({ Component: (await import('@/pages/forensic/report')).ReportPage }) },
+  { path: '/forensic-universe', lazy: async () => ({ Component: (await import('@/pages/forensic/universe')).UniversePage }) },
 
-  { path: '/ml', element: <MlPage /> },
-  { path: '/ml-signal', element: <MlSignalPage /> },
-  { path: '/ml-backtest', element: <MlBacktestPage /> },
-  { path: '/ml-holdings', element: <MlHoldingsPage /> },
-  { path: '/ml-positions', element: <MlPositionsPage /> },
-  { path: '/ml-multibagger', element: <MlMultibaggerPage /> },
-  { path: '/ml-sector_rotation', element: <MlSectorRotationPage /> },
-  { path: '/ml-exit_urgency', element: <MlExitUrgencyPage /> },
-  { path: '/ml-universe', element: <MlUniversePage /> },
-  { path: '/ml-tools', element: <MlToolsPage /> },
-  { path: '/ml-regime', element: <MlRegimePage /> },
+  { path: '/ml', lazy: async () => ({ Component: (await import('@/pages/ml/MlPage')).MlPage }) },
+  { path: '/ml-signal', lazy: async () => ({ Component: (await import('@/pages/ml/signal')).MlSignalPage }) },
+  { path: '/ml-backtest', lazy: async () => ({ Component: (await import('@/pages/ml/backtest')).MlBacktestPage }) },
+  { path: '/ml-holdings', lazy: async () => ({ Component: (await import('@/pages/ml/holdings')).MlHoldingsPage }) },
+  { path: '/ml-positions', lazy: async () => ({ Component: (await import('@/pages/ml/positions')).MlPositionsPage }) },
+  { path: '/ml-multibagger', lazy: async () => ({ Component: (await import('@/pages/ml/multibagger')).MlMultibaggerPage }) },
+  { path: '/ml-sector_rotation', lazy: async () => ({ Component: (await import('@/pages/ml/sector_rotation')).MlSectorRotationPage }) },
+  { path: '/ml-exit_urgency', lazy: async () => ({ Component: (await import('@/pages/ml/exit_urgency')).MlExitUrgencyPage }) },
+  { path: '/ml-universe', lazy: async () => ({ Component: (await import('@/pages/ml/universe')).MlUniversePage }) },
+  { path: '/ml-tools', lazy: async () => ({ Component: (await import('@/pages/ml/tools')).MlToolsPage }) },
+  { path: '/ml-regime', lazy: async () => ({ Component: (await import('@/pages/ml/regime')).MlRegimePage }) },
 
-  { path: '/momentum', element: <MomentumUniversePage /> },
-  { path: '/momentum-portfolio', element: <MomentumPortfolioPage /> },
-  { path: '/momentum-rebalance', element: <MomentumRebalancePage /> },
-  { path: '/momentum-universe', element: <MomentumUniversePage /> },
-  { path: '/momentum-experimentation', element: <MomentumExperimentationPage /> },
-  { path: '/momentum-dynamic-report', element: <MomentumDynamicReportPage /> },
-  { path: '/momentum-dynamic-report/rolling-returns', element: <MomentumRollingReturnsPage /> },
-  { path: '/momentum-dynamic-report/strategy-sweep', element: <MomentumStrategySweepPage /> },
-  { path: '/momentum-dynamic-report/yoy', element: <MomentumYoyPage /> },
-  { path: '/momentum-dynamic-report/income-mode', element: <MomentumIncomeModePage /> },
-  { path: '/momentum-dynamic-report/yoy-matrix', element: <MomentumYoyMatrixPage /> },
-  { path: '/momentum-deploy', element: <StrategyDeployPage /> },
+  { path: '/momentum', lazy: async () => ({ Component: (await import('@/pages/momentum/universe')).MomentumUniversePage }) },
+  { path: '/momentum-portfolio', lazy: async () => ({ Component: (await import('@/pages/momentum/portfolio')).MomentumPortfolioPage }) },
+  { path: '/momentum-rebalance', lazy: async () => ({ Component: (await import('@/pages/momentum/rebalance')).MomentumRebalancePage }) },
+  { path: '/momentum-universe', lazy: async () => ({ Component: (await import('@/pages/momentum/universe')).MomentumUniversePage }) },
+  { path: '/momentum-experimentation', lazy: async () => ({ Component: (await import('@/pages/momentum/experimentation')).MomentumExperimentationPage }) },
+  { path: '/momentum-dynamic-report', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report')).MomentumDynamicReportPage }) },
+  { path: '/momentum-dynamic-report/rolling-returns', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/rolling-returns')).MomentumRollingReturnsPage }) },
+  { path: '/momentum-dynamic-report/strategy-sweep', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/strategy-sweep')).MomentumStrategySweepPage }) },
+  { path: '/momentum-dynamic-report/yoy', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/yoy')).MomentumYoyPage }) },
+  { path: '/momentum-dynamic-report/income-mode', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/income-mode')).MomentumIncomeModePage }) },
+  { path: '/momentum-dynamic-report/yoy-matrix', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/yoy-matrix')).MomentumYoyMatrixPage }) },
+  { path: '/momentum-deploy', lazy: async () => ({ Component: (await import('@/pages/momentum/StrategyDeployPage')).StrategyDeployPage }) },
 
-  { path: '/big_investors', element: <BigInvestorsPage /> },
-  { path: '/big_investors-announcements', element: <BigInvestorsAnnouncementsPage /> },
-  { path: '/big_investors-mf_holdings', element: <BigInvestorsMfHoldingsPage /> },
+  { path: '/big_investors', lazy: async () => ({ Component: (await import('@/pages/big_investors/BigInvestorsPage')).BigInvestorsPage }) },
+  { path: '/big_investors-announcements', lazy: async () => ({ Component: (await import('@/pages/big_investors/announcements')).BigInvestorsAnnouncementsPage }) },
+  { path: '/big_investors-mf_holdings', lazy: async () => ({ Component: (await import('@/pages/big_investors/mf_holdings')).BigInvestorsMfHoldingsPage }) },
 
-  { path: '/backtest', element: <BacktestPage /> },
-  { path: '/backtest-experiments', element: <ExperimentsPage /> },
-  { path: '/backtest-regimes', element: <RegimesPage /> },
+  { path: '/backtest', lazy: async () => ({ Component: (await import('@/pages/backtest/BacktestPage')).BacktestPage }) },
+  { path: '/backtest-experiments', lazy: async () => ({ Component: (await import('@/pages/backtest/ExperimentsPage')).ExperimentsPage }) },
+  { path: '/backtest-regimes', lazy: async () => ({ Component: (await import('@/pages/backtest/RegimesPage')).RegimesPage }) },
 
-  { path: '/ops', element: <OpsPage /> },
-  { path: '/macro', element: <MacroPage /> },
+  { path: '/ops', lazy: async () => ({ Component: (await import('@/pages/ops/OpsPage')).OpsPage }) },
+  { path: '/macro', lazy: async () => ({ Component: (await import('@/pages/macro/MacroPage')).MacroPage }) },
 
-  { path: '/charts', element: <SymbolOverviewPage /> },
+  { path: '/charts', lazy: async () => ({ Component: (await import('@/pages/symbol/SymbolOverviewPage')).SymbolOverviewPage }) },
 ])
