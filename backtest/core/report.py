@@ -220,6 +220,43 @@ ORCHESTRATOR_PENDING = {
 }
 
 
+def _income_from_ledger(fy_ledger: Optional[List[Dict[str, Any]]]) -> Optional[IncomeMode]:
+    """Income-mode headline figures from the per-FY ledger (A88).
+
+    Only produced for capital_mode="annual_reset" runs, which are the only
+    ones with a ledger. Returning None elsewhere is deliberate: a lump-sum run
+    has no withdrawal behaviour, and reporting zeros would make it look like
+    an income strategy that never paid out.
+
+    `years_survived_pct` counts years that ended at or above the base without
+    needing a top-up. In the no-top-up variant that is the survival question
+    the whole variant exists to answer, since a run refunded every April
+    cannot go broke however badly it trades.
+    """
+    if not fy_ledger:
+        return None
+    n_years = len(fy_ledger)
+    withdrawn = sum(float(r.get("withdrawn") or 0.0) for r in fy_ledger)
+    topped_up = sum(float(r.get("topped_up") or 0.0) for r in fy_ledger)
+    survived = sum(
+        1
+        for r in fy_ledger
+        if not (r.get("topped_up") or 0.0) and not (r.get("topup_forgone") or 0.0)
+    )
+    return IncomeMode(
+        total_withdrawn=withdrawn,
+        total_injected=topped_up,
+        years_survived_pct=(survived / n_years) if n_years else None,
+        n_years=n_years,
+        # Read off the ledger rather than a config the report may not have:
+        # the two variants produce genuinely different trade books, so which
+        # one ran is a property of the result, not of the request.
+        top_up_after_loss=bool(fy_ledger[0].get("top_up_after_loss"))
+        if "top_up_after_loss" in fy_ledger[0]
+        else None,
+    )
+
+
 def from_run_result(
     result: Any,
     *,
@@ -332,6 +369,7 @@ def from_run_result(
                 if not r.get("partial")
             ],
         ),
+        income=_income_from_ledger(getattr(result, "fy_ledger", None)),
         equity_curve=list(getattr(result, "equity_curve", None) or []),
         benchmark_curve=list(getattr(result, "benchmark_curve", None) or []),
         trade_book_url=trade_book_url,
