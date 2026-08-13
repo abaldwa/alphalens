@@ -38,6 +38,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Protocol
 import pandas as pd
 
 from backtest.core.horizon import HorizonBucket, sizing_for
+from backtest.instrumentation import NullTimer, RunTimer
 from backtest.core.metrics import compute_metrics
 from backtest.core.portfolio import AnnualResetConfig, SipConfig, StrategyPortfolio
 from backtest.portfolio import Position, PortfolioSimulator
@@ -363,6 +364,11 @@ class OrchestratorConfig:
     # for, so the convention is now a decided, visible choice rather than a
     # silent one — see _resolve_execution_date below.
     execution_timing: Literal["same_day_close", "next_day_open"] = "same_day_close"
+    # STEP 3b: collect per-phase wall-clock timings (backtest/instrumentation.py).
+    # Default True — the overhead is a perf_counter pair per phase and the
+    # measurement is the whole point of the speed work. NOT related to
+    # execution_timing directly above, which is a fill-price policy.
+    collect_timings: bool = True
 
 
 class BacktestOrchestrator:
@@ -494,9 +500,85 @@ class BacktestOrchestrator:
                     self._market_cap_rank_maps_by_date[as_of_date] = {}
         return self._market_cap_rank_maps_by_date[as_of_date].get(ticker)
 
+    def _reconcile_corporate_actions(
+        self, portfolio, config: "OrchestratorConfig", as_of, data_gaps: List[DataGap],
+    ) -> None:
+        """Merger/spinoff swaps and delisting force-closes for one date.
+
+        Extracted from run()'s loop (2026-08-13, STEP 3b) so the phase can be
+        timed by wrapping ONE call rather than re-indenting sixty lines under a
+        `with` block. That mattered: a diff that simultaneously moves code and
+        changes its indentation is one no reviewer can check line-by-line, and
+        this block force-closes positions — the last place to accept an
+        unreviewable diff. Behaviour is unchanged; only the enclosing scope is.
+        """
+        # Corporate-action/delisting reconciliation BEFORE new sizing (Standard
+        # Backtesting Algorithm step 3b, Truthful Review Gap #4) — always runs,
+        # regardless of what the adapter's signals say this period.
+        #
+        # MERGER/SPINOFF checked FIRST, separately from delisting: a merged/
+        # spun-off company may never appear in delisted_companies at all (it
+        # didn't fail or get suspended, it stopped existing as a distinct
+        # security for a completely different reason), so this must not be
+        # folded into the is_delisted branch below.
+        if config.corporate_action_lookup is not None:
+            for ticker in list(portfolio.positions.keys()):
+                event = config.corporate_action_lookup(ticker, as_of)
+                if event is None or event.action_type not in ("MERGER", "SPINOFF"):
+                    continue
+                successor_price = (
+                    config.price_lookup(event.successor_ticker, as_of)
+                    if event.successor_ticker else None
+                )
+                if event.successor_ticker and event.swap_ratio and successor_price is not None:
+                    # Real swap data available: close the original and open the
+                    # successor position at the disclosed ratio — see
+                    # CorporateActionEvent's docstring; unexercised with today's
+                    # real data (no ingestion source populates these fields yet).
+                    old_position = portfolio.positions.get(ticker)
+                    quantity = old_position.quantity if old_position else 0
+                    # swap_ratio = new shares received per 1 old share; the
+                    # value received per old share is therefore
+                    # successor_price * swap_ratio, not successor_price alone.
+                    portfolio.force_close(ticker, successor_price * event.swap_ratio, as_of, reason=f"{event.action_type.lower()}_swap")
+                    new_quantity = int(quantity * event.swap_ratio)
+                    if new_quantity > 0:
+                        portfolio.positions[event.successor_ticker] = Position(
+                            ticker=event.successor_ticker,
+                            sector=config.sector_lookup(event.successor_ticker),
+                            quantity=new_quantity,
+                            entry_price=successor_price,
+                            entry_date=as_of,
+                        )
+                else:
+                    # No real successor/ratio data (the only reachable case
+                    # today) — the plan's documented "mark-to-last-price-and-
+                    # close" policy: realize P&L at the last known real price,
+                    # release capital, never fabricate a swap.
+                    price = config.price_lookup(ticker, as_of)
+                    if price is None:
+                        data_gaps.append(DataGap(ticker, as_of, f"{event.action_type.lower()}_and_no_close_price"))
+                        continue
+                    portfolio.force_close(ticker, price, as_of, reason=f"{event.action_type.lower()}_forced_close")
+
+        if config.is_delisted is not None:
+            for ticker in list(portfolio.positions.keys()):
+                if config.is_delisted(ticker, as_of):
+                    price = config.price_lookup(ticker, as_of)
+                    if price is None:
+                        data_gaps.append(DataGap(ticker, as_of, "delisted_and_no_close_price"))
+                        continue
+                    portfolio.force_close(ticker, price, as_of, reason="forced_close")
+
     def run(self, run: BacktestRun, adapter: StrategyAdapter, config: OrchestratorConfig) -> BacktestRunResult:
         if run.channel != adapter.channel:
             raise ValueError(f"run.channel={run.channel!r} does not match adapter.channel={adapter.channel!r}")
+
+        # STEP 3b instrumentation. On by default: one perf_counter pair per
+        # phase against phases measured in milliseconds, and the reason this
+        # refactor had no speed target is that no run has ever carried a
+        # timing. Set config.collect_timings=False to opt out.
+        timer = RunTimer() if config.collect_timings else NullTimer()
 
         sizing = sizing_for(run.horizon_bucket)
         cadence = config.rebalance_cadence_days or sizing.default_rebalance_cadence_days
@@ -592,74 +674,24 @@ class BacktestOrchestrator:
             # capital_mode="annual_reset".
             portfolio.apply_due_annual_reset(as_of, prices)
 
-            # Corporate-action/delisting reconciliation BEFORE new sizing (Standard
-            # Backtesting Algorithm step 3b, Truthful Review Gap #4) — always runs,
-            # regardless of what the adapter's signals say this period.
-            #
-            # MERGER/SPINOFF checked FIRST, separately from delisting: a merged/
-            # spun-off company may never appear in delisted_companies at all (it
-            # didn't fail or get suspended, it stopped existing as a distinct
-            # security for a completely different reason), so this must not be
-            # folded into the is_delisted branch below.
-            if config.corporate_action_lookup is not None:
-                for ticker in list(portfolio.positions.keys()):
-                    event = config.corporate_action_lookup(ticker, as_of)
-                    if event is None or event.action_type not in ("MERGER", "SPINOFF"):
-                        continue
-                    successor_price = (
-                        config.price_lookup(event.successor_ticker, as_of)
-                        if event.successor_ticker else None
-                    )
-                    if event.successor_ticker and event.swap_ratio and successor_price is not None:
-                        # Real swap data available: close the original and open the
-                        # successor position at the disclosed ratio — see
-                        # CorporateActionEvent's docstring; unexercised with today's
-                        # real data (no ingestion source populates these fields yet).
-                        old_position = portfolio.positions.get(ticker)
-                        quantity = old_position.quantity if old_position else 0
-                        # swap_ratio = new shares received per 1 old share; the
-                        # value received per old share is therefore
-                        # successor_price * swap_ratio, not successor_price alone.
-                        portfolio.force_close(ticker, successor_price * event.swap_ratio, as_of, reason=f"{event.action_type.lower()}_swap")
-                        new_quantity = int(quantity * event.swap_ratio)
-                        if new_quantity > 0:
-                            portfolio.positions[event.successor_ticker] = Position(
-                                ticker=event.successor_ticker,
-                                sector=config.sector_lookup(event.successor_ticker),
-                                quantity=new_quantity,
-                                entry_price=successor_price,
-                                entry_date=as_of,
-                            )
-                    else:
-                        # No real successor/ratio data (the only reachable case
-                        # today) — the plan's documented "mark-to-last-price-and-
-                        # close" policy: realize P&L at the last known real price,
-                        # release capital, never fabricate a swap.
-                        price = config.price_lookup(ticker, as_of)
-                        if price is None:
-                            data_gaps.append(DataGap(ticker, as_of, f"{event.action_type.lower()}_and_no_close_price"))
-                            continue
-                        portfolio.force_close(ticker, price, as_of, reason=f"{event.action_type.lower()}_forced_close")
+            with timer.phase("corp_actions"):
+                self._reconcile_corporate_actions(portfolio, config, as_of, data_gaps)
 
-            if config.is_delisted is not None:
-                for ticker in list(portfolio.positions.keys()):
-                    if config.is_delisted(ticker, as_of):
-                        price = config.price_lookup(ticker, as_of)
-                        if price is None:
-                            data_gaps.append(DataGap(ticker, as_of, "delisted_and_no_close_price"))
-                            continue
-                        portfolio.force_close(ticker, price, as_of, reason="forced_close")
-
-            universe = config.universe_provider(as_of)
-            signals = adapter.generate_signals(universe, as_of, run.horizon_bucket)
+            with timer.phase("universe"):
+                universe = config.universe_provider(as_of)
+            with timer.phase("signals"):
+                signals = adapter.generate_signals(universe, as_of, run.horizon_bucket)
 
             prices: Dict[str, float] = {}
-            for ticker in set(list(portfolio.positions.keys()) + [s.ticker for s in signals]):
-                price = config.price_lookup(ticker, as_of)
-                if price is not None:
-                    prices[ticker] = price
-                elif ticker in portfolio.positions:
-                    data_gaps.append(DataGap(ticker, as_of, "no_price_marking_open_position_at_last_known_price"))
+            with timer.phase("prices"):
+                for ticker in set(list(portfolio.positions.keys()) + [s.ticker for s in signals]):
+                    price = config.price_lookup(ticker, as_of)
+                    if price is not None:
+                        prices[ticker] = price
+                    elif ticker in portfolio.positions:
+                        data_gaps.append(
+                            DataGap(ticker, as_of, "no_price_marking_open_position_at_last_known_price")
+                        )
 
             for signal in signals:
                 self._log_feature(run.run_id, signal.ticker, as_of, run.horizon_bucket, adapter, signal.action)
@@ -767,17 +799,32 @@ class BacktestOrchestrator:
             # day, not just rebalance dates) — runs on rebalance days too,
             # AFTER rotation's own sells/buys, skipping any ticker rotation
             # already touched today via executed_tickers.
-            self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
+            with timer.phase("exit_policy"):
+                self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
 
-            portfolio.record_equity(as_of, prices)
+            with timer.phase("equity"):
+                portfolio.record_equity(as_of, prices)
 
         if self._feature_log_writer is not None:
             self._feature_log_writer.flush()
 
-        return self._finalize(
-            run, portfolio, data_gaps, distinct_tickers, config.trading_days, refit_log,
-            execution_timing=config.execution_timing,
-        )
+        with timer.phase("finalize"):
+            result = self._finalize(
+                run, portfolio, data_gaps, distinct_tickers, config.trading_days, refit_log,
+                execution_timing=config.execution_timing,
+            )
+        # Attached AFTER _finalize so the timing includes finalize itself. The
+        # field is named phase_timings, never `execution_timing` — that name is
+        # already taken by the fill-timing POLICY ("same_day_close" /
+        # "next_day_open"), and its resemblance to instrumentation is precisely
+        # why this project believed it had timings for months while having none.
+        # {} when disabled, never a zero-filled dict. A phase reading
+        # "0.000s, 0 calls" is indistinguishable from a phase that ran for free,
+        # and "we measured nothing" must not look like "everything was instant"
+        # — that ambiguity is a smaller version of the execution_timing
+        # confusion this step exists to fix.
+        result.phase_timings = timer.finish().as_dict() if config.collect_timings else {}
+        return result
 
     def _build_benchmark_curve(
         self, start_date: date_type, end_date: date_type, starting_capital: float,

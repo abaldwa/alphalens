@@ -111,6 +111,22 @@ class BacktestRunResult:
     # explicit, recorded choice (OrchestratorConfig.execution_timing) so
     # every report states which produced it.
     execution_timing: str = "same_day_close"
+    # STEP 3b (2026-08-13) — REAL per-phase wall-clock timings, from
+    # backtest/instrumentation.py::PhaseTimings.as_dict():
+    # {"total_seconds", "measured_seconds", "unattributed_seconds",
+    #  "phases": {name: {"seconds", "calls", "pct_of_measured", "ms_per_call"}}}.
+    #
+    # Note the deliberate name. `execution_timing` directly above is a FILL
+    # POLICY ("same_day_close" / "next_day_open") that has nothing to do with
+    # elapsed time — and because it reads like instrumentation and is recorded
+    # on every run, this project spent months believing it had timing data
+    # while all 500 historical runs carried none. That is why the backtest
+    # redesign's speed target was a guess. These two fields must never be
+    # conflated or merged.
+    #
+    # Empty for every run predating this field and for callers that set
+    # collect_timings=False.
+    phase_timings: Dict[str, Any] = field(default_factory=dict)
     # Per-Bull/Bear/Sideways-segment performance (backtest/core/
     # regime_breakdown.py) — [{"regime": "bull", "start_date": ..., "cagr":
     # ..., "win_rate": ..., "n_trades": ..., ...}, ...]. Empty when the
