@@ -38,6 +38,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from datastore.api.schemas import TAComparisonReportOut, TATradeBookOut
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/technical_backtest", tags=["Technical Backtest"])
@@ -164,8 +166,8 @@ async def get_filter_overlays_trigger_status(job_id: str) -> TriggerStatusRespon
 _COMPARISON_REPORT = Path(__file__).resolve().parents[3] / "backtest" / "reports" / "ta_comparison_2009.json"
 
 
-@router.get("/comparison")
-async def get_comparison() -> Dict[str, Any]:
+@router.get("/comparison", response_model=TAComparisonReportOut)
+async def get_comparison() -> TAComparisonReportOut:
     """The 2009-2026 Technical comparison dataset: every template x exit variant
     with CAGR/Sharpe/Sortino/Calmar, per-FY year-on-year returns, rolling
     2/3/4/5-year return distributions, and the annual-reset (income) ledger for
@@ -186,17 +188,21 @@ async def get_comparison() -> Dict[str, Any]:
         )
     data = json.loads(_COMPARISON_REPORT.read_text())
     data["report_file"] = _COMPARISON_REPORT.name
-    return data
+    # T14: validated rather than passed through, so a field renamed in
+    # ta_comparison_report.py fails here instead of silently rendering as a
+    # blank column in the UI (which is how six columns once stayed empty for
+    # a week — commit 2c430777).
+    return TAComparisonReportOut.model_validate(data)
 
 
-@router.get("/trade_book")
+@router.get("/trade_book", response_model=TATradeBookOut)
 async def get_trade_book(
     run_id: str,
     limit: int = 500,
     offset: int = 0,
     outcome: Optional[str] = None,
     financial_year: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> TATradeBookOut:
     """One run's trades, paginated, straight from backtest_trades.
 
     Paginated rather than whole because the store holds 1.85M rows and a single

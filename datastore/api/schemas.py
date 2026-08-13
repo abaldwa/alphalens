@@ -11,7 +11,7 @@ Single source of truth for API contracts across all endpoints.
 SOLID: Each schema is focused on one resource type.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -1838,3 +1838,157 @@ class BackdatedBuyResponse(BaseModel):
     quantity: Optional[int] = None
     executed: bool = False
     detail: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Technical backtest reports (T14)
+#
+# These six endpoints returned bare Dict[str, Any] read straight from report
+# files on disk, so the frontend's TypeScript interfaces were the only place
+# the shape was written down — and nothing checked that the writer still
+# matched them. A field renamed in backtest/ta_comparison_report.py would
+# surface as a blank column in the UI, which is how six columns once rendered
+# empty for a week (commit 2c430777).
+#
+# Every metric is Optional: these reports are generated per queue and older
+# ones genuinely lack newer fields. A required field here would make a
+# historical report unreadable rather than merely incomplete.
+# ---------------------------------------------------------------------------
+
+
+class TAFyReturnOut(BaseModel):
+    fy_label: str
+    return_pct: Optional[float] = None
+    partial: bool = False
+
+
+class TARollingWindowOut(BaseModel):
+    """best/median/worst are ALREADY ANNUALISED rates (percent per year).
+
+    ta_comparison_report.py computes ((e1 / e0) ** (1 / years) - 1) * 100 per
+    window. A consumer must convert percent -> fraction and nothing else;
+    annualising again understates by roughly the window length.
+    """
+
+    best_pct: Optional[float] = None
+    median_pct: Optional[float] = None
+    worst_pct: Optional[float] = None
+    positive_windows: int = 0
+    n_windows: int = 0
+
+
+class TATradeStatsOut(BaseModel):
+    n_closed: Optional[int] = None
+    win_rate_pct: Optional[float] = None
+    # Per-trade outcomes, not rates: a three-day trade has no annual return.
+    avg_win_pct: Optional[float] = None
+    avg_loss_pct: Optional[float] = None
+    payoff_ratio: Optional[float] = None
+    avg_hold_days: Optional[float] = None
+    avg_win_hold_days: Optional[float] = None
+    avg_loss_hold_days: Optional[float] = None
+    best_trade_pct: Optional[float] = None
+    worst_trade_pct: Optional[float] = None
+    expectancy_pct: Optional[float] = None
+
+
+class TAEquityPointOut(BaseModel):
+    date: str
+    index: float
+
+
+class TAComparisonLumpOut(BaseModel):
+    run_id: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    cagr_pct: Optional[float] = None
+    benchmark_cagr_pct: Optional[float] = None
+    benchmark_index_name: Optional[str] = Field(
+        default=None,
+        description="A98: which index this was compared against. Null on runs predating the split.",
+    )
+    sharpe: Optional[float] = None
+    sortino: Optional[float] = None
+    calmar: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
+    total_trades: Optional[int] = None
+    win_rate_pct: Optional[float] = None
+    profit_factor: Optional[float] = None
+    final_capital: Optional[float] = None
+    avg_days_held: Optional[float] = None
+    fy_returns: List[TAFyReturnOut] = Field(default_factory=list)
+    rolling_returns: Dict[str, TARollingWindowOut] = Field(default_factory=dict)
+    trade_log_path: Optional[str] = None
+    trade_stats: Optional[TATradeStatsOut] = None
+    equity_monthly: List[TAEquityPointOut] = Field(default_factory=list)
+
+
+class TAComparisonAnnualResetOut(BaseModel):
+    """`unverified` is currently always true — FY tax is reported but not
+    debited, so equity compounds tax-free. Clients must render the caveat, not
+    the bare numbers."""
+
+    run_id: Optional[str] = None
+    ltcg_rate: Optional[float] = None
+    ltcg_exemption: Optional[float] = None
+    n_financial_years: int = 0
+    withdrawn_pretax_total: float = 0.0
+    withdrawn_post_tax_total: float = 0.0
+    tax_paid_total: float = 0.0
+    topped_up_total: float = 0.0
+    net_extracted: float = 0.0
+    losing_years: int = 0
+    unverified: bool = True
+    unverified_reason: Optional[str] = None
+
+
+class TAComparisonStrategyOut(BaseModel):
+    template: str
+    exit_variant: Optional[str] = None
+    lump: Optional[TAComparisonLumpOut] = None
+    annual_reset: Dict[str, TAComparisonAnnualResetOut] = Field(default_factory=dict)
+
+
+class TAMeasure3StatusOut(BaseModel):
+    status: Optional[str] = None
+    reason: Optional[str] = None
+    affects: Optional[str] = None
+
+
+class TAComparisonReportOut(BaseModel):
+    n_runs: int = 0
+    n_strategies: int = 0
+    rolling_windows_years: List[float] = Field(default_factory=list)
+    measure_3_status: Optional[TAMeasure3StatusOut] = None
+    strategies: List[TAComparisonStrategyOut] = Field(default_factory=list)
+    report_file: Optional[str] = None
+
+
+class TATradeOut(BaseModel):
+    ticker: str
+    qty: Optional[float] = None
+    # Real date objects out of DuckDB, not strings. Typed as dates so FastAPI
+    # serialises them to ISO-8601 itself; declaring str here rejected them
+    # outright, which is how this contract earned its keep on the first run.
+    buy_date: Optional[date] = None
+    buy_price: Optional[float] = None
+    sale_date: Optional[date] = None
+    sale_price: Optional[float] = None
+    pnl_inr: Optional[float] = None
+    #: A FRACTION (-0.05 == -5%), and a trade outcome rather than a rate.
+    pnl_pct: Optional[float] = None
+    exit_reason: Optional[str] = None
+    holding_days: Optional[float] = None
+    financial_year: Optional[str] = None
+
+
+class TATradeBookOut(BaseModel):
+    run_id: str
+    total: int = 0
+    wins: int = 0
+    losses: int = 0
+    net_pnl_inr: float = 0.0
+    limit: int = 500
+    offset: int = 0
+    pnl_pct_is_fraction: bool = True
+    trades: List[TATradeOut] = Field(default_factory=list)
