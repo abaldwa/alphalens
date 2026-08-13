@@ -1968,3 +1968,25 @@ date — see the row-volume note in A94. All writes go through the existing
 The architectural invariants this establishes are recorded in `AGENTS.md`;
 the `tests/quality/` guard that enforces them is part of A95 and can only be
 switched on after all four channel migrations land.
+
+### derived_exit_params.json is stale after the corporate-action repair — 2026-08-13
+
+`backtest/config/derived_exit_params.json` (generated 2026-08-13T03:30Z)
+was derived from 349,497 unconstrained trades over 2009-04-01..2026-08-10,
+computed on PRE-repair prices. 104 of the 156 repaired corporate actions
+fall inside that window, across 89 tickers.
+
+This is not a cosmetic staleness. The stop/target/max-hold values are
+percentiles of the MAE/MFE distribution, and that distribution previously
+contained fabricated crashes of up to -90% from unapplied splits. Those
+fake excursions inflate the derived stop-loss and distort the MFE
+percentile that sets the target, so the params are biased by construction
+rather than merely out of date.
+
+Regeneration requires re-running the unconstrained variant and then
+`scripts/derive_exit_params_from_unconstrained.py`. Blocked pending the
+user's instruction to launch a backtest — do NOT run unprompted.
+
+Any backtest result produced before 2026-08-13 should be treated as
+computed on corrupted price data and re-run rather than compared against
+post-repair results.
