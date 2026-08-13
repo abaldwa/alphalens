@@ -572,8 +572,30 @@ def _fetch_current(c: Any, key: str) -> Optional[Dict[str, Any]]:
     return df.iloc[0].to_dict()
 
 
-def _decode_strategy(row: Dict[str, Any]) -> Dict[str, Any]:
+def _nulls(row: Dict[str, Any]) -> Dict[str, Any]:
+    """fetchdf() renders SQL NULL as pandas NaN/NaT, which is not None and
+    which every downstream consumer then has to defend against -- a NaN in an
+    Optional[date] field reaches Pydantic as a float and raises. Normalising
+    here means callers see None for "no value", which is what the schema says
+    they get.
+
+    valid_to is the field that matters: NULL there means "this is the current
+    version", so a NaN leaking through turns the live definition into an
+    unparseable row."""
     out = dict(row)
+    for k, v in out.items():
+        if v is None:
+            continue
+        # NaT and NaN are both != themselves; anything else is a real value.
+        if isinstance(v, float) and v != v:
+            out[k] = None
+        elif type(v).__name__ == "NaTType":
+            out[k] = None
+    return out
+
+
+def _decode_strategy(row: Dict[str, Any]) -> Dict[str, Any]:
+    out = _nulls(row)
     out["definition"] = json.loads(out.pop("definition_json"))
     out["entry_criterion"] = json.loads(out.pop("entry_criterion_json"))
     out["exit_criterion"] = json.loads(out.pop("exit_criterion_json"))
@@ -582,7 +604,7 @@ def _decode_strategy(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _decode_filter(row: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(row)
+    out = _nulls(row)
     out["params_schema"] = json.loads(out.pop("params_schema_json"))
     out["default_params"] = json.loads(out.pop("default_params_json"))
     out["applies_to_channels"] = _as_list(out.get("applies_to_channels"))

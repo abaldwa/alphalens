@@ -62,6 +62,7 @@ from .routers import (
     governance,
     holdings,
     indices,
+    strategies as strategy_registry_router,
     macro,
     models,
     momentum,
@@ -172,6 +173,9 @@ async def duckdb_lock_conflict_handler(request, exc: duckdb.IOException):
 app.include_router(system.router)
 app.include_router(ohlcv.router)
 app.include_router(indices.router)
+# A95: the registry is the single source of truth for what a strategy IS;
+# backtest, API and frontend all read these rows.
+app.include_router(strategy_registry_router.router)
 # [AS BUILT, P2.6] forensic.router and multibagger.router MUST be registered
 # before signals.router: their literal "/forensic/{ticker}" and
 # "/multibagger/{ticker}" paths would otherwise structurally collide with

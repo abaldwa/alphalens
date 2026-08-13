@@ -75,6 +75,15 @@ SOURCE_REF = (
 # Fundamental strategies rebalance on fundamentals, which update quarterly.
 EXIT_VARIANT = "rank_rebalance"
 
+# Mirrors backtest/adapters/fundamental_adapter.py's
+# _PRESETS_NEEDING_LIQUIDITY_FLOOR. Imported rather than duplicated so the two
+# cannot drift while the adapter still owns the runtime behaviour; once the
+# adapter reads filter_ids from the registry (A95) its copy is deleted and
+# this import goes with it.
+from backtest.adapters.fundamental_adapter import (  # noqa: E402
+    _PRESETS_NEEDING_LIQUIDITY_FLOOR as PRESETS_NEEDING_LIQUIDITY_FLOOR,
+)
+
 
 def preset_predicates(preset: str) -> List[Dict[str, Any]]:
     """Turn SCREENER_PRESETS[preset] into predicates, preserving the sign
@@ -168,11 +177,20 @@ def build_rows() -> List[Dict[str, Any]]:
                 "definition": definition,
                 "entry_criterion": entry,
                 "exit_criterion": {"variant": EXIT_VARIANT, "conditions": []},
-                # The liquidity floor is applied per-preset by the adapter's
-                # _PRESETS_NEEDING_LIQUIDITY_FLOOR rather than being part of a
-                # strategy's identity, so it attaches with the run config in
-                # A95 rather than being asserted here.
-                "filter_ids": [],
+                # market_cap_floor, NOT adtv_floor: the adapter gates on
+                # LIQUIDITY_FLOOR_MARKET_CAP_CR, which is a size threshold,
+                # not a traded-volume one. Both get called "the liquidity
+                # floor" in conversation and they are not the same filter.
+                #
+                # It IS part of these presets' identity rather than run
+                # config: _PRESETS_NEEDING_LIQUIDITY_FLOOR is keyed by preset
+                # name, so it applies to these three and no others, which a
+                # run-level filter could not express.
+                "filter_ids": (
+                    ["market_cap_floor"]
+                    if name in PRESETS_NEEDING_LIQUIDITY_FLOOR
+                    else []
+                ),
                 "status": "active",
                 "source_ref": SOURCE_REF,
             }
@@ -221,6 +239,9 @@ def _drift(existing: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
         "definition",
         "entry_criterion",
         "exit_criterion",
+        # filter_ids must be compared too, or a corrected filter assignment
+        # silently never reaches an already-registered row.
+        "filter_ids",
     ):
         if existing.get(field) != row[field]:
             changes[field] = row[field]

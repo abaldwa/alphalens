@@ -63,16 +63,56 @@ ALL_CHANNELS = ["momentum", "technical", "fundamental", "ml"]
 def build_filters() -> List[Dict[str, Any]]:
     """The filter definitions to seed. Pure, so --dry-run can show them."""
     from config.settings import MAX_ORDER_VS_ADTV, MIN_ADTV_CR
+    from systems.fundamental_analysis.quality.net_net import (
+        LIQUIDITY_FLOOR_MARKET_CAP_CR,
+    )
 
     return [
+        {
+            # A DIFFERENT CONCEPT from adtv_floor, despite both being called
+            # "the liquidity floor" in conversation. ADTV is how much of a
+            # stock trades; market cap is how big the company is. A large
+            # company can be thinly traded and a small one heavily traded, so
+            # collapsing the two would silently change which stocks three
+            # fundamental presets are allowed to hold.
+            "filter_id": "market_cap_floor",
+            "name": "Size floor (market cap)",
+            "description": (
+                "Exclude tickers at or below a market-capitalisation floor. "
+                "Applied by the fundamental adapter to small_cap_compounders, "
+                "smile and under_followed -- the presets that hunt small "
+                "companies and therefore need a floor under how small. "
+                "A market cap of 0 or a missing lookup means 'not yet sourced', "
+                "never 'genuinely tiny', and must not exclude."
+            ),
+            "filter_type": "universe",
+            "params_schema": {
+                "min_market_cap_cr": {
+                    "type": "float",
+                    "default": float(LIQUIDITY_FLOOR_MARKET_CAP_CR),
+                    "min": 0.0,
+                    "required": True,
+                    "unit": "INR crore",
+                }
+            },
+            "default_params": {
+                "min_market_cap_cr": float(LIQUIDITY_FLOOR_MARKET_CAP_CR)
+            },
+            "applies_to_channels": ["fundamental"],
+            "implementation_ref": (
+                "backtest.adapters.fundamental_adapter.FundamentalAdapter"
+            ),
+            "status": "active",
+        },
         {
             "filter_id": "adtv_floor",
             "name": "Liquidity floor (ADTV)",
             "description": (
                 "Exclude tickers whose 20-day trailing average daily traded value "
-                "is below the floor. Declared three times today: momentum passes "
-                "min_adtv_cr with a volume_panel, technical passes --min-adtv-cr, "
-                "fundamental hardcodes which presets need it."
+                "is below the floor. Declared twice today: momentum passes "
+                "min_adtv_cr with a volume_panel, technical passes --min-adtv-cr. "
+                "NOT what fundamental applies -- see market_cap_floor, which is a "
+                "size gate, not a liquidity one."
             ),
             "filter_type": "universe",
             "params_schema": {
