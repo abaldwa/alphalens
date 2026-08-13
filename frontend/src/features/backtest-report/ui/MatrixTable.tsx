@@ -24,17 +24,17 @@ import { useMemo, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 
-import { EM_DASH, rate } from '../format'
+import { EM_DASH, rate } from '../core/format'
 import {
-  RAG_CLASSES,
   classifyRag,
   periodCagr,
   ragCounts,
   type MatrixColumn,
   type MatrixValues,
   type RagBoundaries,
-} from '../matrix'
-import type { StrategyKey } from '../types'
+} from '../core/matrix'
+import type { StrategyKey } from '../core/types'
+import { RAG_CLASSES, RAG_TEXT_CLASSES } from './ragTheme'
 import { StrategyLink } from './StrategyLink'
 
 export interface MatrixRow {
@@ -184,7 +184,10 @@ export function MatrixTable({
                 key={band}
                 scope="col"
                 aria-sort={ariaSort(band)}
-                className={cn('px-2 py-1.5 text-right font-semibold', `text-${band}`)}
+                // Looked up, not interpolated: Tailwind extracts class names
+                // statically, so a `text-${band}` template would compile to
+                // nothing and the header would lose its colour.
+                className={cn('px-2 py-1.5 text-right font-semibold', RAG_TEXT_CLASSES[band])}
               >
                 <SortButton
                   sortKey={band}

@@ -16,7 +16,7 @@
  * that blocks submit.
  */
 
-import type { MomentumSetup, StrategyReport } from '../types'
+import type { MomentumSetup, StrategyReport } from './types'
 
 /** Mirrors ConfigFormData in pages/momentum/StrategyDeployPage.tsx. Kept
  * structural rather than imported to avoid the report feature depending on a

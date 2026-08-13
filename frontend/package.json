@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "selfcheck": "jiti src/features/backtest-report/selfcheck.ts"
+    "selfcheck": "jiti src/features/backtest-report/selfcheck.ts",
+    "check:layers": "node scripts/check-layers.mjs",
+    "verify": "npm run check:layers && tsc --noEmit && npm run lint && npm run selfcheck"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.19",

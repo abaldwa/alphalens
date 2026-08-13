@@ -22,10 +22,10 @@ import {
   WINDOW_LABELS,
   WINDOW_PRESETS,
   crossesUnreliableHistory,
-  type ReportParams,
   type WindowPreset,
-} from '../useReportParams'
-import type { ReturnMode, TaxBasis } from '../types'
+} from '../core/window'
+import type { ReportParams } from '../data/useReportParams'
+import type { BenchmarkOption, ReturnMode, TaxBasis } from '../core/types'
 
 type Patch = (patch: Partial<ReportParams>) => void
 
@@ -170,14 +170,6 @@ export function WindowSelector({
       ) : null}
     </div>
   )
-}
-
-export interface BenchmarkOption {
-  indexName: string
-  /** Traded across the whole window, as opposed to reaching it only through
-   * NSE's retrospective back-computation. */
-  live: boolean
-  caveat?: string | null
 }
 
 export function BenchmarkSelector({

@@ -10,7 +10,8 @@ import { Link } from 'react-router-dom'
 
 import { Button } from '@/lib/ui'
 
-import { prefillParam, useDeploySelection } from '../deploy/useDeploySelection'
+import { prefillParam } from '../core/prefill'
+import { useDeploySelection } from '../data/useDeploySelection'
 
 export function DeploySelectionBar() {
   const { selected, count, clear } = useDeploySelection()

@@ -22,14 +22,6 @@ export function classifyRag(v: number, b: RagBoundaries): RagBand {
   return 'amber'
 }
 
-/** RAG shading, kept beside the classifier so a band can never be added in
- * one place and forgotten in the other. */
-export const RAG_CLASSES: Record<RagBand, string> = {
-  red: 'bg-red/15 text-red',
-  amber: 'bg-amber/15 text-amber',
-  green: 'bg-green/15 text-green',
-}
-
 export interface MatrixColumn {
   key: string
   label: string

@@ -16,14 +16,14 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { AppShell, Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/lib/ui'
 import { cn } from '@/lib/utils'
 
-import { REPORT_SECTIONS } from '../sections'
-import type { ReportParams } from '../useReportParams'
+import { REPORT_SECTIONS } from './sections'
+import type { ReportParams } from '../data/useReportParams'
+import type { BenchmarkOption } from '../core/types'
 import {
   BenchmarkSelector,
   ModeToggle,
   TaxBasisToggle,
   WindowSelector,
-  type BenchmarkOption,
 } from './ReportControls'
 
 export interface ReportLayoutProps {

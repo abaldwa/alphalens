@@ -25,11 +25,11 @@ import {
   SelectValue,
   Label,
 } from '@/lib/ui'
-import { toConfigForm } from '@/features/backtest-report/deploy/toConfigForm'
-import { parsePrefillParam } from '@/features/backtest-report/deploy/useDeploySelection'
-import { strategyDetailUrl } from '@/features/backtest-report/strategyKey'
-import { rate, pct } from '@/features/backtest-report/format'
-import { useReportData } from '@/features/backtest-report/useReportData'
+import { toConfigForm } from '@/features/backtest-report/core/toConfigForm'
+import { parsePrefillParam } from '@/features/backtest-report/core/prefill'
+import { strategyDetailUrl } from '@/features/backtest-report/core/strategyKey'
+import { rate, pct } from '@/features/backtest-report/core/format'
+import { useReportData } from '@/features/backtest-report/data/useReportData'
 import { apiGet, apiPost, apiPut, apiDelete } from '@/shared/api/client'
 import type {
   MomentumStrategyConfigResponse,

@@ -20,7 +20,7 @@
 
 import { useCallback, useSyncExternalStore } from 'react'
 
-import type { StrategyKey } from '../types'
+import type { StrategyKey } from '../core/types'
 
 const STORAGE_KEY = 'backtest_report_deploy_selection'
 
@@ -84,17 +84,4 @@ export function useDeploySelection() {
   )
 
   return { selected, toggle, clear, isSelected, count: selected.length }
-}
-
-/** The ?prefill= value for the deploy page: keys in selection order. */
-export function prefillParam(keys: StrategyKey[]): string {
-  return keys.join(',')
-}
-
-export function parsePrefillParam(value: string | null): StrategyKey[] {
-  if (!value) return []
-  return value
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
 }

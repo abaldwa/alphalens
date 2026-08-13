@@ -15,9 +15,10 @@
 import { useMemo } from 'react'
 
 import { useReportData } from './useReportData'
-import { resolveWindow, useReportParams } from './useReportParams'
-import type { BenchmarkOption } from './components/ReportControls'
-import type { StrategyReport } from './types'
+import { resolveWindow } from '../core/window'
+import { useReportParams } from './useReportParams'
+
+import type { BenchmarkOption, StrategyReport } from '../core/types'
 
 /** True when the strategy's own run spans the requested window. */
 export function coversWindow(

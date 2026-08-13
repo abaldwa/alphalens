@@ -17,8 +17,8 @@ import { Link } from 'react-router-dom'
 
 import { cn } from '@/lib/utils'
 
-import { sectionUrl, strategyDetailUrl, type ReportSection } from '../strategyKey'
-import type { StrategyKey } from '../types'
+import { sectionUrl, strategyDetailUrl, type ReportSection } from '../core/strategyKey'
+import type { StrategyKey } from '../core/types'
 
 export interface StrategyLinkProps {
   strategyKey: StrategyKey

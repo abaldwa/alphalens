@@ -22,11 +22,11 @@ import {
   CardHeader,
   CardTitle,
 } from '@/lib/ui'
-import { MatrixTable } from '@/features/backtest-report/components/MatrixTable'
-import { TradesLink } from '@/features/backtest-report/components/TradesLink'
-import { EM_DASH, days, inr, num, pct, rate, rateDelta } from '@/features/backtest-report/format'
-import { useReportData } from '@/features/backtest-report/useReportData'
-import type { StrategyReport, StrategySetup } from '@/features/backtest-report/types'
+import { MatrixTable } from '@/features/backtest-report/ui/MatrixTable'
+import { TradesLink } from '@/features/backtest-report/ui/TradesLink'
+import { EM_DASH, days, inr, num, pct, rate, rateDelta } from '@/features/backtest-report/core/format'
+import { useReportData } from '@/features/backtest-report/data/useReportData'
+import type { StrategyReport, StrategySetup } from '@/features/backtest-report/core/types'
 
 function Field({
   label,

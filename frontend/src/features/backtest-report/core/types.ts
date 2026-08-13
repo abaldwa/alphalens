@@ -125,6 +125,15 @@ export type StrategySetup =
   | FundamentalSetup
   | MlSetup
 
+/** A selectable benchmark index for the current window. `live` distinguishes
+ * an index that was actually trading throughout from one that reaches the
+ * window only through NSE's retrospective back-computation (A104). */
+export interface BenchmarkOption {
+  indexName: string
+  live: boolean
+  caveat?: string | null
+}
+
 // ---------------------------------------------------------------------------
 // metric groups
 // ---------------------------------------------------------------------------

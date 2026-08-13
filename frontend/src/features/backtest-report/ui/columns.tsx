@@ -25,10 +25,10 @@ import type { ColumnDef } from '@tanstack/react-table'
 
 import { Badge } from '@/lib/ui'
 
-import { StrategyLink } from './components/StrategyLink'
-import { TradesLink } from './components/TradesLink'
-import { EM_DASH, days, inr, int, num, pct, rate, rateDelta } from './format'
-import type { StrategyReport, TaxBasis } from './types'
+import { StrategyLink } from './StrategyLink'
+import { TradesLink } from './TradesLink'
+import { EM_DASH, days, inr, int, num, pct, rate, rateDelta } from '../core/format'
+import type { StrategyReport, TaxBasis } from '../core/types'
 
 type Col = ColumnDef<StrategyReport, unknown>
 

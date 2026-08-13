@@ -24,13 +24,13 @@ import {
   setupColumns,
   tradeQualityColumns,
   tradesColumn,
-} from '@/features/backtest-report/columns'
-import { DeploySelectionBar } from '@/features/backtest-report/components/DeploySelection'
-import { useDeployColumn } from '@/features/backtest-report/deploy/deployColumn'
-import { MatrixTable } from '@/features/backtest-report/components/MatrixTable'
-import { ReportLayout } from '@/features/backtest-report/components/ReportLayout'
-import { layoutProps } from '@/features/backtest-report/sections'
-import { useReportPage } from '@/features/backtest-report/useReportPage'
+} from '@/features/backtest-report/ui/columns'
+import { DeploySelectionBar } from '@/features/backtest-report/ui/DeploySelection'
+import { useDeployColumn } from '@/features/backtest-report/ui/deployColumn'
+import { MatrixTable } from '@/features/backtest-report/ui/MatrixTable'
+import { ReportLayout } from '@/features/backtest-report/ui/ReportLayout'
+import { layoutProps } from '@/features/backtest-report/ui/sections'
+import { useReportPage } from '@/features/backtest-report/data/useReportPage'
 
 /** Rows excluded by the window selector are counted, not hidden silently —
  * "12 strategies aren't shown" is information; a shorter table is not. */

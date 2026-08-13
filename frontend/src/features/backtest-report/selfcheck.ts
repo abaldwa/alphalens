@@ -31,19 +31,19 @@ import {
   sectionUrl,
   shortLabel,
   strategyDetailUrl,
-} from './strategyKey.ts'
-import { EM_DASH, inr, pct, rate, rateDelta } from './format.ts'
-import { classifyRag, periodCagr, ragCounts } from './matrix.ts'
-import { crossesUnreliableHistory, resolveWindow } from './useReportParams.ts'
-import { toConfigForm } from './deploy/toConfigForm.ts'
-import { parsePrefillParam, prefillParam } from './deploy/useDeploySelection.ts'
-import { adaptMomentumReport, adaptMomentumVariant } from './adapters/momentum.ts'
+} from './core/strategyKey.ts'
+import { EM_DASH, inr, pct, rate, rateDelta } from './core/format.ts'
+import { classifyRag, periodCagr, ragCounts } from './core/matrix.ts'
+import { crossesUnreliableHistory, resolveWindow } from './core/window.ts'
+import { toConfigForm } from './core/toConfigForm.ts'
+import { parsePrefillParam, prefillParam } from './core/prefill.ts'
+import { adaptMomentumReport, adaptMomentumVariant } from './core/adapters/momentum.ts'
 import {
   adaptTechnicalReport,
   adaptTechnicalStrategy,
   incomeIsUnverified,
-} from './adapters/technical.ts'
-import { adaptMlRuns, adaptRun, adaptRuns, horizonDays, yearsBetween } from './adapters/runs.ts'
+} from './core/adapters/technical.ts'
+import { adaptMlRuns, adaptRun, adaptRuns, horizonDays, yearsBetween } from './core/adapters/runs.ts'
 import {
   PERSONAS,
   evaluatePersona,
@@ -52,8 +52,8 @@ import {
   rollingPositiveShare,
   worstYear,
   yoyPositiveShare,
-} from './recommendations.ts'
-import type { StrategyReport } from './types.ts'
+} from './core/recommendations.ts'
+import type { StrategyReport } from './core/types.ts'
 
 let failures = 0
 let checks = 0

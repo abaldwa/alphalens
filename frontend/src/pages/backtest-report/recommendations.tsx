@@ -26,20 +26,20 @@ import {
   CardHeader,
   CardTitle,
 } from '@/lib/ui'
-import { StrategyLink } from '@/features/backtest-report/components/StrategyLink'
-import { TradesLink } from '@/features/backtest-report/components/TradesLink'
-import { ReportLayout } from '@/features/backtest-report/components/ReportLayout'
-import { cagrOn } from '@/features/backtest-report/columns'
-import { EM_DASH, inr, num, pct, rate } from '@/features/backtest-report/format'
+import { StrategyLink } from '@/features/backtest-report/ui/StrategyLink'
+import { TradesLink } from '@/features/backtest-report/ui/TradesLink'
+import { ReportLayout } from '@/features/backtest-report/ui/ReportLayout'
+import { cagrOn } from '@/features/backtest-report/ui/columns'
+import { EM_DASH, inr, num, pct, rate } from '@/features/backtest-report/core/format'
 import {
   PERSONAS,
   PERSONA_ORDER,
   recommendAll,
   type PersonaId,
   type Recommendation,
-} from '@/features/backtest-report/recommendations'
-import { layoutProps } from '@/features/backtest-report/sections'
-import { useReportPage } from '@/features/backtest-report/useReportPage'
+} from '@/features/backtest-report/core/recommendations'
+import { layoutProps } from '@/features/backtest-report/ui/sections'
+import { useReportPage } from '@/features/backtest-report/data/useReportPage'
 
 const TOP_N = 5
 

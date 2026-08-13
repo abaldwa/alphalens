@@ -6,8 +6,8 @@
  * section list has one definition feeding both the sub-nav and the hub.
  */
 
-import type { ReportParams } from './useReportParams'
-import type { BenchmarkOption } from './components/ReportControls'
+import type { ReportParams } from '../data/useReportParams'
+import type { BenchmarkOption } from '../core/types'
 
 export const REPORT_SECTIONS: Array<{ path: string; label: string }> = [
   { path: '/backtest-report', label: 'Overview' },

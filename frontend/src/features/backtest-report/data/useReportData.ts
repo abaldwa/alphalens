@@ -27,10 +27,10 @@ import type { TAComparisonReport } from '@/pages/technical/types'
 import { listBacktestRuns } from '@/shared/api/backtest'
 import { apiGet } from '@/shared/api/client'
 
-import { adaptMomentumReport } from './adapters/momentum'
-import { adaptTechnicalReport } from './adapters/technical'
-import { adaptRuns } from './adapters/runs'
-import type { Channel, StrategyReport } from './types'
+import { adaptMomentumReport } from '../core/adapters/momentum'
+import { adaptTechnicalReport } from '../core/adapters/technical'
+import { adaptRuns } from '../core/adapters/runs'
+import type { Channel, StrategyReport } from '../core/types'
 
 export interface IndexOption {
   index_name: string

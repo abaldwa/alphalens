@@ -20,18 +20,18 @@ import {
   CardHeader,
   CardTitle,
 } from '@/lib/ui'
-import { ReportLayout } from '@/features/backtest-report/components/ReportLayout'
-import { StrategyLink } from '@/features/backtest-report/components/StrategyLink'
-import { cagrOn } from '@/features/backtest-report/columns'
-import { pct, rate } from '@/features/backtest-report/format'
+import { ReportLayout } from '@/features/backtest-report/ui/ReportLayout'
+import { StrategyLink } from '@/features/backtest-report/ui/StrategyLink'
+import { cagrOn } from '@/features/backtest-report/ui/columns'
+import { pct, rate } from '@/features/backtest-report/core/format'
 import {
   PERSONAS,
   PERSONA_ORDER,
   recommendAll,
-} from '@/features/backtest-report/recommendations'
-import { CHANNELS } from '@/features/backtest-report/strategyKey'
-import { REPORT_SECTIONS, layoutProps } from '@/features/backtest-report/sections'
-import { useReportPage } from '@/features/backtest-report/useReportPage'
+} from '@/features/backtest-report/core/recommendations'
+import { CHANNELS } from '@/features/backtest-report/core/strategyKey'
+import { REPORT_SECTIONS, layoutProps } from '@/features/backtest-report/ui/sections'
+import { useReportPage } from '@/features/backtest-report/data/useReportPage'
 
 export function BacktestReportHubPage() {
   const page = useReportPage()

@@ -11,9 +11,9 @@
 
 import type { ColumnDef } from '@tanstack/react-table'
 
-import type { StrategyReport } from '../types'
-import { deployBlockedReason, isDeployable } from './toConfigForm'
-import { useDeploySelection } from './useDeploySelection'
+import type { StrategyReport } from '../core/types'
+import { deployBlockedReason, isDeployable } from '../core/toConfigForm'
+import { useDeploySelection } from '../data/useDeploySelection'
 
 /** Checkbox column, appended to any section's table. */
 export function useDeployColumn(): ColumnDef<StrategyReport, unknown> {
