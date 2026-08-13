@@ -195,13 +195,28 @@ def usable_benchmarks(
     coverage: Dict[str, IndexCoverage],
     *,
     require_fresh: bool = True,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    require_live: bool = True,
 ) -> List[str]:
-    """Indices fit to be offered as a benchmark.
+    """Indices fit to be offered as a benchmark, for a given window.
 
-    require_fresh implements the rule that only indices the daily pipeline
-    actually keeps current are offered for returns comparison: an index that
-    stopped updating would otherwise produce a benchmark CAGR measured over a
-    shorter period than the strategy, with no visible sign of it.
+    require_fresh: only indices the daily pipeline actually keeps current. An
+        index that stopped updating would otherwise produce a benchmark CAGR
+        measured over a shorter period than the strategy, with no visible sign.
+
+    start/end + require_live: the window-dependent rule. An index is offered
+        only if it was actually TRADING across the whole window, not merely
+        present in the table -- NSE back-computes a series before it launched,
+        and those rows are indistinguishable from live ones apart from a null
+        Open. Which indices qualify therefore depends on the window chosen:
+
+            2020-2026  Smallcap 250 (live 2019-01-14) qualifies
+            2009-2026  it does not; the first ten years never traded
+
+        With require_live=False the back-computed span is allowed and the
+        caller is expected to surface comparison_caveat() alongside the
+        number. Without a window, this degrades to the freshness check only.
     """
     out = []
     for name in BROAD_INDICES + SIZE_INDICES:
@@ -210,8 +225,74 @@ def usable_benchmarks(
             continue
         if require_fresh and not cov.is_fresh:
             continue
+        if start and end:
+            if not cov.covers(start, end):
+                continue
+            if require_live and not cov.is_live_over(start, end):
+                continue
         out.append(name)
     return out
+
+
+def benchmark_options(
+    coverage: Dict[str, IndexCoverage],
+    start: date,
+    end: date,
+    *,
+    preferred: Optional[str] = None,
+) -> Dict[str, object]:
+    """Everything the UI benchmark selector needs for one window.
+
+    Returns the indices that traded across the whole window ("live"), those
+    that only reach it via back-computed history ("backcomputed", offered but
+    caveated), and a recommendation.
+
+    The recommendation deliberately prefers a size-matched index that was
+    LIVE over a size-matched one that was not: comparing a small-cap strategy
+    to Nifty 500 mismeasures it by the size spread, but comparing it to an
+    index that did not exist for two-thirds of the window mismeasures it by
+    an unknown amount, and only one of those two errors is quantifiable.
+    """
+    live = usable_benchmarks(coverage, start=start, end=end, require_live=True)
+    all_covering = usable_benchmarks(coverage, start=start, end=end, require_live=False)
+    backcomputed = [n for n in all_covering if n not in live]
+
+    if preferred and preferred in live:
+        recommended = preferred
+    elif preferred and preferred in backcomputed:
+        # Size-matched but not live over this window. Prefer the nearest
+        # live size index, else fall back to broad.
+        recommended = _nearest_live_size_index(preferred, live) or _first_live_broad(live)
+    else:
+        recommended = _first_live_broad(live) or (live[0] if live else None)
+
+    return {
+        "live": live,
+        "backcomputed": backcomputed,
+        "recommended": recommended,
+        "preferred_available": preferred in live if preferred else None,
+    }
+
+
+def _nearest_live_size_index(preferred: str, live: List[str]) -> Optional[str]:
+    """The closest size index by rank order that is live over the window.
+    SIZE_INDICES is ordered small -> large, so this walks outward from the
+    preferred one rather than jumping straight to a broad index."""
+    if preferred not in SIZE_INDICES:
+        return None
+    i = SIZE_INDICES.index(preferred)
+    for offset in range(1, len(SIZE_INDICES)):
+        for j in (i + offset, i - offset):
+            if 0 <= j < len(SIZE_INDICES) and SIZE_INDICES[j] in live:
+                return SIZE_INDICES[j]
+    return None
+
+
+def _first_live_broad(live: List[str]) -> Optional[str]:
+    for name in BROAD_INDICES:
+        if name in live:
+            return name
+    return None
 
 
 def default_benchmark_for(

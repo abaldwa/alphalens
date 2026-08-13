@@ -16,6 +16,7 @@ from datetime import date, timedelta
 import pytest
 
 from config.benchmarks import (
+    benchmark_options,
     DEFAULT_BENCHMARK_INDEX,
     DEFAULT_REGIME_INDEX,
     RANK_BAND_BENCHMARKS,
@@ -161,3 +162,84 @@ class TestDefaultSelection:
         also changed which regimes the strategy was allowed to trade in."""
         assert DEFAULT_REGIME_INDEX == "Nifty 500"
         assert default_benchmark_for(channel="momentum", rank_band=1) != DEFAULT_REGIME_INDEX
+
+
+class TestWindowDependentOptions:
+    """Which indices may serve as a benchmark depends on the window, because
+    NSE back-computes a series before it launched and those rows look exactly
+    like live ones apart from a null Open."""
+
+    @staticmethod
+    def _coverage():
+        return {
+            "Nifty 50": _cov("Nifty 50"),
+            "Nifty 500": _cov("Nifty 500"),
+            "Nifty Next 50": _cov("Nifty Next 50", first=date(2008, 1, 1),
+                                  live_from=date(2008, 1, 1)),
+            "Nifty Midcap 100": _cov("Nifty Midcap 100", first=date(2008, 1, 1),
+                                     live_from=date(2008, 1, 1)),
+            "Nifty Midcap 150": _cov("Nifty Midcap 150", first=date(2008, 1, 1),
+                                     live_from=date(2019, 1, 14), backcomputed=2731),
+            "Nifty Smallcap 250": _cov("Nifty Smallcap 250", first=date(2008, 1, 1),
+                                       live_from=date(2019, 1, 14), backcomputed=2731),
+            "Nifty Microcap 250": _cov("Nifty Microcap 250", first=date(2008, 1, 1),
+                                       live_from=date(2022, 1, 10), backcomputed=3472),
+        }
+
+    def test_recent_window_admits_the_2019_indices(self):
+        opts = benchmark_options(self._coverage(), date(2020, 1, 1), TODAY)
+        assert "Nifty Midcap 150" in opts["live"]
+        assert "Nifty Smallcap 250" in opts["live"]
+
+    def test_long_window_excludes_them(self):
+        """Over 2009-2026 those indices did not trade for the first decade."""
+        opts = benchmark_options(self._coverage(), date(2009, 4, 1), TODAY)
+        assert "Nifty Midcap 150" not in opts["live"]
+        assert "Nifty Midcap 150" in opts["backcomputed"]
+        assert "Nifty Microcap 250" in opts["backcomputed"]
+
+    def test_indices_live_throughout_qualify_on_any_window(self):
+        for start in (date(2009, 4, 1), date(2020, 1, 1)):
+            live = benchmark_options(self._coverage(), start, TODAY)["live"]
+            assert {"Nifty 50", "Nifty Midcap 100", "Nifty Next 50"} <= set(live)
+
+    def test_preferred_index_used_when_it_traded(self):
+        opts = benchmark_options(
+            self._coverage(), date(2020, 1, 1), TODAY, preferred="Nifty Midcap 150"
+        )
+        assert opts["recommended"] == "Nifty Midcap 150"
+        assert opts["preferred_available"] is True
+
+    def test_falls_back_to_the_nearest_live_size_index(self):
+        """Not straight to a broad index: comparing a mid-cap strategy to
+        Nifty 500 mismeasures it by the size spread, where Midcap 100 is
+        adjacent AND traded throughout."""
+        opts = benchmark_options(
+            self._coverage(), date(2009, 4, 1), TODAY, preferred="Nifty Midcap 150"
+        )
+        assert opts["preferred_available"] is False
+        assert opts["recommended"] == "Nifty Midcap 100"
+
+    def test_broad_fallback_when_no_size_index_traded(self):
+        coverage = {
+            "Nifty 500": _cov("Nifty 500"),
+            "Nifty Smallcap 250": _cov("Nifty Smallcap 250", first=date(2008, 1, 1),
+                                       live_from=date(2019, 1, 14), backcomputed=2731),
+        }
+        opts = benchmark_options(
+            coverage, date(2009, 4, 1), TODAY, preferred="Nifty Smallcap 250"
+        )
+        assert opts["recommended"] == "Nifty 500"
+
+    def test_backcomputed_options_are_offered_not_hidden(self):
+        """The user may still choose one deliberately; it just carries a
+        caveat rather than disappearing."""
+        opts = benchmark_options(self._coverage(), date(2009, 4, 1), TODAY)
+        assert opts["backcomputed"]
+        assert set(opts["backcomputed"]).isdisjoint(opts["live"])
+
+    def test_window_shorter_than_history_still_excludes_uncovered_indices(self):
+        coverage = {"Nifty 50": _cov("Nifty 50", first=date(2015, 1, 1),
+                                     live_from=date(2015, 1, 1))}
+        opts = benchmark_options(coverage, date(2009, 4, 1), TODAY)
+        assert opts["live"] == []

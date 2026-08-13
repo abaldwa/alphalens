@@ -69,6 +69,25 @@ class IndexListResponse(BaseModel):
             "separate choice from the benchmark (A98)."
         )
     )
+    live_over_window: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Indices that were actually trading across the whole requested "
+            "window. Only set when start_date and end_date are supplied."
+        ),
+    )
+    backcomputed_over_window: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Indices that reach the window only via NSE's retrospective "
+            "back-computation. Selectable, but every figure derived from them "
+            "carries a caveat."
+        ),
+    )
+    recommended_benchmark: Optional[str] = Field(
+        default=None,
+        description="Best benchmark for this window, preferring a live series.",
+    )
 
 
 def _kind(name: str) -> str:
@@ -92,8 +111,20 @@ def list_indices(
             "default so they are not offered for returns comparison."
         ),
     ),
+    preferred: Optional[str] = Query(
+        None,
+        description=(
+            "The size-matched index this strategy would ideally use. If it did "
+            "not trade across the window, the response recommends the nearest "
+            "index that did."
+        ),
+    ),
 ) -> IndexListResponse:
-    from config.benchmarks import DEFAULT_BENCHMARK_INDEX, DEFAULT_REGIME_INDEX
+    from config.benchmarks import (
+        DEFAULT_BENCHMARK_INDEX,
+        DEFAULT_REGIME_INDEX,
+        benchmark_options,
+    )
 
     # persist=False is required of every router call site: a cached connection
     # holds the DuckDB file locked open for the life of the API process, which
@@ -102,7 +133,20 @@ def list_indices(
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         coverage = load_coverage(conn)
 
-    usable = set(usable_benchmarks(coverage, require_fresh=not include_stale))
+    live: List[str] = []
+    backcomputed: List[str] = []
+    recommended: Optional[str] = None
+    if start_date and end_date:
+        opts = benchmark_options(coverage, start_date, end_date, preferred=preferred)
+        live = opts["live"]
+        backcomputed = opts["backcomputed"]
+        recommended = opts["recommended"]
+        # Over a window, "usable" means the index actually traded then.
+        # Anything reachable only through back-computation stays selectable
+        # but is reported separately, so the UI marks it rather than hides it.
+        usable = set(live)
+    else:
+        usable = set(usable_benchmarks(coverage, require_fresh=not include_stale))
 
     out: List[IndexInfo] = []
     for name, cov in sorted(coverage.items()):
@@ -132,4 +176,7 @@ def list_indices(
         indices=out,
         default_benchmark=DEFAULT_BENCHMARK_INDEX,
         regime_index=DEFAULT_REGIME_INDEX,
+        live_over_window=live,
+        backcomputed_over_window=backcomputed,
+        recommended_benchmark=recommended,
     )
