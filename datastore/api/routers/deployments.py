@@ -150,7 +150,10 @@ def create_deployment(body: DeploymentCreate) -> DeploymentOut:
     version = int(strategy["version"])
     channel = strategy["channel"]
 
-    with get_duckdb_connection(_db(), persist=False) as conn:
+    # read_only=False stated explicitly: this endpoint genuinely writes, and
+    # the connection-discipline gate requires the intent to be visible rather
+    # than inherited from a default.
+    with get_duckdb_connection(_db(), read_only=False, persist=False) as conn:
         # The rule the schema cannot express: DuckDB has no partial unique
         # index, and putting is_active in a plain UNIQUE would forbid a second
         # RETIRED deployment and destroy the history. Two active deployments
@@ -204,7 +207,10 @@ def create_deployment(body: DeploymentCreate) -> DeploymentOut:
 def deactivate_deployment(deployment_id: int) -> DeploymentOut:
     """Retire a deployment. The row is kept, not deleted: a live position's
     history is the audit trail for every trade it produced."""
-    with get_duckdb_connection(_db(), persist=False) as conn:
+    # read_only=False stated explicitly: this endpoint genuinely writes, and
+    # the connection-discipline gate requires the intent to be visible rather
+    # than inherited from a default.
+    with get_duckdb_connection(_db(), read_only=False, persist=False) as conn:
         found = conn.execute(
             "SELECT deployment_id FROM strategy_deployments WHERE deployment_id = ?",
             [deployment_id],
