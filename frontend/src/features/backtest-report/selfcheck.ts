@@ -36,7 +36,6 @@ import { adaptMomentumReport, adaptMomentumVariant } from './adapters/momentum.t
 import {
   adaptTechnicalReport,
   adaptTechnicalStrategy,
-  annualise,
   incomeIsUnverified,
 } from './adapters/technical.ts'
 import { adaptMlRuns, adaptRun, adaptRuns, horizonDays, yearsBetween } from './adapters/runs.ts'
@@ -452,17 +451,11 @@ eq(Object.keys(all).sort(), ['conservative', 'high_risk', 'moderate'], 'three pe
 section('technical adapter')
 // ---------------------------------------------------------------------------
 
-// The single most consequential conversion in the module: Technical reports
-// median TOTAL return per rolling window, Momentum annualised CAGR. A 3-year
-// window returning 33% total is 10%/yr -- placed side by side untouched,
-// Technical would look three times better than it is.
-eq(Math.round((annualise(33.1, 3) ?? 0) * 1000) / 1000, 0.1, '33.1% over 3y annualises to ~10%/yr')
-eq(annualise(0, 5), 0, 'a flat window annualises to zero')
-eq(annualise(null, 3), null, 'null total stays null')
-eq(annualise(-100, 3), null, 'a total wipeout has no annualised rate')
-eq(annualise(-150, 3), null, 'worse than -100% has no annualised rate')
-eq(annualise(10, 0), null, 'a zero-length window has no rate')
-ok((annualise(-50, 2) ?? 0) < 0, 'a losing window annualises negative')
+// Rolling-window figures arrive ALREADY annualised from both engines
+// (ta_comparison_report.py computes ((e1/e0) ** (1/years) - 1) * 100;
+// momentum_metrics returns cagr_pct). The adapter must convert units only.
+// An earlier version annualised a second time, understating every Technical
+// rolling return by roughly the window length.
 
 const taStrategy = {
   template: 'A1',
@@ -530,7 +523,20 @@ eq(ta.tradeQuality.avgWinnerPct, 0.084, 'avg winner converted')
 
 // Rolling windows annualised, not passed through as totals.
 eq(rollingMedian(ta, 3) != null, true, 'technical exposes a 3y rolling median')
-eq(Math.round((rollingMedian(ta, 3) ?? 0) * 1000) / 1000, 0.1, '3y median annualised')
+eq(
+  rollingMedian(ta, 3),
+  0.331,
+  'rolling median is converted percent -> fraction and NOT re-annualised',
+)
+eq(ta.consistency.rolling[0].minCagr, -0.1, 'worst window converted, not re-annualised')
+eq(ta.consistency.rolling[0].maxCagr, 0.9, 'best window converted, not re-annualised')
+
+// The rule: a return is always a RATE. If the adapter re-derived one, a 3y
+// median of 33.1%/yr would collapse to ~10%/yr.
+ok(
+  (rollingMedian(ta, 3) ?? 0) > 0.3,
+  'a 33.1%/yr rolling median stays 33.1%/yr rather than collapsing to ~10%',
+)
 eq(rollingPositiveShare(ta, 3), 0.8, 'positive share taken from positive_windows/n_windows')
 eq(rollingPositiveShare(ta, 5), 1, 'a fully positive window set reports 1')
 eq(ta.consistency.rolling.map((w) => w.window), [3, 5], 'rolling windows sorted ascending')

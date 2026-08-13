@@ -9,17 +9,18 @@
  * equity curve. What T13 is really about is therefore not "Technical has no
  * rolling/YoY" but two narrower problems:
  *
- * 1. UNITS DIFFER, AND THE DIFFERENCE IS INVISIBLE. Technical's
- *    rolling_returns are median TOTAL return over the window; Momentum's are
- *    annualised CAGR. A 3-year window returning 33% total is 10%/yr — put the
- *    two side by side untouched and Technical looks three times better than it
- *    is. This adapter converts total -> annualised so both channels mean the
- *    same thing, and the conversion is the single most consequential line in
- *    this file.
+ * PERCENT vs FRACTION. Technical reports percentages (24.3), Momentum
+ * fractions (0.243). Everything here is normalised to fractions, which is what
+ * the persona gates and formatters expect.
  *
- * 2. PERCENT vs FRACTION. Technical reports percentages (24.3), Momentum
- *    fractions (0.243). Everything here is normalised to fractions, which is
- *    what the persona gates and formatters expect.
+ * [2026-08-13] Both channels' rolling windows are ALREADY annualised rates:
+ * ta_comparison_report.py computes ((e1 / e0) ** (1 / years) - 1) * 100 per
+ * window, and momentum_metrics.rolling_window_returns returns cagr_pct. An
+ * earlier version of this adapter annualised them a second time, which
+ * understated every Technical rolling return by roughly the window length.
+ * The project rule is that a return is ALWAYS a rate (XIRR% or CAGR%), never
+ * a total over a period — so an adapter should only ever be converting units,
+ * never re-deriving a rate.
  *
  * The annual-reset block carries `unverified: true` with a reason and the type
  * says "render the caveat, never bare numbers" — so income figures are passed
@@ -50,23 +51,6 @@ function frac(pct: number | null | undefined): number | null {
   return pct == null ? null : pct / 100
 }
 
-/**
- * Total return over `years` -> annualised, so this can be compared with
- * Momentum's rolling CAGR.
- *
- *     (1 + total)^(1/years) - 1
- *
- * A total return of -100% or worse (total <= -1) cannot be annualised — the
- * strategy is wiped out, and there is no rate that describes it — so it
- * returns null rather than NaN.
- */
-export function annualise(totalPct: number | null, years: number): number | null {
-  if (totalPct == null || years <= 0) return null
-  const total = totalPct / 100
-  if (total <= -1) return null
-  return Math.pow(1 + total, 1 / years) - 1
-}
-
 function rollingWindows(
   rolling: Record<string, TARollingWindow> | undefined,
 ): RollingWindow[] {
@@ -76,11 +60,16 @@ function rollingWindows(
       // Keys look like "3y" / "3" depending on the writer.
       const years = Number(String(label).replace(/[^0-9.]/g, ''))
       if (!Number.isFinite(years) || years <= 0) return null
+      // best/median/worst_pct are ALREADY annualised rates, not totals:
+      // ta_comparison_report.py's _rolling_windows computes
+      // ((e1 / e0) ** (1 / years) - 1) * 100 per window. Only the percent ->
+      // fraction conversion is needed. Annualising again here understated
+      // every Technical rolling return by roughly the window length.
       return {
         window: years,
-        minCagr: annualise(w.worst_pct, years),
-        medianCagr: annualise(w.median_pct, years),
-        maxCagr: annualise(w.best_pct, years),
+        minCagr: frac(w.worst_pct),
+        medianCagr: frac(w.median_pct),
+        maxCagr: frac(w.best_pct),
         positiveShare:
           w.n_windows > 0 ? w.positive_windows / w.n_windows : null,
         nWindows: w.n_windows,

@@ -74,9 +74,25 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - **The regime index and the benchmark index are different parameters.**
   Conflating them means changing a report's comparison also changes which
   regimes the strategy traded in. (A98)
-- **One metric name means one definition across channels.** "Rolling return"
-  currently means annualized CAGR in Momentum and median total return in
-  Technical; placing both in one table compares incomparable numbers. (T13)
+- **A return is always a RATE: XIRR% or CAGR%, never a total over a period.**
+  This is the unit of measurement everywhere — reports, tables, gates,
+  recommendations. A "3-year return of 33%" is meaningless next to a "5-year
+  return of 61%"; as rates (10%/yr vs 10%/yr) they are the same strategy.
+  Total-return figures may exist as an intermediate, but nothing user-facing
+  and nothing feeding a comparison may be one.
+
+  Corollaries, both of which have already caused real errors:
+  - Never annualise a figure that is already a rate. Both engines' rolling
+    windows arrive annualised (`ta_comparison_report.py` computes
+    `((e1/e0) ** (1/years) - 1) * 100`; `momentum_metrics` returns
+    `cagr_pct`). Re-deriving understates by roughly the window length.
+  - Trade-level P&L is NOT covered by this rule. A single trade's return over
+    a 3-day hold is a trade outcome, not a period performance measure, and
+    annualising it produces absurd numbers.
+
+- **One metric name means one definition across channels**, and a claim about
+  which definition a channel uses must be verified against the code that
+  writes the number, not inferred from a summary. (T13)
 
 ### Operational rules
 
