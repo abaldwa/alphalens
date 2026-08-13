@@ -73,6 +73,16 @@ class BacktestRun:
     annual_reset_ltcg_rate: Optional[float] = None
     annual_reset_ltcg_exemption: Optional[float] = None
     annual_reset_regime_label: Optional[str] = None
+    # [2026-08-13] Whether a losing FY is topped back up to base_capital.
+    # True (default) is the original measure. False withdraws surplus exactly
+    # as before but injects nothing after a loss, leaving the strategy to earn
+    # its way back on the capital it has left.
+    #
+    # Like the LTCG regime above, this is a RUN-LEVEL input rather than a
+    # reporting choice: a smaller book sizes smaller positions and can fail
+    # can_buy outright, so the two variants take genuinely different trades and
+    # neither can be derived from the other's trade book.
+    annual_reset_top_up_after_loss: bool = True
     random_seed: int = 0
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     parent_run_id: Optional[str] = None

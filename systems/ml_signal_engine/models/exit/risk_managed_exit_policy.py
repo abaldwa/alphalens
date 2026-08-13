@@ -44,6 +44,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from systems.ml_signal_engine.models.exit.exit_intent import (
+    EXIT_ACTION_EXIT,
+    EXIT_ACTION_HOLD,
+    validate_actions,
+)
+
 # Ordered by severity, all strictly above EXIT_URGENT_THRESHOLD (80) so each
 # genuinely closes a position. The gaps are what keep urgency meaningful for
 # ranking and reporting rather than collapsing to a single "exit now" value.
@@ -124,7 +130,16 @@ class RiskManagedExitPolicy:
         urgency = urgency.mask(stop_hit, URGENCY_STOP)
         exit_type = exit_type.mask(stop_hit, "thesis_broken")
 
+        # [STEP 4, 2026-08-13] Intent stated directly. Each of these four
+        # conditions IS a decision to exit; encoding them as urgency and
+        # letting the consumer re-threshold is what made three of them
+        # unreachable in the policy this class was written to replace.
+        action = pd.Series(EXIT_ACTION_HOLD, index=X.index, dtype=object)
+        action = action.mask(momentum_exhausted | max_hold_hit | target_hit | stop_hit,
+                             EXIT_ACTION_EXIT)
+
         out = pd.DataFrame(index=X.index)
+        out["exit_action"] = action
         out["exit_urgency"] = urgency
         out["exit_type"] = exit_type.astype(str)
         # No survival model exists in a rule-based policy — NaN rather than a
@@ -133,6 +148,7 @@ class RiskManagedExitPolicy:
         out["exit_survival_5d"] = np.nan
         out["exit_survival_21d"] = np.nan
         out["exit_survival_63d"] = np.nan
+        validate_actions(out["exit_action"].unique())
         return out
 
     def predict(self, X: pd.DataFrame) -> pd.Series:

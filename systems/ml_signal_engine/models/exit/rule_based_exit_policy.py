@@ -42,6 +42,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from systems.ml_signal_engine.models.exit.exit_intent import (
+    EXIT_ACTION_EXIT,
+    EXIT_ACTION_HOLD,
+    validate_actions,
+)
+
 from systems.ml_signal_engine.models.exit.exit_signal import (
     EXIT_TYPES,
     PND_EXIT_SCORE_THRESHOLD,
@@ -171,7 +177,26 @@ class RuleBasedExitPolicy:
         triggered = target_hit | stop_hit | max_hold_hit | momentum_exhausted
         urgency = urgency.where(triggered, 45.0)
 
+        # [STEP 4, 2026-08-13] Intent, stated directly from the booleans above
+        # rather than encoded into an urgency band for the consumer to decode.
+        #
+        # Every one of these four conditions IS a decision to exit — a stop was
+        # breached, a target was met, the holding period elapsed, or momentum
+        # gave back its gains. Under the old urgency-band round trip only
+        # stop_hit could clear the >80 sale threshold; max_hold (<=65) and
+        # momentum_exhaustion (<=79) could not fire at all, and target_hit
+        # needed roughly a 20-point overshoot. exit_urgency below is retained
+        # and unchanged for ranking and reporting, but it is no longer how the
+        # decision travels.
+        action = pd.Series(EXIT_ACTION_HOLD, index=X.index, dtype=object)
+        action = action.mask(max_hold_hit, EXIT_ACTION_EXIT)
+        action = action.mask(momentum_exhausted, EXIT_ACTION_EXIT)
+        action = action.mask(target_hit, EXIT_ACTION_EXIT)
+        # Applied last so the most severe reason wins where several coincide.
+        action = action.mask(stop_hit, EXIT_ACTION_EXIT)
+
         out = pd.DataFrame(index=X.index)
+        out["exit_action"] = action
         out["exit_urgency"] = urgency.clip(0, 100)
         out["exit_type"] = exit_type.astype(str)
         # No survival-curve fit exists in a rule-based policy — honestly NaN
@@ -185,6 +210,9 @@ class RuleBasedExitPolicy:
         if "pnd_score" in X.columns:
             pnd_triggered = X["pnd_score"] > PND_EXIT_SCORE_THRESHOLD
             out.loc[pnd_triggered, "exit_type"] = "pnd_exit"
+            # A pump-and-dump signal is an exit, not a suggestion — the same
+            # "P&D pre-filter takes priority" framing as the hard block on buys.
+            out.loc[pnd_triggered, "exit_action"] = EXIT_ACTION_EXIT
             out.loc[pnd_triggered, "exit_urgency"] = np.maximum(
                 out.loc[pnd_triggered, "exit_urgency"].to_numpy(), PND_EXIT_URGENCY_FLOOR
             )
@@ -193,4 +221,8 @@ class RuleBasedExitPolicy:
             "exit_type must always be a valid, non-null EXIT_TYPES category"
         )
 
-        return out[["exit_urgency", "exit_type", "exit_survival_5d", "exit_survival_21d", "exit_survival_63d"]]
+        validate_actions(out["exit_action"].unique())
+        return out[[
+            "exit_action", "exit_urgency", "exit_type",
+            "exit_survival_5d", "exit_survival_21d", "exit_survival_63d",
+        ]]

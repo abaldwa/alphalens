@@ -85,10 +85,22 @@ class TestRuleBasedExitPolicy:
         assert out["exit_type"].isin(EXIT_TYPES).all()
 
     def test_output_columns_match_exit_signal_model_contract(self):
+        """exit_action leads the contract as of STEP 4 (2026-08-13).
+
+        Note how this assertion is written: it pins the exact column LIST,
+        which is why it failed loudly when the contract gained a column instead
+        of letting the change through unnoticed. That strictness is worth
+        keeping — the same explicit-projection idiom appears at the end of
+        every policy's predict_full and in this suite's own row-loop reference,
+        and in all three places adding a column upstream was not enough to make
+        it reach the caller. Two policies, including the default variant, would
+        have shipped emitting no intent at all.
+        """
         policy = RuleBasedExitPolicy()
         out = policy.predict_full(_row(pnl_pct=0.05))
         assert list(out.columns) == [
-            "exit_urgency", "exit_type", "exit_survival_5d", "exit_survival_21d", "exit_survival_63d",
+            "exit_action", "exit_urgency", "exit_type",
+            "exit_survival_5d", "exit_survival_21d", "exit_survival_63d",
         ]
         assert out["exit_urgency"].between(0, 100).all()
 

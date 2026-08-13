@@ -717,6 +717,7 @@ def _run_immediate(
             annual_reset_ltcg_rate=(annual_reset_spec or {}).get("ltcg_rate"),
             annual_reset_ltcg_exemption=(annual_reset_spec or {}).get("ltcg_exemption"),
             annual_reset_regime_label=(annual_reset_spec or {}).get("regime_label"),
+            annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
                 "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
@@ -969,6 +970,7 @@ def _run_deferred(
         annual_reset_ltcg_rate=(annual_reset_spec or {}).get("ltcg_rate"),
         annual_reset_ltcg_exemption=(annual_reset_spec or {}).get("ltcg_exemption"),
         annual_reset_regime_label=(annual_reset_spec or {}).get("regime_label"),
+        annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
         config={
             "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
             "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
@@ -1092,6 +1094,8 @@ def run_orchestrator_backtest(
     # capital_mode="annual_reset" only — the LTCG regime is a run-level input
     # because it changes the FY withdrawal and therefore the trades taken.
     annual_reset_ltcg_rate: Optional[float] = None,
+    # False = withdraw surplus as usual but never inject after a losing year.
+    annual_reset_top_up_after_loss: bool = True,
     annual_reset_ltcg_exemption: Optional[float] = None,
     annual_reset_regime_label: Optional[str] = None,
 ) -> dict:
@@ -1203,6 +1207,7 @@ def run_orchestrator_backtest(
     if capital_mode == "annual_reset":
         annual_reset_spec = {
             "ltcg_rate": annual_reset_ltcg_rate,
+            "top_up_after_loss": annual_reset_top_up_after_loss,
             "ltcg_exemption": annual_reset_ltcg_exemption,
             "regime_label": annual_reset_regime_label,
         }
@@ -1254,6 +1259,18 @@ def main() -> None:
     # the report applies whichever LTCG regime it likes to a single trade book —
     # the regime here changes the FY withdrawal, hence next year's capital, hence
     # which trades execute. One run per regime; the engine refuses to guess.
+    parser.add_argument(
+        "--annual-reset-no-top-up", action="store_true",
+        help=(
+            "capital_mode=annual_reset only. Withdraw surplus at each FY boundary exactly "
+            "as usual, but after a LOSING year inject nothing — the strategy continues on "
+            "the capital it has left and must earn its way back before any further "
+            "withdrawal. Without this flag a losing year is topped back up to the base, "
+            "which means the run is refunded annually and can never report ruin however "
+            "badly it performs. The withdrawal threshold stays at the base either way, so "
+            "recovery is measured against the original capital."
+        ),
+    )
     parser.add_argument(
         "--annual-reset-ltcg-rate", type=float, default=None,
         help="LTCG rate for the annual-reset withdrawal, e.g. 0.10 or 0.125. Required for --capital-mode annual_reset.",
@@ -1476,6 +1493,7 @@ def main() -> None:
         combo_templates=args.combo_templates.split(",") if args.combo_templates else None,
         defer_db_writes=args.defer_db_writes,
         annual_reset_ltcg_rate=args.annual_reset_ltcg_rate,
+        annual_reset_top_up_after_loss=not args.annual_reset_no_top_up,
         annual_reset_ltcg_exemption=args.annual_reset_ltcg_exemption,
         annual_reset_regime_label=args.annual_reset_regime_label,
         precomputed_matches_dir=args.precomputed_matches_dir,

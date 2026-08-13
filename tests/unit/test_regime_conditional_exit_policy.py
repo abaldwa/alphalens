@@ -140,6 +140,10 @@ def _reference_predict_full_row_loop(policy: RegimeConditionalExitPolicy, X: pd.
     urgency = urgency.where(triggered, 45.0)
 
     out = pd.DataFrame(index=X.index)
+    # STEP 4 (2026-08-13): the reference mirrors the policy's intent column too,
+    # otherwise this equivalence test would silently stop covering the one
+    # field the engine now actually acts on.
+    out["exit_action"] = pd.Series("hold", index=X.index, dtype=object).mask(triggered, "exit")
     out["exit_urgency"] = urgency.clip(0, 100)
     out["exit_type"] = exit_type.astype(str)
     out["exit_survival_5d"] = np.nan
@@ -153,7 +157,10 @@ def _reference_predict_full_row_loop(policy: RegimeConditionalExitPolicy, X: pd.
             out.loc[pnd_triggered, "exit_urgency"].to_numpy(), PND_EXIT_URGENCY_FLOOR
         )
 
-    return out[["exit_urgency", "exit_type", "exit_survival_5d", "exit_survival_21d", "exit_survival_63d"]]
+    return out[[
+        "exit_action", "exit_urgency", "exit_type",
+        "exit_survival_5d", "exit_survival_21d", "exit_survival_63d",
+    ]]
 
 
 class TestPredictFullVectorizedEquivalence:

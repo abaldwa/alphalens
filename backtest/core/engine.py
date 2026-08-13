@@ -39,9 +39,20 @@ import pandas as pd
 
 from backtest.core.horizon import HorizonBucket, sizing_for
 from backtest.instrumentation import NullTimer, RunTimer
+from systems.ml_signal_engine.models.exit.exit_intent import (
+    EXIT_ACTION_EXIT,
+    EXIT_ACTION_REDUCE,
+    action_from_urgency,
+    validate_actions,
+)
 from backtest.core.metrics import compute_metrics
 from backtest.core.portfolio import AnnualResetConfig, SipConfig, StrategyPortfolio
-from backtest.portfolio import Position, PortfolioSimulator
+from backtest.portfolio import (
+    EXIT_REDUCE_THRESHOLD,
+    EXIT_URGENT_THRESHOLD,
+    MONITOR_THRESHOLD,
+    Position,
+)
 from backtest.core.regime_breakdown import compute_regime_breakdown
 from backtest.core.run_context import BacktestRun, BacktestRunResult
 from backtest.core.tax import fy_tax_cash_flows
@@ -475,6 +486,12 @@ class BacktestOrchestrator:
         # re-querying PIT fundamentals/prices per trade. See
         # _get_market_cap_rank_for_date()'s docstring.
         self._market_cap_rank_maps_by_date: Dict[Any, Dict[str, int]] = {}
+        # Count of exit decisions resolved through the legacy urgency->action
+        # mapping because the policy emitted no exit_action. Non-zero means a
+        # policy is still on the contract that lost max-hold and
+        # momentum-exhaustion exits entirely, so it is surfaced rather than
+        # left for a reader to infer.
+        self._legacy_urgency_fallbacks: int = 0
 
     def _get_market_cap_rank_for_date(self, ticker: str, as_of_date, all_buy_tickers_this_date: Optional[List[str]] = None) -> Optional[int]:
         """Point-in-time {ticker: rank} for `as_of_date`, batched by date and
@@ -666,11 +683,14 @@ class BacktestOrchestrator:
                     "determines the FY withdrawal and therefore the trades taken, so it "
                     "cannot be defaulted (both regimes would come out identical)."
                 )
+            # top_up_after_loss defaults True, i.e. the original measure, so a
+            # run that does not set it behaves exactly as before.
             annual_reset = AnnualResetConfig(
                 base_capital=run.initial_capital,
                 ltcg_rate=float(_rate),
                 ltcg_exemption=float(_exempt or 0.0),
                 regime_label=str(_label),
+                top_up_after_loss=bool(getattr(run, "annual_reset_top_up_after_loss", True)),
             )
         portfolio = StrategyPortfolio(
             initial_capital=run.initial_capital, horizon_bucket=run.horizon_bucket, sip=sip,
@@ -1053,11 +1073,44 @@ class BacktestOrchestrator:
             return
 
         exit_ctx = pd.DataFrame(rows, index=row_tickers)
-        urgency = self._exit_model.predict_full(exit_ctx)["exit_urgency"]
+        predictions = self._exit_model.predict_full(exit_ctx)
+
+        # [STEP 4, 2026-08-13] Consume the policy's stated INTENT.
+        #
+        # This used to call PortfolioSimulator.exit_action_for_urgency — a
+        # STATIC method on a class whose portfolio this loop does not use — to
+        # re-derive an action from a score the policy had already decided from.
+        # StrategyPortfolio has no partial-reduce operation, so every
+        # 'reduce_position' fell out of the if/elif chain and did nothing at
+        # all: no sell, no counter, no log line. The entire 60-80 urgency band
+        # evaporated, which is also the band baseline's max-hold (<=65) and
+        # momentum-exhaustion (<=79) triggers emitted into.
+        if "exit_action" in predictions.columns:
+            actions = predictions["exit_action"]
+        else:
+            # A policy still on the legacy contract. Counted, not assumed:
+            # "which policies have not been migrated" must be a fact in the run
+            # record rather than something a reader infers.
+            self._legacy_urgency_fallbacks += len(row_tickers)
+            actions = action_from_urgency(
+                predictions["exit_urgency"],
+                urgent_threshold=EXIT_URGENT_THRESHOLD,
+                reduce_threshold=EXIT_REDUCE_THRESHOLD,
+                monitor_threshold=MONITOR_THRESHOLD,
+            )
+
+        validate_actions(actions.unique())
         for ticker in row_tickers:
-            action = PortfolioSimulator.exit_action_for_urgency(float(urgency.loc[ticker]))
-            if action == "immediate_exit":
+            action = actions.loc[ticker]
+            if action == EXIT_ACTION_EXIT:
                 portfolio.sell(ticker, prices[ticker], as_of, reason="exit_model_urgent")
+            elif action == EXIT_ACTION_REDUCE:
+                # Raises if the portfolio cannot do it, rather than resolving
+                # to nothing. A partial exit that silently does not happen
+                # produces a backtest of a strategy nobody ran.
+                portfolio.reduce_position(
+                    ticker, prices[ticker], as_of, reason="exit_model_reduce",
+                )
 
     def _log_feature(self, run_id, ticker, as_of, horizon_bucket, adapter: StrategyAdapter, action: str) -> None:
         if self._feature_log_writer is None:

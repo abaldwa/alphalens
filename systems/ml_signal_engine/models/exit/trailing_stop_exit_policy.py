@@ -32,6 +32,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from systems.ml_signal_engine.models.exit.exit_intent import (
+    EXIT_ACTION_EXIT,
+    EXIT_ACTION_HOLD,
+    validate_actions,
+)
+
+
 from systems.ml_signal_engine.models.exit.exit_signal import (
     EXIT_TYPES,
     PND_EXIT_SCORE_THRESHOLD,
@@ -123,15 +130,24 @@ class TrailingStopExitPolicy:
         urgency = urgency.where(triggered, 45.0)
 
         out = pd.DataFrame(index=X.index)
+        # [STEP 4, 2026-08-13] Intent stated directly from the trigger boolean
+        # this policy already computed, rather than encoded into an urgency
+        # band for the consumer to re-threshold. The round trip is what left
+        # three of RuleBasedExitPolicy's four triggers unable to fire.
+        out["exit_action"] = pd.Series(EXIT_ACTION_HOLD, index=X.index, dtype=object).mask(
+            triggered, EXIT_ACTION_EXIT
+        )
         out["exit_urgency"] = urgency.clip(0, 100)
         out["exit_type"] = exit_type.astype(str)
         out["exit_survival_5d"] = np.nan
         out["exit_survival_21d"] = np.nan
         out["exit_survival_63d"] = np.nan
 
+
         if "pnd_score" in X.columns:
             pnd_triggered = X["pnd_score"] > PND_EXIT_SCORE_THRESHOLD
             out.loc[pnd_triggered, "exit_type"] = "pnd_exit"
+            out.loc[pnd_triggered, "exit_action"] = EXIT_ACTION_EXIT
             out.loc[pnd_triggered, "exit_urgency"] = np.maximum(
                 out.loc[pnd_triggered, "exit_urgency"].to_numpy(), PND_EXIT_URGENCY_FLOOR
             )
@@ -140,4 +156,8 @@ class TrailingStopExitPolicy:
             "exit_type must always be a valid, non-null EXIT_TYPES category"
         )
 
-        return out[["exit_urgency", "exit_type", "exit_survival_5d", "exit_survival_21d", "exit_survival_63d"]]
+        validate_actions(out["exit_action"].unique())
+        return out[[
+            "exit_action", "exit_urgency", "exit_type",
+            "exit_survival_5d", "exit_survival_21d", "exit_survival_63d",
+        ]]

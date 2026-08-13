@@ -91,6 +91,20 @@ _ORCHESTRATOR_FLAGS = {
     # separate runs and cannot be derived post-hoc from one trade book the way
     # the lump run's regimes are.
     "annual_reset_ltcg_rate", "annual_reset_ltcg_exemption", "annual_reset_regime_label",
+    # 2026-08-13: withhold the top-up after a losing FY. Per-job for the same
+    # reason as the LTCG regime — a book left smaller sizes smaller positions
+    # and can fail can_buy outright, so the two variants take different trades
+    # and neither is derivable from the other's trade book.
+    #
+    # Named to match the CLI flag (--annual-reset-no-top-up), NOT the config
+    # field (top_up_after_loss), because the loop below maps field names to
+    # flags mechanically and omits False booleans entirely. A field named
+    # annual_reset_top_up_after_loss set to false would therefore emit no flag
+    # at all and silently run the TOPPED-UP variant — the exact inversion the
+    # author was trying to avoid. Spelling it the other way round makes
+    # true -> flag emitted -> no top-up, and the allowed-field check rejects
+    # the tempting wrong name with an explicit error rather than misreading it.
+    "annual_reset_no_top_up",
 } | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",

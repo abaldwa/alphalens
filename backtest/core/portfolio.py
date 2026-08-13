@@ -99,7 +99,21 @@ class AnnualResetConfig:
 
     so profits are taken out only to the extent they were actually BOOKED and
     are actually LIQUID, exactly as a real fully-invested investor would find.
-    Losses are always topped back up to `base_capital`, which is always possible.
+    Losses are topped back up to `base_capital`, which is always possible.
+
+    TWO VARIANTS (2026-08-13). `top_up_after_loss` selects between them; the
+    withdrawal half is identical in both:
+
+        True  (default)  the rule above — a losing year is refunded to base
+        False            a losing year is NOT refunded; the strategy carries on
+                         with what it has left and must earn its way back
+
+    They answer different questions and neither rescores the other. The
+    topped-up variant measures return on a maintained Rs 10L. The no-top-up
+    variant measures whether the strategy would have survived and recovered
+    unaided — and it is the only one that CAN report ruin, because a run
+    refunded every April cannot go broke however badly it trades. See
+    `top_up_after_loss` below for why the trade books genuinely diverge.
 
     Consequence that must be reported, never hidden: opening capital is NOT
     Rs 10L every year. It drifts above it in good years. Every FY's actual
@@ -115,6 +129,35 @@ class AnnualResetConfig:
     ltcg_rate: float = 0.125
     ltcg_exemption: float = 0.0
     regime_label: str = "engine_default"
+    # [2026-08-13, user request] Whether a losing year is topped back up to
+    # base_capital.
+    #
+    # True (default, unchanged) is the original measure: "if there has been a
+    # loss in the Financial Year, I will pour the deficit into the strategy and
+    # start the year again with 10,00,000."
+    #
+    # False is the new variant: withdraw surplus exactly as before, but after a
+    # losing year add NOTHING and let the strategy run on the capital it has
+    # left until it earns its way back. These answer different questions and
+    # neither is a rescoring of the other:
+    #
+    #   top_up=True   "what does this strategy yield on a maintained Rs 10L?"
+    #   top_up=False  "would this strategy have survived and recovered on its
+    #                  own?"
+    #
+    # The difference compounds rather than offsetting. A drawdown year leaves
+    # the no-top-up book smaller, so it sizes smaller positions, so it takes
+    # DIFFERENT trades (position_size is a function of equity and can_buy
+    # rejects on integer-share rounding) — a book down to Rs 6L may not be able
+    # to open a full slate at all. It can also fail terminally, which the
+    # topped-up variant structurally cannot: that one is refunded every year and
+    # therefore can never report ruin, however bad the strategy is. That is
+    # precisely the risk this variant exists to expose.
+    #
+    # The withdrawal threshold stays base_capital, so recovery is measured
+    # against the original base: nothing is taken out until the book is whole
+    # again, and only the genuine surplus above it is withdrawn thereafter.
+    top_up_after_loss: bool = True
 
     def __post_init__(self) -> None:
         if self.base_capital <= 0:
@@ -300,12 +343,24 @@ class StrategyPortfolio:
 
             withdrawn = 0.0
             topped_up = 0.0
+            topup_forgone = 0.0
             if equity_before < cfg.base_capital:
-                # Losing year: always fundable, so the base is genuinely restored.
-                topped_up = cfg.base_capital - equity_before
-                self.cash += topped_up
-                self.total_contributed += topped_up
-                self.cash_flows.append({"date": str(reset_date.date()), "amount": -topped_up})
+                shortfall = cfg.base_capital - equity_before
+                if cfg.top_up_after_loss:
+                    # Losing year: always fundable, so the base is genuinely restored.
+                    topped_up = shortfall
+                    self.cash += topped_up
+                    self.total_contributed += topped_up
+                    self.cash_flows.append({"date": str(reset_date.date()), "amount": -topped_up})
+                else:
+                    # [2026-08-13] No-top-up variant: the year ends with less
+                    # than it started and the next year begins on exactly that.
+                    # Recorded rather than passed over silently — a ledger row
+                    # showing topped_up=0 for a losing year is ambiguous between
+                    # "no top-up was needed" and "a top-up was withheld", and
+                    # those are opposite facts. topup_forgone makes the second
+                    # explicit and is what the two variants must be compared on.
+                    topup_forgone = shortfall
             elif realised_after_tax > 0:
                 # Take out only what was booked AND is liquid AND is genuinely
                 # above the base. Any of the three can bind; usually `cash` does.
@@ -333,6 +388,12 @@ class StrategyPortfolio:
                 "withdrawn": round(withdrawn, 2),
                 "withdrawal_tax_drag": round(withdrawn_pretax - withdrawn, 2),
                 "topped_up": round(topped_up, 2),
+                # Capital a top_up_after_loss=True run WOULD have injected here
+                # and this one did not. Always present; 0.0 both when no
+                # shortfall existed and when the top-up was actually made, so
+                # it is read together with topped_up, never alone.
+                "topup_forgone": round(topup_forgone, 2),
+                "top_up_after_loss": cfg.top_up_after_loss,
                 "opening_capital_next": round(equity_after, 2),
                 # The honest return for the year: growth of the capital the year
                 # actually STARTED with, before any boundary adjustment.
@@ -491,6 +552,44 @@ class StrategyPortfolio:
                 return None
         self.positions.pop(ticker, None)
         return self._close(position, position.quantity, price, date, reason, adtv_cr)
+
+    def reduce_position(
+        self, ticker: str, price: float, date, fraction: float = 0.5,
+        reason: str = "exit_model_reduce", adtv_cr: Optional[float] = None,
+    ) -> Optional[Trade]:
+        """Partially close a position — the 60-80 urgency band's action.
+
+        [STEP 4, 2026-08-13] This class did not have this method, and that
+        absence was the whole defect. BacktestOrchestrator._apply_exit_policy
+        borrowed PortfolioSimulator's static urgency->action map while driving a
+        StrategyPortfolio, so every 'reduce_position' fell out of the bottom of
+        the if/elif chain and did nothing: no trade, no counter, no log line.
+        The entire 60-80 band evaporated, which is also the band baseline's
+        max-hold (<=65) and momentum-exhaustion (<=79) triggers emitted into.
+        PortfolioSimulator has had a working implementation the whole time; only
+        the class the orchestrator actually uses lacked one.
+
+        Returns None when the position does not exist or the reduction rounds
+        to zero shares — both are genuine "nothing to do" outcomes rather than
+        silent failures, and neither leaves an intended action unperformed:
+        a sub-one-share reduction has no executable form.
+
+        Unlike sell(), min_holding_days is NOT enforced. A reduction is a risk
+        response to a position already moving against the thesis, and the floor
+        exists to stop churn on fresh entries, not to trap a losing position.
+        """
+        if not 0 < fraction <= 1:
+            raise ValueError(f"fraction must be in (0, 1], got {fraction}")
+        position = self.positions.get(ticker)
+        if position is None:
+            return None
+        reduce_qty = int(position.quantity * fraction)
+        if reduce_qty <= 0:
+            return None
+        trade = self._close(position, reduce_qty, price, date, reason, adtv_cr, partial=True)
+        if position.quantity <= 0:
+            self.positions.pop(ticker, None)
+        return trade
 
     def force_close(self, ticker: str, price: float, date, reason: str = "forced_close") -> Optional[Trade]:
         """Delisting/merger reconciliation hook (Truthful Review Gap #4) — always
