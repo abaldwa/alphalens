@@ -61,7 +61,7 @@ from backtest.adapters.momentum_adapter import MomentumAdapter
 from backtest.adapters.technical_adapter import TechnicalAdapter
 from backtest.adapters.technical_combo_adapter import TechnicalComboAdapter
 from backtest.batch_common import exclusive_backtest_lock
-from backtest.core.engine import EXIT_POLICY_VARIANTS, BacktestOrchestrator, OrchestratorConfig, build_exit_model_for_variant
+from backtest.core.engine import ALL_EXIT_POLICY_VARIANTS, BacktestOrchestrator, OrchestratorConfig, build_exit_model_for_variant
 from backtest.core.feature_log import FeatureLogWriter
 from backtest.core.horizon import HorizonBucket
 from backtest.core.run_context import BacktestRun
@@ -1200,13 +1200,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--exit-variant", default="baseline", choices=list(EXIT_POLICY_VARIANTS),
+        "--exit-variant", default="risk_managed", choices=list(ALL_EXIT_POLICY_VARIANTS),
         help=(
-            "Exit policy variant (backtest/core/engine.py::build_exit_model_for_variant): "
-            "baseline (today's PerTemplateExitPolicy, default — no behavior change if omitted), "
-            "condition (ConditionBasedExitPolicy), combined (baseline OR condition), "
-            "trailing (TrailingStopExitPolicy), atr_adaptive (ATRAdaptiveExitPolicy), "
-            "regime_conditional (RegimeConditionalExitPolicy)."
+            "Exit policy variant (backtest/core/engine.py::build_exit_model_for_variant). "
+            "Carried grid: unconstrained (no barrier — the reference), risk_managed "
+            "(per-template stop/target/max-hold, all reachable; the DEFAULT), condition "
+            "(exit when the entry thesis breaks), combined (risk_managed OR condition), "
+            "trailing, atr_adaptive. Retired but still selectable so historical runs stay "
+            "reproducible: baseline (three of its four triggers were unreachable — 0.00% "
+            "time exits over 108,762 model-driven exits; use risk_managed instead), "
+            "regime_conditional."
         ),
     )
     parser.add_argument(

@@ -542,20 +542,13 @@ _F1 = ScreenerTemplate(
     key_display_features=["rsi_14", "sma_200_ratio", "hurst_exp_21d", "adx_14"],
 )
 
-_F2 = ScreenerTemplate(
-    name="F2",
-    category="F",
-    description="Momentum + Volume",
-    conditions=[
-        # Above SMA200
-        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
-        # Volume expansion (High ROE attracts institutional buying)
-        {"feature": "volume_ratio_21d", "op": "gt", "value": 1.5},
-        # ADX confirms trending
-        {"feature": "adx_14", "op": "gt", "value": 20},
-    ],
-    key_display_features=["sma_200_ratio", "volume_ratio_21d", "adx_14", "rsi_14"],
-)
+# F2 ("Momentum + Volume") REMOVED 2026-08-13 — the third duplicate found by
+# the signature scan, identical to B1 "Weinstein Stage 2" (sma_200_ratio > 1.0,
+# volume_ratio_21d > 1.5, adx_14 > 20) down to the same key_display_features.
+# B1 survives: it is the canonically-named strategy, and F2's comments claimed
+# a fundamental thesis ("high ROE attracts institutional buying") that its
+# three purely technical conditions never encoded — the same failure mode as
+# F3/F7. Nothing to inherit; the display features were already equal.
 
 _F3 = ScreenerTemplate(
     name="F3",
@@ -1289,8 +1282,8 @@ TEMPLATES: List[ScreenerTemplate] = [
     _D1, _D2, _D3, _D4,
     # Category E (7 — E8 excluded as duplicate of C6)
     _E1, _E2, _E3, _E4, _E5, _E6, _E7,
-    # Category F (7 — F7 removed as a definitional duplicate of F3)
-    _F1, _F2, _F3, _F4, _F5, _F6, _F8,
+    # Category F (6 — F2 removed as a duplicate of B1, F7 as a duplicate of F3)
+    _F1, _F3, _F4, _F5, _F6, _F8,
     # Category S (7 — S007/S009/S010/S011/S012 excluded; see module docstring)
     _S001, _S002, _S003, _S004, _S005, _S006, _S008,
     # Category R (4 — per-ticker HMM regime, R5 removed: "volatile" was mislabeled)
@@ -1303,8 +1296,8 @@ TEMPLATES: List[ScreenerTemplate] = [
 # Fast name → template lookup used by ScreenerEngine
 TEMPLATE_MAP: Dict[str, ScreenerTemplate] = {t.name: t for t in TEMPLATES}
 
-assert len(TEMPLATES) == 64, (
-    f"Expected 64 templates, got {len(TEMPLATES)}. "
+assert len(TEMPLATES) == 63, (
+    f"Expected 63 templates, got {len(TEMPLATES)}. "
     "If you added or removed templates, update this assertion."
 )
 
@@ -1325,15 +1318,12 @@ assert len(TEMPLATES) == 64, (
 # does not miss, so the check runs here rather than in a doc or a review
 # checklist. `value` goes through repr() because it may be a list (the
 # "between" op), which is unhashable.
-_KNOWN_DUPLICATE_GROUPS = {
-    # B1 "Trend Following (Weinstein Stage 2)" and F2 "Momentum + volume" are
-    # also the identical screen (sma_200_ratio > 1.0, volume_ratio_21d > 1.5,
-    # adx_14 > 20). Left in place pending a product decision rather than
-    # dropped silently: unlike C1/C3 and F3/F7 this pair spans two categories,
-    # so removing either changes what a category-level report covers. Recorded
-    # here so the gate stays meaningful instead of being switched off.
-    frozenset({"B1", "F2"}),
-}
+# Empty by design. All three duplicate pairs found (C1/C3, F3/F7, B1/F2) were
+# resolved by dropping one member rather than exempting the pair, so the gate
+# below is currently absolute. Add an entry only with the reason a genuine
+# duplicate must stay registered — an exemption is a permanent extra backtest
+# run per grid point, not a formality.
+_KNOWN_DUPLICATE_GROUPS: set = set()
 
 
 def _condition_signature(template: ScreenerTemplate) -> frozenset:
@@ -1406,7 +1396,6 @@ TEMPLATE_STYLE: Dict[str, str] = {
     "E6": "Momentum",          # GARP momentum
     "E7": "Trend Following",   # Greenblatt Magic Formula proxy
     "F1": "Mean Reversion",    # Low RSI quality
-    "F2": "Momentum",          # Momentum + volume
     "F3": "Momentum",           # Dividend/consistent growth proxy — flag_pattern_score + hurst_exp_21d only, no MA/ADX trend gate; hurst measures statistical persistence not a price-vs-MA trend
     "F4": "Trend Following",   # Compounder proxy
     "F5": "Trend Following",   # Cash flow king proxy — flag_pattern_score + low volume_ratio_21d (quiet accumulation during a continuation pattern), no ATR/BB-width/breakout condition so not Volatility

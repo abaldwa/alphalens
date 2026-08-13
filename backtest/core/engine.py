@@ -91,16 +91,59 @@ def _build_default_exit_model(max_hold_days: int = _NO_MAX_HOLD_DAYS_SENTINEL):
     )
 
 
+# Exit regimes carried into the 2026-08 Technical re-run.
+#
+# "baseline" was RETIRED (2026-08-13), not merely deprioritised. It nominally
+# had the same three barriers as "risk_managed", but emitted urgency bands that
+# could not reach EXIT_URGENT_THRESHOLD for max-hold (<=65) or momentum
+# exhaustion (<=79), so three of its four triggers were structurally dead:
+# across 65 baseline runs and 108,762 model-driven exits, 0.00% were time
+# exits. Keeping it would spend a full slice of every sweep re-measuring a
+# known defect, and — worse — its results are not what its name claims, which
+# is how they got read as a real stop/target/max-hold arm for months.
+# "risk_managed" is its correct replacement: identical template parameters,
+# urgency bands above the threshold, so the barriers actually fire.
+#
+# "regime_conditional" was also dropped from the carried set. It multiplies the
+# grid by a whole dimension while answering a narrower question than the others
+# (should barriers tighten in a bear market), and that question is only
+# meaningful once the barriers themselves are known to work — which is exactly
+# what this round establishes. The policy class is retained and can be re-added
+# to a later sweep; only its place in the default grid is removed.
 EXIT_POLICY_VARIANTS = (
-    # "risk_managed" (2026-08-12): the per-template stop/target/max-hold exits
-    # the strategy spec asked for, using RiskManagedExitPolicy so every trigger
-    # actually clears EXIT_URGENT_THRESHOLD. "baseline" nominally has the same
-    # three barriers but emits urgency bands that cannot reach the threshold for
-    # max-hold or momentum-exhaustion, so across 65 baseline runs and 108,762
-    # model-driven exits 0.00% were time exits — see risk_managed_exit_policy.py.
-    "baseline", "condition", "combined", "trailing", "atr_adaptive", "regime_conditional",
-    "risk_managed", "unconstrained",
+    # The reference: no engine-imposed barrier of any kind, so every other
+    # variant is measured as its improvement over letting the strategy signal
+    # run. Also the ONLY variant whose trades can be used to DERIVE barriers
+    # (backtest/derive_exit_params.py) — every other variant's trades are
+    # truncated by its own barriers, making that derivation circular.
+    "unconstrained",
+    # Per-template stop/target/max-hold, all reachable, parameters derived from
+    # the unconstrained runs' actual MAE/MFE rather than hand-chosen.
+    "risk_managed",
+    # "Exit when the entry thesis breaks", independent of P&L. NOTE: this has
+    # never actually been exercised on the Technical channel — its 13 runs to
+    # date were fundamental/momentum, where it needs a `template` column it
+    # never receives, and it fired 0 exits in all of them. This round is its
+    # first real test.
+    "condition",
+    # Barriers OR thesis-break, whichever comes first. Redefined 2026-08-13 to
+    # compose risk_managed rather than the retired baseline.
+    "combined",
+    # Path-dependent: ratchets with price instead of capping at a fixed level,
+    # so it is the one variant that can hold the right tail a fixed target cuts.
+    "trailing",
+    # Barriers scaled by ATR. Well motivated here specifically: median holding
+    # period under no constraint clusters at 7 / 31 / 93 days across templates,
+    # and a -5% stop costs 15% of winners in the short cluster but 60% in the
+    # long one — a single fixed percentage cannot be right for all three.
+    "atr_adaptive",
 )
+
+# Retired / not in the default grid, but still constructible by name so
+# historical runs can be reproduced and so a targeted sweep can opt in.
+RETIRED_EXIT_POLICY_VARIANTS = ("baseline", "regime_conditional")
+
+ALL_EXIT_POLICY_VARIANTS = EXIT_POLICY_VARIANTS + RETIRED_EXIT_POLICY_VARIANTS
 
 # Effectively-disabled stop/target bounds for the "unconstrained" variant
 # below — RuleBasedExitPolicy requires target_pct > 0 and stop_pct < 0
@@ -159,7 +202,13 @@ def build_exit_model_for_variant(
         return ConditionBasedExitPolicy()
 
     if variant == "combined":
-        return CompositeExitPolicy([_build_default_exit_model(hold_days), ConditionBasedExitPolicy()])
+        # Composes risk_managed, NOT the retired baseline: "barriers OR thesis
+        # break" is only a meaningful arm if the barrier half can actually
+        # fire, and baseline's could not.
+        return CompositeExitPolicy(
+            [build_exit_model_for_variant("risk_managed", max_hold_days=max_hold_days),
+             ConditionBasedExitPolicy()]
+        )
 
     if variant == "trailing":
         # TrailingStopExitPolicy has no per-template router of its own yet
@@ -211,7 +260,10 @@ def build_exit_model_for_variant(
             max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL,
         )
 
-    raise ValueError(f"unknown exit_policy_variant {variant!r}; must be one of {EXIT_POLICY_VARIANTS}")
+    raise ValueError(
+        f"unknown exit_policy_variant {variant!r}; must be one of {ALL_EXIT_POLICY_VARIANTS} "
+        f"(carried grid: {EXIT_POLICY_VARIANTS}; retired but reproducible: {RETIRED_EXIT_POLICY_VARIANTS})"
+    )
 
 
 SignalAction = str  # "buy" | "sell" | "forced_close" | "hold"

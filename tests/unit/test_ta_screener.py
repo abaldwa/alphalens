@@ -24,7 +24,7 @@ from systems.technical_analysis.screener.templates import TEMPLATE_MAP, TEMPLATE
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Templates registry contains exactly 64 templates
+# Test 1: Templates registry contains exactly 63 templates
 # ---------------------------------------------------------------------------
 
 def test_templates_count_exactly_64():
@@ -38,17 +38,17 @@ def test_templates_count_exactly_64():
     2. All template names are unique.
     3. ScreenerEngine.list_templates() also returns exactly 64 TemplateInfo objects.
     """
-    assert len(TEMPLATES) == 64, (
-        f"Expected 64 templates, got {len(TEMPLATES)}. "
+    assert len(TEMPLATES) == 63, (
+        f"Expected 63 templates, got {len(TEMPLATES)}. "
         "Check systems/technical_analysis/screener/templates.py."
     )
 
     names = [t.name for t in TEMPLATES]
-    assert len(set(names)) == 64, "Duplicate template names detected"
+    assert len(set(names)) == 63, "Duplicate template names detected"
 
     engine = ScreenerEngine()
     infos = engine.list_templates()
-    assert len(infos) == 64, (
+    assert len(infos) == 63, (
         f"ScreenerEngine.list_templates() returned {len(infos)}, expected 66"
     )
 
@@ -594,7 +594,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
-        assert len(template_results) == 64
+        assert len(template_results) == 63
         # A1 should have TICKER_A as a full match (verified in test 2 above)
         assert any(r.ticker == "TICKER_A" for r in template_results.get("A1", []))
 
@@ -624,7 +624,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
         assert template_results["A1"] == []  # failed template degrades to empty, not a crash
-        assert len(template_results) == 64
+        assert len(template_results) == 63
 
     def test_run_writes_to_signals_db_and_returns_counts(self, tmp_path, monkeypatch):
         import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
@@ -640,7 +640,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         counts = checker.run("2026-07-02")
 
-        assert len(counts) == 64
+        assert len(counts) == 63
         assert counts["A1"] == 1
 
         from datastore.api.db import get_duckdb_connection
@@ -665,7 +665,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
 # missing/typo'd feature as "condition unmet" with only a WARNING log, so a
 # future feature-column rename could zero out a template's results with no
 # test failure. This test statically cross-checks every "feature"/"feature2"
-# and key_display_features entry across all 64 templates against the real
+# and key_display_features entry across all 63 templates against the real
 # feature registries. No Parquet/DB I/O — pure static data-structure check.
 # ---------------------------------------------------------------------------
 

@@ -55,6 +55,11 @@ import { MomentumPortfolioPage } from '@/pages/momentum/portfolio'
 import { MomentumRebalancePage } from '@/pages/momentum/rebalance'
 import { MomentumExperimentationPage } from '@/pages/momentum/experimentation'
 import { MomentumDynamicReportPage } from '@/pages/momentum/dynamic-report'
+import { MomentumRollingReturnsPage } from '@/pages/momentum/dynamic-report/rolling-returns'
+import { MomentumStrategySweepPage } from '@/pages/momentum/dynamic-report/strategy-sweep'
+import { MomentumYoyPage } from '@/pages/momentum/dynamic-report/yoy'
+import { MomentumIncomeModePage } from '@/pages/momentum/dynamic-report/income-mode'
+import { MomentumYoyMatrixPage } from '@/pages/momentum/dynamic-report/yoy-matrix'
 import { StrategyDeployPage } from '@/pages/momentum/StrategyDeployPage'
 
 import { BigInvestorsPage } from '@/pages/big_investors/BigInvestorsPage'
@@ -134,6 +139,11 @@ export const router = createBrowserRouter([
   { path: '/momentum-universe', element: <MomentumUniversePage /> },
   { path: '/momentum-experimentation', element: <MomentumExperimentationPage /> },
   { path: '/momentum-dynamic-report', element: <MomentumDynamicReportPage /> },
+  { path: '/momentum-dynamic-report/rolling-returns', element: <MomentumRollingReturnsPage /> },
+  { path: '/momentum-dynamic-report/strategy-sweep', element: <MomentumStrategySweepPage /> },
+  { path: '/momentum-dynamic-report/yoy', element: <MomentumYoyPage /> },
+  { path: '/momentum-dynamic-report/income-mode', element: <MomentumIncomeModePage /> },
+  { path: '/momentum-dynamic-report/yoy-matrix', element: <MomentumYoyMatrixPage /> },
   { path: '/momentum-deploy', element: <StrategyDeployPage /> },
 
   { path: '/big_investors', element: <BigInvestorsPage /> },
