@@ -87,6 +87,17 @@ export const router = createBrowserRouter([
   { path: '/big_investors-announcements', lazy: async () => ({ Component: (await import('@/pages/big_investors/announcements')).BigInvestorsAnnouncementsPage }) },
   { path: '/big_investors-mf_holdings', lazy: async () => ({ Component: (await import('@/pages/big_investors/mf_holdings')).BigInvestorsMfHoldingsPage }) },
 
+  // The unified cross-channel decision report. Every section shares one
+  // contract, one set of tables and one strategy identity, so a strategy
+  // reads the same on all of them (see features/backtest-report).
+  { path: '/backtest-report', lazy: async () => ({ Component: (await import('@/pages/backtest-report/hub')).BacktestReportHubPage }) },
+  { path: '/backtest-report/recommendations', lazy: async () => ({ Component: (await import('@/pages/backtest-report/recommendations')).BacktestRecommendationsPage }) },
+  { path: '/backtest-report/returns', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestReturnsPage }) },
+  { path: '/backtest-report/consistency', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestConsistencyPage }) },
+  { path: '/backtest-report/risk', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestRiskPage }) },
+  { path: '/backtest-report/trade-quality', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestTradeQualityPage }) },
+  { path: '/backtest-report/strategy/:key', lazy: async () => ({ Component: (await import('@/pages/backtest-report/strategy-detail')).BacktestStrategyDetailPage }) },
+
   { path: '/backtest', lazy: async () => ({ Component: (await import('@/pages/backtest/BacktestPage')).BacktestPage }) },
   { path: '/backtest-experiments', lazy: async () => ({ Component: (await import('@/pages/backtest/ExperimentsPage')).ExperimentsPage }) },
   { path: '/backtest-regimes', lazy: async () => ({ Component: (await import('@/pages/backtest/RegimesPage')).RegimesPage }) },

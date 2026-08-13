@@ -170,6 +170,15 @@ export const NAV_SECTIONS: NavSection[] = [
     href: '/backtest',
     subItems: [
       { id: 'index', label: 'Runs', href: '/backtest' },
+      // The cross-channel decision report. Registered here rather than under
+      // Momentum because it spans all four channels — Momentum's own
+      // dynamic-report sub-pages redirect into it.
+      { id: 'report', label: 'Report', href: '/backtest-report' },
+      {
+        id: 'report_recommendations',
+        label: 'Recommendations',
+        href: '/backtest-report/recommendations',
+      },
       {
         id: 'experiments',
         label: 'Experiments',
