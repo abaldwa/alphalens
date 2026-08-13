@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import pytest
+
 from backtest.core.report import (
     ORCHESTRATOR_PENDING,
     StrategyReport,
@@ -151,3 +153,30 @@ def test_to_dict_is_json_shaped():
     assert d["strategy_key"] == "technical:A1"
     assert set(d["pending"]["consistency.rolling"]) == {"backlog_id", "reason"}
     assert ORCHESTRATOR_PENDING["consistency.rolling"].backlog_id == "T13"
+
+
+# ---------------------------------------------------------------------------
+# A89 -- the engine emits the canonical identity
+# ---------------------------------------------------------------------------
+
+
+def test_the_engines_key_wins_over_a_caller_supplied_one():
+    """A run that states its own identity is authoritative; anything the
+    caller reconstructs is a guess by comparison."""
+    res = _Result()
+    res.strategy_key = "technical:A1"
+    r = from_run_result(res, strategy_key="technical:WRONG")
+    assert r.strategy_key == "technical:A1"
+
+
+def test_a_pre_a89_run_still_accepts_a_supplied_key():
+    r = from_run_result(_Result(), strategy_key="technical:A1")
+    assert r.strategy_key == "technical:A1"
+
+
+def test_a_report_with_no_identity_at_all_is_refused():
+    """A report that cannot name its strategy cannot be linked to, compared or
+    deployed -- silently labelling it "unknown" would put an anonymous row in
+    a ranking table."""
+    with pytest.raises(ValueError, match="strategy_key"):
+        from_run_result(_Result())

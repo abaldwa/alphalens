@@ -223,7 +223,7 @@ ORCHESTRATOR_PENDING = {
 def from_run_result(
     result: Any,
     *,
-    strategy_key: str,
+    strategy_key: Optional[str] = None,
     label: Optional[str] = None,
     channel: Optional[str] = None,
     trade_book_url: Optional[str] = None,
@@ -236,6 +236,16 @@ def from_run_result(
     """
     metrics: Dict[str, Any] = getattr(result, "metrics", None) or {}
     run = getattr(result, "run", None)
+    # A89: prefer the key the engine emitted. Falling back to a caller-supplied
+    # one keeps runs recorded before A89 readable, but a run that states its
+    # own identity is authoritative over anything reconstructed.
+    strategy_key = getattr(result, "strategy_key", None) or strategy_key
+    if not strategy_key:
+        raise ValueError(
+            "No strategy_key: the run did not emit one (pre-A89) and none was "
+            "supplied. A report that cannot identify its strategy cannot be "
+            "linked to, compared, or deployed."
+        )
 
     def m(key: str) -> Optional[float]:
         v = metrics.get(key)

@@ -170,6 +170,14 @@ class BacktestRunResult:
     # because an unpaid balance keeps compounding until settled — the exact
     # effect being removed.
     tax_ledger: List[Dict[str, Any]] = field(default_factory=list)
+    # [A89, 2026-08-13] The canonical cross-application identity,
+    # "{channel}:{name}" -- the same key the registry, the API and the
+    # frontend use. Four schemes coexisted (variant_id, strategy_id+run_id,
+    # template_name+exit_variant, and a localStorage string), so no view could
+    # link to another and the client had to re-derive identity by parsing
+    # strings. Emitted by the engine now, which is what lets that parsing be
+    # deleted rather than maintained.
+    strategy_key: Optional[str] = None
     # [A90, 2026-08-13] The benchmark's equity curve, same shape and dates as
     # `equity_curve` below: [{"date": "YYYY-MM-DD", "equity": float}].
     #

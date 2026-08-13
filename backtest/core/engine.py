@@ -357,6 +357,36 @@ class RefitEvent:
     model_version: str
 
 
+def canonical_strategy_key(run) -> Optional[str]:
+    """"{channel}:{name}" -- the cross-application strategy identity (A89).
+
+    `name` prefers the template/preset the run actually executed, because that
+    is what the registry and the UI key on; strategy_id is the fallback, since
+    it embeds a run date and would make every re-run look like a different
+    strategy.
+
+    A colon in the name would make the key ambiguous to split, so it is
+    rejected rather than silently producing a key that parses to something
+    else.
+    """
+    channel = getattr(run, "channel", None)
+    name = (
+        getattr(run, "template_name", None)
+        or getattr(run, "preset", None)
+        or getattr(run, "strategy_id", None)
+    )
+    if not channel or not name:
+        return None
+    name = str(name)
+    if ":" in name:
+        logger.warning(
+            "strategy name %r contains a colon; omitting strategy_key rather "
+            "than emitting one that parses back to a different strategy", name,
+        )
+        return None
+    return f"{channel}:{name}"
+
+
 def _curve_to_rows(curve):
     """A pandas equity curve -> [{"date": "YYYY-MM-DD", "equity": float}].
 
@@ -1383,6 +1413,11 @@ class BacktestOrchestrator:
             # return and then dropped, so a report could draw the strategy's
             # line but never the one it is judged against.
             benchmark_curve=_curve_to_rows(benchmark_curve),
+            # A89: the identity every other surface already uses. Built from
+            # the run's own channel and strategy_id rather than re-derived
+            # downstream, so the engine, the registry, the API and the UI
+            # cannot disagree about what to call the same strategy.
+            strategy_key=canonical_strategy_key(run),
             exit_policy_variant=self._exit_policy_variant,
             regime_label=regime_label,
             trade_log_path=str(trade_log_path),
