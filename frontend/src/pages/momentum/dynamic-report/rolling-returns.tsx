@@ -8,7 +8,7 @@ export function MomentumRollingReturnsPage() {
 
   return (
     <AppShell title="Momentum — Rolling Return Consistency" description="Part of the Momentum Strategy Report.">
-      <BackToReportLink />
+      <BackToReportLink unifiedSection="consistency" />
       <Card>
         <CardHeader>
           <CardTitle>Rolling Return Consistency</CardTitle>

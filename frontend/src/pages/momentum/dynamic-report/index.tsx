@@ -35,9 +35,16 @@ const SECTIONS = [
     description: 'Each strategy starts every FY at ₹10L; surplus withdrawn as cash, shortfalls topped up.',
   },
   {
-    to: '/momentum-dynamic-report/yoy-matrix',
+    // Moved into the unified report, where the same pivot covers all four
+    // channels rather than momentum alone.
+    to: '/backtest-report/consistency?channel=momentum',
     title: 'YoY Consistency Matrix',
-    description: 'Per band: strategies x fiscal years, Red/Amber/Green consistency scan — the other heavy table.',
+    description: 'Per band: strategies x fiscal years, Red/Amber/Green consistency scan — now in the unified Backtest Report.',
+  },
+  {
+    to: '/backtest-report/recommendations?channel=momentum',
+    title: 'Deploy Recommendations',
+    description: 'Conservative / Moderate / High Risk shortlists across every channel, with the gates and weights that produced them.',
   },
 ]
 

@@ -9,6 +9,7 @@
 // header states this so the two are never silently compared.
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import {
   Badge,
@@ -17,6 +18,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  DataTable,
   Table,
   TableHeader,
   TableBody,
@@ -31,8 +33,6 @@ import {
 } from '@/shared/api/backtest'
 
 const ROLLING_WINDOWS = ['2y', '3y', '4y', '5y'] as const
-
-type SortKey = 'sharpe' | 'cagr' | 'excess_return' | 'calmar' | 'max_drawdown' | 'post_tax'
 
 const pct = (v: number | null | undefined) =>
   v === null || v === undefined || Number.isNaN(v) ? '—' : `${(v * 100).toFixed(2)}%`
@@ -49,22 +49,8 @@ const inr = (v: number | null | undefined) =>
 const signClass = (v: number | null | undefined) =>
   v === null || v === undefined ? '' : v > 0 ? 'text-emerald-600 dark:text-emerald-400' : v < 0 ? 'text-red-600 dark:text-red-400' : ''
 
-function sortValue(s: TaComparisonStrategy, key: SortKey): number {
-  const m = s.engine_metrics ?? {}
-  switch (key) {
-    case 'sharpe': return m.sharpe ?? -Infinity
-    case 'cagr': return m.cagr ?? -Infinity
-    case 'excess_return': return m.excess_return ?? -Infinity
-    case 'calmar': return m.calmar ?? -Infinity
-    // Least-negative drawdown is best, so a plain descending sort is correct.
-    case 'max_drawdown': return m.max_drawdown ?? -Infinity
-    case 'post_tax': return s.post_tax_return_on_capital ?? -Infinity
-  }
-}
-
 export function TaComparisonPanel() {
   const [selected, setSelected] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('sharpe')
   const [styleFilter, setStyleFilter] = useState<string>('all')
 
   const list = useQuery({
@@ -83,11 +69,139 @@ export function TaComparisonPanel() {
     refetchInterval: 60_000,
   })
 
+  // Ordering is DataTable's job now (click any column header). The panel only
+  // filters; the hand-rolled comparator and its "Sort by" dropdown are gone,
+  // so this table sorts the same way as every other table in the app.
   const strategies = useMemo(() => {
     const rows = report.data?.strategies ?? []
-    const filtered = styleFilter === 'all' ? rows : rows.filter((r) => r.style === styleFilter)
-    return [...filtered].sort((a, b) => sortValue(b, sortKey) - sortValue(a, sortKey))
-  }, [report.data, sortKey, styleFilter])
+    return styleFilter === 'all' ? rows : rows.filter((r) => r.style === styleFilter)
+  }, [report.data, styleFilter])
+
+  const headlineColumns = useMemo<ColumnDef<TaComparisonStrategy, unknown>[]>(
+    () => [
+      { id: 'template', accessorFn: (s) => s.template_name, header: 'Template', size: 150 },
+      {
+        id: 'style',
+        accessorFn: (s) => s.style,
+        header: 'Style',
+        size: 110,
+        cell: (i) => <Badge variant="secondary">{i.row.original.style}</Badge>,
+      },
+      {
+        id: 'cagr',
+        accessorFn: (s) => s.engine_metrics?.cagr ?? null,
+        header: 'CAGR',
+        size: 90,
+        meta: { align: 'right' },
+        cell: (i) => (
+          <span className={signClass(i.row.original.engine_metrics?.cagr)}>
+            {pct(i.row.original.engine_metrics?.cagr)}
+          </span>
+        ),
+      },
+      {
+        id: 'benchmark',
+        accessorFn: (s) => s.engine_metrics?.benchmark_cagr ?? null,
+        header: 'Benchmark',
+        size: 100,
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => (
+          <span className="text-muted-foreground">
+            {pct(i.row.original.engine_metrics?.benchmark_cagr)}
+          </span>
+        ),
+      },
+      {
+        id: 'excess',
+        accessorFn: (s) => s.engine_metrics?.excess_return ?? null,
+        header: 'Excess',
+        size: 90,
+        meta: { align: 'right' },
+        cell: (i) => (
+          <span className={signClass(i.row.original.engine_metrics?.excess_return)}>
+            {pct(i.row.original.engine_metrics?.excess_return)}
+          </span>
+        ),
+      },
+      {
+        id: 'sharpe',
+        accessorFn: (s) => s.engine_metrics?.sharpe ?? null,
+        header: 'Sharpe',
+        size: 80,
+        meta: { align: 'right' },
+        cell: (i) => num(i.row.original.engine_metrics?.sharpe),
+      },
+      {
+        id: 'sortino',
+        accessorFn: (s) => s.engine_metrics?.sortino ?? null,
+        header: 'Sortino',
+        size: 80,
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => num(i.row.original.engine_metrics?.sortino),
+      },
+      {
+        id: 'calmar',
+        accessorFn: (s) => s.engine_metrics?.calmar ?? null,
+        header: 'Calmar',
+        size: 80,
+        meta: { align: 'right', priority: 'medium' },
+        cell: (i) => num(i.row.original.engine_metrics?.calmar),
+      },
+      {
+        id: 'maxdd',
+        accessorFn: (s) => s.engine_metrics?.max_drawdown ?? null,
+        header: 'Max DD',
+        size: 90,
+        meta: { align: 'right' },
+        cell: (i) => (
+          <span className="text-red-600 dark:text-red-400">
+            {pct(i.row.original.engine_metrics?.max_drawdown)}
+          </span>
+        ),
+      },
+      {
+        id: 'winrate',
+        accessorFn: (s) => s.engine_metrics?.win_rate ?? null,
+        header: 'Win rate',
+        size: 90,
+        meta: { align: 'right' },
+        cell: (i) => pct(i.row.original.engine_metrics?.win_rate),
+      },
+      {
+        id: 'trades',
+        accessorFn: (s) => s.closed_trades ?? null,
+        header: 'Trades',
+        size: 80,
+        meta: { align: 'right' },
+        cell: (i) => i.row.original.closed_trades ?? '—',
+      },
+      {
+        id: 'avghold',
+        accessorFn: (s) => s.avg_holding_days ?? null,
+        header: 'Avg hold (d)',
+        size: 100,
+        meta: { align: 'right' },
+        cell: (i) => num(i.row.original.avg_holding_days, 1),
+      },
+      {
+        id: 'avgheld',
+        accessorFn: (s) => s.holdings?.avg_concurrent_positions_calendar ?? null,
+        header: 'Avg held',
+        size: 90,
+        meta: { align: 'right', priority: 'low', group: 'activity' },
+        cell: (i) => num(i.row.original.holdings?.avg_concurrent_positions_calendar, 1),
+      },
+      {
+        id: 'signals',
+        accessorFn: (s) => s.entries?.avg_entries_per_month ?? null,
+        header: 'Signals/mo',
+        size: 95,
+        meta: { align: 'right', priority: 'low', group: 'activity' },
+        cell: (i) => num(i.row.original.entries?.avg_entries_per_month, 1),
+      },
+    ],
+    [],
+  )
 
   const styles = useMemo(
     () => Array.from(new Set((report.data?.strategies ?? []).map((r) => r.style))).sort(),
@@ -158,19 +272,6 @@ export function TaComparisonPanel() {
                 <option value="all">All styles</option>
                 {styles.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
-              <select
-                aria-label="Sort by"
-                className="h-9 rounded-md border bg-background px-2 text-sm"
-                value={sortKey}
-                onChange={(e) => setSortKey(e.target.value as SortKey)}
-              >
-                <option value="sharpe">Sharpe</option>
-                <option value="cagr">CAGR</option>
-                <option value="excess_return">Excess vs benchmark</option>
-                <option value="calmar">Calmar</option>
-                <option value="max_drawdown">Max drawdown</option>
-                <option value="post_tax">Post-tax return</option>
-              </select>
             </div>
           </div>
         </CardHeader>
@@ -191,51 +292,17 @@ export function TaComparisonPanel() {
 
       {/* Headline metrics */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Performance &amp; Risk</CardTitle></CardHeader>
-        <CardContent className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Template</TableHead>
-                <TableHead>Style</TableHead>
-                <TableHead className="text-right">CAGR</TableHead>
-                <TableHead className="text-right">Benchmark</TableHead>
-                <TableHead className="text-right">Excess</TableHead>
-                <TableHead className="text-right">Sharpe</TableHead>
-                <TableHead className="text-right">Sortino</TableHead>
-                <TableHead className="text-right">Calmar</TableHead>
-                <TableHead className="text-right">Max DD</TableHead>
-                <TableHead className="text-right">Win rate</TableHead>
-                <TableHead className="text-right">Trades</TableHead>
-                <TableHead className="text-right">Avg hold (d)</TableHead>
-                <TableHead className="text-right">Avg held</TableHead>
-                <TableHead className="text-right">Signals/mo</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {strategies.map((s) => {
-                const m = s.engine_metrics ?? {}
-                return (
-                  <TableRow key={s.template_name}>
-                    <TableCell className="font-medium">{s.template_name}</TableCell>
-                    <TableCell><Badge variant="secondary">{s.style}</Badge></TableCell>
-                    <TableCell className={cnRight(signClass(m.cagr))}>{pct(m.cagr)}</TableCell>
-                    <TableCell className="text-right text-muted-foreground">{pct(m.benchmark_cagr)}</TableCell>
-                    <TableCell className={cnRight(signClass(m.excess_return))}>{pct(m.excess_return)}</TableCell>
-                    <TableCell className="text-right">{num(m.sharpe)}</TableCell>
-                    <TableCell className="text-right">{num(m.sortino)}</TableCell>
-                    <TableCell className="text-right">{num(m.calmar)}</TableCell>
-                    <TableCell className="text-right text-red-600 dark:text-red-400">{pct(m.max_drawdown)}</TableCell>
-                    <TableCell className="text-right">{pct(m.win_rate)}</TableCell>
-                    <TableCell className="text-right">{s.closed_trades ?? '—'}</TableCell>
-                    <TableCell className="text-right">{num(s.avg_holding_days, 1)}</TableCell>
-                    <TableCell className="text-right">{num(s.holdings?.avg_concurrent_positions_calendar, 1)}</TableCell>
-                    <TableCell className="text-right">{num(s.entries?.avg_entries_per_month, 1)}</TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
+        <CardHeader>
+          <CardTitle className="text-base">Performance &amp; Risk</CardTitle>
+          <CardDescription>Click any column header to sort.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            columns={headlineColumns}
+            data={strategies}
+            isLoading={report.isLoading}
+            emptyMessage="No strategies in this report."
+          />
         </CardContent>
       </Card>
 

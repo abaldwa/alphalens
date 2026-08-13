@@ -1,4 +1,4 @@
-import { createBrowserRouter } from 'react-router-dom'
+import { Navigate, createBrowserRouter } from 'react-router-dom'
 
 import { HomePage } from '@/pages/home/HomePage'
 
@@ -80,7 +80,11 @@ export const router = createBrowserRouter([
   { path: '/momentum-dynamic-report/strategy-sweep', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/strategy-sweep')).MomentumStrategySweepPage }) },
   { path: '/momentum-dynamic-report/yoy', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/yoy')).MomentumYoyPage }) },
   { path: '/momentum-dynamic-report/income-mode', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/income-mode')).MomentumIncomeModePage }) },
-  { path: '/momentum-dynamic-report/yoy-matrix', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/yoy-matrix')).MomentumYoyMatrixPage }) },
+  // Superseded by /backtest-report/consistency, which renders the same pivot
+  // through the shared MatrixTable across all four channels rather than
+  // momentum alone. Redirected rather than removed so existing links and
+  // bookmarks keep working.
+  { path: '/momentum-dynamic-report/yoy-matrix', element: <Navigate to="/backtest-report/consistency?channel=momentum" replace /> },
   { path: '/momentum-deploy', lazy: async () => ({ Component: (await import('@/pages/momentum/StrategyDeployPage')).StrategyDeployPage }) },
 
   { path: '/big_investors', lazy: async () => ({ Component: (await import('@/pages/big_investors/BigInvestorsPage')).BigInvestorsPage }) },

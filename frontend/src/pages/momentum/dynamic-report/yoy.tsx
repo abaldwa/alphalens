@@ -18,7 +18,7 @@ export function MomentumYoyPage() {
 
   return (
     <AppShell title="Momentum — Year-on-Year" description="Part of the Momentum Strategy Report.">
-      <BackToReportLink />
+      <BackToReportLink unifiedSection="consistency" />
       <Card>
         <CardHeader>
           <CardTitle>Year-on-Year (Apr&ndash;Mar)</CardTitle>

@@ -8,7 +8,7 @@ export function MomentumIncomeModePage() {
 
   return (
     <AppShell title="Momentum — Income Mode" description="Part of the Momentum Strategy Report.">
-      <BackToReportLink />
+      <BackToReportLink unifiedSection="returns" />
       <Card>
         <CardHeader>
           <CardTitle>Income Mode (Annual Capital Reset)</CardTitle>
