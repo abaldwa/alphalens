@@ -30,6 +30,7 @@ import duckdb
 import pandas as pd
 
 from backtest.derive_exit_params import derive_params, params_to_frame
+from backtest.trade_filters import ADTV_LOOKBACK_SESSIONS, DEFAULT_TOP_N_BY_ADTV
 
 # Sampling exists because the full unconstrained set is ~679k trades and the
 # path join is the expensive part. 0 means "no sampling" — prefer that for the
@@ -77,50 +78,98 @@ def load_trades(backtest_db: Path, market_db: Path, sample_rows: int) -> pd.Data
         con.register("trades", trades)
         # MAE/MFE from the day AFTER entry through the exit day: an exit
         # barrier cannot fire on the bar that opened the position.
+        # Tradeability filters, applied here rather than assumed.
+        #
+        # IMPORTANT LIMITATION, stated rather than buried: these trades were
+        # PRODUCED by runs that had none of these filters on. Removing the
+        # untradeable ones after the fact is a large improvement over using
+        # them, but it is not equivalent to re-running the unconstrained sweep
+        # with the filters active — in a real re-run the capital those trades
+        # consumed would have gone to different names, so the surviving trade
+        # SET would differ, not just shrink. Barriers derived here are sound
+        # enough to configure the re-run with; the re-run's own unconstrained
+        # arm is what they should ultimately be re-derived from.
         path = con.execute(
-            """
-            select t.template, t.pnl_pct, t.holding_days,
-                   min(o.low) / t.buy_price - 1.0 as mae,
-                   max(o.high) / t.buy_price - 1.0 as mfe
-            from trades t
+            f"""
+            with adtv as (
+                select ticker, date,
+                       avg(close * volume) over (
+                           partition by ticker order by date
+                           rows between {ADTV_LOOKBACK_SESSIONS} preceding and 1 preceding
+                       ) as adtv_value
+                from ohlcv_adjusted
+            ),
+            ranked as (
+                select ticker, date,
+                       row_number() over (partition by date order by adtv_value desc) as adtv_rank
+                from adtv where adtv_value is not null
+            ),
+            eligible as (
+                select t.*
+                from trades t
+                join ranked r on r.ticker = t.ticker and r.date = t.buy_date
+                where r.adtv_rank <= {DEFAULT_TOP_N_BY_ADTV}
+            ),
+            -- A trade whose ENTRY or EXIT bar was circuit-locked was not
+            -- fillable at that price; high == low on a day that traded.
+            unlocked as (
+                select e.* from eligible e
+                where not exists (
+                    select 1 from ohlcv_adjusted o
+                    where o.ticker = e.ticker and o.high = o.low and o.volume > 0
+                      and o.date in (e.buy_date, e.sale_date)
+                )
+            )
+            select u.template, u.pnl_pct, u.holding_days,
+                   min(o.low) / u.buy_price - 1.0 as mae,
+                   max(o.high) / u.buy_price - 1.0 as mfe,
+                   count(*) as n_bars,
+                   date_diff('day', u.buy_date, u.sale_date) as calendar_days
+            from unlocked u
             join ohlcv_adjusted o
-              on o.ticker = t.ticker
-             and o.date > t.buy_date
-             and o.date <= t.sale_date
-            group by t.template, t.pnl_pct, t.holding_days,
-                     t.ticker, t.buy_date, t.buy_price
+              on o.ticker = u.ticker
+             and o.date > u.buy_date
+             and o.date <= u.sale_date
+            group by u.template, u.pnl_pct, u.holding_days,
+                     u.ticker, u.buy_date, u.buy_price, u.sale_date
             """
         ).fetchdf()
+
+        # Blackout rule: a trade whose bar count is far below the trading days
+        # its window spans was held through a period no barrier could act in.
+        # ~0.68 bars per calendar day is the normal ratio (5 sessions / 7.35
+        # calendar days); 0.5 leaves generous room for holidays before flagging.
+        before_blackout = len(path)
+        path = path[path["n_bars"] >= 0.5 * path["calendar_days"] * (5.0 / 7.0)]
+        print(f"blackout filter dropped {before_blackout - len(path)} trades")
     finally:
         con.close()
 
-    # The GROUP BY above collapses identical trades, and most of the row count
-    # IS duplicates: 538,985 of 679,492 unconstrained Technical trade rows are
-    # exact repeats, because the same (ticker, buy_date, sale_date) trade is
-    # produced by every run whose config differs only in a dimension that did
-    # not change the trade (top_n, capital_mode). Collapsing them is correct
-    # here — a trade that happens to appear under six configs is one piece of
-    # evidence about how that screen's trades behave, not six — but it must be
-    # deliberate, so it is asserted rather than left to a silent side effect.
-    #
-    # This is separately verified: a per-trade bar count over the market DB
-    # found ZERO unconstrained Technical trades with no OHLCV bars between
-    # entry and exit. If that ever stops being true the difference below stops
-    # matching the duplicate count, and the check fires.
+    # Stage-by-stage accounting. Written this way after the first version's
+    # guard misfired: it compared the final row count against the count of
+    # DISTINCT input trades, which was correct before the tradeability filters
+    # existed and wrong afterwards — every legitimately filtered trade looked
+    # like missing OHLCV, and it reported 54,005 "trades with no price path"
+    # that were simply illiquid, circuit-locked or blacked out. A filter drop
+    # and a data hole must never share a counter.
     unique_trades = trades.drop_duplicates(
         subset=["ticker", "buy_date", "sale_date", "template", "pnl_pct"]
     )
-    if len(path) < len(unique_trades):
-        raise SystemExit(
-            f"{len(unique_trades) - len(path)} distinct trades have no OHLCV path "
-            "between entry and exit. Barriers derived from the remainder would be "
-            "biased toward whichever tickers happen to have coverage — fix the "
-            "OHLCV gap rather than proceeding."
-        )
     print(
-        f"{len(trades)} trade rows -> {len(path)} distinct trade paths "
-        f"({len(trades) - len(path)} duplicate rows across configs collapsed)"
+        f"{len(trades)} trade rows -> {len(unique_trades)} distinct trades "
+        f"({len(trades) - len(unique_trades)} duplicate rows across configs collapsed)"
     )
+    print(
+        f"after tradeability filters (PIT top-{DEFAULT_TOP_N_BY_ADTV} ADTV, circuit-locked "
+        f"entry/exit bars, blackouts): {len(path)} trades "
+        f"({100.0 * (1 - len(path) / max(len(unique_trades), 1)):.1f}% removed)"
+    )
+    if path.empty:
+        raise SystemExit(
+            "every trade was filtered out — check the filter thresholds before "
+            "concluding anything from an empty set."
+        )
+
     path.attrs["window"] = window
     return path
 
