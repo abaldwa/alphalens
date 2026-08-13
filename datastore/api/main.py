@@ -63,6 +63,7 @@ from .routers import (
     holdings,
     indices,
     strategies as strategy_registry_router,
+    deployments as deployments_router,
     macro,
     models,
     momentum,
@@ -176,6 +177,8 @@ app.include_router(indices.router)
 # A95: the registry is the single source of truth for what a strategy IS;
 # backtest, API and frontend all read these rows.
 app.include_router(strategy_registry_router.router)
+# A91: channel-agnostic deployment of a registry strategy.
+app.include_router(deployments_router.router)
 # [AS BUILT, P2.6] forensic.router and multibagger.router MUST be registered
 # before signals.router: their literal "/forensic/{ticker}" and
 # "/multibagger/{ticker}" paths would otherwise structurally collide with
