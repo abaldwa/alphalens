@@ -41,7 +41,7 @@ class TestListPending:
         assert response.json()["actions"] == []
 
     def test_lists_a_real_proposed_action(self, client):
-        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0)
+        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0, enforce_readiness=False)
         adapter = _FixedAdapter("technical", [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9)])
         runner.propose_today(adapter, ["RELIANCE"], "2026-07-20")
 
@@ -54,7 +54,7 @@ class TestListPending:
 
 class TestAccept:
     def test_accept_requires_horizon_bucket_on_first_ever_action(self, client):
-        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0)
+        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0, enforce_readiness=False)
         adapter = _FixedAdapter("technical", [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9)])
         actions = runner.propose_today(adapter, ["RELIANCE"], "2026-07-20")
 
@@ -67,7 +67,7 @@ class TestAccept:
         assert "No existing paper-trading state" in response.json()["detail"]
 
     def test_accept_with_horizon_bucket_creates_state_and_executes(self, client):
-        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0)
+        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0, enforce_readiness=False)
         adapter = _FixedAdapter("technical", [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9)])
         actions = runner.propose_today(adapter, ["RELIANCE"], "2026-07-20")
 
@@ -93,7 +93,7 @@ class TestAccept:
 
 class TestReject:
     def test_reject_never_needs_horizon_bucket(self, client):
-        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0)
+        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0, enforce_readiness=False)
         adapter = _FixedAdapter("technical", [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9)])
         actions = runner.propose_today(adapter, ["RELIANCE"], "2026-07-20")
 
@@ -128,7 +128,7 @@ class TestStateSummary:
         assert response.status_code == 404
 
     def test_returns_state_after_a_real_accept(self, client):
-        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0)
+        runner = PaperTradingRunner("technical", "ta_5d", HorizonBucket.D5, 1_000_000.0, enforce_readiness=False)
         adapter = _FixedAdapter("technical", [Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9)])
         actions = runner.propose_today(adapter, ["RELIANCE"], "2026-07-20")
         runner.accept(actions[0].action_id, "2026-07-20", 100.0, {"RELIANCE": 100.0})

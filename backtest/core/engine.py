@@ -429,6 +429,81 @@ def resolve_strategy_version(strategy_key: Optional[str]) -> Optional[int]:
     return int(version) if version is not None else None
 
 
+class ReadinessNotMet(RuntimeError):
+    """A run was refused because its data prerequisites were unmet (A103)."""
+
+
+def _enforce_run_readiness(*, run, config, strategy_key: str, strategy_version) -> None:
+    """Probe a few dates across the run window; refuse if inputs are missing.
+
+    Sampling, not exhaustive checking, is the point: the failure this exists
+    to catch is a feature that was never backfilled across the window, and a
+    handful of probes answers that as well as 860 would. A genuinely
+    intermittent single-date hole is what `data_gaps` is for.
+    """
+    from backtest.core.readiness import ReadinessChecker, record_blocked
+
+    # Explicit None checks, not truthiness: trading_days is a pandas
+    # DatetimeIndex, and `index or []` raises "truth value is ambiguous".
+    raw_days = getattr(config, "trading_days", None)
+    days = list(raw_days) if raw_days is not None else []
+    raw_universe = getattr(config, "universe", None)
+    if raw_universe is None:
+        raw_universe = getattr(run, "universe", None)
+    universe = list(raw_universe) if raw_universe is not None else []
+    if not days or not universe:
+        # Nothing to probe against. Silence here would be indistinguishable
+        # from a pass, so say so.
+        logger.warning(
+            "%s: readiness not enforced — no trading_days/universe on the config",
+            strategy_key,
+        )
+        return
+
+    n = max(1, int(config.readiness_sample_dates))
+    step = max(1, len(days) // n)
+    sample = days[::step][:n]
+    checker = ReadinessChecker()
+
+    unready = []
+    for as_of in sample:
+        try:
+            verdict = checker.check(
+                run.channel, as_of, universe=universe, strategy_key=strategy_key,
+            )
+        except Exception:
+            logger.exception(
+                "%s: readiness check failed to run for %s — not treating that as a pass",
+                strategy_key, as_of,
+            )
+            continue
+        if not verdict.ready:
+            unready.append(verdict)
+
+    if not unready:
+        return
+
+    detail = "; ".join(m.detail for v in unready for m in v.missing)
+    for verdict in unready:
+        try:
+            record_blocked(
+                verdict, strategy_key=strategy_key,
+                strategy_version=strategy_version or 0,
+                db_path=config.signal_ledger_db_path,
+            )
+        except Exception:
+            logger.exception("Could not record the blocked run for %s", strategy_key)
+
+    message = (
+        f"{strategy_key}: {len(unready)} of {len(sample)} sampled dates are missing "
+        f"required inputs — {detail}. The run would complete and report a plausible "
+        "number computed on a silently reduced universe."
+    )
+    if config.readiness_is_fatal:
+        raise ReadinessNotMet(message)
+    logger.error("%s (continuing: readiness_is_fatal=False)", message)
+
+
 def _curve_to_rows(curve):
     """A pandas equity curve -> [{"date": "YYYY-MM-DD", "equity": float}].
 
@@ -507,6 +582,18 @@ class OrchestratorConfig:
     # a literal 1, which stamped every ledger row and every deploy hand-off
     # with a version the run had not necessarily executed.
     signal_ledger_strategy_version: Optional[int] = None
+    # A103. Checked once at run start (see _enforce_run_readiness), not per
+    # rebalance date. Default ON: a backtest that silently screened a reduced
+    # universe produces a plausible number that drives a deploy decision.
+    enforce_readiness: bool = True
+    # How many dates across the window to sample. The question being asked --
+    # "was this indicator ever backfilled here?" -- is answered by a handful
+    # of probes; 860 would answer it 860 times at 860x the cost.
+    readiness_sample_dates: int = 5
+    # Raise on an unready run, vs log loudly and continue. Default False:
+    # aborting mid-sweep would fail a 400-job queue on its first strategy
+    # whose feature happened to be sparse. The refusal is always recorded.
+    readiness_is_fatal: bool = False
 
 
 class BacktestOrchestrator:
@@ -858,6 +945,26 @@ class BacktestOrchestrator:
             if config.signal_ledger_strategy_version is not None
             else resolve_strategy_version(run_strategy_key)
         )
+        # A103 readiness gate, as a RUN-START precondition rather than a
+        # per-rebalance-date check. Per-date would mean ~860 DB round-trips
+        # per job (times the parallel queue's concurrency) to re-answer a
+        # question whose answer barely varies across a run — and the engine
+        # already records genuine per-date holes as `data_gaps`.
+        #
+        # What this catches instead is the failure the per-date check would
+        # mostly miss: a strategy gated on an indicator that was NEVER
+        # backfilled over the window. The screener treats a NULL feature as
+        # "condition unmet" rather than raising (see A81/A74), so such a run
+        # completes, reports a plausible CAGR, and silently screened a
+        # reduced universe the whole way. That result then drives a deploy
+        # decision, which is what makes a wrong backtest as costly as a wrong
+        # live signal.
+        if config.enforce_readiness and run_strategy_key:
+            _enforce_run_readiness(
+                run=run, config=config, strategy_key=run_strategy_key,
+                strategy_version=run_strategy_version,
+            )
+
         if config.persist_signals:
             ledger_key = run_strategy_key
             if ledger_key:

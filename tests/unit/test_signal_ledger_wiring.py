@@ -217,6 +217,9 @@ class TestPaperTrading:
 
         runner = PaperTradingRunner(
             "technical", "ta_5d", HorizonBucket.D5, 1_000_000.0, signal_ledger_db_path=ledger_db,
+            # This test is about the LEDGER, not the A103 gate; ta_5d is not a
+            # registered strategy so the gate would (correctly) refuse it.
+            enforce_readiness=False,
         )
         adapter = _FixedSignalAdapter([
             Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9),
@@ -243,7 +246,118 @@ class TestPaperTrading:
         runner = PaperTradingRunner(
             "technical", "ta_5d", HorizonBucket.D5, 1_000_000.0,
             persist_signals=False, signal_ledger_db_path=ledger_db,
+            enforce_readiness=False,
         )
         adapter = _FixedSignalAdapter([Signal(ticker="RELIANCE", action="buy", sector="Energy")])
         runner.propose_today(adapter, ["RELIANCE"], date(2026, 7, 20))
         assert read_signals(strategy_key="technical:ta_5d", db_path=ledger_db) == []
+
+
+class TestRunReadinessGate:
+    """A103 on the backtest side: a run-start precondition, not a per-date
+    check.
+
+    The failure it targets is A81/A74's silent-NaN class: the screener treats
+    a NULL feature as "condition unmet" rather than raising, so a strategy
+    gated on an indicator that was never backfilled completes normally and
+    reports a plausible CAGR computed on a silently reduced universe. That
+    number then drives a deploy decision.
+    """
+
+    def _cfg(self, **kw):
+        from backtest.core.engine import OrchestratorConfig
+        import inspect
+        sig = inspect.signature(OrchestratorConfig)
+        base = {k: v for k, v in kw.items() if k in sig.parameters}
+        return base
+
+    def test_sampling_is_bounded_not_one_check_per_trading_day(self, monkeypatch):
+        """860 rebalance dates times the parallel queue's concurrency is the
+        DuckDB write-lock contention this project has already been bitten by;
+        the question being asked does not need asking 860 times."""
+        from backtest.core import engine as eng
+
+        calls = []
+
+        class _Checker:
+            def check(self, channel, as_of, **kw):
+                calls.append(as_of)
+
+                class _R:
+                    ready = True
+                    missing = ()
+                return _R()
+
+        monkeypatch.setattr(eng, "_enforce_run_readiness", eng._enforce_run_readiness)
+        import backtest.core.readiness as rd
+        monkeypatch.setattr(rd, "ReadinessChecker", lambda *a, **k: _Checker())
+
+        class _Cfg:
+            trading_days = [date(2026, 1, d) for d in range(1, 29)]
+            universe = ["RELIANCE"]
+            readiness_sample_dates = 5
+            readiness_is_fatal = False
+            signal_ledger_db_path = None
+
+        class _Run:
+            channel = "momentum"
+
+        eng._enforce_run_readiness(
+            run=_Run(), config=_Cfg(), strategy_key="momentum:x", strategy_version=1,
+        )
+        assert 0 < len(calls) <= 5, f"sampled {len(calls)} dates, expected <= 5"
+
+    def test_an_unready_run_raises_when_configured_fatal(self, monkeypatch):
+        import backtest.core.readiness as rd
+        from backtest.core.engine import ReadinessNotMet, _enforce_run_readiness
+
+        class _R:
+            ready = False
+
+            class _M:
+                detail = "hurst_exp_63d never backfilled over this window"
+                kind = "indicator"
+            missing = (_M(),)
+
+        class _Checker:
+            def check(self, *a, **k):
+                return _R()
+
+        monkeypatch.setattr(rd, "ReadinessChecker", lambda *a, **k: _Checker())
+        monkeypatch.setattr(rd, "record_blocked", lambda *a, **k: 0)
+
+        class _Cfg:
+            trading_days = [date(2026, 1, 5)]
+            universe = ["RELIANCE"]
+            readiness_sample_dates = 1
+            readiness_is_fatal = True
+            signal_ledger_db_path = None
+
+        class _Run:
+            channel = "momentum"
+
+        with pytest.raises(ReadinessNotMet, match="hurst_exp_63d"):
+            _enforce_run_readiness(
+                run=_Run(), config=_Cfg(), strategy_key="momentum:x", strategy_version=1,
+            )
+
+    def test_a_missing_universe_is_reported_not_treated_as_ready(self, caplog):
+        """Silence here would be indistinguishable from a pass."""
+        from backtest.core.engine import _enforce_run_readiness
+
+        class _Cfg:
+            trading_days = []
+            universe = []
+            readiness_sample_dates = 5
+            readiness_is_fatal = False
+            signal_ledger_db_path = None
+
+        class _Run:
+            channel = "momentum"
+            universe = None
+
+        with caplog.at_level("WARNING"):
+            _enforce_run_readiness(
+                run=_Run(), config=_Cfg(), strategy_key="momentum:x", strategy_version=1,
+            )
+        assert "readiness not enforced" in caplog.text

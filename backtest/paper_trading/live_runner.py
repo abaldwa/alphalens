@@ -42,7 +42,7 @@ from backtest.core.engine import StrategyAdapter
 from backtest.core.horizon import HorizonBucket
 from backtest.core.portfolio import StrategyPortfolio
 from backtest.core.signal_ledger import SignalLedgerRecorder
-from strategies.signals import NO_RUN
+from strategies.signals import NO_RUN, UNVERSIONED
 from backtest.portfolio import Position, Trade
 from backtest.paper_trading.approval_queue import (
     STATE_DIR, PendingAction, read_pending_actions, record_execution,
@@ -50,6 +50,26 @@ from backtest.paper_trading.approval_queue import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _Uncheckable:
+    """Stands in for a Readiness when the check itself could not run.
+
+    Not-ready by construction, and carries a MissingInput so the caller's
+    logging path works unchanged. It exists so that "the readiness check
+    crashed" can never be mistaken for "the data is ready" -- the failure
+    mode that would quietly disable the gate.
+    """
+
+    ready = False
+
+    class _Reason:
+        detail = "readiness check failed to run (see traceback above)"
+
+    missing = (_Reason(),)
+
+
+_UNCHECKABLE = _Uncheckable()
 
 
 def _state_path(channel: str, strategy_id: str) -> Path:
@@ -108,6 +128,7 @@ class PaperTradingRunner:
         self, channel: str, strategy_id: str,
         horizon_bucket: Optional[HorizonBucket] = None, initial_capital: Optional[float] = None,
         persist_signals: bool = True, signal_ledger_db_path: Optional[Path] = None,
+        enforce_readiness: bool = True, readiness_checker: Optional[Any] = None,
     ) -> None:
         """persist_signals (A94): record every proposed signal in the
         strategy_signals ledger with source="paper". Default ON — this is
@@ -118,6 +139,14 @@ class PaperTradingRunner:
 
         signal_ledger_db_path=None uses strategies.signals' default,
         BACKTEST_DUCKDB_PATH. Tests pass a tmp_path DB.
+
+        enforce_readiness (A103): refuse to generate when the channel's data
+        prerequisites are unmet, instead of proposing on partial inputs.
+        Default ON, and this is the path that most needs it — a proposal here
+        is put in front of a human to accept, so a signal computed on 60 of
+        66 indicators does not look wrong, it looks like a recommendation.
+        Since execution is next market open either way, a day's delay costs
+        nothing that a wrong proposal does not cost more.
         """
         self.channel = channel
         self.strategy_id = strategy_id
@@ -125,6 +154,8 @@ class PaperTradingRunner:
         self.initial_capital = initial_capital
         self.persist_signals = persist_signals
         self.signal_ledger_db_path = signal_ledger_db_path
+        self.enforce_readiness = enforce_readiness
+        self._readiness_checker = readiness_checker
 
     def _portfolio(self) -> StrategyPortfolio:
         existing = load_portfolio_state(self.channel, self.strategy_id)
@@ -148,9 +179,62 @@ class PaperTradingRunner:
             raise ValueError(f"adapter.channel={adapter.channel!r} does not match runner.channel={self.channel!r}")
         if self.horizon_bucket is None:
             raise ValueError("propose_today requires horizon_bucket to be set on the runner")
+
+        readiness = self._check_readiness(universe, as_of_date)
+        if readiness is not None and not readiness.ready:
+            # Deliberately returns an empty proposal list rather than raising:
+            # "nothing to review today" is a normal operational outcome the
+            # caller already handles, whereas an exception here would fail the
+            # whole scheduled paper-trading step for every strategy after it.
+            # The refusal is recorded and logged, so this is never silent.
+            logger.warning(
+                "%s/%s: NOT generating signals for %s — %s. "
+                "A delayed signal is preferred to one computed on partial data.",
+                self.channel, self.strategy_id, as_of_date,
+                "; ".join(m.detail for m in readiness.missing),
+            )
+            return []
+
         signals = adapter.generate_signals(universe, as_of_date, self.horizon_bucket)
         self._record_signals(as_of_date, signals)
         return write_pending_actions(self.channel, self.strategy_id, as_of_date, signals)
+
+    def _check_readiness(self, universe: List[str], as_of_date: date_type):
+        """The A103 gate. Returns a Readiness, or None when not enforcing.
+
+        A failure to RUN the check is treated as not-ready. The alternative --
+        swallow the error and generate anyway -- would turn the one mechanism
+        that stops bad signals into the mechanism that hides why they got
+        through.
+        """
+        if not self.enforce_readiness:
+            return None
+        from backtest.core.readiness import ReadinessChecker, record_blocked
+
+        checker = self._readiness_checker or ReadinessChecker()
+        strategy_key = f"{self.channel}:{self.strategy_id}"
+        try:
+            readiness = checker.check(
+                self.channel, as_of_date,
+                universe=universe, strategy_key=strategy_key,
+            )
+        except Exception:
+            logger.exception(
+                "%s: readiness check itself failed for %s — refusing to generate. "
+                "An unrunnable check is not a pass.", strategy_key, as_of_date,
+            )
+            return _UNCHECKABLE
+
+        if not readiness.ready:
+            try:
+                record_blocked(
+                    readiness, strategy_key=strategy_key, strategy_version=UNVERSIONED,
+                    db_path=self.signal_ledger_db_path,
+                )
+            except Exception:
+                # The refusal still stands; only its audit row was lost.
+                logger.exception("Could not record the blocked signal generation")
+        return readiness
 
     def _record_signals(self, as_of_date: date_type, signals: List[Any]) -> int:
         """Persist one day's proposals to the A94 ledger (source="paper").
