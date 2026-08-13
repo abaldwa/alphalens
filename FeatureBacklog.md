@@ -1807,3 +1807,50 @@ new/modified test file also run individually and passing (`test_backtester.py`,
 `test_fundamentals_history.py`, `test_technical_router.py`,
 `test_watchlist_daily_router.py`, `test_db_lock_retry.py`,
 `test_sector_accumulation.py`).
+
+### Legacy corporate-action repair — 2026-08-13
+
+Repaired 156 SPLIT/BONUS actions whose legacy-sourced price history had
+never been adjusted, across 128 tickers, after recovering 45 split ratios
+that were ingested as 0.0. See `ingestion/adjust/ratio_recovery.py` and
+`scripts/repair_corporate_action_ratios.py`. DB backup retained at
+`datastore/normalised/alphalens.duckdb.pre_ca_repair_20260813_114048`.
+
+Open items this surfaced and did NOT fix:
+
+- **~20 tickers appear DOUBLE-adjusted, including INFY, NCC, ZYDUSLIFE,
+  MAHSEAMLES, TCI, EIHOTEL.** Their residual ex-date gap is roughly
+  1/expected rather than 1.0 — e.g. INFY's 2006-07-13 1:1 bonus leaves a
+  0.503 gap, meaning prior prices were halved twice. The repair script
+  refuses these (`contradicted`) because `adj_factor` does not describe
+  the stored prices, so the adjuster cannot rebuild them from
+  `raw = current / adj_factor`. Fixing them needs the same
+  validate-then-patch treatment as the RIGHTS one-off:
+  `scripts/validate_corporate_actions_fyers.py` against a trusted source.
+  Affects pre-2017 history only; INFY makes this material for any
+  large-cap backtest starting before 2007.
+
+- **32 tickers blocked from repair**, listed by
+  `scripts/repair_corporate_action_ratios.py` (dry run). 12 are the
+  double-adjusted set above; the rest have one action already baked into
+  the prices without being recorded in `adj_factor`, which makes the whole
+  ticker unsafe to recompute.
+
+- **1,300 of 1,580 SPLIT/BONUS actions have no legacy price data either
+  side of the ex-date**, so they cannot be verified at all. Mostly
+  pre-2005 or delisted tickers. Harmless for backtests starting 2009, but
+  it means the repair's coverage is bounded by price availability rather
+  than by the classifier.
+
+- **`find_discontinuities` is not yet wired into `data_integrity_check`.**
+  The gate and its tests exist (`ingestion/adjust/continuity_gate.py`);
+  hooking it into the daily pipeline is the remaining step. Note the
+  history is NOT clean enough to make it blocking today — 1,706 legacy
+  bars still exceed the 35% threshold post-repair (down from 1,814), so
+  it must report rather than fail the run until that residue is
+  characterised.
+
+- **41 zero-ratio SPLITs remain** (down from 86). These sit on blocked
+  tickers or lack the price data to confirm a recovered ratio; 4
+  zero-ratio BONUS records are correct as-is (bonus debentures and a DVR
+  issue, which must never receive an equity adjustment).
