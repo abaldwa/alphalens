@@ -141,3 +141,112 @@ def test_no_lookup_preserves_prior_behaviour():
     unblocked = _run_with_circuit(None)
     reasons = {g["reason"] for g in unblocked.data_gaps}
     assert not any("circuit_locked" in r for r in reasons)
+
+
+# ---------------------------------------------------------------------------
+# Data-blackout force close
+# ---------------------------------------------------------------------------
+# The third INDOTECH defect, and the one with no fill-time analogue: a
+# blackout is only visible across a HOLDING WINDOW, not at a single fill. The
+# engine previously carried a position at its last known price for as long as
+# the data was missing — 209 calendar days in INDOTECH's case — and no stop,
+# target or max-hold can fire on a day with no bar.
+
+def _run_with_blackout(missing_after_index, max_blackout_sessions):
+    """AAA prices normally, then stops having bars entirely."""
+    from backtest.core.engine import BacktestOrchestrator, OrchestratorConfig, Signal
+    from backtest.core.horizon import HorizonBucket
+    from backtest.core.run_context import BacktestRun
+
+    days = pd.bdate_range("2024-01-01", periods=80)
+    cutoff = days[missing_after_index]
+
+    class _Adapter:
+        channel = "technical"
+
+        def generate_signals(self, universe, as_of_date, horizon_bucket):
+            if as_of_date <= cutoff.date():
+                return [Signal(ticker="AAA", action="buy", sector="IT", conviction=1.0, adtv_cr=50.0)]
+            return []
+
+        def feature_vector(self, ticker, as_of_date):
+            return {}
+
+    def price_lookup(ticker, as_of):
+        return None if as_of > cutoff.date() else 100.0
+
+    run = BacktestRun(
+        run_id="blackout_test", channel="technical", strategy_id="s",
+        horizon_bucket=HorizonBucket.D21, mode="backtest",
+        start_date=days[0].date(), end_date=days[-1].date(),
+        initial_capital=1_000_000.0, universe_spec="test", capital_mode="lump",
+    )
+    config = OrchestratorConfig(
+        trading_days=days,
+        universe_provider=lambda d: ["AAA"],
+        price_lookup=price_lookup,
+        sector_lookup=lambda t: "IT",
+        max_blackout_sessions=max_blackout_sessions,
+    )
+    return BacktestOrchestrator().run(run, _Adapter(), config)
+
+
+def test_a_position_is_force_closed_after_a_blackout():
+    result = _run_with_blackout(missing_after_index=20, max_blackout_sessions=5)
+    reasons = [g["reason"] for g in result.data_gaps]
+    assert any(r.startswith("data_blackout_forced_close_after_") for r in reasons)
+
+
+def test_the_close_happens_only_after_the_threshold_is_exceeded():
+    """A single missing day is a suspension or a holiday quirk, not a
+    blackout. Closing on the first absent bar would churn positions out of the
+    book for ordinary data noise."""
+    result = _run_with_blackout(missing_after_index=20, max_blackout_sessions=5)
+    closes = [g for g in result.data_gaps if g["reason"].startswith("data_blackout_forced_close_after_")]
+    assert closes, "expected exactly one forced close"
+    sessions = int(closes[0]["reason"].split("_after_")[1].split("_")[0])
+    assert sessions == 6, f"should close on the 6th consecutive missing session, got {sessions}"
+
+
+def test_without_the_setting_the_position_is_carried_indefinitely():
+    """Prior behaviour must be preserved for callers that do not opt in."""
+    result = _run_with_blackout(missing_after_index=20, max_blackout_sessions=None)
+    reasons = [g["reason"] for g in result.data_gaps]
+    assert not any("blackout" in r for r in reasons)
+    assert any(r == "no_price_marking_open_position_at_last_known_price" for r in reasons)
+
+
+def test_blackout_is_counted_in_trading_days_not_rebalance_dates():
+    """Regression guard for a real bug in the first implementation.
+
+    The check originally lived inline in the daily loop's REBALANCE branch,
+    which returns early for non-rebalance days. The streak therefore advanced
+    once per rebalance date rather than once per trading day, so on a 21-day
+    cadence a 5-session threshold silently became a 105-session one — the
+    position stayed in the book through months of missing data, which is
+    exactly the behaviour the check exists to remove. It only surfaced because
+    the test below asserts the EXACT session count rather than merely that a
+    close eventually happened.
+
+    With 80 business days, a cadence of 21, and data stopping at index 20, a
+    rebalance-counted streak could never reach 6 within the window at all.
+    """
+    result = _run_with_blackout(missing_after_index=20, max_blackout_sessions=5)
+    closes = [
+        g for g in result.data_gaps
+        if g["reason"].startswith("data_blackout_forced_close_after_")
+    ]
+    assert len(closes) == 1, f"expected exactly one forced close, got {len(closes)}"
+
+    # The close must land 6 TRADING days after the data stops, and the
+    # position must be gone afterwards — no further mark-to-market gaps for it.
+    close_date = closes[0]["as_of_date"]
+    later_marks = [
+        g for g in result.data_gaps
+        if g["reason"] == "no_price_marking_open_position_at_last_known_price"
+        and g["as_of_date"] > close_date
+    ]
+    assert not later_marks, (
+        "position still being marked after its blackout close — the force-close "
+        "did not actually remove it from the book"
+    )

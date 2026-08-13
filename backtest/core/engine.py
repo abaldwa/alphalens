@@ -374,6 +374,11 @@ class OrchestratorConfig:
     # grants itself. None disables the check, preserving prior behaviour for
     # every caller that does not supply one.
     circuit_locked_lookup: Optional[Callable[[str, date_type], bool]] = None
+    # Force-close an open position after this many CONSECUTIVE trading days
+    # with no bar for it. None disables the check (prior behaviour: the
+    # position is carried at its last known price for as long as the data is
+    # missing, however long that is).
+    max_blackout_sessions: Optional[int] = None
 
 
 class BacktestOrchestrator:
@@ -575,6 +580,53 @@ class BacktestOrchestrator:
                         continue
                     portfolio.force_close(ticker, price, as_of, reason="forced_close")
 
+    def _check_blackouts(
+        self, portfolio, config: "OrchestratorConfig", prices: Dict[str, float], as_of,
+        blackout_streak: Dict[str, int], last_seen_price: Dict[str, float],
+        data_gaps: List[DataGap],
+    ) -> None:
+        """Force-close positions whose bars have stopped arriving.
+
+        Previously a position whose data went missing was carried at its last
+        known price for as long as the gap lasted — INDOTECH's 601-day trade
+        spans a 209-calendar-day hole and was marked at whatever price appeared
+        when data resumed. No stop, target or max-hold can fire on a day with
+        no bar, so holding through a blackout is not a decision the strategy
+        made; it is the absence of one.
+
+        Called from BOTH the rebalance and non-rebalance branches of the daily
+        loop. That is not incidental: the first version of this lived inline in
+        the rebalance branch only, so the streak counted REBALANCE dates rather
+        than trading days and a 21-day cadence turned a 5-session threshold
+        into a 105-session one. A blackout is measured in trading days, so the
+        check has to run on every trading day.
+
+        Closes at the LAST KNOWN price deliberately. Closing at the price that
+        appears when data resumes would book a return across a period nobody
+        could have traded, which is the whole thing being removed.
+        """
+        if config.max_blackout_sessions is None:
+            return
+        for ticker in list(portfolio.positions.keys()):
+            if ticker in prices:
+                blackout_streak.pop(ticker, None)
+                continue
+            blackout_streak[ticker] = blackout_streak.get(ticker, 0) + 1
+            if blackout_streak[ticker] <= config.max_blackout_sessions:
+                continue
+            last_price = last_seen_price.get(ticker)
+            if last_price is None:
+                # Never seen a real price for a position we hold. Recorded
+                # rather than closed at a fabricated value.
+                data_gaps.append(DataGap(ticker, as_of, "blackout_and_no_last_known_price"))
+                continue
+            portfolio.force_close(ticker, last_price, as_of, reason="data_blackout_forced_close")
+            data_gaps.append(DataGap(
+                ticker, as_of,
+                f"data_blackout_forced_close_after_{blackout_streak[ticker]}_sessions",
+            ))
+            blackout_streak.pop(ticker, None)
+
     def run(self, run: BacktestRun, adapter: StrategyAdapter, config: OrchestratorConfig) -> BacktestRunResult:
         if run.channel != adapter.channel:
             raise ValueError(f"run.channel={run.channel!r} does not match adapter.channel={adapter.channel!r}")
@@ -628,6 +680,13 @@ class BacktestOrchestrator:
         portfolio.prime_annual_reset_schedule(config.trading_days)
 
         data_gaps: List[DataGap] = []
+        # {ticker: consecutive trading days with no bar} for open positions.
+        blackout_streak: Dict[str, int] = {}
+        # {ticker: most recent real close seen}. Position carries no such field
+        # and price_lookup returns None precisely during a blackout — which is
+        # what makes the blackout a blackout — so the last tradeable price has
+        # to be remembered here or the force-close below can never fire.
+        last_seen_price: Dict[str, float] = {}
         distinct_tickers: List[str] = []
         refit_log: List[RefitEvent] = []
         refit_dates = (
@@ -656,8 +715,12 @@ class BacktestOrchestrator:
                     price = config.price_lookup(ticker, as_of)
                     if price is not None:
                         prices[ticker] = price
+                        last_seen_price[ticker] = price
                     else:
                         data_gaps.append(DataGap(ticker, as_of, "no_price_marking_open_position_at_last_known_price"))
+                self._check_blackouts(
+                    portfolio, config, prices, as_of, blackout_streak, last_seen_price, data_gaps,
+                )
                 self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
                 portfolio.record_equity(as_of, prices)
                 continue
@@ -693,10 +756,15 @@ class BacktestOrchestrator:
                     price = config.price_lookup(ticker, as_of)
                     if price is not None:
                         prices[ticker] = price
+                        last_seen_price[ticker] = price
                     elif ticker in portfolio.positions:
                         data_gaps.append(
                             DataGap(ticker, as_of, "no_price_marking_open_position_at_last_known_price")
                         )
+
+            self._check_blackouts(
+                portfolio, config, prices, as_of, blackout_streak, last_seen_price, data_gaps,
+            )
 
             for signal in signals:
                 self._log_feature(run.run_id, signal.ticker, as_of, run.horizon_bucket, adapter, signal.action)

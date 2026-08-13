@@ -267,7 +267,7 @@ def _build_pit_adtv_panel(ohlcv: pd.DataFrame, lookback: int) -> pd.DataFrame:
 
 def _build_config(
     ohlcv: pd.DataFrame, sector_map: Dict[str, str], top_n_by_adtv: Optional[int] = None,
-    block_circuit_fills: bool = False,
+    block_circuit_fills: bool = False, max_blackout_sessions: Optional[int] = None,
 ) -> OrchestratorConfig:
     trading_days = pd.DatetimeIndex(sorted(ohlcv["date"].unique()))
     price_map = {(row.ticker, row.date.date()): row.close for row in ohlcv.itertuples(index=False)}
@@ -357,6 +357,7 @@ def _build_config(
             (lambda ticker, as_of: (ticker, as_of) in locked_bars)
             if block_circuit_fills else None
         ),
+        max_blackout_sessions=max_blackout_sessions,
     )
 
 
@@ -557,6 +558,7 @@ def _run_immediate(
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
+    max_blackout_sessions=None,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -569,6 +571,7 @@ def _run_immediate(
         config = _build_config(
             ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n,
             block_circuit_fills=block_circuit_fills,
+            max_blackout_sessions=max_blackout_sessions,
         )
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
         # price/volume panels from the same ohlcv pull momentum's branch
@@ -848,6 +851,7 @@ def _run_deferred(
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
+    max_blackout_sessions=None,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -863,6 +867,7 @@ def _run_deferred(
     config = _build_config(
             ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n,
             block_circuit_fills=block_circuit_fills,
+            max_blackout_sessions=max_blackout_sessions,
         )
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
@@ -1061,6 +1066,8 @@ def run_orchestrator_backtest(
     pit_adtv_top_n: Optional[int] = None,
     # Refuse fills on circuit-locked bars. False = prior behaviour.
     block_circuit_fills: bool = False,
+    # Force-close an open position after this many consecutive no-bar sessions.
+    max_blackout_sessions: Optional[int] = None,
     capital_mode: str = "lump", initial_capital: float = 1_000_000.0, sip_amount: Optional[float] = None,
     universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
@@ -1210,7 +1217,7 @@ def run_orchestrator_backtest(
         bear_drawdown_pct,
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
-        block_circuit_fills=block_circuit_fills,
+        block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1290,6 +1297,17 @@ def main() -> None:
             "least this fraction (e.g. 0.12) below its highest close UP TO that date. Unlike the "
             "segment classifier this has no confirmation lag, so the identical rule runs in "
             "backtest and live — see systems/regime/market_regime.py::bear_by_running_peak_drawdown."
+        ),
+    )
+    parser.add_argument(
+        "--max-blackout-sessions", type=int, default=None,
+        help=(
+            "Force-close an open position after this many consecutive trading days with "
+            "no bar, at its LAST KNOWN price. Without it a position is carried at that "
+            "price for as long as the data is missing — INDOTECH's 601-day trade spans a "
+            "209-day hole and was marked at whatever price appeared when data resumed. "
+            "No stop or target can fire on a day with no bar, so holding through a "
+            "blackout is not a decision the strategy made."
         ),
     )
     parser.add_argument(
@@ -1448,6 +1466,7 @@ def main() -> None:
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
         pit_adtv_top_n=args.pit_adtv_top_n,
         block_circuit_fills=args.block_circuit_fills,
+        max_blackout_sessions=args.max_blackout_sessions,
         max_hold_days=args.max_hold_days, min_adtv_cr=args.min_adtv_cr,
         quality_gate_min_f_score=args.quality_gate_min_f_score,
         quality_gate_max_m_score=args.quality_gate_max_m_score,
