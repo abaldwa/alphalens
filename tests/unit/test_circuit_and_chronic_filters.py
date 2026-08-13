@@ -20,6 +20,7 @@ unconstrained Technical runs, so no run has ever excluded a locked fill.
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from backtest.trade_filters import (
     CHRONIC_CIRCUIT_LOCK_PCT,
@@ -250,3 +251,14 @@ def test_blackout_is_counted_in_trading_days_not_rebalance_dates():
         "position still being marked after its blackout close — the force-close "
         "did not actually remove it from the book"
     )
+
+
+@pytest.fixture(autouse=True)
+def _a94_ledger_never_touches_the_real_db(tmp_path, monkeypatch):
+    """A94: OrchestratorConfig.persist_signals defaults True, so any run in
+    this module now writes to strategy_signals. Project policy forbids a
+    test writing to the real DuckDB even transiently — redirect the default
+    path instead of relying on each test to opt out."""
+    import config.settings as settings
+
+    monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "a94_ledger.duckdb")

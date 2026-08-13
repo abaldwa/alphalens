@@ -49,6 +49,14 @@ SOURCES = frozenset({"backtest", "paper", "live"})
 # would drop them out of the key and let duplicates through unnoticed.
 NO_RUN = ""
 
+# Same reasoning as NO_RUN, for strategy_version: the column is NOT NULL and
+# part of the primary key, so a run that cannot resolve its registry version
+# (pre-registry, or a strategy not registered) needs a value. 0 is used
+# because registry versions are append-only from 1, so it can never collide
+# with a real one -- and unlike defaulting to 1, it does not claim the run
+# executed a definition it may never have seen.
+UNVERSIONED = 0
+
 
 class SignalError(ValueError):
     """A signal batch was rejected."""
@@ -58,7 +66,7 @@ def write_signals(
     signals: Sequence[Dict[str, Any]],
     *,
     strategy_key: str,
-    strategy_version: int,
+    strategy_version: Optional[int],
     source: str,
     run_id: str = NO_RUN,
     allow_hold: bool = False,
@@ -83,6 +91,8 @@ def write_signals(
     """
     if source not in SOURCES:
         raise SignalError(f"unknown source {source!r}; valid: {sorted(SOURCES)}")
+    if strategy_version is None:
+        strategy_version = UNVERSIONED
     if source == "backtest" and not run_id:
         raise SignalError("backtest signals must carry a run_id")
     if not signals:

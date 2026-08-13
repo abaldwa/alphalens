@@ -234,6 +234,18 @@ export interface StrategyReport {
   income: IncomeMode | null
   equityCurve: EquityPoint[] | null
   tradeBookUrl: string | null
+  /** Registry lifecycle state, when the source knows it. A retired strategy
+   * is refused by POST /api/v1/deployments (409), so the UI blocks it rather
+   * than letting the user discover that after submit. Absent means "not
+   * stated", which is treated as deployable. */
+  status?: string | null
+  /** Registry version this row was backtested at. Passed to the deployment so
+   * the deployed rules are PINNED to the tested ones; omitted, the backend
+   * pins the strategy's current version instead. */
+  strategyVersion?: number | null
+  /** The backtest run this row came from, so a live deployment traces back to
+   * its evidence. */
+  sourceRunId?: string | null
   /** Which metrics this row cannot supply yet, keyed by dotted path
    * ("returns.cagrPostTax"). Drives the em-dash tooltip. */
   pending: Record<string, PendingField>

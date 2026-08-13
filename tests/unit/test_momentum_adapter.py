@@ -716,3 +716,14 @@ class TestRealPricePanelIntegration:
         signals = adapter.generate_signals(list(panel.columns), as_of, HorizonBucket.D21)
         assert all(s.ticker in panel.columns for s in signals)
         assert len(adapter._currently_held) <= 2
+
+
+@pytest.fixture(autouse=True)
+def _a94_ledger_never_touches_the_real_db(tmp_path, monkeypatch):
+    """A94: OrchestratorConfig.persist_signals defaults True, so any run in
+    this module now writes to strategy_signals. Project policy forbids a
+    test writing to the real DuckDB even transiently — redirect the default
+    path instead of relying on each test to opt out."""
+    import config.settings as settings
+
+    monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "a94_ledger.duckdb")

@@ -19,6 +19,11 @@ def isolated_paper_trading_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(aq, "EXECUTIONS_DIR", root / "executions")
     monkeypatch.setattr(aq, "STATE_DIR", root / "state")
     monkeypatch.setattr(lr, "STATE_DIR", root / "state")
+    # A94: propose_today now persists signals with source="paper", and
+    # persistence is on by default. Never the real DuckDB, not even briefly.
+    import config.settings as settings
+
+    monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "signals_ledger.duckdb")
 
 
 class _FixedAdapter:

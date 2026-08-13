@@ -194,3 +194,14 @@ def test_execution_timing_is_a_policy_and_phase_timings_is_the_measurement():
     assert result.execution_timing in ("same_day_close", "next_day_open")
     assert isinstance(result.phase_timings, dict)
     assert "phases" in result.phase_timings
+
+
+@pytest.fixture(autouse=True)
+def _a94_ledger_never_touches_the_real_db(tmp_path, monkeypatch):
+    """A94: OrchestratorConfig.persist_signals defaults True, so any run in
+    this module now writes to strategy_signals. Project policy forbids a
+    test writing to the real DuckDB even transiently — redirect the default
+    path instead of relying on each test to opt out."""
+    import config.settings as settings
+
+    monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "a94_ledger.duckdb")

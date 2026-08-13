@@ -21,6 +21,19 @@ from backtest.core.horizon import HorizonBucket
 from backtest.core.run_context import BacktestRun
 
 
+@pytest.fixture(autouse=True)
+def _ledger_writes_go_to_a_throwaway_db(tmp_path, monkeypatch):
+    """A94: OrchestratorConfig.persist_signals defaults True, so every run
+    below now writes to the strategy_signals ledger. Project policy is that
+    no test ever writes to the real DuckDB — not even a row it deletes
+    afterwards — so redirect the default path for the whole module rather
+    than relying on each test to remember to switch persistence off.
+    """
+    import config.settings as settings
+
+    monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "signals_ledger.duckdb")
+
+
 def _run(**overrides):
     defaults = dict(
         channel="technical", strategy_id="test_strategy", horizon_bucket=HorizonBucket.D5,

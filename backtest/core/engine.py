@@ -56,6 +56,7 @@ from backtest.portfolio import (
 )
 from backtest.core.regime_breakdown import compute_regime_breakdown
 from backtest.core.run_context import BacktestRun, BacktestRunResult
+from backtest.core.signal_ledger import SignalLedgerRecorder
 from backtest.core.tax import fy_tax_cash_flows
 from config.settings import MIN_ADT_INR
 
@@ -387,6 +388,47 @@ def canonical_strategy_key(run) -> Optional[str]:
     return f"{channel}:{name}"
 
 
+def resolve_strategy_version(strategy_key: Optional[str]) -> Optional[int]:
+    """The strategy_registry version this run is executing, or None.
+
+    Recorded so a result can be tied to the exact definition that produced it.
+    Two things depend on getting this right, and both fail silently without it:
+
+    * A deployment pins a version (strategy_deployments.strategy_version). If
+      the run cannot say which version it tested, the deploy hand-off pins
+      whatever is CURRENT at deploy time -- so a definition revised between
+      backtest and deployment ships the new rules with the old evidence, which
+      is exactly what AGENTS.md invariant 6 forbids.
+    * Ledger rows keyed to the wrong version make a signal untraceable to the
+      rules that emitted it.
+
+    None (not a default of 1) when the strategy is absent from the registry:
+    stamping a version number that was never executed is worse than admitting
+    the run predates the registry, because it looks authoritative.
+    """
+    if not strategy_key:
+        return None
+    from config.settings import BACKTEST_DUCKDB_PATH
+    from strategies.registry import get_strategy
+
+    try:
+        strategy = get_strategy(strategy_key, db_path=BACKTEST_DUCKDB_PATH)
+    except Exception:  # registry table absent, DB locked, key unreadable
+        # exception(), not warning(): a broad except around a registry read is
+        # how "version could not be resolved" silently becomes the permanent
+        # answer. The traceback is the only way to tell a missing table from a
+        # genuine lookup miss.
+        logger.exception(
+            "Could not resolve a registry version for %r; the run will not "
+            "record which strategy definition it executed.", strategy_key,
+        )
+        return None
+    if strategy is None:
+        return None
+    version = strategy.get("version")
+    return int(version) if version is not None else None
+
+
 def _curve_to_rows(curve):
     """A pandas equity curve -> [{"date": "YYYY-MM-DD", "equity": float}].
 
@@ -444,6 +486,27 @@ class OrchestratorConfig:
     # position is carried at its last known price for as long as the data is
     # missing, however long that is).
     max_blackout_sessions: Optional[int] = None
+    # A94: persist every emitted signal to the strategy_signals ledger, so a
+    # trade can be traced back to the signal that produced it. Default ON —
+    # a ledger that is only populated when someone remembers to ask for it
+    # is not an audit trail. Set False for throwaway runs (unit tests,
+    # parameter probes) where the DB write is pure overhead.
+    #
+    # Writes are buffered for the WHOLE run and flushed once at the end
+    # (backtest/core/signal_ledger.py) rather than per rebalance date —
+    # ~860 lock acquisitions per job would reintroduce exactly the DuckDB
+    # write-lock contention defer_db_writes exists to avoid.
+    persist_signals: bool = True
+    # None -> strategies.signals' own default, BACKTEST_DUCKDB_PATH (where
+    # the A94 tables live, alongside backtest_runs). Tests point this at a
+    # tmp_path DB; nothing writes signals to the real database in a test.
+    signal_ledger_db_path: Optional[Any] = None
+    # Which strategy_registry version this run executed. None means "ask the
+    # registry" (resolve_strategy_version). Set it only to OVERRIDE that —
+    # e.g. replaying a historical version deliberately. It used to default to
+    # a literal 1, which stamped every ledger row and every deploy hand-off
+    # with a version the run had not necessarily executed.
+    signal_ledger_strategy_version: Optional[int] = None
 
 
 class BacktestOrchestrator:
@@ -779,6 +842,41 @@ class BacktestOrchestrator:
             if config.refit_cadence_days else set()
         )
 
+        # A94 signal ledger. canonical_strategy_key can legitimately return
+        # None (no channel, or a name containing a colon) — in that case the
+        # run simply does not write signals, because a row filed under a
+        # guessed key is worse than an absent row: it attributes decisions to
+        # a strategy that may not be the one that made them.
+        signal_recorder = None
+        run_strategy_key = canonical_strategy_key(run)
+        # Resolved once here, not per-signal: it is a registry read, and every
+        # row of this run belongs to the same definition by construction.
+        # An explicit config override wins (a caller replaying a historical
+        # version knows better than the registry's current head).
+        run_strategy_version = (
+            config.signal_ledger_strategy_version
+            if config.signal_ledger_strategy_version is not None
+            else resolve_strategy_version(run_strategy_key)
+        )
+        if config.persist_signals:
+            ledger_key = run_strategy_key
+            if ledger_key:
+                signal_recorder = SignalLedgerRecorder(
+                    strategy_key=ledger_key,
+                    source="backtest",
+                    run_id=run.run_id,
+                    strategy_version=run_strategy_version,
+                    channel=run.channel,
+                    db_path=config.signal_ledger_db_path,
+                )
+            else:
+                logger.warning(
+                    "persist_signals is on but this run has no canonical strategy_key "
+                    "(channel=%r, strategy_id=%r) — skipping the signal ledger rather "
+                    "than filing signals under a guessed key",
+                    getattr(run, "channel", None), getattr(run, "strategy_id", None),
+                )
+
         for as_of_date in config.trading_days:
             as_of = as_of_date.date() if hasattr(as_of_date, "date") else as_of_date
             is_rebalance_date = as_of_date in rebalance_date_set
@@ -854,6 +952,11 @@ class BacktestOrchestrator:
             self._check_blackouts(
                 portfolio, config, prices, as_of, blackout_streak, last_seen_price, data_gaps,
             )
+
+            # One buffered batch per rebalance date, never per ticker. The
+            # actual DB write happens once, after the loop (see flush below).
+            if signal_recorder is not None:
+                signal_recorder.record(as_of, signals)
 
             for signal in signals:
                 self._log_feature(run.run_id, signal.ticker, as_of, run.horizon_bucket, adapter, signal.action)
@@ -982,6 +1085,12 @@ class BacktestOrchestrator:
 
         if self._feature_log_writer is not None:
             self._feature_log_writer.flush()
+
+        # A94: the run's single ledger write, deliberately next to the
+        # feature-log flush so all of this job's DB work sits in one tail
+        # rather than being spread across the run's rebalance dates.
+        if signal_recorder is not None:
+            signal_recorder.flush()
 
         with timer.phase("finalize"):
             result = self._finalize(

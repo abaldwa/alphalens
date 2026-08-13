@@ -35,7 +35,7 @@ import {
 import { EM_DASH, inr, pct, rate, rateDelta } from './core/format.ts'
 import { classifyRag, periodCagr, ragCounts } from './core/matrix.ts'
 import { crossesUnreliableHistory, resolveWindow } from './core/window.ts'
-import { toConfigForm } from './core/toConfigForm.ts'
+import { isDeployable, toConfigForm, toDeploymentRequest } from './core/toConfigForm.ts'
 import { parsePrefillParam, prefillParam } from './core/prefill.ts'
 import { adaptMomentumReport, adaptMomentumVariant } from './core/adapters/momentum.ts'
 import {
@@ -729,12 +729,51 @@ ok(deployable.unmapped.includes('initial_capital'), 'initial capital is required
 ok(deployable.unmapped.includes('start_date'), 'start date is required input, not inherited')
 ok(deployable.unmapped.includes('portfolio_id'), 'portfolio is required input, not inherited')
 
-// A91: the deploy config schema is momentum-only, so every other channel is
-// blocked with a reason rather than silently doing nothing.
+// A91 is DONE: /api/v1/deployments is channel-agnostic, so no channel is
+// blocked any more. The checks are inverted deliberately — if the deploy path
+// ever regresses to momentum-only, these fail rather than the UI quietly
+// disabling three quarters of the report's rows again.
 const taDeploy = toConfigForm(ta)
-ok(taDeploy.blockedReason?.includes('A91') === true, 'a technical strategy is blocked, naming A91')
-eq(Object.keys(taDeploy.values).length, 0, 'and carries no values across')
-ok(toConfigForm(ml).blockedReason != null, 'an ML strategy is blocked too')
+eq(taDeploy.blockedReason, null, 'a technical strategy is deployable (A91 lifted)')
+eq(toConfigForm(ml).blockedReason, null, 'an ML strategy is deployable too')
+ok(isDeployable(ta) && isDeployable(ml), 'isDeployable no longer keys on channel')
+ok(
+  taDeploy.unmapped.includes('initial_capital') && taDeploy.unmapped.includes('portfolio_id'),
+  'a non-momentum strategy still has to be told capital and portfolio',
+)
+
+// The POST body for /api/v1/deployments. It carries a REFERENCE to the
+// registry row and the run-time decisions, never the rules themselves.
+const taRequest = toDeploymentRequest(ta)
+ok(taRequest.payload != null, 'a technical strategy produces a deployment payload')
+eq(taRequest.payload?.strategy_key, ta.key, 'the payload references the strategy by key')
+eq(
+  Object.keys(taRequest.payload?.filter_overrides ?? { x: 1 }).length,
+  0,
+  'no filter overrides: the registry row is what was backtested',
+)
+ok(
+  ['lump', 'sip', 'annual_reset'].includes(taRequest.payload?.capital_mode ?? ''),
+  'capital_mode is mapped into the API vocabulary',
+)
+// The four fields a backtest cannot answer must be demanded, not defaulted.
+for (const field of ['initial_capital', 'start_date', 'sip_amount', 'portfolio_id']) {
+  ok(taRequest.unmapped.includes(field), `${field} is a deployment decision, not inherited`)
+}
+ok(
+  !Object.keys(taRequest.payload ?? {}).includes('initial_capital'),
+  'and the draft payload does not carry a placeholder capital',
+)
+
+// The one thing that is still blocked: a retired registry row. The backend
+// refuses it with a 409, so the UI must not present it as deployable.
+const retired = { ...ta, status: 'retired' }
+ok(
+  toConfigForm(retired).blockedReason?.includes('retired') === true,
+  'a retired strategy is still blocked, saying why',
+)
+eq(isDeployable(retired), false, 'and isDeployable agrees')
+eq(toDeploymentRequest(retired).payload, null, 'a retired strategy produces no payload at all')
 
 eq(prefillParam(['momentum:a', 'momentum:b']), 'momentum:a,momentum:b', 'prefill param round-trips')
 eq(parsePrefillParam('momentum:a,momentum:b').length, 2, 'and parses back')

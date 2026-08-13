@@ -3,10 +3,15 @@
  *
  * The Deploy checkbox column, appended to any section's table.
  *
- * A non-momentum strategy's checkbox is DISABLED with a tooltip naming A91,
- * rather than absent or silently inert. The distinction matters: absent looks
- * like an oversight, inert looks like a bug, and disabled-with-a-reason tells
- * the user the truth — this channel has no deploy path yet.
+ * Every channel is selectable (A91): /api/v1/deployments is channel-agnostic,
+ * so Technical, Fundamental and ML strategies deploy through the same path as
+ * Momentum.
+ *
+ * A strategy that genuinely cannot be deployed — a retired registry row, which
+ * the backend refuses with a 409 — still renders DISABLED with the reason in
+ * the tooltip, rather than absent or silently inert. The distinction matters:
+ * absent looks like an oversight, inert looks like a bug, and
+ * disabled-with-a-reason tells the user the truth.
  */
 
 import type { ColumnDef } from '@tanstack/react-table'

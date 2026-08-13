@@ -7,13 +7,14 @@ definitions instead of importing TEMPLATES / build_category_presets /
 STRATEGY_CATALOG), datastore/api/routers/strategies.py, the technical
 screener and alert checker, daily inference.
 
-Three tables that together make strategy definitions, filters and generated
+Four tables that together make strategy definitions, filters and generated
 signals declarative and auditable instead of scattered across Python
 modules in four incompatible shapes:
 
-    strategy_registry   A92 - one row per (strategy, version), all channels
-    filter_registry     A93 - one row per (filter, version)
-    strategy_signals    A94 - the signal ledger: (strategy, date, ticker, action)
+    strategy_registry          A92 - one row per (strategy, version)
+    filter_registry            A93 - one row per (filter, version)
+    strategy_signals           A94 - the ledger: (strategy, date, ticker, action)
+    signal_generation_blocked  the refusals: when a generator would not run
 
 See AGENTS.md "Architectural invariants" for the rules these enforce, and
 FeatureBacklog.md's "A92-A95 - Registry-driven architecture (spec)" section
@@ -168,10 +169,51 @@ _CREATE_SIGNAL_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_strategy_signals_run ON strategy_signals (run_id)",
 ]
 
+# ---------------------------------------------------------------------------
+# signal_generation_blocked
+# ---------------------------------------------------------------------------
+# The counterpart to strategy_signals: strategy_signals records what a
+# generator DID, this records when it REFUSED to. Without it, "no signals for
+# this strategy today" is ambiguous between "the strategy found nothing" and
+# "the strategy was never allowed to look because six of its indicators were
+# null" -- and those demand opposite responses from an operator.
+#
+# missing_json is the serialised list of backtest/core/readiness.py's
+# MissingInput ([{kind, detail, expected}, ...]), so the row says WHICH input
+# was absent, not merely that something was. A row that only said "blocked"
+# would send whoever reads it back to re-derive the cause by hand, on an
+# evening when the data has since been backfilled and the cause is gone.
+#
+# The PK is (strategy, version, as_of_date) with no checked_at: the scheduler
+# retries the same day several times while a backfill catches up, and the
+# LATEST attempt's missing list is the one worth keeping. Including checked_at
+# in the key would accumulate one row per retry and bury it.
+_CREATE_SIGNAL_GENERATION_BLOCKED = """
+    CREATE TABLE IF NOT EXISTS signal_generation_blocked (
+        strategy_key VARCHAR NOT NULL,
+        strategy_version INTEGER NOT NULL,
+        channel VARCHAR NOT NULL,               -- momentum|technical|fundamental|ml
+        as_of_date DATE NOT NULL,               -- the date signals were WANTED for
+        missing_json VARCHAR NOT NULL,          -- [{kind, detail, expected}, ...]
+        checked_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (strategy_key, strategy_version, as_of_date)
+    )
+"""
+
+# "what was blocked today, across every strategy" is the operator's question
+# every evening; "was this strategy ever blocked" is the debugging one.
+_CREATE_BLOCKED_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_signal_blocked_date "
+    "ON signal_generation_blocked (as_of_date)",
+    "CREATE INDEX IF NOT EXISTS idx_signal_blocked_key "
+    "ON signal_generation_blocked (strategy_key, as_of_date)",
+]
+
 _REGISTRY_TABLES = {
     "strategy_registry": _CREATE_STRATEGY_REGISTRY,
     "filter_registry": _CREATE_FILTER_REGISTRY,
     "strategy_signals": _CREATE_STRATEGY_SIGNALS,
+    "signal_generation_blocked": _CREATE_SIGNAL_GENERATION_BLOCKED,
 }
 
 
@@ -212,7 +254,7 @@ def create_strategy_registry_schema(
         for table_name, ddl in _REGISTRY_TABLES.items():
             conn.execute(ddl)
             logger.info(f"Ensured table exists: {table_name}")
-        for ddl in _CREATE_SIGNAL_INDEXES:
+        for ddl in _CREATE_SIGNAL_INDEXES + _CREATE_BLOCKED_INDEXES:
             conn.execute(ddl)
 
     logger.info(

@@ -40,7 +40,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     # step_download_fno's docstring in daily_pipeline.py.
     ExceptionCatalogEntry(
         step_name="download_index_ohlcv",
-        location="ingestion/scheduler/daily_pipeline.py:676",
+        location="ingestion/scheduler/daily_pipeline.py:726",
         caught="NSE indices-close archive fetch or index_ohlcv write "
         "failure (A31).",
         impact="index_ohlcv missing for the date — sector-rotation report "
@@ -58,7 +58,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     # step_download_corporate_actions's docstring in daily_pipeline.py.
     ExceptionCatalogEntry(
         step_name="download_large_deals",
-        location="ingestion/scheduler/daily_pipeline.py:1024",
+        location="ingestion/scheduler/daily_pipeline.py:1074",
         caught="Combined NSE+BSE bulk/block deal fetch or persist "
         "failure (each of the 4 underlying sources is independently "
         "caught inside download_large_deals() itself; this is the "
@@ -75,7 +75,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="attribute_bulk_deals",
-        location="ingestion/scheduler/daily_pipeline.py:1064",
+        location="ingestion/scheduler/daily_pipeline.py:1114",
         caught="Wash-trade netting / investor_family attribution failure "
         "over that date's own large_deals rows.",
         impact="bulk_deal_positions missing for the date. Purely a "
@@ -88,7 +88,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="publish_and_snapshot",
-        location="ingestion/scheduler/daily_pipeline.py:2232",
+        location="ingestion/scheduler/daily_pipeline.py:2282",
         caught="N=7 rollback snapshot (fno_data, ohlcv_adjusted) write or "
         "prune failure. Runs last, after every other writer for the date.",
         impact="No new rollback snapshot exists for this date — "
@@ -104,7 +104,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="main (scheduler startup)",
-        location="ingestion/scheduler/daily_pipeline.py:2731",
+        location="ingestion/scheduler/daily_pipeline.py:2781",
         caught="scheduler.remove_job('backfill_catchup') raising "
         "JobLookupError when the stale persisted job doesn't exist (the "
         "common case after the first cleanup run).",

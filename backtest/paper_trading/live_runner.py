@@ -41,6 +41,8 @@ from typing import Any, Dict, List, Optional
 from backtest.core.engine import StrategyAdapter
 from backtest.core.horizon import HorizonBucket
 from backtest.core.portfolio import StrategyPortfolio
+from backtest.core.signal_ledger import SignalLedgerRecorder
+from strategies.signals import NO_RUN
 from backtest.portfolio import Position, Trade
 from backtest.paper_trading.approval_queue import (
     STATE_DIR, PendingAction, read_pending_actions, record_execution,
@@ -105,11 +107,24 @@ class PaperTradingRunner:
     def __init__(
         self, channel: str, strategy_id: str,
         horizon_bucket: Optional[HorizonBucket] = None, initial_capital: Optional[float] = None,
+        persist_signals: bool = True, signal_ledger_db_path: Optional[Path] = None,
     ) -> None:
+        """persist_signals (A94): record every proposed signal in the
+        strategy_signals ledger with source="paper". Default ON — this is
+        the case the ledger exists for. A paper trade is a real decision a
+        human will later be asked to explain, and until now the only trace
+        of it was a JSON file under paper_trading/state/, so an accepted
+        action could not be joined back to the signal that produced it.
+
+        signal_ledger_db_path=None uses strategies.signals' default,
+        BACKTEST_DUCKDB_PATH. Tests pass a tmp_path DB.
+        """
         self.channel = channel
         self.strategy_id = strategy_id
         self.horizon_bucket = horizon_bucket
         self.initial_capital = initial_capital
+        self.persist_signals = persist_signals
+        self.signal_ledger_db_path = signal_ledger_db_path
 
     def _portfolio(self) -> StrategyPortfolio:
         existing = load_portfolio_state(self.channel, self.strategy_id)
@@ -134,7 +149,33 @@ class PaperTradingRunner:
         if self.horizon_bucket is None:
             raise ValueError("propose_today requires horizon_bucket to be set on the runner")
         signals = adapter.generate_signals(universe, as_of_date, self.horizon_bucket)
+        self._record_signals(as_of_date, signals)
         return write_pending_actions(self.channel, self.strategy_id, as_of_date, signals)
+
+    def _record_signals(self, as_of_date: date_type, signals: List[Any]) -> int:
+        """Persist one day's proposals to the A94 ledger (source="paper").
+
+        Flushed immediately, unlike the backtest path which buffers a whole
+        run: paper trading generates ONE date per day, so a day's proposals
+        are already the natural batch, and deferring them would mean the
+        ledger disagreed with the approval queue a human is looking at right
+        now. One small write a day is no threat to the DuckDB write lock;
+        860 of them inside a tight backtest loop would be.
+
+        run_id is NO_RUN ('') — the sentinel the schema requires, because
+        run_id is in the primary key and DuckDB PK columns cannot be NULL.
+        """
+        if not self.persist_signals or not signals:
+            return 0
+        recorder = SignalLedgerRecorder(
+            strategy_key=f"{self.channel}:{self.strategy_id}",
+            source="paper",
+            run_id=NO_RUN,
+            channel=self.channel,
+            db_path=self.signal_ledger_db_path,
+        )
+        recorder.record(as_of_date, signals)
+        return recorder.flush()
 
     def accept(self, action_id: str, as_of_date: date_type, price: float, prices: Dict[str, float]) -> PendingAction:
         """Execute one accepted action against the persisted portfolio,

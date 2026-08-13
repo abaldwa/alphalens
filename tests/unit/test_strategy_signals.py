@@ -21,6 +21,7 @@ from strategies.signals import (
     read_signals,
     signal_counts,
     write_signals,
+    UNVERSIONED,
 )
 
 KEY = "technical:A1_pullback"
@@ -209,3 +210,34 @@ class TestMaintenance:
         _write(db, [_sig(5, "INFY"), _sig(6, "TCS", "sell")])
         counts = {(c["source"], c["action"]): c["n"] for c in signal_counts(db_path=db)}
         assert counts == {("backtest", "buy"): 1, ("backtest", "sell"): 1}
+
+
+class TestVersionSentinel:
+    """A run that cannot resolve its registry version still has to write a
+    row: strategy_version is NOT NULL and part of the primary key.
+
+    The sentinel matters because the alternative that was in place -- default
+    to 1 -- stamps rows with a definition the run may never have executed.
+    That reads as authoritative while being wrong, and it is the same hole
+    that let the deploy hand-off pin the CURRENT registry version instead of
+    the backtested one (AGENTS.md invariant 6).
+    """
+
+    def test_none_version_is_stored_as_the_unversioned_sentinel(self, db):
+        _write(db, [_sig(5, "INFY")], strategy_version=None)
+        rows = read_signals(strategy_key=KEY, db_path=db)
+        assert rows[0]["strategy_version"] == UNVERSIONED
+
+    def test_the_sentinel_cannot_collide_with_a_real_version(self):
+        """Registry versions are append-only from 1, so 0 is unreachable."""
+        assert UNVERSIONED == 0
+
+    def test_unversioned_and_versioned_rows_coexist_for_one_strategy(self, db):
+        """They are distinct rows, not an overwrite: a pre-registry run and a
+        registered run are different evidence and must both survive."""
+        _write(db, [_sig(5, "INFY")], strategy_version=None)
+        _write(db, [_sig(5, "INFY")], strategy_version=3)
+        versions = sorted(
+            r["strategy_version"] for r in read_signals(strategy_key=KEY, db_path=db)
+        )
+        assert versions == [UNVERSIONED, 3]
