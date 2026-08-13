@@ -25,6 +25,8 @@ import {
   tradeQualityColumns,
   tradesColumn,
 } from '@/features/backtest-report/columns'
+import { DeploySelectionBar } from '@/features/backtest-report/components/DeploySelection'
+import { useDeployColumn } from '@/features/backtest-report/deploy/deployColumn'
 import { MatrixTable } from '@/features/backtest-report/components/MatrixTable'
 import { ReportLayout } from '@/features/backtest-report/components/ReportLayout'
 import { layoutProps } from '@/features/backtest-report/sections'
@@ -49,6 +51,7 @@ function useSection() {
 
 export function BacktestReturnsPage() {
   const page = useSection()
+  const deployColumn = useDeployColumn()
   const columns = useMemo(
     () => [
       ...identityColumns('returns'),
@@ -56,8 +59,9 @@ export function BacktestReturnsPage() {
       ...(page.params.mode === 'regular_returns' ? incomeColumns() : []),
       ...setupColumns(),
       tradesColumn(),
+      deployColumn,
     ],
-    [page.params.taxBasis, page.params.mode],
+    [page.params.taxBasis, page.params.mode, deployColumn],
   )
 
   return (
@@ -85,15 +89,22 @@ export function BacktestReturnsPage() {
           />
         </CardContent>
       </Card>
+      <DeploySelectionBar />
     </ReportLayout>
   )
 }
 
 export function BacktestConsistencyPage() {
   const page = useSection()
+  const deployColumn = useDeployColumn()
   const columns = useMemo(
-    () => [...identityColumns('consistency'), ...consistencyColumns(), tradesColumn()],
-    [],
+    () => [
+      ...identityColumns('consistency'),
+      ...consistencyColumns(),
+      tradesColumn(),
+      deployColumn,
+    ],
+    [deployColumn],
   )
 
   // The YoY matrix: strategies down, financial years across. Its columns are
@@ -161,15 +172,17 @@ export function BacktestConsistencyPage() {
           />
         </CardContent>
       </Card>
+      <DeploySelectionBar />
     </ReportLayout>
   )
 }
 
 export function BacktestRiskPage() {
   const page = useSection()
+  const deployColumn = useDeployColumn()
   const columns = useMemo(
-    () => [...identityColumns('risk'), ...riskColumns(), tradesColumn()],
-    [],
+    () => [...identityColumns('risk'), ...riskColumns(), tradesColumn(), deployColumn],
+    [deployColumn],
   )
 
   return (
@@ -192,15 +205,22 @@ export function BacktestRiskPage() {
           />
         </CardContent>
       </Card>
+      <DeploySelectionBar />
     </ReportLayout>
   )
 }
 
 export function BacktestTradeQualityPage() {
   const page = useSection()
+  const deployColumn = useDeployColumn()
   const columns = useMemo(
-    () => [...identityColumns('trade-quality'), ...tradeQualityColumns(), tradesColumn()],
-    [],
+    () => [
+      ...identityColumns('trade-quality'),
+      ...tradeQualityColumns(),
+      tradesColumn(),
+      deployColumn,
+    ],
+    [deployColumn],
   )
 
   return (
@@ -227,6 +247,7 @@ export function BacktestTradeQualityPage() {
           />
         </CardContent>
       </Card>
+      <DeploySelectionBar />
     </ReportLayout>
   )
 }

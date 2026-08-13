@@ -35,6 +35,8 @@ import {
 import { EM_DASH, inr, pct, rate, rateDelta } from './format.ts'
 import { classifyRag, periodCagr, ragCounts } from './matrix.ts'
 import { crossesUnreliableHistory, resolveWindow } from './useReportParams.ts'
+import { toConfigForm } from './deploy/toConfigForm.ts'
+import { parsePrefillParam, prefillParam } from './deploy/useDeploySelection.ts'
 import { adaptMomentumReport, adaptMomentumVariant } from './adapters/momentum.ts'
 import {
   adaptTechnicalReport,
@@ -706,6 +708,38 @@ ok(
 )
 eq(crossesUnreliableHistory('2009-04-01'), false, 'the reliable-from date itself is not flagged')
 eq(crossesUnreliableHistory(null), false, 'an open start is not flagged')
+
+// ---------------------------------------------------------------------------
+console.log('\ndeploy hand-off')
+
+const deployable = toConfigForm(adapted)
+eq(deployable.blockedReason, null, 'a momentum strategy can be carried to the deploy form')
+eq(deployable.values.top_n, adapted.setup.channel === 'momentum' ? adapted.setup.topN ?? undefined : undefined, 'top N carries across')
+eq(
+  deployable.values.lookback_months,
+  adapted.setup.channel === 'momentum' ? adapted.setup.lookbackMonths ?? undefined : undefined,
+  'lookback carries across',
+)
+
+// Deployment choices are NOT strategy attributes. A backtest cannot know how
+// much capital you are putting in or when you start, and prefilling a
+// plausible-looking zero that the user does not notice is worse than an empty
+// field that blocks submit.
+ok(deployable.unmapped.includes('initial_capital'), 'initial capital is required input, not inherited')
+ok(deployable.unmapped.includes('start_date'), 'start date is required input, not inherited')
+ok(deployable.unmapped.includes('portfolio_id'), 'portfolio is required input, not inherited')
+
+// A91: the deploy config schema is momentum-only, so every other channel is
+// blocked with a reason rather than silently doing nothing.
+const taDeploy = toConfigForm(ta)
+ok(taDeploy.blockedReason?.includes('A91') === true, 'a technical strategy is blocked, naming A91')
+eq(Object.keys(taDeploy.values).length, 0, 'and carries no values across')
+ok(toConfigForm(ml).blockedReason != null, 'an ML strategy is blocked too')
+
+eq(prefillParam(['momentum:a', 'momentum:b']), 'momentum:a,momentum:b', 'prefill param round-trips')
+eq(parsePrefillParam('momentum:a,momentum:b').length, 2, 'and parses back')
+eq(parsePrefillParam(null).length, 0, 'an absent prefill param is an empty queue')
+eq(parsePrefillParam(' , ,').length, 0, 'blank entries are dropped rather than becoming empty keys')
 
 // ---------------------------------------------------------------------------
 console.log(`\n${checks - failures}/${checks} checks passed`)

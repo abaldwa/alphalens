@@ -2,7 +2,8 @@
 // Allows selecting per-band strategies with any filter combination, configuring
 // capital deployment (one-time + SIP), start date, rebalance schedule, and
 // viewing historical YoY returns with Red/Green P&L coloring.
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -24,6 +25,11 @@ import {
   SelectValue,
   Label,
 } from '@/lib/ui'
+import { toConfigForm } from '@/features/backtest-report/deploy/toConfigForm'
+import { parsePrefillParam } from '@/features/backtest-report/deploy/useDeploySelection'
+import { strategyDetailUrl } from '@/features/backtest-report/strategyKey'
+import { rate, pct } from '@/features/backtest-report/format'
+import { useReportData } from '@/features/backtest-report/useReportData'
 import { apiGet, apiPost, apiPut, apiDelete } from '@/shared/api/client'
 import type {
   MomentumStrategyConfigResponse,
@@ -106,6 +112,22 @@ const initialFormState: ConfigFormData = {
 export function StrategyDeployPage() {
   const [formData, setFormData] = useState<ConfigFormData>(initialFormState)
   const [editingId, setEditingId] = useState<number | null>(null)
+  // Deploy hand-off from /backtest-report: ?prefill=<StrategyKey>[,<key>...].
+  // The queue is stepped through one config at a time — the form creates one
+  // config per submit, and batching them silently would deploy strategies the
+  // user never looked at.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const prefillKeys = useMemo(
+    () => parsePrefillParam(searchParams.get('prefill')),
+    [searchParams],
+  )
+  const [prefillIndex, setPrefillIndex] = useState(0)
+  const [unmappedFields, setUnmappedFields] = useState<string[]>([])
+  const { strategies: reportStrategies } = useReportData({ channel: 'momentum' })
+  const prefillSource = useMemo(() => {
+    const key = prefillKeys[prefillIndex]
+    return key ? reportStrategies.find((s) => s.key === key) ?? null : null
+  }, [prefillKeys, prefillIndex, reportStrategies])
   const [selectedConfigForReturns, setSelectedConfigForReturns] = useState<number | null>(null)
   const [showReturns, setShowReturns] = useState(false)
   const queryClient = useQueryClient()
@@ -138,6 +160,10 @@ export function StrategyDeployPage() {
       queryClient.invalidateQueries({ queryKey: ['momentum-configs'] })
       setFormData(initialFormState)
       setEditingId(null)
+      // Advance the prefill queue so a multi-select hand-off walks the user
+      // through one strategy per submit, rather than deploying the rest
+      // behind their back.
+      setPrefillIndex((i) => i + 1)
     },
   })
 
@@ -162,8 +188,35 @@ export function StrategyDeployPage() {
     },
   })
 
+  // Seed the form from the backtested definition. Only the fields the report
+  // can actually supply are written; the rest keep their defaults and are
+  // listed in unmappedFields so the form can require them. A prefilled zero
+  // the user does not notice is worse than an empty field that blocks submit.
+  useEffect(() => {
+    if (!prefillSource) return
+    const { values, unmapped } = toConfigForm(prefillSource)
+    setFormData((prev) => ({ ...prev, ...(values as Partial<ConfigFormData>) }))
+    setUnmappedFields(unmapped)
+  }, [prefillSource])
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    // Deployment choices the backtest cannot supply must be filled in
+    // explicitly — capital and start date change the outcome, and inheriting
+    // a placeholder for them would deploy something nobody chose.
+    if (prefillSource) {
+      const missing: string[] = []
+      if (unmappedFields.includes('initial_capital') && !formData.initial_capital) {
+        missing.push('Initial capital')
+      }
+      if (unmappedFields.includes('start_date') && !formData.start_date) {
+        missing.push('Start date')
+      }
+      if (missing.length > 0) {
+        window.alert(`Fill in before deploying: ${missing.join(', ')}`)
+        return
+      }
+    }
     // Each selected category creates a separate config
     const baseConfig = {
       band_id: formData.band_id,
@@ -416,6 +469,79 @@ export function StrategyDeployPage() {
 
   return (
     <AppShell title="Momentum Strategy Deployment" description="Configure and deploy momentum strategies per band with historical YoY returns">
+      {prefillSource ? (
+        <Card className="mb-4 border-primary">
+          <CardHeader>
+            <CardTitle>
+              Prefilled from backtest — {prefillSource.label}
+              {prefillKeys.length > 1
+                ? ` (${prefillIndex + 1} of ${prefillKeys.length})`
+                : ''}
+            </CardTitle>
+            <CardDescription>
+              Every field below came from this strategy's backtested definition
+              and is fully editable. Deployment choices the backtest cannot
+              supply are listed as required.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex flex-wrap gap-x-6 gap-y-1 tabular-nums">
+              <span>
+                CAGR (post-tax){' '}
+                <strong>{rate(prefillSource.returns.cagrPostTax)}</strong>
+              </span>
+              <span>
+                Max drawdown <strong>{pct(prefillSource.risk.maxDrawdown)}</strong>
+              </span>
+              <span>
+                3y rolling median{' '}
+                <strong>
+                  {rate(
+                    prefillSource.consistency.rolling.find((w) => w.window === 3)
+                      ?.medianCagr ?? null,
+                  )}
+                </strong>
+              </span>
+            </div>
+            {unmappedFields.length > 0 ? (
+              <p className="text-amber">
+                Requires your input: {unmappedFields.join(', ')}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-3">
+              <a
+                href={strategyDetailUrl(prefillSource.key)}
+                className="text-primary hover:underline"
+              >
+                Back to the full backtest report
+              </a>
+              {prefillIndex + 1 < prefillKeys.length ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPrefillIndex((i) => i + 1)}
+                >
+                  Skip to next selected strategy
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams)
+                  next.delete('prefill')
+                  setSearchParams(next, { replace: true })
+                }}
+              >
+                Clear prefill
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {/* Section 1: Strategy Configuration Form */}
       <Card>
         <CardHeader>
