@@ -362,6 +362,35 @@ PND_FLAG_THRESHOLD = 40
 EXIT_URGENT_THRESHOLD = 80
 EXIT_REDUCE_THRESHOLD = 60
 
+# [2026-08-13, user decision] P&D pre-filter DISABLED until its delivery
+# inputs are rebuilt and the model retrained.
+#
+# pnd_detector consumes delivery_pct plus four derived features
+# (delivery_pct_3d_avg, delivery_vs_4w_avg, delivery_collapse_flag,
+# delivery_spike_then_collapse — features/pnd_features.py). Through
+# 2026-07 delivery_pct was 93-98% NULL in the feature panel and both
+# pnd_detector.py and multibagger_model.py read it as
+# `COALESCE(delivery_pct, 0.0)`, so the model was trained believing
+# almost every stock had 0% delivery — which is not "missing", it is the
+# extreme value meaning pure intraday churn with no ownership transfer,
+# i.e. the exact pump-and-dump signature this model exists to detect.
+# The 2026-08-05 delivery UPSERT fix + FYERS-primary rollout took
+# coverage to ~90% populated (real values in the 50s), so the feature's
+# meaning inverted underneath a model last trained 2026-07-13. Its
+# blocking decisions are extrapolation outside the training
+# distribution, and SPEC-MODEL-006 makes those decisions CRITICAL: a
+# blocked ticker is never scored at all (see _step_signals_and_meta).
+#
+# Disabled rather than threshold-tuned because no threshold is
+# trustworthy while the inputs mean something different from what the
+# model learned. Re-enable only after: delivery history is backfilled,
+# the COALESCE(...,0.0) imputation is replaced with true NaN + an
+# explicit missingness indicator, and pnd_detector is retrained and
+# reviewed. Until then no ticker is P&D-blocked — the universe is
+# scored unfiltered, which is the safe direction (nothing is silently
+# excluded), NOT a claim that P&D risk is absent.
+PND_FILTER_ENABLED = False
+
 CONFORMAL_TARGET_COVERAGE = 0.90  # alpha = 0.10
 CONFORMAL_MIN_COVERAGE_ALERT = 0.85
 CONFORMAL_VALIDATION_WINDOW_DAYS = 63
@@ -390,6 +419,18 @@ PAPER_TRADING_REQUIRE_APPROVAL = os.environ.get("PAPER_TRADING_REQUIRE_APPROVAL"
 PSI_MODERATE_THRESHOLD = 0.10  # warning: reduce position sizing 50% (SPEC-ALERT-001)
 PSI_SEVERE_THRESHOLD = 0.25  # halt + retrain (SPEC-ALERT-001: "Model Drift | HIGH")
 PSI_TOP_N_FEATURES = 50  # SPEC-PIPE-005: "PSI: top 50 features vs baseline"
+# [2026-08-13] Floor below which drift monitoring is reported DEGRADED.
+# stats_baseline.pkl held 3 features (a Phase 0.6 stand-in over
+# ohlcv_adjusted, never swapped for the Phase 1 panel), two of which are
+# absent from the feature panel entirely — so PSI_TOP_N_FEATURES=50 was in
+# practice ONE feature, with no signal that anything was wrong. See
+# PSIMonitor.check_drift.
+PSI_MIN_MONITORED_FEATURES = 10
+# Non-null-share movement (fraction, not percentage points x100) beyond
+# which a feature's PSI is treated as a stale-baseline signal rather than
+# market drift — the two populations are not comparable. delivery_pct
+# moved ~0.05 -> ~0.90 across the 2026-08-05 delivery fix.
+PSI_COVERAGE_SHIFT_TOLERANCE = 0.20
 MIN_MODEL_ACCURACY = 0.45
 NULL_RATE_ALERT_THRESHOLD = 0.01  # 1%
 RATIO_FEATURE_RANGE = (0.1, 10.0)

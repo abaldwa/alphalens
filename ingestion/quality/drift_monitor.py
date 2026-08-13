@@ -28,7 +28,14 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from config.settings import PSI_BASELINE_PATH, PSI_MODERATE_THRESHOLD, PSI_SEVERE_THRESHOLD, PSI_TOP_N_FEATURES
+from config.settings import (
+    PSI_BASELINE_PATH,
+    PSI_COVERAGE_SHIFT_TOLERANCE,
+    PSI_MIN_MONITORED_FEATURES,
+    PSI_MODERATE_THRESHOLD,
+    PSI_SEVERE_THRESHOLD,
+    PSI_TOP_N_FEATURES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +210,19 @@ class PSIMonitor:
                 logger.warning(f"PSI baseline: feature '{col}' is entirely NaN — skipped")
                 continue
             edges = _quantile_bin_edges(values, self.n_bins)
-            baseline[col] = {"bin_edges": edges, "baseline_pct": _bin_proportions(values, edges)}
+            # [2026-08-13] non_null_share is recorded so check_drift() can
+            # tell a genuine distribution shift apart from a COVERAGE
+            # change. Live incident 2026-08-12: delivery_pct went from
+            # 93-98% NULL to ~10% NULL when the delivery UPSERT fix landed,
+            # and PSI (0.272) halted inference on what was really the data
+            # getting BETTER — the baseline deciles had been derived from
+            # the ~5% of rows that happened to have delivery data, so the
+            # two populations were never comparable in the first place.
+            baseline[col] = {
+                "bin_edges": edges,
+                "baseline_pct": _bin_proportions(values, edges),
+                "non_null_share": float(len(values) / len(feature_matrix)) if len(feature_matrix) else 0.0,
+            }
 
         if save:
             self.baseline_path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,6 +302,26 @@ class PSIMonitor:
         available = [n for n in baseline if n in feature_matrix.columns]
         names = feature_names if feature_names is not None else available[:PSI_TOP_N_FEATURES]
 
+        # [2026-08-13] A monitor that silently monitors almost nothing is
+        # worse than no monitor: it manufactures confidence. The
+        # baseline/feature-matrix intersection is where coverage silently
+        # collapses — stats_baseline.pkl held only 3 features (a Phase 0.6
+        # stand-in over ohlcv_adjusted that was never swapped for the
+        # Phase 1 panel, see ingestion/quality/baseline_runner.py), two of
+        # which ('return_1d', 'volume') do not exist in the feature panel
+        # at all, so the "top 50 features" check was in fact checking
+        # exactly ONE feature — and every halt/ok verdict rested on it.
+        if len(available) < PSI_MIN_MONITORED_FEATURES:
+            logger.error(
+                "PSI check_drift: only %d feature(s) are checkable (%s) — below the "
+                "PSI_MIN_MONITORED_FEATURES=%d floor. The baseline covers %d feature(s) and the "
+                "matrix %d; drift monitoring is DEGRADED and its verdict must not be trusted as "
+                "'top %d features'. Rebuild the baseline from the feature panel "
+                "(ingestion/quality/baseline_runner.py).",
+                len(available), available, PSI_MIN_MONITORED_FEATURES,
+                len(baseline), len(feature_matrix.columns), PSI_TOP_N_FEATURES,
+            )
+
         results: Dict[str, dict] = {}
         for name in names:
             if name not in baseline or name not in feature_matrix.columns:
@@ -299,9 +338,34 @@ class PSIMonitor:
             current_pct = _bin_proportions(current, edges)
             psi = _psi_from_proportions(baseline_pct, current_pct)
             status = self.classify(psi)
-            results[name] = {"psi": psi, "status": status}
 
-            if status != "ok":
+            # [2026-08-13] Coverage guard. If the feature's non-null share
+            # has moved materially since the baseline was built, today's
+            # values and the baseline deciles describe DIFFERENT
+            # populations, and the PSI between them measures the coverage
+            # change rather than any market move. Downgrade to a
+            # 'stale_baseline' warning instead of halting inference: a halt
+            # must mean "the market changed", never "we started collecting
+            # this field properly". Live case: delivery_pct, 2026-08-12.
+            baseline_share = baseline[name].get("non_null_share")
+            current_share = len(current) / len(feature_matrix) if len(feature_matrix) else 0.0
+            coverage_shift = (
+                abs(current_share - baseline_share) if baseline_share is not None else None
+            )
+            if coverage_shift is not None and coverage_shift > PSI_COVERAGE_SHIFT_TOLERANCE:
+                logger.warning(
+                    "PSI drift [stale_baseline] %s: PSI=%.4f, but non-null coverage moved "
+                    "%.1f%% -> %.1f%% (shift %.1f%% > %.0f%% tolerance). The baseline and today's "
+                    "values describe different populations; this is a baseline-refresh signal, "
+                    "not market drift. Rebuild via ingestion/quality/baseline_runner.py.",
+                    name, psi, baseline_share * 100, current_share * 100,
+                    coverage_shift * 100, PSI_COVERAGE_SHIFT_TOLERANCE * 100,
+                )
+                status = "stale_baseline"
+
+            results[name] = {"psi": psi, "status": status, "coverage_shift": coverage_shift}
+
+            if status not in ("ok", "stale_baseline"):
                 logger.warning(f"PSI drift [{status}] {name}: PSI={psi:.4f}")
 
         return results

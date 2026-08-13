@@ -47,7 +47,13 @@ import numpy as np
 import pandas as pd
 import shap
 
-from config.settings import DATASTORE_API_BASE_URL, EXIT_URGENT_THRESHOLD, MODELS_DIR, PSI_SEVERE_THRESHOLD
+from config.settings import (
+    DATASTORE_API_BASE_URL,
+    EXIT_URGENT_THRESHOLD,
+    MODELS_DIR,
+    PND_FILTER_ENABLED,
+    PSI_SEVERE_THRESHOLD,
+)
 from config.timezone import now_ist
 from features.pnd_features import PND_FEATURES
 from features.technical import CORE_TECHNICAL_FEATURES
@@ -831,15 +837,33 @@ def run_daily_inference(
             )
 
         t0 = time.monotonic()
-        try:
-            blocked = _step_pnd_filter(pnd_feature_matrix, run_date, buffer, models_dir)
-            _flush_signal_writes(http_client, api_base_url, buffer)
-        except Exception as exc:
-            log_pipeline_step("pnd_filter", "failed", stocks=0, duration_s=time.monotonic() - t0, error=str(exc))
-            raise
+        # [2026-08-13] config.settings.PND_FILTER_ENABLED gates this step —
+        # see that setting's comment for the delivery_pct train/serve skew
+        # that makes pnd_detector's blocking decisions untrustworthy today.
+        # Skipped (not failed): an intentionally disabled filter is not a
+        # pipeline error, and blocking nothing is the safe direction —
+        # every ticker is scored rather than silently excluded.
+        if not PND_FILTER_ENABLED:
+            blocked = set()
+            result["pnd_filter_disabled"] = True
+            logger.warning(
+                "daily_inference: P&D pre-filter DISABLED (PND_FILTER_ENABLED=False) — no ticker "
+                "is being P&D-blocked. pnd_detector's delivery inputs changed meaning after the "
+                "2026-08-05 delivery fix; re-enable only after backfill + retrain."
+            )
+            log_pipeline_step("pnd_filter", "skipped", stocks=0, duration_s=time.monotonic() - t0)
+        else:
+            try:
+                blocked = _step_pnd_filter(pnd_feature_matrix, run_date, buffer, models_dir)
+                _flush_signal_writes(http_client, api_base_url, buffer)
+            except Exception as exc:
+                log_pipeline_step("pnd_filter", "failed", stocks=0, duration_s=time.monotonic() - t0, error=str(exc))
+                raise
+            log_pipeline_step(
+                "pnd_filter", "success", stocks=len(pnd_feature_matrix), duration_s=time.monotonic() - t0
+            )
         result["pnd_blocked"] = sorted(blocked)
         timings["pnd_filter"] = time.monotonic() - t0
-        log_pipeline_step("pnd_filter", "success", stocks=len(pnd_feature_matrix), duration_s=timings["pnd_filter"])
 
         t0 = time.monotonic()
         try:

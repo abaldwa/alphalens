@@ -198,3 +198,108 @@ def test_check_drift_caps_default_feature_selection_at_top_n(monkeypatch, tmp_pa
     result = monitor.check_drift(_feature_matrix(seed=2), baseline=baseline)
 
     assert len(result) == 1
+
+
+# ===== [2026-08-13] coverage guard + degraded-monitoring floor =====
+
+
+class TestBaselineRecordsCoverage:
+    """compute_baseline persists each feature's non-null share so
+    check_drift can tell a distribution shift apart from a coverage change."""
+
+    def test_non_null_share_is_recorded(self, tmp_path):
+        monitor = PSIMonitor(baseline_path=tmp_path / "b.pkl")
+        matrix = _feature_matrix(n=100, seed=3)
+        matrix.loc[:49, "f1"] = np.nan  # half the column missing
+
+        baseline = monitor.compute_baseline(matrix, save=False)
+
+        assert baseline["f1"]["non_null_share"] == pytest.approx(0.5)
+        assert baseline["f2"]["non_null_share"] == pytest.approx(1.0)
+
+
+class TestCoverageShiftIsNotMarketDrift:
+    """[2026-08-12 incident] delivery_pct went from ~5% populated to ~90%
+    populated when the delivery UPSERT fix landed. PSI against a baseline
+    derived from the sparse era hit 0.272 and halted inference — on data
+    that had just got BETTER. A halt must mean the market changed, never
+    that we started collecting a field properly.
+    """
+
+    def _sparse_baseline_and_full_matrix(self, monitor):
+        rng = np.random.default_rng(11)
+        n = 500
+        # Baseline era: only ~5% of rows carry the feature, and that sparse
+        # subset sits at a different level from the full population.
+        sparse = pd.DataFrame({"f1": np.full(n, np.nan), "f2": rng.normal(0, 1, n)})
+        sparse.loc[:24, "f1"] = rng.normal(20, 1, 25)
+        baseline = monitor.compute_baseline(sparse, save=False)
+
+        # Today: fully populated, centred elsewhere — a big PSI purely
+        # because the two populations are different, not because of drift.
+        full = pd.DataFrame({"f1": rng.normal(55, 5, n), "f2": rng.normal(0, 1, n)})
+        return baseline, full
+
+    def test_large_coverage_gain_is_reported_as_stale_baseline_not_halt(self, tmp_path):
+        monitor = PSIMonitor(baseline_path=tmp_path / "b.pkl")
+        baseline, full = self._sparse_baseline_and_full_matrix(monitor)
+
+        result = monitor.check_drift(full, baseline=baseline)
+
+        assert result["f1"]["status"] == "stale_baseline", (
+            "a coverage jump must not halt inference; it is a baseline-refresh signal"
+        )
+        assert result["f1"]["coverage_shift"] > 0.20
+
+    def test_stable_coverage_still_halts_on_real_drift(self, tmp_path):
+        """The guard must not swallow genuine drift: same coverage, shifted values."""
+        monitor = PSIMonitor(baseline_path=tmp_path / "b.pkl")
+        baseline = monitor.compute_baseline(_feature_matrix(seed=1), save=False)
+
+        shifted = _feature_matrix(seed=1)
+        shifted["f1"] = shifted["f1"] + 10
+
+        result = monitor.check_drift(shifted, baseline=baseline)
+
+        assert result["f1"]["status"] == "halt"
+        assert result["f1"]["coverage_shift"] == pytest.approx(0.0)
+
+    def test_legacy_baseline_without_coverage_still_works(self, tmp_path):
+        """Baselines pickled before non_null_share existed must not crash."""
+        monitor = PSIMonitor(baseline_path=tmp_path / "b.pkl")
+        baseline = monitor.compute_baseline(_feature_matrix(seed=1), save=False)
+        for entry in baseline.values():
+            entry.pop("non_null_share")
+
+        result = monitor.check_drift(_feature_matrix(seed=1), baseline=baseline)
+
+        assert result["f1"]["coverage_shift"] is None
+        assert result["f1"]["status"] == "ok"
+
+
+class TestDegradedMonitoringIsLoud:
+    """A monitor silently covering 1 of 50 features manufactures confidence.
+    stats_baseline.pkl held 3 features, two absent from the feature panel,
+    so 'top 50 features vs baseline' was in fact checking exactly one."""
+
+    def test_thin_intersection_logs_an_error(self, tmp_path, caplog):
+        monitor = PSIMonitor(baseline_path=tmp_path / "b.pkl")
+        baseline = monitor.compute_baseline(_feature_matrix(seed=1), save=False)
+
+        # Only f1 exists in today's matrix -> intersection of 1.
+        today = pd.DataFrame({"f1": _feature_matrix(seed=1)["f1"]})
+        with caplog.at_level("ERROR"):
+            monitor.check_drift(today, baseline=baseline)
+
+        assert "DEGRADED" in caplog.text
+        assert "only 1 feature" in caplog.text
+
+    def test_healthy_intersection_is_silent(self, tmp_path, caplog):
+        monitor = PSIMonitor(baseline_path=tmp_path / "b.pkl")
+        wide = pd.DataFrame({f"f{i}": np.random.default_rng(i).normal(0, 1, 200) for i in range(12)})
+        baseline = monitor.compute_baseline(wide, save=False)
+
+        with caplog.at_level("ERROR"):
+            monitor.check_drift(wide, baseline=baseline)
+
+        assert "DEGRADED" not in caplog.text
