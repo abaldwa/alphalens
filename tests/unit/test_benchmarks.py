@@ -210,15 +210,36 @@ class TestWindowDependentOptions:
         assert opts["recommended"] == "Nifty Midcap 150"
         assert opts["preferred_available"] is True
 
-    def test_falls_back_to_the_nearest_live_size_index(self):
-        """Not straight to a broad index: comparing a mid-cap strategy to
-        Nifty 500 mismeasures it by the size spread, where Midcap 100 is
-        adjacent AND traded throughout."""
+    def test_falls_back_to_nifty_500_when_the_index_did_not_exist(self):
+        """A104: fall back to the broad index rather than ranking on a series
+        that was retrospectively computed."""
         opts = benchmark_options(
             self._coverage(), date(2009, 4, 1), TODAY, preferred="Nifty Midcap 150"
         )
         assert opts["preferred_available"] is False
-        assert opts["recommended"] == "Nifty Midcap 100"
+        assert opts["recommended"] == "Nifty 500"
+
+    def test_fallback_states_its_reason_and_its_own_limitation(self):
+        """The substitution has to be visible: Nifty 500 is broad, so part of
+        any excess return against it is the size spread, not the strategy."""
+        opts = benchmark_options(
+            self._coverage(), date(2009, 4, 1), TODAY, preferred="Nifty Midcap 150"
+        )
+        reason = opts["fallback_reason"]
+        assert "Nifty Midcap 150" in reason
+        assert "2019-01-14" in reason
+        assert "Nifty 500" in reason
+        assert "size" in reason
+
+    def test_no_fallback_reason_when_the_preferred_index_is_used(self):
+        opts = benchmark_options(
+            self._coverage(), date(2020, 1, 1), TODAY, preferred="Nifty Midcap 150"
+        )
+        assert opts["fallback_reason"] is None
+
+    def test_no_fallback_reason_when_no_preference_was_expressed(self):
+        opts = benchmark_options(self._coverage(), date(2009, 4, 1), TODAY)
+        assert opts["fallback_reason"] is None
 
     def test_broad_fallback_when_no_size_index_traded(self):
         coverage = {
@@ -230,6 +251,7 @@ class TestWindowDependentOptions:
             coverage, date(2009, 4, 1), TODAY, preferred="Nifty Smallcap 250"
         )
         assert opts["recommended"] == "Nifty 500"
+        assert "Nifty Smallcap 250" in opts["fallback_reason"]
 
     def test_backcomputed_options_are_offered_not_hidden(self):
         """The user may still choose one deliberately; it just carries a

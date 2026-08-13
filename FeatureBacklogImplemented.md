@@ -6,7 +6,35 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 
 ## Status Matrix
 
-### Frontend
+#### A104 — Back-computed benchmark policy — DECIDED 2026-08-13
+
+NSE publishes a size index before it launched by computing it retrospectively
+from constituent data: Close only, no Open/High/Low. Nifty Microcap 250 is live
+from 2022-01-10 (3,472 back-computed sessions), Midcap 150 / Smallcap 250 /
+Smallcap 50 from 2019-01-14 (2,731 each), Smallcap 100 from 2011-10-03 (928).
+Over a 2009-2026 backtest, a small-cap strategy's excess return was therefore
+being measured against a series that did not exist for the first decade.
+
+**Decision: fall back to Nifty 500, with a message.** When the size-matched
+index did not trade across the whole window, `benchmark_options()` recommends
+Nifty 500 and returns a `fallback_reason` naming the index, its launch date,
+the substitution, and the substitution's own limitation — that Nifty 500 is
+broad, so part of any excess return against it is the large/small-cap spread
+rather than the strategy. The API returns that string; it must be rendered
+alongside the excess-return figure, not buried in a tooltip.
+
+Nifty 500 specifically rather than "the first broad index": it is the widest
+series with full history, so it is the one substitution that cannot itself
+introduce a coverage gap.
+
+The rejected alternative was ranking on the back-computed series with a caveat
+attached. A persona recommendation is a deploy-or-not decision, and "beat an
+index that did not exist for ten of the seventeen years" is not evidence for
+one. Back-computed indices remain *selectable* — a deliberate choice is still
+allowed — they are simply never the default and never `usable_as_benchmark`
+over a window they did not trade.
+
+## Frontend
 
 ### FE2 — 1.5 MB single JS chunk — CLOSED 2026-08-13
 

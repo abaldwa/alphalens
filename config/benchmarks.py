@@ -245,24 +245,52 @@ def benchmark_options(
 
     Returns the indices that traded across the whole window ("live"), those
     that only reach it via back-computed history ("backcomputed", offered but
-    caveated), and a recommendation.
+    caveated), a recommendation, and — when the size-matched index did not
+    exist across the window — the reason it was not used.
 
-    The recommendation deliberately prefers a size-matched index that was
-    LIVE over a size-matched one that was not: comparing a small-cap strategy
-    to Nifty 500 mismeasures it by the size spread, but comparing it to an
-    index that did not exist for two-thirds of the window mismeasures it by
-    an unknown amount, and only one of those two errors is quantifiable.
+    Fallback rule (A104, decided 2026-08-13): when the preferred index did not
+    trade across the whole window, fall back to Nifty 500 and SAY SO. The
+    substitution is deliberately visible rather than silent: Nifty 500 is a
+    broad index, so a small-cap strategy compared against it is being measured
+    partly on the size spread, and a reader has to know that is what they are
+    looking at.
+
+    The alternative considered and rejected was ranking on the back-computed
+    series with a caveat. A recommendation is a deploy-or-not decision, and
+    "beat an index that did not exist for ten of the seventeen years" is not
+    evidence for one.
     """
     live = usable_benchmarks(coverage, start=start, end=end, require_live=True)
     all_covering = usable_benchmarks(coverage, start=start, end=end, require_live=False)
     backcomputed = [n for n in all_covering if n not in live]
 
+    fallback_reason: Optional[str] = None
+
     if preferred and preferred in live:
         recommended = preferred
-    elif preferred and preferred in backcomputed:
-        # Size-matched but not live over this window. Prefer the nearest
-        # live size index, else fall back to broad.
-        recommended = _nearest_live_size_index(preferred, live) or _first_live_broad(live)
+    elif preferred:
+        # Nifty 500 specifically, not merely "the first broad index" — it is
+        # the widest series with full history, so it is the one substitution
+        # that never itself introduces a coverage gap.
+        recommended = (
+            DEFAULT_BENCHMARK_INDEX
+            if DEFAULT_BENCHMARK_INDEX in live
+            else _first_live_broad(live) or (live[0] if live else None)
+        )
+        cov = coverage.get(preferred)
+        launched = (
+            f" (launched {cov.live_from.isoformat()})"
+            if cov and cov.live_from
+            else ""
+        )
+        fallback_reason = (
+            f"{preferred} did not trade across "
+            f"{start.isoformat()}..{end.isoformat()}{launched}, so "
+            f"{recommended} is used instead. As a broad-market index it does "
+            f"not match this strategy's size profile — part of any excess "
+            f"return shown is the large/small-cap spread rather than the "
+            f"strategy."
+        )
     else:
         recommended = _first_live_broad(live) or (live[0] if live else None)
 
@@ -271,21 +299,8 @@ def benchmark_options(
         "backcomputed": backcomputed,
         "recommended": recommended,
         "preferred_available": preferred in live if preferred else None,
+        "fallback_reason": fallback_reason,
     }
-
-
-def _nearest_live_size_index(preferred: str, live: List[str]) -> Optional[str]:
-    """The closest size index by rank order that is live over the window.
-    SIZE_INDICES is ordered small -> large, so this walks outward from the
-    preferred one rather than jumping straight to a broad index."""
-    if preferred not in SIZE_INDICES:
-        return None
-    i = SIZE_INDICES.index(preferred)
-    for offset in range(1, len(SIZE_INDICES)):
-        for j in (i + offset, i - offset):
-            if 0 <= j < len(SIZE_INDICES) and SIZE_INDICES[j] in live:
-                return SIZE_INDICES[j]
-    return None
 
 
 def _first_live_broad(live: List[str]) -> Optional[str]:

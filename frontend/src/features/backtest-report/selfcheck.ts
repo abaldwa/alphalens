@@ -34,6 +34,13 @@ import {
 } from './strategyKey.ts'
 import { adaptMomentumReport, adaptMomentumVariant } from './adapters/momentum.ts'
 import {
+  adaptTechnicalReport,
+  adaptTechnicalStrategy,
+  annualise,
+  incomeIsUnverified,
+} from './adapters/technical.ts'
+import { adaptMlRuns, adaptRun, adaptRuns, horizonDays, yearsBetween } from './adapters/runs.ts'
+import {
   PERSONAS,
   evaluatePersona,
   recommendAll,
@@ -439,6 +446,181 @@ ok(
   'recommendAll reports every strategy for every persona',
 )
 eq(Object.keys(all).sort(), ['conservative', 'high_risk', 'moderate'], 'three personas')
+
+
+// ---------------------------------------------------------------------------
+section('technical adapter')
+// ---------------------------------------------------------------------------
+
+// The single most consequential conversion in the module: Technical reports
+// median TOTAL return per rolling window, Momentum annualised CAGR. A 3-year
+// window returning 33% total is 10%/yr -- placed side by side untouched,
+// Technical would look three times better than it is.
+eq(Math.round((annualise(33.1, 3) ?? 0) * 1000) / 1000, 0.1, '33.1% over 3y annualises to ~10%/yr')
+eq(annualise(0, 5), 0, 'a flat window annualises to zero')
+eq(annualise(null, 3), null, 'null total stays null')
+eq(annualise(-100, 3), null, 'a total wipeout has no annualised rate')
+eq(annualise(-150, 3), null, 'worse than -100% has no annualised rate')
+eq(annualise(10, 0), null, 'a zero-length window has no rate')
+ok((annualise(-50, 2) ?? 0) < 0, 'a losing window annualises negative')
+
+const taStrategy = {
+  template: 'A1',
+  exit_variant: 'risk_managed',
+  lump: {
+    run_id: 'run_ta_1',
+    start_date: '2009-04-01',
+    end_date: '2026-08-12',
+    cagr_pct: 18.4,
+    benchmark_cagr_pct: 12.1,
+    sharpe: 0.9,
+    sortino: 1.2,
+    calmar: 0.6,
+    max_drawdown_pct: -38.2,
+    total_trades: 412,
+    win_rate_pct: 52.5,
+    profit_factor: 1.6,
+    final_capital: 5_200_000,
+    avg_days_held: 19,
+    fy_returns: [
+      { fy_end: '2024-03-31', fy_label: 'FY2024', opening_equity: 1, closing_equity: 1, return_pct: 22.5, partial: false },
+      { fy_end: '2025-03-31', fy_label: 'FY2025', opening_equity: 1, closing_equity: 1, return_pct: -6.2, partial: false },
+      { fy_end: '2026-03-31', fy_label: 'FY2026', opening_equity: 1, closing_equity: 1, return_pct: 9.9, partial: true },
+    ],
+    rolling_returns: {
+      '3y': { n_windows: 10, best_pct: 90, median_pct: 33.1, worst_pct: -10, positive_windows: 8 },
+      '5y': { n_windows: 8, best_pct: 200, median_pct: 61, worst_pct: 5, positive_windows: 8 },
+    },
+    trade_log_path: null,
+    trade_stats: {
+      n_closed: 400, n_wins: 210, n_losses: 190, win_rate_pct: 52.5,
+      avg_win_pct: 8.4, avg_loss_pct: -4.1, payoff_ratio: 2.0,
+      avg_hold_days: 19, avg_win_hold_days: 24, avg_loss_hold_days: 13,
+      best_trade_pct: 140, worst_trade_pct: -32, expectancy_pct: 2.1,
+    },
+    equity_monthly: [
+      { date: '2009-04-30', index: 100 },
+      { date: '2009-05-31', index: 108 },
+    ],
+  },
+  annual_reset: {
+    ltcg_12_5pct_1_25L: {
+      run_id: 'run_ta_1_reset', ltcg_rate: 0.125, ltcg_exemption: 125000,
+      n_financial_years: 17, withdrawn_pretax_total: 900000,
+      withdrawn_post_tax_total: 820000, tax_paid_total: 80000,
+      topped_up_total: 150000, net_extracted: 670000, losing_years: 4,
+      unverified: true, unverified_reason: 'measure_3 not yet verified',
+    },
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any
+
+const ta = adaptTechnicalStrategy(taStrategy)
+
+eq(ta.key, 'technical:A1', 'technical key')
+eq(ta.label, 'A1 · risk_managed', 'technical label carries the exit variant')
+
+// Percent -> fraction, so both channels mean the same thing.
+eq(ta.returns.cagrPreTax, 0.184, 'cagr converted from percent to fraction')
+eq(ta.returns.benchmarkCagr, 0.121, 'benchmark cagr converted')
+eq(Math.round((ta.returns.excessReturn ?? 0) * 1000) / 1000, 0.063, 'excess return computed')
+eq(ta.risk.maxDrawdown, -0.382, 'drawdown converted')
+eq(ta.tradeQuality.winRate, 0.525, 'win rate converted')
+eq(ta.tradeQuality.avgWinnerPct, 0.084, 'avg winner converted')
+
+// Rolling windows annualised, not passed through as totals.
+eq(rollingMedian(ta, 3) != null, true, 'technical exposes a 3y rolling median')
+eq(Math.round((rollingMedian(ta, 3) ?? 0) * 1000) / 1000, 0.1, '3y median annualised')
+eq(rollingPositiveShare(ta, 3), 0.8, 'positive share taken from positive_windows/n_windows')
+eq(rollingPositiveShare(ta, 5), 1, 'a fully positive window set reports 1')
+eq(ta.consistency.rolling.map((w) => w.window), [3, 5], 'rolling windows sorted ascending')
+
+// A partial financial year is not a year's return.
+eq(ta.consistency.yoy.map((y) => y.fyLabel), ['FY2024', 'FY2025'], 'partial FY excluded')
+eq(ta.consistency.yoy[0].returnPct, 0.225, 'yoy converted to fraction')
+
+eq(ta.equityCurve?.length, 2, 'technical carries an equity curve')
+eq(ta.equityCurve?.[0].value, 100, 'equity curve maps index -> value')
+ok(ta.tradeBookUrl?.includes('run_ta_1') === true, 'trade book url carries the run id')
+eq(ta.pending['returns.cagrPostTax']?.backlogId, 'A86', 'post-tax cagr is pending A86')
+eq(ta.income?.nYears, 17, 'income mode mapped')
+eq(ta.income?.topUpAfterLoss, true, 'topped-up total implies losing years were refunded')
+
+ok(
+  incomeIsUnverified({ strategies: [taStrategy] } as any),
+  'unverified annual-reset figures are reported as such',
+)
+
+const noLump = adaptTechnicalStrategy({ template: 'B2', exit_variant: 'trailing', lump: null, annual_reset: {} } as any)
+eq(noLump.returns.cagrPreTax, null, 'a strategy with no lump run has no cagr')
+eq(noLump.consistency.rolling.length, 0, 'and no rolling windows')
+ok(noLump.pending['returns.cagrPreTax'] != null, 'and says why')
+eq(adaptTechnicalReport(null).length, 0, 'null technical report is empty')
+
+// ---------------------------------------------------------------------------
+section('run adapter (ML and fallback)')
+// ---------------------------------------------------------------------------
+
+eq(horizonDays('21d'), 21, 'horizon bucket parsed')
+eq(horizonDays(null), null, 'missing horizon is null')
+eq(horizonDays('abc'), null, 'unparseable horizon is null')
+eq(Math.round((yearsBetween('2009-04-01', '2026-04-01') ?? 0)), 17, 'window years computed')
+eq(yearsBetween('2026-01-01', '2020-01-01'), null, 'a backwards window is null')
+eq(yearsBetween(null, '2020-01-01'), null, 'missing bound is null')
+
+const mlRun = {
+  run_id: 'run_ml_1', parent_run_id: null, channel: 'ml', strategy_id: 'signal_21d',
+  horizon_bucket: '21d', mode: 'backtest', start_date: '2009-04-01', end_date: '2026-08-12',
+  capital_mode: 'lump', initial_capital: 1_000_000, created_at: '2026-08-12',
+  config: null,
+  metrics: {
+    cagr: 0.14, cagr_trading_day_legacy: 0.15, xirr: 0.135, final_capital: 4_000_000,
+    total_contributed: 1_000_000, max_drawdown: -0.29, win_rate: 0.51, profit_factor: 1.3,
+    sharpe: 0.8, sortino: 1.0, calmar: 0.5, n_distinct_tickers_traded: 200,
+    turnover_ratio: 3.2, n_trades: 900, benchmark_cagr: 0.12, excess_return: 0.02,
+    benchmark_status: 'ok', cash_position_series: [], avg_days_held: 21,
+  },
+  data_gaps: [], integrity_passed: true, live_eligible: false,
+  buy_signal_count: 0, sell_signal_count: 0, regime_breakdown: [],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any
+
+const ml = adaptRun(mlRun)
+eq(ml.key, 'ml:signal_21d', 'ml key')
+eq(ml.channel, 'ml', 'ml channel')
+eq(ml.setup.channel === 'ml' ? ml.setup.horizonDays : null, 21, 'ml horizon days')
+eq(ml.returns.cagrPreTax, 0.14, 'ml cagr mapped')
+eq(ml.returns.benchmarkCaveat, null, 'a healthy benchmark has no caveat')
+eq(ml.risk.maxDrawdown, -0.29, 'ml drawdown mapped')
+eq(ml.consistency.rolling.length, 0, 'run summaries carry no rolling windows')
+eq(ml.pending['consistency.rolling']?.backlogId, 'T13', 'and say which item supplies them')
+eq(ml.setup.window.startDate, '2009-04-01', 'run window captured')
+
+const degraded = adaptRun({ ...mlRun, metrics: { ...mlRun.metrics, benchmark_status: 'missing_index' } } as any)
+ok(
+  degraded.returns.benchmarkCaveat?.includes('missing_index') === true,
+  'a degraded benchmark status is surfaced, not dropped',
+)
+
+const noMetrics = adaptRun({ ...mlRun, metrics: null } as any)
+eq(noMetrics.returns.cagrPreTax, null, 'a run with no metrics does not crash')
+eq(noMetrics.risk.sharpe, null, 'and reports nulls')
+
+eq(adaptRuns(null).length, 0, 'null runs list is empty')
+eq(
+  adaptMlRuns([mlRun, { ...mlRun, channel: 'technical', strategy_id: 'A1' }] as any).length,
+  1,
+  'adaptMlRuns filters to the ml channel',
+)
+
+// Every adapter must agree on units, or the shared tables compare apples to
+// oranges. All three express CAGR as a fraction.
+ok(
+  (adapted.returns.cagrPreTax ?? 0) < 1 &&
+    (ta.returns.cagrPreTax ?? 0) < 1 &&
+    (ml.returns.cagrPreTax ?? 0) < 1,
+  'all three adapters express CAGR as a fraction',
+)
 
 // ---------------------------------------------------------------------------
 console.log(`\n${checks - failures}/${checks} checks passed`)

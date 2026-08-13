@@ -88,6 +88,15 @@ class IndexListResponse(BaseModel):
         default=None,
         description="Best benchmark for this window, preferring a live series.",
     )
+    fallback_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Set when the size-matched index did not trade across the window "
+            "and Nifty 500 was substituted. Must be shown to the user "
+            "alongside any excess-return figure: a broad index does not match "
+            "a size-scoped strategy, so part of the excess is the size spread."
+        ),
+    )
 
 
 def _kind(name: str) -> str:
@@ -115,8 +124,8 @@ def list_indices(
         None,
         description=(
             "The size-matched index this strategy would ideally use. If it did "
-            "not trade across the window, the response recommends the nearest "
-            "index that did."
+            "not trade across the window, Nifty 500 is recommended instead and "
+            "fallback_reason explains why (A104)."
         ),
     ),
 ) -> IndexListResponse:
@@ -136,11 +145,13 @@ def list_indices(
     live: List[str] = []
     backcomputed: List[str] = []
     recommended: Optional[str] = None
+    fallback_reason: Optional[str] = None
     if start_date and end_date:
         opts = benchmark_options(coverage, start_date, end_date, preferred=preferred)
         live = opts["live"]
         backcomputed = opts["backcomputed"]
         recommended = opts["recommended"]
+        fallback_reason = opts["fallback_reason"]
         # Over a window, "usable" means the index actually traded then.
         # Anything reachable only through back-computation stays selectable
         # but is reported separately, so the UI marks it rather than hides it.
@@ -179,4 +190,5 @@ def list_indices(
         live_over_window=live,
         backcomputed_over_window=backcomputed,
         recommended_benchmark=recommended,
+        fallback_reason=fallback_reason,
     )
