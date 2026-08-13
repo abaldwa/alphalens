@@ -201,19 +201,21 @@ class StrategyReport:
 # building one from an orchestrator run
 # ---------------------------------------------------------------------------
 
-#: Metrics the orchestrator's own metrics block structurally cannot supply.
+#: Metrics a run may not carry. T13 computes all four in-engine now, so these
+#: apply only to runs recorded BEFORE that landed -- they are cleared below
+#: whenever the values are actually present.
 ORCHESTRATOR_PENDING = {
     "consistency.rolling": PendingField(
-        "T13", "Rolling windows are computed post-hoc from trade books, not in-engine."
+        "T13", "This run predates rolling windows being computed in-engine."
     ),
     "consistency.yoy": PendingField(
-        "T13", "Year-on-year returns are computed post-hoc from trade books."
+        "T13", "This run predates year-on-year returns being computed in-engine."
     ),
     "trade_quality.churn_per_year": PendingField(
-        "T13", "Churn is computed for Momentum only today."
+        "T13", "This run predates churn being computed in-engine."
     ),
     "trade_quality.avg_winner_pct": PendingField(
-        "T13", "Average winner/loser is computed for Momentum only today."
+        "T13", "This run predates average winner/loser being computed in-engine."
     ),
 }
 
@@ -282,7 +284,32 @@ def from_run_result(
             win_rate=m("win_rate"),
             profit_factor=m("profit_factor"),
             avg_hold_days=m("avg_days_held"),
+            churn_per_year=m("churn_per_year"),
+            avg_winner_pct=m("avg_winner_pct"),
+            avg_loser_pct=m("avg_loser_pct"),
             turnover_ratio=m("turnover_ratio"),
+        ),
+        consistency=Consistency(
+            rolling=[
+                RollingWindow(
+                    window_years=float(str(label).rstrip("y")),
+                    min_cagr=w.get("min_cagr"),
+                    median_cagr=w.get("median_cagr"),
+                    max_cagr=w.get("max_cagr"),
+                    positive_share=w.get("positive_share"),
+                    n_windows=w.get("n_windows"),
+                )
+                for label, w in sorted((metrics.get("rolling_returns") or {}).items())
+                if isinstance(w, dict) and w.get("n_windows")
+            ],
+            yoy=[
+                YoyReturn(fy_label=r.get("fy_label", ""), return_pct=r.get("return_pct"))
+                for r in (metrics.get("fy_returns") or [])
+                # A partial financial year is not a year's return. Including
+                # it drags every "share of positive years" figure around with
+                # a stub period.
+                if not r.get("partial")
+            ],
         ),
         equity_curve=list(getattr(result, "equity_curve", None) or []),
         benchmark_curve=list(getattr(result, "benchmark_curve", None) or []),
@@ -292,7 +319,16 @@ def from_run_result(
 
     # Only claim a metric is pending when it is actually absent -- a stale
     # pending entry on a populated field tells the reader the number is
-    # missing while showing it to them.
+    # missing while showing it to them. T13 supplies four of these in-engine
+    # now, so they clear themselves as soon as a run carries them.
+    if report.consistency.rolling:
+        report.pending.pop("consistency.rolling", None)
+    if report.consistency.yoy:
+        report.pending.pop("consistency.yoy", None)
+    if report.trade_quality.churn_per_year is not None:
+        report.pending.pop("trade_quality.churn_per_year", None)
+    if report.trade_quality.avg_winner_pct is not None:
+        report.pending.pop("trade_quality.avg_winner_pct", None)
     if report.returns.cagr_post_tax is None:
         report.pending["returns.cagr_post_tax"] = PendingField(
             "A86", "Post-tax CAGR is not emitted by this run."

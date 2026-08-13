@@ -1,7 +1,7 @@
 [
   {
-    "action_id": "2026-08-07_PASHUPATI_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_PASHUPATI_reduce",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "reduce",
     "ticker": "PASHUPATI",
@@ -10,28 +10,28 @@
     "reason": "opportunity_cost (urgency 65)"
   },
   {
-    "action_id": "2026-08-07_GODREJCP_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_GODREJCP_sell",
+    "date": "2026-08-13",
     "status": "pending",
-    "action_type": "reduce",
+    "action_type": "sell",
     "ticker": "GODREJCP",
     "company_name": "Godrej Consumer Products Ltd.",
     "price": 1077.2,
-    "reason": "opportunity_cost (urgency 65)"
+    "reason": "thesis_broken (urgency 86)"
   },
   {
-    "action_id": "2026-08-07_TARMAT_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_TARMAT_reduce",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "reduce",
     "ticker": "TARMAT",
     "company_name": "Tarmat Ltd",
     "price": 49.18,
-    "reason": "opportunity_cost (urgency 65)"
+    "reason": "target_achieved (urgency 78)"
   },
   {
-    "action_id": "2026-08-07_CANHLIFE_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_CANHLIFE_reduce",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "reduce",
     "ticker": "CANHLIFE",
@@ -40,73 +40,63 @@
     "reason": "opportunity_cost (urgency 65)"
   },
   {
-    "action_id": "2026-08-07_DEEPINDS_sell",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_DEEPINDS_sell",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "sell",
     "ticker": "DEEPINDS",
     "company_name": "Deep Industries Ltd",
     "price": 453.8,
-    "reason": "target_achieved (urgency 83)"
+    "reason": "target_achieved (urgency 86)"
   },
   {
-    "action_id": "2026-08-07_BSE_sell",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_BSE_sell",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "sell",
     "ticker": "BSE",
     "company_name": "BSE Ltd.",
     "price": 3816.6,
-    "reason": "thesis_broken (urgency 82)"
+    "reason": "thesis_broken (urgency 81)"
   },
   {
-    "action_id": "2026-08-07_WAAREEENER_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_WAAREEENER_reduce",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "reduce",
     "ticker": "WAAREEENER",
     "company_name": "Waaree Energies Ltd.",
     "price": 2859.2,
-    "reason": "opportunity_cost (urgency 64)"
+    "reason": "opportunity_cost (urgency 65)"
   },
   {
-    "action_id": "2026-08-07_TECHM_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_TECHM_reduce",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "reduce",
     "ticker": "TECHM",
     "company_name": "Tech Mahindra Ltd.",
     "price": 1410.1,
-    "reason": "target_achieved (urgency 70)"
+    "reason": "target_achieved (urgency 71)"
   },
   {
-    "action_id": "2026-08-07_MPHASIS_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_MPHASIS_reduce",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "reduce",
     "ticker": "MPHASIS",
     "company_name": "MphasiS Ltd.",
     "price": 2296.6,
-    "reason": "opportunity_cost (urgency 63)"
+    "reason": "opportunity_cost (urgency 65)"
   },
   {
-    "action_id": "2026-08-07_ENRIN_reduce",
-    "date": "2026-08-07",
+    "action_id": "2026-08-13_ENRIN_reduce",
+    "date": "2026-08-13",
     "status": "pending",
     "action_type": "reduce",
     "ticker": "ENRIN",
     "company_name": "Siemens Energy India Ltd.",
     "price": 3281.5,
-    "reason": "opportunity_cost (urgency 63)"
-  },
-  {
-    "action_id": "2026-08-07_NURECA_sell",
-    "date": "2026-08-07",
-    "status": "pending",
-    "action_type": "sell",
-    "ticker": "NURECA",
-    "company_name": "Nureca Ltd",
-    "price": 228.96,
-    "reason": "target_achieved (urgency 87)"
+    "reason": "opportunity_cost (urgency 65)"
   }
 ]

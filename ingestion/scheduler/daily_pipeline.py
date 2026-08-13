@@ -267,9 +267,18 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
 
     Raises
     ------
-    None — FYERS/network failures are logged and swallowed here (not
-    critical: step_download_bhavcopy is the always-on backing source).
-    step_fyers_health_check is the step that surfaces coverage problems.
+    RuntimeError
+        [2026-08-13] If there is no valid cached FYERS access token. This
+        is the one failure that is NOT swallowed: an expired token makes
+        every subsequent pull silently empty, leaving the day 100%
+        bhavcopy-sourced with healthy-looking row counts, and it needs a
+        human (Turnstile blocks unattended login). Everything else —
+        FYERS/network failures mid-pull — is still logged and swallowed
+        here (not critical: step_download_bhavcopy is the always-on
+        backing source), with step_fyers_health_check surfacing coverage
+        problems. run_steps_for_date records either outcome as a failed
+        checkpoint for this step only; steps that don't depend on it
+        (adjust_prices, compute_features, ...) still run.
     """
     from config.settings import DUCKDB_PATH, FYERS_PRIMARY_ENABLED
 
@@ -322,8 +331,33 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
 
     from_str, to_str = since_date.isoformat(), run_date.isoformat()
 
+    # [2026-08-13] Pre-flight token check. FYERS access tokens expire daily
+    # and unattended login is blocked by Cloudflare Turnstile (see
+    # ingestion/scrapers/fyers_login.py), so the token is refreshed by hand
+    # via `python3 -m ingestion.scrapers.fyers_backfill exchange <url>`. When
+    # it lapses, batch_download returns empty for every ticker and this step
+    # swallows that (below) because step_download_bhavcopy is the always-on
+    # backing source — the day then looks healthy by row count while being
+    # 100% bhavcopy-sourced, and the only signal is fyers_health_check
+    # failing hours later. Live incident 2026-08-11/08-12: two full days
+    # silently bhavcopy-only. Failing loudly HERE, before a guaranteed-empty
+    # 2,000-ticker pull, is both faster and actionable ("go paste an auth
+    # code") instead of a coverage error that reads as "FYERS is down".
     try:
         fb = FYERSBackfill(non_interactive=True)
+        if not fb.get_access_token():
+            raise RuntimeError("no cached FYERS access token")
+    except Exception as exc:
+        logger.error(
+            f"download_fyers_daily: no valid FYERS access token for {from_str}..{to_str} ({exc}) — "
+            "the daily token has expired and needs a manual refresh: "
+            "`python3 -m ingestion.scrapers.fyers_backfill login` then `... exchange <redirect-url>`. "
+            "Skipping the FYERS pull; step_download_bhavcopy remains the backing source for these dates, "
+            "but they will be bhavcopy-sourced until the token is refreshed and this step is re-run."
+        )
+        raise
+
+    try:
         results = fb.batch_download(tickers, from_str, to_str, save=False, show_progress=False)
     except Exception as exc:
         logger.error(f"download_fyers_daily: FYERS batch download failed for {from_str}..{to_str}: {exc}")
@@ -356,75 +390,91 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
         diff_df = diff_fyers_vs_prod(conn, staged_df, tickers, since_date, run_date)
         targets = recompute_targets(diff_df)
 
-        if not targets.empty:
-            with publish_run_lock() as acquired:
-                if not acquired:
-                    logger.warning(
-                        f"download_fyers_daily: could not acquire publish_run_lock for {from_str}..{to_str} "
-                        "— another staging/publish operation is in progress, skipping this run"
-                    )
-                    drop_staging_table(conn, "ohlcv_fyers_daily")
-                    return
-                conn.execute(
-                    "ALTER TABLE staging.ohlcv_fyers_daily ADD COLUMN IF NOT EXISTS adj_factor DOUBLE DEFAULT 1.0"
+        # [2026-08-13] The write is NOT gated on `targets` (diff result).
+        # recompute_targets answers "which rows need expensive downstream
+        # feature recompute?" — a different question from "should FYERS rows
+        # be written at all?". Gating the INSERT on it meant that whenever
+        # step_download_bhavcopy (which runs first, depends_on=[] for both)
+        # had already written rows whose close/volume match FYERS within
+        # diff_fyers_vs_prod's tolerances, every row diffed as "unchanged",
+        # the INSERT was skipped entirely, and `source` stayed 'bhavcopy'
+        # forever — so fyers_health_check reported 0.0% coverage on a day
+        # whose prices were in fact correct. Live incident 2026-08-12: all
+        # 2,122 rows bhavcopy-sourced, 0 fyers-sourced, health check failing
+        # on three separate force-runs while the FYERS API served that date
+        # fine. Re-running the step could never fix it, because the very
+        # condition that made the write necessary (source mislabelled) is
+        # invisible to a close/volume diff. The UPSERT is idempotent and
+        # ~2k rows/day, so writing unconditionally costs effectively
+        # nothing; `targets` still gates downstream recompute below.
+        with publish_run_lock() as acquired:
+            if not acquired:
+                logger.warning(
+                    f"download_fyers_daily: could not acquire publish_run_lock for {from_str}..{to_str} "
+                    "— another staging/publish operation is in progress, skipping this run"
                 )
-                conn.execute(
-                    "ALTER TABLE staging.ohlcv_fyers_daily ADD COLUMN IF NOT EXISTS vol_adj_factor DOUBLE DEFAULT 1.0"
-                )
-                # staging's "date" column loads as TIMESTAMP-family (pandas
-                # has no true date-only dtype) — cast to DATE so the INSERT
-                # below writes proper DATE values, matching ohlcv_adjusted's
-                # native column type.
-                conn.execute("ALTER TABLE staging.ohlcv_fyers_daily ALTER COLUMN date TYPE DATE")
-                # See scripts/fyers_staged_backfill.py's identical fix
-                # (2026-08-04, live-confirmed): the `(ticker, date) IN
-                # (SELECT ...)` row/tuple-comparison pattern hits a genuine
-                # DuckDB 1.2.0 internal engine crash regardless of the
-                # date column's declared type — rewritten as a standard
-                # correlated EXISTS join (column-wise equality) instead.
-                #
-                # [2026-08-05] Changed from DELETE+INSERT to UPSERT to
-                # preserve bhavcopy delivery_qty/delivery_pct.  The previous
-                # DELETE+INSERT destroyed delivery data that step_download_
-                # bhavcopy had already written (bhavcopy runs first, per
-                # checkpoint STEPS ordering), because the Fyers re-INSERT
-                # doesn't carry delivery columns.  This caused:
-                #   (a) null_sweep critical findings on delivery_pct (100%
-                #       NULL for Fyers-sourced rows)
-                #   (b) PSI drift halt on delivery_pct (degenerate all-NaN
-                #       distribution vs real reference)
-                # With UPSERT, only Fyers columns (prices, source, factors)
-                # are updated; existing delivery values are untouched.
-                # [2026-08-10] adj_factor/vol_adj_factor are written as the
-                # LITERAL 1.0, not passed through from staging. FYERS serves
-                # prices already adjusted as-of-fetch-time, so a FYERS row is
-                # by definition unadjusted-by-us and its factors must be 1.0 —
-                # no exceptions. Previously these came from
-                # `excluded.adj_factor`, which is 1.0 only *implicitly*: the
-                # ADD COLUMN IF NOT EXISTS ... DEFAULT 1.0 above is a no-op if
-                # the staged DataFrame ever carries its own adj_factor, and
-                # any non-1.0 value would then flow through. Worse, on the
-                # UPSERT path a row previously adjusted by
-                # scripts/run_price_adjuster.py keeps its stale factor while
-                # its prices are replaced by FYERS' already-adjusted ones — a
-                # later adjuster pass would then double-adjust it.
-                conn.execute(
-                    """
-                    INSERT INTO ohlcv_adjusted
-                        (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, source)
-                    SELECT date, ticker, open, high, low, close, volume, 1.0, 1.0, 'fyers'
-                    FROM staging.ohlcv_fyers_daily
-                    ON CONFLICT (date, ticker) DO UPDATE SET
-                        open           = excluded.open,
-                        high           = excluded.high,
-                        low            = excluded.low,
-                        close          = excluded.close,
-                        volume         = excluded.volume,
-                        adj_factor     = 1.0,
-                        vol_adj_factor = 1.0,
-                        source         = excluded.source
-                    """
-                )
+                drop_staging_table(conn, "ohlcv_fyers_daily")
+                return
+            conn.execute(
+                "ALTER TABLE staging.ohlcv_fyers_daily ADD COLUMN IF NOT EXISTS adj_factor DOUBLE DEFAULT 1.0"
+            )
+            conn.execute(
+                "ALTER TABLE staging.ohlcv_fyers_daily ADD COLUMN IF NOT EXISTS vol_adj_factor DOUBLE DEFAULT 1.0"
+            )
+            # staging's "date" column loads as TIMESTAMP-family (pandas
+            # has no true date-only dtype) — cast to DATE so the INSERT
+            # below writes proper DATE values, matching ohlcv_adjusted's
+            # native column type.
+            conn.execute("ALTER TABLE staging.ohlcv_fyers_daily ALTER COLUMN date TYPE DATE")
+            # See scripts/fyers_staged_backfill.py's identical fix
+            # (2026-08-04, live-confirmed): the `(ticker, date) IN
+            # (SELECT ...)` row/tuple-comparison pattern hits a genuine
+            # DuckDB 1.2.0 internal engine crash regardless of the
+            # date column's declared type — rewritten as a standard
+            # correlated EXISTS join (column-wise equality) instead.
+            #
+            # [2026-08-05] Changed from DELETE+INSERT to UPSERT to
+            # preserve bhavcopy delivery_qty/delivery_pct.  The previous
+            # DELETE+INSERT destroyed delivery data that step_download_
+            # bhavcopy had already written (bhavcopy runs first, per
+            # checkpoint STEPS ordering), because the Fyers re-INSERT
+            # doesn't carry delivery columns.  This caused:
+            #   (a) null_sweep critical findings on delivery_pct (100%
+            #       NULL for Fyers-sourced rows)
+            #   (b) PSI drift halt on delivery_pct (degenerate all-NaN
+            #       distribution vs real reference)
+            # With UPSERT, only Fyers columns (prices, source, factors)
+            # are updated; existing delivery values are untouched.
+            # [2026-08-10] adj_factor/vol_adj_factor are written as the
+            # LITERAL 1.0, not passed through from staging. FYERS serves
+            # prices already adjusted as-of-fetch-time, so a FYERS row is
+            # by definition unadjusted-by-us and its factors must be 1.0 —
+            # no exceptions. Previously these came from
+            # `excluded.adj_factor`, which is 1.0 only *implicitly*: the
+            # ADD COLUMN IF NOT EXISTS ... DEFAULT 1.0 above is a no-op if
+            # the staged DataFrame ever carries its own adj_factor, and
+            # any non-1.0 value would then flow through. Worse, on the
+            # UPSERT path a row previously adjusted by
+            # scripts/run_price_adjuster.py keeps its stale factor while
+            # its prices are replaced by FYERS' already-adjusted ones — a
+            # later adjuster pass would then double-adjust it.
+            conn.execute(
+                """
+                INSERT INTO ohlcv_adjusted
+                    (date, ticker, open, high, low, close, volume, adj_factor, vol_adj_factor, source)
+                SELECT date, ticker, open, high, low, close, volume, 1.0, 1.0, 'fyers'
+                FROM staging.ohlcv_fyers_daily
+                ON CONFLICT (date, ticker) DO UPDATE SET
+                    open           = excluded.open,
+                    high           = excluded.high,
+                    low            = excluded.low,
+                    close          = excluded.close,
+                    volume         = excluded.volume,
+                    adj_factor     = 1.0,
+                    vol_adj_factor = 1.0,
+                    source         = excluded.source
+                """
+            )
 
         drop_staging_table(conn, "ohlcv_fyers_daily")
 

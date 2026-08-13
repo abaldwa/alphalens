@@ -22,7 +22,7 @@ momentum-specific assumptions).
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -58,6 +58,22 @@ class BacktestMetrics:
     # different yardsticks — and a report cannot honestly label its own
     # benchmark column. None only for runs predating this field.
     benchmark_index_name: Optional[str] = None
+    # [T13, 2026-08-13] Consistency and trade-quality metrics that only
+    # Momentum produced. Computed in-engine here so every channel reports the
+    # same figures under the same definitions -- previously Technical could
+    # get them only post-hoc from trade-book CSVs, under a different
+    # definition, which is worse than not having them because the columns line
+    # up and invite an invalid comparison.
+    #
+    # rolling_returns: {"3y": {min_cagr, median_cagr, max_cagr,
+    # positive_share, n_windows}, ...} -- all FRACTIONS, all ANNUALISED.
+    rolling_returns: Dict[str, Any] = field(default_factory=dict)
+    # [{"fy_label": "FY2021", "return_pct": 0.18, "partial": false}, ...]
+    fy_returns: List[Dict[str, Any]] = field(default_factory=list)
+    churn_per_year: Optional[float] = None
+    # Per-trade outcomes, not rates -- never annualise these.
+    avg_winner_pct: Optional[float] = None
+    avg_loser_pct: Optional[float] = None
     cash_position_series: List[Dict] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
     avg_days_held: Optional[float] = None  # mean (exit_date - entry_date).days across closed trades; None if n_trades == 0
     # 2026-08-01 (Technical-strategy Momentum-parity reporting) — n_trades
@@ -236,6 +252,166 @@ def benchmark_metrics(
     return bench_cagr, strategy_cagr - bench_cagr, "ok"
 
 
+# ---------------------------------------------------------------------------
+# T13 -- consistency and trade-quality metrics, in-engine
+#
+# Momentum computed these; the orchestrator channels (Technical, Fundamental,
+# ML) did not, so a Technical strategy could only ever be compared with a
+# Momentum one on the handful of metrics both happened to produce. They were
+# available for Technical only post-hoc, from trade-book CSVs, using a
+# DIFFERENT definition -- which is worse than not having them, because the
+# columns line up and invite a comparison that is not valid.
+#
+# The definitions below deliberately match backtest/momentum_metrics.py:
+# calendar-stepped rolling windows reporting ANNUALISED CAGR. Everything here
+# is a FRACTION (0.243 = 24.3%/yr), matching the rest of BacktestMetrics --
+# the Technical comparison report uses percentages, and that boundary is
+# exactly where a unit error becomes a wrong number on a screen.
+# ---------------------------------------------------------------------------
+
+
+#: Window lengths reported for every run. 2/3/4/5 matches what the Technical
+#: comparison report and the Momentum dynamic report already publish, so the
+#: two remain directly comparable.
+ROLLING_WINDOW_YEARS = (2, 3, 4, 5)
+
+
+def rolling_window_cagrs(
+    equity_curve: pd.Series, window_years: float, step_months: int = 3,
+) -> List[float]:
+    """Every window_years-long window's ANNUALISED return, as fractions.
+
+    Window starts step by CALENDAR time, not row index. Stepping by index is a
+    bug this project has already shipped once: a quarterly-rebalance curve has
+    ~63 trading days between rows, so index stepping under-sampled by ~60x and
+    produced 1-2 windows over a 16-year backtest.
+
+    The tail shorter than one full window is dropped rather than padded. A
+    partial window is not a short-dated return, it is no return at all, and
+    extrapolating one would invent the strategy's most recent performance --
+    the figure a reader trusts most.
+    """
+    if equity_curve is None or len(equity_curve) < 2 or window_years <= 0:
+        return []
+    curve = equity_curve.dropna().sort_index()
+    if len(curve) < 2:
+        return []
+
+    window_delta = pd.DateOffset(years=int(window_years))
+    step_delta = pd.DateOffset(months=step_months)
+
+    out: List[float] = []
+    cursor = curve.index[0]
+    last = curve.index[-1]
+    while cursor <= last:
+        starts = curve[curve.index >= cursor]
+        if starts.empty:
+            break
+        start_ts, start_value = starts.index[0], float(starts.iloc[0])
+        ends = curve[curve.index >= start_ts + window_delta]
+        if ends.empty:
+            break
+        end_ts, end_value = ends.index[0], float(ends.iloc[0])
+        if start_value > 0 and end_value > 0:
+            years = (end_ts - start_ts).days / 365.25
+            if years > 0:
+                out.append((end_value / start_value) ** (1.0 / years) - 1.0)
+        cursor = cursor + step_delta
+    return out
+
+
+def rolling_window_summary(
+    equity_curve: pd.Series, window_years: float, step_months: int = 3,
+) -> Dict[str, Optional[float]]:
+    """min/median/max annualised return across every rolling window, plus the
+    share that were positive -- the consistency question ("does this work
+    repeatedly?") rather than the headline one ("what did it return?")."""
+    values = rolling_window_cagrs(equity_curve, window_years, step_months)
+    if not values:
+        return {
+            "min_cagr": None, "median_cagr": None, "max_cagr": None,
+            "positive_share": None, "n_windows": 0,
+        }
+    return {
+        "min_cagr": float(min(values)),
+        "median_cagr": float(np.median(values)),
+        "max_cagr": float(max(values)),
+        "positive_share": sum(1 for v in values if v > 0) / len(values),
+        "n_windows": len(values),
+    }
+
+
+def financial_year_label(ts) -> str:
+    """Indian financial year: 1 April - 31 March. FY2021 starts 2020-04-01."""
+    ts = pd.Timestamp(ts)
+    return f"FY{ts.year + 1}" if ts.month >= 4 else f"FY{ts.year}"
+
+
+def fy_returns(equity_curve: pd.Series) -> List[Dict[str, Any]]:
+    """Per-financial-year return as a FRACTION, from the equity curve.
+
+    A year's return is measured from the equity at the previous FY's close, so
+    consecutive years chain to the whole-period return. The first FY is
+    measured from the curve's own start, which makes it a PARTIAL year unless
+    the run happens to begin on 1 April -- flagged as such, because a stub
+    period presented as a year drags every "share of positive years" figure.
+    """
+    if equity_curve is None or len(equity_curve) < 2:
+        return []
+    curve = equity_curve.dropna().sort_index()
+    if len(curve) < 2:
+        return []
+
+    frame = pd.DataFrame({"equity": curve.values}, index=pd.to_datetime(curve.index))
+    frame["fy"] = [financial_year_label(ts) for ts in frame.index]
+
+    out: List[Dict[str, Any]] = []
+    prev_close: Optional[float] = None
+    first_fy = frame["fy"].iloc[0]
+    for fy, group in frame.groupby("fy", sort=True):
+        open_value = prev_close if prev_close is not None else float(group["equity"].iloc[0])
+        close_value = float(group["equity"].iloc[-1])
+        ret = (close_value / open_value - 1.0) if open_value > 0 else None
+        out.append({
+            "fy_label": fy,
+            "return_pct": ret,
+            # True when the run started mid-year, so this is not a full year's
+            # performance and must not be counted as one.
+            "partial": bool(fy == first_fy and frame.index[0].month != 4),
+        })
+        prev_close = close_value
+    return out
+
+
+def churn_per_year(n_trades: Optional[int], start_date, end_date) -> Optional[float]:
+    """Round-trips per year -- what the strategy costs to run, and the figure
+    that decides whether a pre-tax edge survives contact with STCG."""
+    if not n_trades:
+        return None
+    years = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days / 365.25
+    return None if years <= 0 else float(n_trades) / years
+
+
+def avg_winner_loser(
+    trade_returns_pct: Optional[List[float]],
+) -> Tuple[Optional[float], Optional[float]]:
+    """Mean return of winning and of losing trades, as fractions.
+
+    These are TRADE OUTCOMES, not rates: a 4% gain over a three-day hold is
+    4%, not 380%/yr. Annualising them is meaningless and the rate rule in
+    AGENTS.md explicitly exempts them.
+    """
+    if not trade_returns_pct:
+        return None, None
+    wins = [r for r in trade_returns_pct if r is not None and r > 0]
+    losses = [r for r in trade_returns_pct if r is not None and r < 0]
+    return (
+        float(np.mean(wins)) if wins else None,
+        float(np.mean(losses)) if losses else None,
+    )
+
+
+
 def compute_metrics(
     equity_curve: pd.Series,
     cash_flows: List[Tuple[str, float]],  # [(date_str, amount), ...] incl. initial capital, SIP, tax outflows
@@ -302,6 +478,8 @@ def compute_metrics(
         n_outlier_trades = None
         max_abs_return_zscore = None
 
+    _avg_win, _avg_loss = avg_winner_loser(trade_returns_pct)
+
     return BacktestMetrics(
         cagr=cagr_value,
         cagr_trading_day_legacy=trading_day_cagr(equity_curve),
@@ -323,6 +501,14 @@ def compute_metrics(
         excess_return=excess_return,
         benchmark_status=bench_status,
         benchmark_index_name=benchmark_index_name,
+        rolling_returns={
+            f"{w}y": rolling_window_summary(equity_curve, w)
+            for w in ROLLING_WINDOW_YEARS
+        },
+        fy_returns=fy_returns(equity_curve),
+        churn_per_year=churn_per_year(len(trade_pnls), start_date, end_date),
+        avg_winner_pct=_avg_win,
+        avg_loser_pct=_avg_loss,
         cash_position_series=cash_position_series or [],
         avg_days_held=(float(np.mean(holding_days)) if holding_days else None),
         total_trades=len(trade_pnls) + n_open_positions,

@@ -1,5 +1,5 @@
 {
-  "as_of_date": "2026-08-07",
+  "as_of_date": "2026-08-13",
   "cash": 877806.3511441669,
   "initial_capital": 10000000,
   "sizing_mode": "equal_weight",
@@ -29,7 +29,7 @@
       "entry_date": "2026-07-02",
       "entry_price": 49.18,
       "quantity": 20317,
-      "peak_price": 52.7,
+      "peak_price": 64.68,
       "entry_atr_pct": null
     },
     {
@@ -47,7 +47,7 @@
       "entry_date": "2026-07-02",
       "entry_price": 453.8,
       "quantity": 2201,
-      "peak_price": 638.9,
+      "peak_price": 665.9,
       "entry_atr_pct": null
     },
     {
@@ -74,7 +74,7 @@
       "entry_date": "2026-07-03",
       "entry_price": 1410.1,
       "quantity": 708,
-      "peak_price": 1635.0,
+      "peak_price": 1639.0,
       "entry_atr_pct": null
     },
     {
@@ -83,7 +83,7 @@
       "entry_date": "2026-07-04",
       "entry_price": 2296.6,
       "quantity": 435,
-      "peak_price": 2475.0,
+      "peak_price": 2541.0,
       "entry_atr_pct": null
     },
     {
@@ -137,6 +137,10 @@
     {
       "date": "2026-08-07",
       "equity": 10451457.501144167
+    },
+    {
+      "date": "2026-08-13",
+      "equity": 10670507.041144166
     }
   ],
   "position_meta": {
