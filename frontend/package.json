@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "selfcheck": "jiti src/features/backtest-report/selfcheck.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.19",
