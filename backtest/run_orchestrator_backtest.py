@@ -66,6 +66,7 @@ from backtest.core.feature_log import FeatureLogWriter
 from backtest.core.horizon import HorizonBucket
 from backtest.core.run_context import BacktestRun
 from backtest.core.run_store import save_run_result
+from backtest.trade_filters import ADTV_LOOKBACK_SESSIONS as PIT_ADTV_LOOKBACK_SESSIONS
 from backtest.run_phase1_backtest import _real_market_cap_map, _real_sector_map
 from backtest.strategy_id import (
     CODE_TO_HORIZON,
@@ -249,7 +250,24 @@ def _momentum_rank_band_wiring(rank_band_id: int, start_date: date_type, end_dat
     }
 
 
-def _build_config(ohlcv: pd.DataFrame, sector_map: Dict[str, str]) -> OrchestratorConfig:
+def _build_pit_adtv_panel(ohlcv: pd.DataFrame, lookback: int) -> pd.DataFrame:
+    """(date x ticker) trailing-mean turnover, SHIFTED so each date carries
+    only bars strictly before it.
+
+    The shift is the whole point. Ranking a date on liquidity that includes
+    that date's own bar uses volume which had not printed when the decision
+    was made — and on a day a name spikes on news, that is exactly the
+    lookahead that promotes the stock you could not have bought.
+    """
+    turnover = (ohlcv.assign(turnover=ohlcv["close"] * ohlcv["volume"])
+                .pivot_table(index="date", columns="ticker", values="turnover", aggfunc="sum")
+                .sort_index())
+    return turnover.rolling(lookback, min_periods=max(2, lookback // 3)).mean().shift(1)
+
+
+def _build_config(
+    ohlcv: pd.DataFrame, sector_map: Dict[str, str], top_n_by_adtv: Optional[int] = None,
+) -> OrchestratorConfig:
     trading_days = pd.DatetimeIndex(sorted(ohlcv["date"].unique()))
     price_map = {(row.ticker, row.date.date()): row.close for row in ohlcv.itertuples(index=False)}
 
@@ -260,6 +278,28 @@ def _build_config(ohlcv: pd.DataFrame, sector_map: Dict[str, str]) -> Orchestrat
         ticker: np.sort(group["date"].to_numpy().astype("datetime64[D]").astype(np.int64))
         for ticker, group in ohlcv.groupby("ticker")
     }
+
+    # [2026-08-13] Point-in-time ADTV ranking. The universe was ALREADY being
+    # truncated to "top 800 by ADTV" via config.universe.get_top_adtv_tickers,
+    # so this looked correct — but that helper ranks on the adtv_cr column of
+    # TODAY'S universe CSV, a single static present-day snapshot, and applies
+    # it to the whole 2009-2026 window. That is lookahead of the worst kind:
+    # a name that became liquid BECAUSE of a rally is admitted to the universe
+    # for the years before the rally, i.e. precisely when it was untradeable.
+    #
+    # INDOTECH is the worked example. Static CSV rank 671 -> inside the top
+    # 800 -> tradeable from 2009 in every run. Its real trailing-21-session
+    # ADTV rank on its 2023-04-25 entry date was 1,554th. It produced the
+    # single largest trade in the entire history (+1,493.95%, replicated
+    # across six templates). JAIBALAJI (static 726, PIT 1,305) and SERVOTECH
+    # (static 792, PIT 1,253) are the same story.
+    #
+    # None preserves the previous behaviour exactly for callers that do not
+    # opt in, so this is inert until a run asks for it.
+    adtv_panel = (
+        _build_pit_adtv_panel(ohlcv, PIT_ADTV_LOOKBACK_SESSIONS)
+        if top_n_by_adtv else None
+    )
 
     def universe_provider(as_of: date_type) -> List[str]:
         as_of_ordinal = np.datetime64(as_of, "D").astype(np.int64)
@@ -273,7 +313,21 @@ def _build_config(ohlcv: pd.DataFrame, sector_map: Dict[str, str]) -> Orchestrat
             idx = np.searchsorted(dates, as_of_ordinal, side="right") - 1
             if idx >= 0 and dates[idx] >= lower_bound:
                 candidates.append(ticker)
-        return candidates
+
+        if adtv_panel is None:
+            return candidates
+
+        as_of_ts = pd.Timestamp(as_of)
+        rows = adtv_panel.index[adtv_panel.index <= as_of_ts]
+        if len(rows) == 0:
+            # Before any ADTV history exists there is no basis to rank on.
+            # Returning the unranked candidates would silently disable the
+            # filter for the start of the window, so return nothing and let
+            # the run show zero trades there instead of untradeable ones.
+            return []
+        ranked = adtv_panel.loc[rows[-1]].dropna()
+        top = set(ranked.nlargest(top_n_by_adtv).index)
+        return [t for t in candidates if t in top]
 
     return OrchestratorConfig(
         trading_days=trading_days,
@@ -477,7 +531,9 @@ def _run_immediate(
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
     bear_drawdown_pct,
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
-    *, annual_reset_spec=None,
+    # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
+    # None so every existing caller is byte-identical until it opts in.
+    *, annual_reset_spec=None, pit_adtv_top_n=None,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -487,7 +543,7 @@ def _run_immediate(
     with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
         ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
         sector_map = _real_sector_map()
-        config = _build_config(ohlcv, sector_map)
+        config = _build_config(ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n)
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
         # price/volume panels from the same ohlcv pull momentum's branch
         # below already uses — passed to Technical/Fundamental too so their
@@ -763,7 +819,9 @@ def _run_deferred(
     quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
     bear_drawdown_pct,
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
-    *, annual_reset_spec=None,
+    # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
+    # None so every existing caller is byte-identical until it opts in.
+    *, annual_reset_spec=None, pit_adtv_top_n=None,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -776,7 +834,7 @@ def _run_deferred(
 
     ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
     sector_map = _real_sector_map()
-    config = _build_config(ohlcv, sector_map)
+    config = _build_config(ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n)
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
     # Hoisted out of the technical branch — see the matching note in
@@ -969,6 +1027,9 @@ def _run_deferred(
 def run_orchestrator_backtest(
     channel: str, start_date: date_type, end_date: date_type, strategy_id: Optional[str] = None,
     horizon_bucket: Optional[str] = None,
+    # Point-in-time top-N-by-ADTV universe (2026-08-13). None = today's
+    # behaviour unchanged, i.e. the static present-day CSV ranking.
+    pit_adtv_top_n: Optional[int] = None,
     capital_mode: str = "lump", initial_capital: float = 1_000_000.0, sip_amount: Optional[float] = None,
     universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
@@ -1117,7 +1178,7 @@ def run_orchestrator_backtest(
         quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
         bear_drawdown_pct,
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
-        annual_reset_spec=annual_reset_spec,
+        annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1197,6 +1258,17 @@ def main() -> None:
             "least this fraction (e.g. 0.12) below its highest close UP TO that date. Unlike the "
             "segment classifier this has no confirmation lag, so the identical rule runs in "
             "backtest and live — see systems/regime/market_regime.py::bear_by_running_peak_drawdown."
+        ),
+    )
+    parser.add_argument(
+        "--pit-adtv-top-n", type=int, default=None,
+        help=(
+            "Restrict the tradeable universe to the top N by POINT-IN-TIME ADTV, ranked on "
+            "a trailing 21-session window ending strictly before each date. Without this, "
+            "--max-tickers ranks on config/universe.py's adtv_cr column — a static "
+            "present-day snapshot applied to the whole history, which admits names that "
+            "only became liquid later (INDOTECH: static rank 671, actual rank 1,554 on its "
+            "2023 entry date, and the single largest trade in the run history)."
         ),
     )
     parser.add_argument(
@@ -1331,6 +1403,7 @@ def main() -> None:
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months, run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
+        pit_adtv_top_n=args.pit_adtv_top_n,
         max_hold_days=args.max_hold_days, min_adtv_cr=args.min_adtv_cr,
         quality_gate_min_f_score=args.quality_gate_min_f_score,
         quality_gate_max_m_score=args.quality_gate_max_m_score,
