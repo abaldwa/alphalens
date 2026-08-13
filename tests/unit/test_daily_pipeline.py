@@ -917,9 +917,13 @@ class TestFyersAdjFactorInvariant:
         # staging line (the file's first INSERT INTO ohlcv_adjusted is the
         # bhavcopy upsert, and the staging table name also appears in
         # earlier ALTER statements).
+        # [2026-08-13] Indentation dedented by one level when the write
+        # stopped being nested inside `if not targets.empty:` (see
+        # TestFyersWriteNotGatedOnDiff). Matching on the statement's own
+        # text rather than its leading whitespace keeps this invariant
+        # test from breaking on unrelated re-indentation.
         assert (
             "SELECT date, ticker, open, high, low, close, volume, 1.0, 1.0, 'fyers'\n"
-            "                    FROM staging.ohlcv_fyers_daily"
         ) in sql, (
             "step_download_fyers_daily must INSERT literal 1.0 factors, "
             "not pass staging's adj_factor through"
@@ -1096,3 +1100,153 @@ class TestWaitForDatastoreApi:
 
         daily_pipeline._wait_for_datastore_api(max_wait_seconds=10, poll_interval_seconds=1)
         # No exception raised is the assertion — proceeding anyway is correct.
+
+
+class TestFyersWriteNotGatedOnDiff:
+    """[2026-08-13 incident] step_download_fyers_daily must write its rows
+    with source='fyers' even when diff_fyers_vs_prod classifies every row
+    as "unchanged".
+
+    step_download_bhavcopy runs first (both are depends_on=[]), so on any
+    day FYERS is late or briefly unauthenticated, bhavcopy fills the
+    (date, ticker) keys. When the FYERS pull then lands with prices that
+    match bhavcopy's within diff_fyers_vs_prod's tolerances, every row
+    diffs as "unchanged". The write used to be gated on that diff
+    (`if not targets.empty:`), so nothing was written and `source` stayed
+    'bhavcopy' — making fyers_health_check report 0.0% coverage for a date
+    whose prices were in fact correct, unfixable by re-running the step.
+    Live on 2026-08-12: 2,122 bhavcopy rows, 0 fyers rows, three failed
+    force-runs while the FYERS API served that date normally.
+
+    recompute_targets still gates the *downstream recompute* — just not the
+    write. Fixtures below are hand-built and deterministic; they are test
+    data, not a stand-in for real market data.
+    """
+
+    RUN_DATE = date(2026, 3, 10)
+
+    def _fyers_frame(self) -> pd.DataFrame:
+        """What the (mocked) FYERS pull returns for RUN_DATE."""
+        return pd.DataFrame(
+            {
+                "ticker": ["AAA", "BBB"],
+                "date": [self.RUN_DATE, self.RUN_DATE],
+                "open": [100.0, 200.0],
+                "high": [101.0, 201.0],
+                "low": [99.0, 199.0],
+                "close": [100.5, 200.5],
+                "volume": [1000, 2000],
+            }
+        )
+
+    def _patch(self, monkeypatch, db_path, fyers_frame):
+        import config.settings as settings_mod
+        import config.universe as universe_mod
+        from contextlib import contextmanager
+
+        from datastore.staging import publish as publish_mod
+        from ingestion.scrapers import fyers_backfill as backfill_mod
+        from ingestion.scrapers import fyers_symbol_master as symbol_mod
+
+        monkeypatch.setattr(settings_mod, "FYERS_PRIMARY_ENABLED", True, raising=False)
+        monkeypatch.setattr(settings_mod, "DUCKDB_PATH", db_path, raising=False)
+        monkeypatch.setattr(
+            universe_mod, "get_tickers_for_feature_engineering", lambda *a, **k: ["AAA", "BBB"]
+        )
+        monkeypatch.setattr(symbol_mod, "fetch_valid_nse_eq_tickers", lambda *a, **k: {"AAA", "BBB"})
+
+        class _FakeBackfill:
+            def __init__(self, *a, **k):
+                pass
+
+            def get_access_token(self):
+                return "test-token-not-a-real-credential"
+
+            def batch_download(self, tickers, from_str, to_str, **k):
+                return {t: fyers_frame[fyers_frame["ticker"] == t].copy() for t in tickers}
+
+        monkeypatch.setattr(backfill_mod, "FYERSBackfill", _FakeBackfill)
+
+        @contextmanager
+        def _always_acquired():
+            yield True
+
+        monkeypatch.setattr(publish_mod, "publish_run_lock", _always_acquired)
+
+    def _seed_bhavcopy_rows(self, db_path, frame):
+        """Pre-populate ohlcv_adjusted exactly as step_download_bhavcopy
+        would have: same prices FYERS will return, source='bhavcopy',
+        delivery columns populated."""
+        create_normalised.create_schema(db_path=db_path)
+        with get_duckdb_connection(db_path, persist=False) as conn:
+            for row in frame.itertuples(index=False):
+                conn.execute(
+                    "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, "
+                    "delivery_qty, delivery_pct, adj_factor, vol_adj_factor, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, 1.0, 'bhavcopy')",
+                    [row.date, row.ticker, row.open, row.high, row.low, row.close,
+                     row.volume, 500, 42.5],
+                )
+
+    def test_identical_prices_still_get_source_fyers(self, monkeypatch, tmp_path):
+        db_path = tmp_path / "unchanged_diff.duckdb"
+        frame = self._fyers_frame()
+        self._seed_bhavcopy_rows(db_path, frame)
+        self._patch(monkeypatch, db_path, frame)
+
+        daily_pipeline.step_download_fyers_daily(self.RUN_DATE, db_path=db_path)
+
+        with get_duckdb_connection(db_path, persist=False, read_only=True) as conn:
+            sources = conn.execute(
+                "SELECT source, count(*) FROM ohlcv_adjusted WHERE date = ? GROUP BY 1",
+                [self.RUN_DATE],
+            ).fetchall()
+        assert sources == [("fyers", 2)], (
+            "every row must be re-labelled source='fyers' even though the diff "
+            f"classified them all as unchanged; got {sources}"
+        )
+
+    def test_bhavcopy_delivery_columns_survive_the_write(self, monkeypatch, tmp_path):
+        """The 2026-08-05 invariant: UPSERT (not DELETE+INSERT), so the
+        delivery data only bhavcopy carries is never destroyed."""
+        db_path = tmp_path / "delivery_preserved.duckdb"
+        frame = self._fyers_frame()
+        self._seed_bhavcopy_rows(db_path, frame)
+        self._patch(monkeypatch, db_path, frame)
+
+        daily_pipeline.step_download_fyers_daily(self.RUN_DATE, db_path=db_path)
+
+        with get_duckdb_connection(db_path, persist=False, read_only=True) as conn:
+            rows = conn.execute(
+                "SELECT delivery_qty, delivery_pct, adj_factor, vol_adj_factor "
+                "FROM ohlcv_adjusted WHERE date = ? ORDER BY ticker",
+                [self.RUN_DATE],
+            ).fetchall()
+        assert rows == [(500, 42.5, 1.0, 1.0), (500, 42.5, 1.0, 1.0)]
+
+    def test_missing_token_raises_instead_of_silently_pulling_nothing(self, monkeypatch, tmp_path):
+        """[2026-08-13] An expired token used to degrade to a silent
+        bhavcopy-only day (empty pull, swallowed) — healthy row counts, no
+        signal until fyers_health_check failed hours later. It must now
+        fail loudly, before the pull."""
+        db_path = tmp_path / "no_token.duckdb"
+        frame = self._fyers_frame()
+        self._seed_bhavcopy_rows(db_path, frame)
+        self._patch(monkeypatch, db_path, frame)
+
+        from ingestion.scrapers import fyers_backfill as backfill_mod
+
+        class _ExpiredTokenBackfill:
+            def __init__(self, *a, **k):
+                pass
+
+            def get_access_token(self):
+                raise RuntimeError("token expired")
+
+            def batch_download(self, *a, **k):  # pragma: no cover - must never be reached
+                raise AssertionError("batch_download must not run without a valid token")
+
+        monkeypatch.setattr(backfill_mod, "FYERSBackfill", _ExpiredTokenBackfill)
+
+        with pytest.raises(RuntimeError, match="token expired"):
+            daily_pipeline.step_download_fyers_daily(self.RUN_DATE, db_path=db_path)
