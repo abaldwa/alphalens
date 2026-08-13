@@ -74,6 +74,18 @@ class BacktestMetrics:
     # Per-trade outcomes, not rates -- never annualise these.
     avg_winner_pct: Optional[float] = None
     avg_loser_pct: Optional[float] = None
+    # [A86, 2026-08-13] Which basis `cagr` above is stated on: "post_tax" when
+    # the run paid capital-gains tax as an annual cash outflow, "pre_tax"
+    # otherwise. Reading a CAGR without knowing this is how a post-tax figure
+    # gets compared with a pre-tax one and the difference is read as skill.
+    tax_basis: str = "pre_tax"
+    total_tax_paid: Optional[float] = None
+    # The OTHER basis, reconstructed from the same run rather than re-simulated
+    # (see reconstruct_pre_tax_curve for what that does and does not assume).
+    # Both bases from one execution is the point of A86: Momentum previously
+    # needed two full runs and Technical computed tax post-hoc on the trade
+    # book, so the two channels' "post-tax" numbers were not the same measure.
+    cagr_other_basis: Optional[float] = None
     cash_position_series: List[Dict] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
     avg_days_held: Optional[float] = None  # mean (exit_date - entry_date).days across closed trades; None if n_trades == 0
     # 2026-08-01 (Technical-strategy Momentum-parity reporting) — n_trades
@@ -383,6 +395,39 @@ def fy_returns(equity_curve: pd.Series) -> List[Dict[str, Any]]:
     return out
 
 
+def reconstruct_pre_tax_curve(
+    equity_curve: pd.Series, tax_ledger: Optional[List[Dict]],
+) -> Optional[pd.Series]:
+    """The equity curve this run would have had if tax were never charged.
+
+    Tax leaves the portfolio as a dated cash outflow, so adding each payment
+    back from its payment date onwards recovers the pre-tax path exactly --
+    for the SAME sequence of trades.
+
+    WHAT THIS DOES NOT DO: re-simulate. A portfolio that kept the tax money
+    would have had more cash and might have taken positions this run could not
+    afford, so the reconstruction is the honest lower bound on a pre-tax run,
+    not a substitute for one. It is reported as `cagr_other_basis` rather than
+    as an independent result for exactly that reason -- the alternative,
+    running the whole backtest twice, doubles every sweep's cost to answer a
+    question this arithmetic answers to within position-sizing effects.
+    """
+    if equity_curve is None or len(equity_curve) == 0 or not tax_ledger:
+        return None
+    payments = [
+        (pd.Timestamp(row.get("fy_end")), float(row.get("paid") or 0.0))
+        for row in tax_ledger
+        if row.get("paid")
+    ]
+    if not payments:
+        return None
+    curve = equity_curve.copy()
+    add_back = pd.Series(0.0, index=curve.index)
+    for when, amount in payments:
+        add_back.loc[add_back.index >= when] += amount
+    return curve + add_back
+
+
 def churn_per_year(n_trades: Optional[int], start_date, end_date) -> Optional[float]:
     """Round-trips per year -- what the strategy costs to run, and the figure
     that decides whether a pre-tax edge survives contact with STCG."""
@@ -427,6 +472,9 @@ def compute_metrics(
     n_open_positions: int = 0,
     holding_days_all: Optional[List[float]] = None,
     benchmark_index_name: Optional[str] = None,
+    # A86: the run's tax ledger, so both bases come from one execution.
+    tax_ledger: Optional[List[Dict]] = None,
+    deduct_tax_annually: bool = False,
 ) -> BacktestMetrics:
     """
     Single entry point every adapter's backtest/walk-forward run calls once
@@ -480,6 +528,24 @@ def compute_metrics(
 
     _avg_win, _avg_loss = avg_winner_loser(trade_returns_pct)
 
+    # A86 -- state the basis, and supply the other one from the same run.
+    _tax_basis = "post_tax" if deduct_tax_annually else "pre_tax"
+    _total_tax = (
+        sum(float(r.get("paid") or 0.0) for r in tax_ledger) if tax_ledger else None
+    )
+    _other_curve = (
+        reconstruct_pre_tax_curve(equity_curve, tax_ledger)
+        if deduct_tax_annually
+        else None
+    )
+    _other_cagr = (
+        calendar_cagr(
+            float(_other_curve.iloc[0]), float(_other_curve.iloc[-1]), start_date, end_date
+        )
+        if _other_curve is not None and len(_other_curve) >= 2
+        else None
+    )
+
     return BacktestMetrics(
         cagr=cagr_value,
         cagr_trading_day_legacy=trading_day_cagr(equity_curve),
@@ -509,6 +575,9 @@ def compute_metrics(
         churn_per_year=churn_per_year(len(trade_pnls), start_date, end_date),
         avg_winner_pct=_avg_win,
         avg_loser_pct=_avg_loss,
+        tax_basis=_tax_basis,
+        total_tax_paid=_total_tax,
+        cagr_other_basis=_other_cagr,
         cash_position_series=cash_position_series or [],
         avg_days_held=(float(np.mean(holding_days)) if holding_days else None),
         total_trades=len(trade_pnls) + n_open_positions,

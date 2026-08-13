@@ -260,8 +260,19 @@ def from_run_result(
             "exit_policy_variant": getattr(result, "exit_policy_variant", None),
         },
         returns=Returns(
-            cagr_pre_tax=m("cagr"),
-            cagr_post_tax=m("cagr_post_tax"),
+            # A86: `cagr` is whichever basis the run was executed on, and
+            # `tax_basis` says which. Assigning it to the wrong field is how a
+            # post-tax figure gets compared with a pre-tax one and the gap
+            # read as skill, so the assignment is driven by the recorded basis
+            # rather than assumed.
+            cagr_pre_tax=(
+                m("cagr_other_basis") if metrics.get("tax_basis") == "post_tax"
+                else m("cagr")
+            ),
+            cagr_post_tax=(
+                m("cagr") if metrics.get("tax_basis") == "post_tax"
+                else m("cagr_post_tax")
+            ),
             xirr=m("xirr"),
             final_capital=m("final_capital"),
             total_contributed=m("total_contributed"),

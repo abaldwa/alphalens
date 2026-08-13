@@ -1294,6 +1294,12 @@ class BacktestOrchestrator:
             n_open_positions=len(portfolio.positions),
             holding_days_all=holding_days + open_holding_days,
             benchmark_index_name=self._benchmark_index_name,
+            # A86: both tax bases from one execution. The ledger says what was
+            # actually paid and when; deduct_tax_annually says which basis the
+            # headline CAGR is therefore stated on.
+            tax_ledger=list(portfolio.tax_ledger),
+            deduct_tax_annually=bool(getattr(portfolio, "deduct_tax_annually", False))
+            and getattr(portfolio, "annual_reset", None) is None,
         )
 
         from systems.regime.market_regime import METHOD_NAME
