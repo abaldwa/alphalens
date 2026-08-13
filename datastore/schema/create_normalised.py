@@ -1293,6 +1293,22 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
 
         db_path = DUCKDB_PATH
         db_path.parent.mkdir(parents=True, exist_ok=True)
+    elif not isinstance(db_path, (str, Path)):
+        # [2026-08-12] Without this, passing anything else — most easily a live
+        # DuckDB connection, since callers hold one and the argument names are
+        # one word apart — reaches duckdb.connect(str(db_path)) and CREATES a
+        # database file named after the object's repr. That produced a real
+        # 1.5MB file called
+        #   "<duckdb.duckdb.DuckDBPyConnection object at 0x70072d395370>"
+        # sitting in the repo root, carrying the entire normalised schema and
+        # zero rows. It failed later with a confusing CatalogException about a
+        # missing table, giving no hint that the argument was the problem.
+        raise TypeError(
+            f"db_path must be a str or Path, got {type(db_path).__name__}. "
+            "To build the schema on an existing connection there is no such "
+            "parameter — call create_schema(db_path=...) or "
+            "create_schema(in_memory=True)."
+        )
 
     # persist=False (SPEC-SCHED-013): this can run at startup of either the
     # long-lived scheduler process or the long-lived API process, both of
