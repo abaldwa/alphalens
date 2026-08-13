@@ -99,6 +99,72 @@ from systems.technical_analysis.screener.templates import TEMPLATE_STYLE
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# A84: the module contract's default tradeable universe -- top 800 by
+# POINT-IN-TIME ADTV. 800 is the figure the backtest module is specified
+# against; it is a default, not a limit, and 0 disables PIT ranking entirely.
+DEFAULT_PIT_ADTV_TOP_N = 800
+
+# A96/A101: the earliest date a backtest may start. Before this, price history
+# crosses the 2007-04-02 legacy/Fyers seam (69 of 473 tickers jump more than
+# 2x across it) and includes corporate actions that were never applied. A
+# window that reaches further back does not produce a longer track record, it
+# produces a fabricated one, so it is clamped rather than honoured.
+EARLIEST_RELIABLE_START = date_type(2009, 4, 1)
+
+WINDOW_PRESETS = {"3y": 3, "5y": 5, "10y": 10, "15y": 15, "max": None}
+
+
+def resolve_window(
+    window: Optional[str],
+    start_date: Optional[date_type],
+    end_date: Optional[date_type],
+    today: Optional[date_type] = None,
+) -> tuple[date_type, date_type]:
+    """Turn (--window | --start-date/--end-date) into concrete dates.
+
+    Exactly one of `window` and `start_date` may be given: accepting both
+    would mean silently ignoring one, and the caller would never learn which.
+    """
+    if window and start_date:
+        raise ValueError(
+            "Pass --window OR --start-date, not both: they are two ways to say "
+            "the same thing and honouring one would silently discard the other."
+        )
+    end = end_date or (today or date_type.today())
+
+    if window:
+        key = window.strip().lower()
+        if key not in WINDOW_PRESETS:
+            raise ValueError(
+                f"Unknown --window {window!r}. Valid: {sorted(WINDOW_PRESETS)}"
+            )
+        years = WINDOW_PRESETS[key]
+        start = EARLIEST_RELIABLE_START if years is None else _minus_years(end, years)
+    elif start_date:
+        start = start_date
+    else:
+        raise ValueError("One of --window or --start-date is required.")
+
+    if start < EARLIEST_RELIABLE_START:
+        logger.warning(
+            "window start %s precedes %s; clamping. Earlier history crosses the "
+            "legacy/Fyers seam and has unrepaired corporate actions (A99-A102), "
+            "so returns from it would be fabricated rather than merely noisy.",
+            start, EARLIEST_RELIABLE_START,
+        )
+        start = EARLIEST_RELIABLE_START
+    if start >= end:
+        raise ValueError(f"Empty window: start {start} is not before end {end}.")
+    return start, end
+
+
+def _minus_years(d: date_type, years: int) -> date_type:
+    """Calendar-year subtraction that survives 29 February."""
+    try:
+        return d.replace(year=d.year - years)
+    except ValueError:
+        return d.replace(year=d.year - years, day=28)
+
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 
 # Feature-log spill lives on DISK, deliberately not in tempfile.gettempdir().
@@ -1073,9 +1139,12 @@ def run_orchestrator_backtest(
     horizon_bucket: Optional[str] = None,
     # Point-in-time top-N-by-ADTV universe (2026-08-13). None = today's
     # behaviour unchanged, i.e. the static present-day CSV ranking.
-    pit_adtv_top_n: Optional[int] = None,
+    # A84/A85: the module contract's defaults, so a programmatic caller gets
+    # the same universe and fill rules as the CLI rather than quietly weaker
+    # ones.
+    pit_adtv_top_n: Optional[int] = DEFAULT_PIT_ADTV_TOP_N,
     # Refuse fills on circuit-locked bars. False = prior behaviour.
-    block_circuit_fills: bool = False,
+    block_circuit_fills: bool = True,
     # Force-close an open position after this many consecutive no-bar sessions.
     max_blackout_sessions: Optional[int] = None,
     capital_mode: str = "lump", initial_capital: float = 1_000_000.0, sip_amount: Optional[float] = None,
@@ -1253,7 +1322,9 @@ def run_orchestrator_backtest(
     return report
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """The CLI surface, split out of main() so the module contract's defaults
+    (A84/A85) can be asserted without executing a backtest."""
     parser = argparse.ArgumentParser(description="Run backtest/core/engine.py's BacktestOrchestrator against real data")
     parser.add_argument("--channel", required=True, choices=["technical", "fundamental", "momentum"])
     parser.add_argument(
@@ -1264,8 +1335,24 @@ def main() -> None:
         "--horizon-bucket", default=None, choices=list(HORIZON_BUCKET_MAP) + list(CODE_TO_HORIZON),
         help="Defaults per channel/template per the Explainer's published style table (backtest/strategy_id.py)",
     )
-    parser.add_argument("--start-date", required=True, type=date_type.fromisoformat)
-    parser.add_argument("--end-date", required=True, type=date_type.fromisoformat)
+    # A96: the window is a first-class parameter. "N years" existed only as a
+    # years_back local inside sweep scripts and was never reachable from the
+    # CLI or the API, so every caller hand-computed dates and they drifted.
+    # --window is resolved against --end-date (or the latest trading date) so
+    # "10y" means the same thing to every caller.
+    parser.add_argument(
+        "--window", default=None,
+        help=(
+            "Backtest window as 3y/5y/10y/15y/max, resolved backwards from "
+            "--end-date (default: today). Mutually exclusive with --start-date. "
+            "Windows reaching before "
+            f"{EARLIEST_RELIABLE_START} are clamped, because earlier data crosses "
+            "the 2007-04-02 legacy/Fyers seam and the unrepaired corporate "
+            "actions in A99-A102 -- returns from that period are not trustworthy."
+        ),
+    )
+    parser.add_argument("--start-date", required=False, default=None, type=date_type.fromisoformat)
+    parser.add_argument("--end-date", required=False, default=None, type=date_type.fromisoformat)
     parser.add_argument("--capital-mode", default="lump", choices=["lump", "sip", "annual_reset"])
     # capital_mode="annual_reset" only (2026-08-12). Unlike the lump run — where
     # the report applies whichever LTCG regime it likes to a single trade book —
@@ -1349,25 +1436,30 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--block-circuit-fills", action="store_true",
+        "--block-circuit-fills", action=argparse.BooleanOptionalAction, default=True,
         help=(
             "Refuse to fill a buy or sell on a circuit-locked bar (high == low with "
             "volume > 0). There is no opposing side at a locked price, so a fill there "
             "is money the simulation grants itself. Distinct from the adapter's "
-            "--circuit-band-pct, which is a close-to-close proxy and was off in all 195 "
-            "unconstrained Technical runs. Blocked fills are recorded as data_gaps, not "
-            "dropped silently."
+            "--circuit-band-pct, which is a close-to-close proxy. Blocked fills are "
+            "recorded as data_gaps, not dropped silently. "
+            "[A85, 2026-08-13] NOW ON BY DEFAULT — it was off in all 195 unconstrained "
+            "Technical runs, which therefore contain fills that could not have happened. "
+            "Pass --no-block-circuit-fills to reproduce a historical run exactly."
         ),
     )
     parser.add_argument(
-        "--pit-adtv-top-n", type=int, default=None,
+        "--pit-adtv-top-n", type=int, default=DEFAULT_PIT_ADTV_TOP_N,
         help=(
             "Restrict the tradeable universe to the top N by POINT-IN-TIME ADTV, ranked on "
-            "a trailing 21-session window ending strictly before each date. Without this, "
-            "--max-tickers ranks on config/universe.py's adtv_cr column — a static "
+            "a trailing 21-session window ending strictly before each date. The alternative "
+            "is --max-tickers ranking on config/universe.py's adtv_cr column — a static "
             "present-day snapshot applied to the whole history, which admits names that "
             "only became liquid later (INDOTECH: static rank 671, actual rank 1,554 on its "
-            "2023 entry date, and the single largest trade in the run history)."
+            "2023 entry date, and the single largest trade in the run history). That is "
+            "lookahead: a stock enters the universe BECAUSE of the rally the backtest then "
+            f"claims to capture. [A84, 2026-08-13] Defaults to {DEFAULT_PIT_ADTV_TOP_N}; "
+            "pass 0 to disable and rank statically, which reproduces pre-A84 runs."
         ),
     )
     parser.add_argument(
@@ -1492,7 +1584,16 @@ def main() -> None:
             "Default (omit) is today's unchanged always-live-fetch behavior."
         ),
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+    # A96: one resolution point for the window, so --window and explicit dates
+    # cannot disagree and every downstream consumer sees concrete dates.
+    args.start_date, args.end_date = resolve_window(
+        args.window, args.start_date, args.end_date
+    )
 
     run_orchestrator_backtest(
         channel=args.channel, strategy_id=args.strategy_id, horizon_bucket=args.horizon_bucket,
@@ -1503,7 +1604,10 @@ def main() -> None:
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
-        pit_adtv_top_n=args.pit_adtv_top_n,
+        # 0 is the explicit "rank statically" escape hatch; downstream treats
+        # None as disabled, so translate here rather than teaching every
+        # consumer a second sentinel.
+        pit_adtv_top_n=args.pit_adtv_top_n or None,
         block_circuit_fills=args.block_circuit_fills,
         max_blackout_sessions=args.max_blackout_sessions,
         max_hold_days=args.max_hold_days, min_adtv_cr=args.min_adtv_cr,

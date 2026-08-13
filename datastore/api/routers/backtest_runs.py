@@ -512,8 +512,14 @@ async def trigger_orchestrator_backtest(
     horizon_bucket: Optional[str] = Query(
         None, description="Defaults per channel/template per the Explainer's published style table"
     ),
-    start_date: str = Query(..., description="YYYY-MM-DD"),
-    end_date: str = Query(..., description="YYYY-MM-DD"),
+    # A96: a window in years, resolved by the runner so the API and the CLI
+    # cannot disagree about what "10y" means. Supply either this or
+    # start_date; supplying both is rejected rather than silently resolved.
+    window: Optional[str] = Query(
+        None, description="3y | 5y | 10y | 15y | max. Alternative to start_date."
+    ),
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
     capital_mode: str = Query("lump"),
     initial_capital: float = Query(1_000_000.0),
     sip_amount: Optional[float] = Query(None),
@@ -539,14 +545,28 @@ async def trigger_orchestrator_backtest(
     _ORCHESTRATOR_TRIGGER_LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _ORCHESTRATOR_TRIGGER_LOGS_DIR / f"{run_id}.log"
 
+    if bool(window) == bool(start_date):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Supply exactly one of window or start_date. Both would mean "
+                "silently discarding one; neither leaves the run undefined."
+            ),
+        )
+
     cmd = [
         sys.executable, "-m", "backtest.run_orchestrator_backtest",
-        "--channel", channel,
-        "--start-date", start_date, "--end-date", end_date, "--capital-mode", capital_mode,
+        "--channel", channel, "--capital-mode", capital_mode,
         "--initial-capital", str(initial_capital), "--universe-spec", universe_spec,
         "--min-history-days", str(min_history_days), "--top-n", str(top_n),
         "--lookback-months", str(lookback_months), "--run-id", run_id,
     ]
+    if window:
+        cmd += ["--window", window]
+    if start_date:
+        cmd += ["--start-date", start_date]
+    if end_date:
+        cmd += ["--end-date", end_date]
     if strategy_id:
         cmd += ["--strategy-id", strategy_id]
     if horizon_bucket:
