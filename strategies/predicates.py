@@ -27,12 +27,17 @@ Grammar
 -------
     {"feature": <column name>, "op": <op>, "value": <scalar|[lo,hi]|[...]>}
 
-    lt / gt / lte / gte / eq       column vs scalar
+    lt / gt / lte / gte / eq       column vs scalar             value=<scalar>
     between                        column in [lo, hi]           value=[lo, hi]
     top_pct / bottom_pct           cross-sectional percentile   value in (0, 1]
-    gt_col / lt_col / gte_col /    column vs another column     value=<column>
+    gt_col / lt_col / gte_col /    column vs another column     feature2=<column>
       lte_col
     in / not_in                    column in a set              value=[...]
+
+Note the col-vs-col ops take `feature2`, NOT `value` -- that is the shape the
+screener engine reads (`condition.get("feature2")`), and the 63 templates are
+written that way. Requiring `value` here would reject every real template
+using them.
 
 `in`/`not_in` are the one addition to the screener's vocabulary, needed by
 Fundamental (sector exclusions, `PRESET_EXCLUDED_SECTORS`) which currently
@@ -88,6 +93,18 @@ def validate_predicate(pred: Any, *, where: str = "predicate") -> None:
             f"{where}: unknown op {op!r}. Valid ops: {sorted(ALL_OPS)}"
         )
 
+    # Col-vs-col ops carry their right-hand side in `feature2`; everything
+    # else in `value`.
+    if op in COL_VS_COL_OPS:
+        feature2 = pred.get("feature2")
+        if not isinstance(feature2, str) or not feature2:
+            raise PredicateError(
+                f"{where}: op {op!r} needs 'feature2' (a column name), not 'value'"
+            )
+        if feature2 == feature:
+            raise PredicateError(f"{where}: op {op!r} compares {feature!r} to itself")
+        return
+
     if "value" not in pred:
         raise PredicateError(f"{where}: missing 'value'")
     value = pred["value"]
@@ -115,12 +132,6 @@ def validate_predicate(pred: Any, *, where: str = "predicate") -> None:
                 f"{where}: op {op!r} needs a fraction in (0, 1], got {value!r}"
             )
 
-    elif op in COL_VS_COL_OPS:
-        if not isinstance(value, str) or not value:
-            raise PredicateError(f"{where}: op {op!r} needs a column name as value")
-        if value == feature:
-            raise PredicateError(f"{where}: op {op!r} compares {feature!r} to itself")
-
     elif op in SET_OPS:
         if not _is_sequence(value) or len(value) == 0:
             raise PredicateError(f"{where}: op {op!r} needs a non-empty list")
@@ -147,9 +158,9 @@ def features_used(preds: Sequence[Dict[str, Any]]) -> List[str]:
         if isinstance(feature, str) and feature not in out:
             out.append(feature)
         if pred.get("op") in COL_VS_COL_OPS:
-            value = pred.get("value")
-            if isinstance(value, str) and value not in out:
-                out.append(value)
+            feature2 = pred.get("feature2")
+            if isinstance(feature2, str) and feature2 not in out:
+                out.append(feature2)
     return out
 
 

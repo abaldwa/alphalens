@@ -72,7 +72,7 @@ class TestPredicates:
             {"feature": "rsi_14", "op": "lt", "value": 30},
             {"feature": "close", "op": "between", "value": [10, 20]},
             {"feature": "roc_10", "op": "top_pct", "value": 0.2},
-            {"feature": "close", "op": "gt_col", "value": "sma_50"},
+            {"feature": "close", "op": "gt_col", "feature2": "sma_50"},
             {"feature": "sector", "op": "not_in", "value": ["Financials"]},
         ]:
             validate_predicate(pred)
@@ -95,7 +95,14 @@ class TestPredicates:
 
     def test_col_vs_col_self_comparison_rejected(self):
         with pytest.raises(PredicateError, match="itself"):
-            validate_predicate({"feature": "close", "op": "gt_col", "value": "close"})
+            validate_predicate({"feature": "close", "op": "gt_col", "feature2": "close"})
+
+    def test_col_vs_col_with_value_instead_of_feature2_rejected(self):
+        """The screener engine reads feature2 for these ops. A predicate
+        written with `value` would be treated as unmet at screen time without
+        raising, so it has to fail here instead."""
+        with pytest.raises(PredicateError, match="feature2"):
+            validate_predicate({"feature": "close", "op": "gt_col", "value": "sma_50"})
 
     def test_missing_value_rejected(self):
         with pytest.raises(PredicateError, match="missing 'value'"):
@@ -108,7 +115,7 @@ class TestPredicates:
 
     def test_features_used_includes_rhs_column(self):
         preds = [
-            {"feature": "close", "op": "gt_col", "value": "sma_50"},
+            {"feature": "close", "op": "gt_col", "feature2": "sma_50"},
             {"feature": "rsi_14", "op": "lt", "value": 30},
         ]
         assert features_used(preds) == ["close", "sma_50", "rsi_14"]
