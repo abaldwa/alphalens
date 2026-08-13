@@ -21,6 +21,11 @@ import pandas as pd
 
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "reports")
 
+# C3 and F7 were de-registered on 2026-08-13 as definitional duplicates of C1
+# and F3, but their labels stay here deliberately: this map exists to name runs
+# in reports already on disk and rows already in the backtest DB, which still
+# carry those template names. Dropping the entries would leave historical
+# reports labelling real runs with a bare code.
 TEMPLATE_LABELS = {
     "A1": "BB Squeeze Breakout", "A2": "MACD Histogram Divergence",
     "A3": "Williams %R Mean Reversion", "A4": "RSI Oversold + Trend",

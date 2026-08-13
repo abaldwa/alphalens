@@ -73,7 +73,13 @@ COMPOSITE_STRATEGIES: Dict[str, Dict] = {
 # applied on top (same filters threaded to every sub-adapter).
 COMBO_TEMPLATES: List[List[str]] = [
     ["A1", "C1"],   # Trend Following + (time series) Momentum
-    ["B2", "C3"],   # Trend Following (IBD base breakout) + Dual Momentum
+    # C3 was dropped 2026-08-13 as a definitional duplicate of C1, so this combo
+    # would now pair B2 with a template that no longer exists. Repointed to C2
+    # (cross-sectional momentum) rather than C1: this combo's purpose is a
+    # Trend-Following + Momentum pair distinct from ["A1", "C1"] above, and
+    # reusing C1 here would have made the two combos differ only in their
+    # trend leg.
+    ["B2", "C2"],   # Trend Following (IBD base breakout) + Cross-Sectional Momentum
     ["A4", "C5"],   # Mean Reversion + 52-week-high proximity (Trend Following)
 ]
 

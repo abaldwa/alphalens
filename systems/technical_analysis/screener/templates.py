@@ -241,7 +241,13 @@ _C1 = ScreenerTemplate(
         # Positive 10-day return (time-series momentum)
         {"feature": "roc_10", "op": "gt", "value": 0},
     ],
-    key_display_features=["sma_200_ratio", "roc_10", "composite_momentum_63d", "adx_14"],
+    # rs_vs_nifty500_21d inherited from C3 (dropped 2026-08-13 as a definitional
+    # duplicate of this template — same two conditions, order reversed). The
+    # survivor keeps the UNION of both templates' display features so no column
+    # a user relied on disappears with the dropped name.
+    key_display_features=[
+        "sma_200_ratio", "roc_10", "composite_momentum_63d", "adx_14", "rs_vs_nifty500_21d",
+    ],
 )
 
 _C2 = ScreenerTemplate(
@@ -255,18 +261,17 @@ _C2 = ScreenerTemplate(
     key_display_features=["roc_10", "composite_momentum_21d", "sma_200_ratio", "volume_ratio_21d"],
 )
 
-_C3 = ScreenerTemplate(
-    name="C3",
-    category="C",
-    description="Dual Momentum",
-    conditions=[
-        # Absolute momentum: positive 10-day return
-        {"feature": "roc_10", "op": "gt", "value": 0},
-        # Trend filter: above SMA200
-        {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
-    ],
-    key_display_features=["roc_10", "sma_200_ratio", "composite_momentum_63d", "rs_vs_nifty500_21d"],
-)
+# C3 ("Dual Momentum") REMOVED 2026-08-13. It was not merely similar to C1, it
+# was the identical screen: {roc_10 > 0, sma_200_ratio > 1.0} against C1's
+# {sma_200_ratio > 1.0, roc_10 > 0} — the same conjunction with the operands
+# written in the other order, and the same exits (stop 0.04 / target 0.10 /
+# hold 21). Two templates that cannot differ on any input, in any window, are
+# one strategy costing two backtest runs; a full-grid sweep spent ~3% of its
+# compute proving C1 == C3 to four decimal places (3,886 trades, 27.66% CAGR,
+# byte-identical trade sequences). C1 survives and inherited C3's
+# rs_vs_nifty500_21d display feature. Detection is now automated — see the
+# duplicate-signature assertion below the master registry, which fails the
+# import rather than leaving the next copy-paste duplicate to be found by hand.
 
 _C4 = ScreenerTemplate(
     name="C4",
@@ -562,7 +567,11 @@ _F3 = ScreenerTemplate(
         # Hurst > 0.5 (persistence in returns — consistent compounder proxy)
         {"feature": "hurst_exp_21d", "op": "gt", "value": 0.5},
     ],
-    key_display_features=["flag_pattern_score", "hurst_exp_21d", "sma_200_ratio", "rsi_14"],
+    # adx_14 inherited from F7 (dropped 2026-08-13 as a definitional duplicate
+    # of this template). Union of both templates' display features — see C1.
+    key_display_features=[
+        "flag_pattern_score", "hurst_exp_21d", "sma_200_ratio", "rsi_14", "adx_14",
+    ],
 )
 
 _F4 = ScreenerTemplate(
@@ -606,18 +615,16 @@ _F6 = ScreenerTemplate(
     key_display_features=["rsi_14", "macd_hist", "sma_200_ratio", "volume_ratio_21d"],
 )
 
-_F7 = ScreenerTemplate(
-    name="F7",
-    category="F",
-    description="Promoter Confidence proxy",
-    conditions=[
-        # Flag pattern (promoters buying = steady trend formation proxy)
-        {"feature": "flag_pattern_score", "op": "gt", "value": 0.5},
-        # Hurst > 0.5 (persistent trend = insider confidence proxy)
-        {"feature": "hurst_exp_21d", "op": "gt", "value": 0.5},
-    ],
-    key_display_features=["flag_pattern_score", "hurst_exp_21d", "sma_200_ratio", "adx_14"],
-)
+# F7 ("Promoter Confidence proxy") REMOVED 2026-08-13 — identical screen to F3
+# ({flag_pattern_score > 0.5, hurst_exp_21d > 0.5}, same exits). Unlike C1/C3
+# this pair had never been noticed in any earlier audit; it surfaced only once
+# all 66 templates were compared by order-independent condition signature
+# instead of by eye. Verified byte-identical: 4,532 trades, 11.69% CAGR both.
+# The two descriptions ("dividend consistency" vs "promoter confidence") name
+# different fundamental theses, but neither is expressible in the two purely
+# technical conditions both were built from — the distinct names described an
+# intent the conditions never encoded. F3 survives and inherited F7's adx_14
+# display feature.
 
 _F8 = ScreenerTemplate(
     name="F8",
@@ -1276,14 +1283,14 @@ TEMPLATES: List[ScreenerTemplate] = [
     _A1, _A2, _A3, _A4,
     # Category B (5)
     _B1, _B2, _B3, _B4, _B5,
-    # Category C (7)
-    _C1, _C2, _C3, _C4, _C5, _C6, _C7,
+    # Category C (6 — C3 removed as a definitional duplicate of C1)
+    _C1, _C2, _C4, _C5, _C6, _C7,
     # Category D (4)
     _D1, _D2, _D3, _D4,
     # Category E (7 — E8 excluded as duplicate of C6)
     _E1, _E2, _E3, _E4, _E5, _E6, _E7,
-    # Category F (8)
-    _F1, _F2, _F3, _F4, _F5, _F6, _F7, _F8,
+    # Category F (7 — F7 removed as a definitional duplicate of F3)
+    _F1, _F2, _F3, _F4, _F5, _F6, _F8,
     # Category S (7 — S007/S009/S010/S011/S012 excluded; see module docstring)
     _S001, _S002, _S003, _S004, _S005, _S006, _S008,
     # Category R (4 — per-ticker HMM regime, R5 removed: "volatile" was mislabeled)
@@ -1296,9 +1303,68 @@ TEMPLATES: List[ScreenerTemplate] = [
 # Fast name → template lookup used by ScreenerEngine
 TEMPLATE_MAP: Dict[str, ScreenerTemplate] = {t.name: t for t in TEMPLATES}
 
-assert len(TEMPLATES) == 66, (
-    f"Expected 66 templates, got {len(TEMPLATES)}. "
+assert len(TEMPLATES) == 64, (
+    f"Expected 64 templates, got {len(TEMPLATES)}. "
     "If you added or removed templates, update this assertion."
+)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-screen gate
+# ---------------------------------------------------------------------------
+# Two templates whose condition SETS are equal are the same screen, however
+# differently their descriptions are worded — condition order carries no
+# meaning, so {A and B} and {B and A} select identical stocks on every date.
+# Such a pair costs a full duplicate backtest run per grid point and reports
+# the same result twice under two names, which reads as independent
+# corroboration when it is one number printed twice.
+#
+# This was found by hand three times (E8/C6, then C1/C3 and F3/F7 in the same
+# 2026-08-13 pass, the latter never noticed in any earlier audit) — a review
+# method with a demonstrated miss rate. Comparing signatures at import time
+# does not miss, so the check runs here rather than in a doc or a review
+# checklist. `value` goes through repr() because it may be a list (the
+# "between" op), which is unhashable.
+_KNOWN_DUPLICATE_GROUPS = {
+    # B1 "Trend Following (Weinstein Stage 2)" and F2 "Momentum + volume" are
+    # also the identical screen (sma_200_ratio > 1.0, volume_ratio_21d > 1.5,
+    # adx_14 > 20). Left in place pending a product decision rather than
+    # dropped silently: unlike C1/C3 and F3/F7 this pair spans two categories,
+    # so removing either changes what a category-level report covers. Recorded
+    # here so the gate stays meaningful instead of being switched off.
+    frozenset({"B1", "F2"}),
+}
+
+
+def _condition_signature(template: ScreenerTemplate) -> frozenset:
+    return frozenset(
+        (c["feature"], c["op"], repr(c.get("value"))) for c in template.conditions
+    )
+
+
+def _find_duplicate_screens() -> Dict[frozenset, List[str]]:
+    by_signature: Dict[frozenset, List[str]] = {}
+    for t in TEMPLATES:
+        by_signature.setdefault(_condition_signature(t), []).append(t.name)
+    return {sig: names for sig, names in by_signature.items() if len(names) > 1}
+
+
+_unexpected_duplicates = {
+    sig: names
+    for sig, names in _find_duplicate_screens().items()
+    if frozenset(names) not in _KNOWN_DUPLICATE_GROUPS
+}
+assert not _unexpected_duplicates, (
+    "Templates with identical condition sets are the same screen and must not "
+    "both be registered (they double the backtest cost and report one result "
+    "twice under two names): "
+    + "; ".join(
+        f"{sorted(names)} share conditions {sorted(sig)}"
+        for sig, names in _unexpected_duplicates.items()
+    )
+    + ". Drop one and let the survivor inherit the union of both "
+    "key_display_features, or — if the pair is intentional and understood — "
+    "add it to _KNOWN_DUPLICATE_GROUPS with the reason."
 )
 
 # ---------------------------------------------------------------------------
@@ -1324,7 +1390,6 @@ TEMPLATE_STYLE: Dict[str, str] = {
     "B5": "Momentum",          # Livermore pivot breakout with volume surge
     "C1": "Momentum",          # Time series momentum
     "C2": "Momentum",          # Cross-sectional momentum
-    "C3": "Momentum",          # Dual momentum
     "C4": "Momentum",          # CAN SLIM proxy (institutional momentum)
     "C5": "Trend Following",   # 52-week high proximity
     "C6": "Trend Following",   # EMA ribbon alignment
@@ -1346,7 +1411,6 @@ TEMPLATE_STYLE: Dict[str, str] = {
     "F4": "Trend Following",   # Compounder proxy
     "F5": "Trend Following",   # Cash flow king proxy — flag_pattern_score + low volume_ratio_21d (quiet accumulation during a continuation pattern), no ATR/BB-width/breakout condition so not Volatility
     "F6": "Mean Reversion",    # Turnaround proxy
-    "F7": "Momentum",           # Promoter confidence proxy — flag_pattern_score + hurst_exp_21d only, no MA/ADX trend gate; hurst measures statistical persistence not a price-vs-MA trend
     "F8": "Momentum",          # PEG proxy (growth momentum)
     "S001": "Trend Following",  # EMA crossover
     "S002": "Trend Following",  # Supertrend breakout

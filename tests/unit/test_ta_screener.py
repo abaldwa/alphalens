@@ -24,28 +24,31 @@ from systems.technical_analysis.screener.templates import TEMPLATE_MAP, TEMPLATE
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Templates registry contains exactly 66 templates
+# Test 1: Templates registry contains exactly 64 templates
 # ---------------------------------------------------------------------------
 
-def test_templates_count_exactly_66():
-    """SPEC-TA-005: the registry must define exactly 66 pre-built templates.
+def test_templates_count_exactly_64():
+    """SPEC-TA-005: the registry must define exactly 64 pre-built templates.
+
+    Was 66 until 2026-08-13, when C3 and F7 were removed as definitional
+    duplicates of C1 and F3 (identical condition sets, identical exits).
 
     Verifies that:
-    1. TEMPLATES list has exactly 66 entries.
+    1. TEMPLATES list has exactly 64 entries.
     2. All template names are unique.
-    3. ScreenerEngine.list_templates() also returns exactly 66 TemplateInfo objects.
+    3. ScreenerEngine.list_templates() also returns exactly 64 TemplateInfo objects.
     """
-    assert len(TEMPLATES) == 66, (
-        f"Expected 66 templates, got {len(TEMPLATES)}. "
+    assert len(TEMPLATES) == 64, (
+        f"Expected 64 templates, got {len(TEMPLATES)}. "
         "Check systems/technical_analysis/screener/templates.py."
     )
 
     names = [t.name for t in TEMPLATES]
-    assert len(set(names)) == 66, "Duplicate template names detected"
+    assert len(set(names)) == 64, "Duplicate template names detected"
 
     engine = ScreenerEngine()
     infos = engine.list_templates()
-    assert len(infos) == 66, (
+    assert len(infos) == 64, (
         f"ScreenerEngine.list_templates() returned {len(infos)}, expected 66"
     )
 
@@ -591,7 +594,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
-        assert len(template_results) == 66
+        assert len(template_results) == 64
         # A1 should have TICKER_A as a full match (verified in test 2 above)
         assert any(r.ticker == "TICKER_A" for r in template_results.get("A1", []))
 
@@ -621,7 +624,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         resolved, template_results = checker.evaluate("2026-07-02")
         assert resolved == "2026-07-02"
         assert template_results["A1"] == []  # failed template degrades to empty, not a crash
-        assert len(template_results) == 66
+        assert len(template_results) == 64
 
     def test_run_writes_to_signals_db_and_returns_counts(self, tmp_path, monkeypatch):
         import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
@@ -637,7 +640,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
         checker = checker_mod.DailyAlertChecker()
         counts = checker.run("2026-07-02")
 
-        assert len(counts) == 66
+        assert len(counts) == 64
         assert counts["A1"] == 1
 
         from datastore.api.db import get_duckdb_connection
@@ -662,7 +665,7 @@ class TestDailyAlertCheckerEvaluateAndRun:
 # missing/typo'd feature as "condition unmet" with only a WARNING log, so a
 # future feature-column rename could zero out a template's results with no
 # test failure. This test statically cross-checks every "feature"/"feature2"
-# and key_display_features entry across all 66 templates against the real
+# and key_display_features entry across all 64 templates against the real
 # feature registries. No Parquet/DB I/O — pure static data-structure check.
 # ---------------------------------------------------------------------------
 
@@ -818,3 +821,103 @@ class TestPreloadDates:
             engine._load_df("2023-01-03")
             engine._load_df("2023-01-03")
         assert len(read_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-screen gate (2026-08-13)
+# ---------------------------------------------------------------------------
+# Three duplicate pairs reached the registry over the project's life (E8/C6,
+# C1/C3, F3/F7) and each was found by hand, one of them only after a full-grid
+# sweep had already paid to backtest it twice. These tests cover the import-time
+# gate that replaced that manual review.
+
+def test_no_two_templates_share_a_condition_set():
+    """Two templates with equal condition SETS are the same screen — condition
+    order carries no meaning, so {A and B} and {B and A} select identical
+    stocks on every date. Registering both doubles the backtest cost and prints
+    one result twice under two names, which reads as corroboration.
+
+    B1/F2 is a real, still-unresolved duplicate; it is exempted explicitly (not
+    by weakening the check) pending a product decision, because it spans two
+    categories. Any pair NOT on that list fails here.
+    """
+    from systems.technical_analysis.screener.templates import (
+        _KNOWN_DUPLICATE_GROUPS,
+        _find_duplicate_screens,
+    )
+
+    unexpected = {
+        tuple(sorted(names)): sorted(sig)
+        for sig, names in _find_duplicate_screens().items()
+        if frozenset(names) not in _KNOWN_DUPLICATE_GROUPS
+    }
+    assert not unexpected, f"undeclared duplicate screens: {unexpected}"
+
+
+def test_duplicate_gate_detects_a_reordered_copy():
+    """The gate must catch the exact shape that slipped through three times:
+    the same conditions written in a different order. Without this, the test
+    above passes trivially whether the detector works or not.
+    """
+    from systems.technical_analysis.screener.templates import (
+        ScreenerTemplate,
+        _condition_signature,
+    )
+
+    original = ScreenerTemplate(
+        name="X1", category="C", description="original",
+        conditions=[
+            {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+            {"feature": "roc_10", "op": "gt", "value": 0},
+        ],
+        key_display_features=["roc_10"],
+    )
+    reordered = ScreenerTemplate(
+        name="X2", category="C", description="differently worded, same screen",
+        conditions=list(reversed(original.conditions)),
+        key_display_features=["sma_200_ratio"],
+    )
+    assert _condition_signature(original) == _condition_signature(reordered)
+
+    # A genuinely different threshold must NOT collide — the detector has to
+    # separate "same screen" from "similar screen", or it would force real
+    # templates to be deleted.
+    different = ScreenerTemplate(
+        name="X3", category="C", description="tighter threshold",
+        conditions=[
+            {"feature": "sma_200_ratio", "op": "gt", "value": 1.0},
+            {"feature": "roc_10", "op": "gt", "value": 5},
+        ],
+        key_display_features=["roc_10"],
+    )
+    assert _condition_signature(original) != _condition_signature(different)
+
+
+def test_signature_handles_list_valued_conditions():
+    """The 'between' op carries a list value, which is unhashable — the
+    signature builder must repr() it rather than crashing the import of the
+    whole templates module."""
+    from systems.technical_analysis.screener.templates import (
+        ScreenerTemplate,
+        _condition_signature,
+    )
+
+    t = ScreenerTemplate(
+        name="X4", category="F", description="between-op template",
+        conditions=[{"feature": "rsi_14", "op": "between", "value": [30, 50]}],
+        key_display_features=["rsi_14"],
+    )
+    assert len(_condition_signature(t)) == 1
+
+
+def test_dropped_duplicates_are_gone_and_survivors_kept_both_display_features():
+    """C3/F7 must be de-registered, and the surviving template must carry the
+    UNION of both templates' display features — otherwise dropping a duplicate
+    silently removes a column a user relied on seeing."""
+    from systems.technical_analysis.screener.templates import TEMPLATE_MAP
+
+    assert "C3" not in TEMPLATE_MAP
+    assert "F7" not in TEMPLATE_MAP
+    # rs_vs_nifty500_21d was C3-only; adx_14 was F7-only.
+    assert "rs_vs_nifty500_21d" in TEMPLATE_MAP["C1"].key_display_features
+    assert "adx_14" in TEMPLATE_MAP["F3"].key_display_features
