@@ -67,6 +67,17 @@ _INDEX_NAME_MAP = {
     "NIFTY 50": "Nifty 50",
     "NIFTY 100": "Nifty 100",
     "NIFTY 500": "Nifty 500",
+    # [2026-08-13, A97] The size indices. Until these landed, a small- or
+    # mid-cap strategy had no honest benchmark: every rank band was compared
+    # against Nifty 500 regardless of what it actually held.
+    "NIFTY NEXT 50": "Nifty Next 50",
+    "NIFTY MIDCAP 50": "Nifty Midcap 50",
+    "NIFTY MIDCAP 100": "Nifty Midcap 100",
+    "NIFTY MIDCAP 150": "Nifty Midcap 150",
+    "NIFTY SMALLCAP 50": "Nifty Smallcap 50",
+    "NIFTY SMALLCAP 100": "Nifty Smallcap 100",
+    "NIFTY SMALLCAP 250": "Nifty Smallcap 250",
+    "NIFTY MICROCAP 250": "Nifty Microcap 250",
 }
 
 
@@ -104,7 +115,9 @@ def parse_csv(path: Path) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def ingest(paths, dry_run: bool = False, overwrite: bool = False) -> None:
+def ingest(
+    paths, dry_run: bool = False, overwrite: bool = False, db_path=None
+) -> None:
     frames = []
     for p in sorted(paths):
         df = parse_csv(Path(p))
@@ -137,7 +150,9 @@ def ingest(paths, dry_run: bool = False, overwrite: bool = False) -> None:
         if overwrite
         else "DO NOTHING"
     )
-    with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
+    with get_duckdb_connection(
+        db_path or DUCKDB_PATH, read_only=False, persist=False
+    ) as conn:
         pre = {
             n: c for n, c in conn.execute(
                 "SELECT index_name, COUNT(*) FROM index_ohlcv GROUP BY 1"
@@ -172,13 +187,21 @@ def main() -> None:
         "--overwrite", action="store_true",
         help="Overwrite an existing (date, index_name) row. Default leaves scraped rows untouched.",
     )
+    parser.add_argument(
+        "--db-path", default=None,
+        help="Write to this DuckDB instead of DUCKDB_PATH. Used to rehearse an "
+             "ingest against a copy of the real database before applying it.",
+    )
     args = parser.parse_args()
 
     paths = globmod.glob(args.glob)
     if not paths:
         raise SystemExit(f"no files matched {args.glob!r}")
     logger.info(f"matched {len(paths)} file(s)")
-    ingest(paths, dry_run=args.dry_run, overwrite=args.overwrite)
+    ingest(
+        paths, dry_run=args.dry_run, overwrite=args.overwrite,
+        db_path=Path(args.db_path) if args.db_path else None,
+    )
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ from .routers import (
     fundamentals,
     governance,
     holdings,
+    indices,
     macro,
     models,
     momentum,
@@ -170,6 +171,7 @@ async def duckdb_lock_conflict_handler(request, exc: duckdb.IOException):
 # added P2.2; fno added P2.3; forensic/multibagger/governance added P2.6) =====
 app.include_router(system.router)
 app.include_router(ohlcv.router)
+app.include_router(indices.router)
 # [AS BUILT, P2.6] forensic.router and multibagger.router MUST be registered
 # before signals.router: their literal "/forensic/{ticker}" and
 # "/multibagger/{ticker}" paths would otherwise structurally collide with

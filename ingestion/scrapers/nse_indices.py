@@ -68,7 +68,42 @@ TRACKED_INDICES = [
     "Nifty Pharma",
     "Nifty Oil & Gas",
     "Nifty Media",
+    # [2026-08-13, A97] The size indices. Without these, a small- or mid-cap
+    # rank-band strategy had no honest benchmark -- every band was compared
+    # against Nifty 500 regardless of what it actually held. History came from
+    # NSE's own historical PR CSVs (scripts/ingest_index_csv.py); these
+    # entries are what keep FUTURE dates populated.
+    "Nifty Next 50",
+    "Nifty Midcap 50",
+    "Nifty Midcap 100",
+    "Nifty Midcap 150",
+    "Nifty Smallcap 50",
+    "Nifty Smallcap 100",
+    "Nifty Smallcap 250",
+    "Nifty Microcap 250",
 ]
+
+# [2026-08-13, A97] NSE is not internally consistent about how it capitalises
+# these in ind_close_all: the 2026-08-10 file publishes "NIFTY Midcap 100" and
+# "NIFTY Smallcap 100" while every sibling is "Nifty Midcap 150", "Nifty
+# Smallcap 250", and so on. TRACKED_INDICES is matched exactly, so adding the
+# canonical spelling alone would have silently dropped those two indices every
+# single day -- the identical failure that left Nifty 100 with zero rows until
+# 2026-08-09.
+#
+# Rather than add each observed variant by hand and wait for NSE to invent
+# another one, the filter below matches case-insensitively on a normalised
+# (casefolded, whitespace-collapsed) key and stores the canonical name. A
+# future casing change is then a no-op instead of a silent data outage.
+#
+# This handles CASING and SPACING only. A genuine rename (CNX Nifty ->
+# Nifty 50) is a different fact and stays in HISTORICAL_INDEX_ALIASES, which
+# is applied first.
+def _normalise_index_name(name: str) -> str:
+    return " ".join(str(name).split()).casefold()
+
+
+_NORMALISED_TO_CANONICAL = {_normalise_index_name(n): n for n in TRACKED_INDICES}
 
 # 2026-07-20: NSE renamed every CNX-prefixed index to its current Nifty-
 # prefixed name around 2015-11-06 (confirmed live against the real
@@ -221,7 +256,13 @@ def download_index_ohlcv(date: str) -> pd.DataFrame:
     # there in the fetched CSV.
     raw["Index Name"] = raw["Index Name"].replace(_ALIAS_TO_CANONICAL)
 
-    raw = raw[raw["Index Name"].isin(TRACKED_INDICES)].reset_index(drop=True)
+    # [2026-08-13, A97] Match case/spacing-insensitively and store the
+    # canonical name. NSE publishes "NIFTY Midcap 100" alongside "Nifty
+    # Midcap 150" in the same file; an exact isin() would drop the former
+    # every day while looking like it worked. See _NORMALISED_TO_CANONICAL.
+    canonical = raw["Index Name"].map(_normalise_index_name).map(_NORMALISED_TO_CANONICAL)
+    raw = raw[canonical.notna()].reset_index(drop=True)
+    raw["Index Name"] = canonical[canonical.notna()].reset_index(drop=True)
 
     volume = raw["Volume"].replace("-", pd.NA) if "Volume" in raw.columns else pd.NA
     df = pd.DataFrame(
