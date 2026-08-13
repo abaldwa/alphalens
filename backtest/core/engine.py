@@ -357,6 +357,29 @@ class RefitEvent:
     model_version: str
 
 
+def _curve_to_rows(curve):
+    """A pandas equity curve -> [{"date": "YYYY-MM-DD", "equity": float}].
+
+    Deliberately the same shape, key and sampling as the strategy
+    `equity_curve` built inline below, so the two series can be zipped by date
+    without either side guessing at the other's convention. Downsampling for
+    display is the report layer's job (A83), not the engine's -- an engine
+    that thins the series decides for every future consumer how much detail
+    they are allowed.
+
+    NaN points are dropped rather than serialised as nulls: a gap in the index
+    series is missing data, and emitting it as a point invites a chart to draw
+    a line through it.
+    """
+    if curve is None or len(curve) == 0:
+        return []
+    return [
+        {"date": ts.date().isoformat(), "equity": float(value)}
+        for ts, value in curve.items()
+        if value == value
+    ]
+
+
 @dataclass
 class OrchestratorConfig:
     trading_days: pd.DatetimeIndex
@@ -1349,6 +1372,11 @@ class BacktestOrchestrator:
             # is a ledger nobody can check.
             tax_ledger=list(portfolio.tax_ledger),
             ledger_violations=ledger_violations,
+            # A90: the benchmark's path, in the same shape and on the same
+            # dates as equity_curve below. It was computed to derive excess
+            # return and then dropped, so a report could draw the strategy's
+            # line but never the one it is judged against.
+            benchmark_curve=_curve_to_rows(benchmark_curve),
             exit_policy_variant=self._exit_policy_variant,
             regime_label=regime_label,
             trade_log_path=str(trade_log_path),

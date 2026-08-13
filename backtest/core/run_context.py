@@ -170,6 +170,19 @@ class BacktestRunResult:
     # because an unpaid balance keeps compounding until settled — the exact
     # effect being removed.
     tax_ledger: List[Dict[str, Any]] = field(default_factory=list)
+    # [A90, 2026-08-13] The benchmark's equity curve, same shape and dates as
+    # `equity_curve` below: [{"date": "YYYY-MM-DD", "equity": float}].
+    #
+    # The strategy curve was already carried; the index one was computed by
+    # _build_benchmark_curve to derive excess return and then discarded. A
+    # report could therefore draw the strategy's path but never the line it is
+    # supposed to be judged against, which is the comparison the whole report
+    # exists to make.
+    #
+    # Empty when no index series covered the window. Never interpolated, and
+    # never substituted from another index: a benchmark you did not choose is
+    # worse than no benchmark, because it looks like one you did.
+    benchmark_curve: List[Dict[str, Any]] = field(default_factory=list)
     # Accounting identities broken by this run (backtest/ledger_invariants.py).
     # Empty is the only acceptable value; a non-empty list means the simulation
     # itself is wrong, not that the strategy performed badly.
