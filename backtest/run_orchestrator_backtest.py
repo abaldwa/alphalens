@@ -267,6 +267,7 @@ def _build_pit_adtv_panel(ohlcv: pd.DataFrame, lookback: int) -> pd.DataFrame:
 
 def _build_config(
     ohlcv: pd.DataFrame, sector_map: Dict[str, str], top_n_by_adtv: Optional[int] = None,
+    block_circuit_fills: bool = False,
 ) -> OrchestratorConfig:
     trading_days = pd.DatetimeIndex(sorted(ohlcv["date"].unique()))
     price_map = {(row.ticker, row.date.date()): row.close for row in ohlcv.itertuples(index=False)}
@@ -329,11 +330,33 @@ def _build_config(
         top = set(ranked.nlargest(top_n_by_adtv).index)
         return [t for t in candidates if t in top]
 
+    # Circuit-locked bars, identified as high == low on a day that actually
+    # traded. That is the unambiguous signature: a real session with literally
+    # no intraday range means the band was hit and held. The pre-existing
+    # circuit_band_pct adapter option is a close-to-close PROXY for the same
+    # thing and was None in all 195 unconstrained Technical runs, so no run to
+    # date has excluded a single locked fill.
+    #
+    # volume > 0 is required: a flat bar with no volume is a carried-forward
+    # price on a non-trading day, not a lock, and treating those as locks
+    # would withhold dormant small caps for the wrong reason.
+    locked_bars = set()
+    if block_circuit_fills:
+        locked = ohlcv[(ohlcv["high"] == ohlcv["low"]) & (ohlcv["volume"] > 0)]
+        locked_bars = {
+            (row.ticker, row.date.date() if hasattr(row.date, "date") else row.date)
+            for row in locked.itertuples(index=False)
+        }
+
     return OrchestratorConfig(
         trading_days=trading_days,
         universe_provider=universe_provider,
         price_lookup=lambda ticker, as_of: price_map.get((ticker, as_of)),
         sector_lookup=lambda ticker: sector_map.get(ticker, "Unknown"),
+        circuit_locked_lookup=(
+            (lambda ticker, as_of: (ticker, as_of) in locked_bars)
+            if block_circuit_fills else None
+        ),
     )
 
 
@@ -533,7 +556,7 @@ def _run_immediate(
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
-    *, annual_reset_spec=None, pit_adtv_top_n=None,
+    *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -543,7 +566,10 @@ def _run_immediate(
     with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
         ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
         sector_map = _real_sector_map()
-        config = _build_config(ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n)
+        config = _build_config(
+            ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n,
+            block_circuit_fills=block_circuit_fills,
+        )
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
         # price/volume panels from the same ohlcv pull momentum's branch
         # below already uses — passed to Technical/Fundamental too so their
@@ -821,7 +847,7 @@ def _run_deferred(
     combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
-    *, annual_reset_spec=None, pit_adtv_top_n=None,
+    *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -834,7 +860,10 @@ def _run_deferred(
 
     ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
     sector_map = _real_sector_map()
-    config = _build_config(ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n)
+    config = _build_config(
+            ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n,
+            block_circuit_fills=block_circuit_fills,
+        )
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
     # Hoisted out of the technical branch — see the matching note in
@@ -1030,6 +1059,8 @@ def run_orchestrator_backtest(
     # Point-in-time top-N-by-ADTV universe (2026-08-13). None = today's
     # behaviour unchanged, i.e. the static present-day CSV ranking.
     pit_adtv_top_n: Optional[int] = None,
+    # Refuse fills on circuit-locked bars. False = prior behaviour.
+    block_circuit_fills: bool = False,
     capital_mode: str = "lump", initial_capital: float = 1_000_000.0, sip_amount: Optional[float] = None,
     universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
@@ -1179,6 +1210,7 @@ def run_orchestrator_backtest(
         bear_drawdown_pct,
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
+        block_circuit_fills=block_circuit_fills,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1258,6 +1290,17 @@ def main() -> None:
             "least this fraction (e.g. 0.12) below its highest close UP TO that date. Unlike the "
             "segment classifier this has no confirmation lag, so the identical rule runs in "
             "backtest and live — see systems/regime/market_regime.py::bear_by_running_peak_drawdown."
+        ),
+    )
+    parser.add_argument(
+        "--block-circuit-fills", action="store_true",
+        help=(
+            "Refuse to fill a buy or sell on a circuit-locked bar (high == low with "
+            "volume > 0). There is no opposing side at a locked price, so a fill there "
+            "is money the simulation grants itself. Distinct from the adapter's "
+            "--circuit-band-pct, which is a close-to-close proxy and was off in all 195 "
+            "unconstrained Technical runs. Blocked fills are recorded as data_gaps, not "
+            "dropped silently."
         ),
     )
     parser.add_argument(
@@ -1404,6 +1447,7 @@ def main() -> None:
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
         pit_adtv_top_n=args.pit_adtv_top_n,
+        block_circuit_fills=args.block_circuit_fills,
         max_hold_days=args.max_hold_days, min_adtv_cr=args.min_adtv_cr,
         quality_gate_min_f_score=args.quality_gate_min_f_score,
         quality_gate_max_m_score=args.quality_gate_max_m_score,

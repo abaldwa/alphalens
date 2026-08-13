@@ -369,6 +369,11 @@ class OrchestratorConfig:
     # measurement is the whole point of the speed work. NOT related to
     # execution_timing directly above, which is a fill-price policy.
     collect_timings: bool = True
+    # (ticker, date) -> True when that bar was circuit-locked. A locked bar
+    # has no opposing side, so a fill at its price is money the simulation
+    # grants itself. None disables the check, preserving prior behaviour for
+    # every caller that does not supply one.
+    circuit_locked_lookup: Optional[Callable[[str, date_type], bool]] = None
 
 
 class BacktestOrchestrator:
@@ -746,6 +751,14 @@ class BacktestOrchestrator:
                 if signal.ticker not in fill_prices:
                     data_gaps.append(DataGap(signal.ticker, execution_date, "no_price_for_sell_signal"))
                     continue
+                if config.circuit_locked_lookup is not None and config.circuit_locked_lookup(
+                    signal.ticker, execution_date
+                ):
+                    # Recorded as a visible gap rather than skipped silently:
+                    # a position we intended to exit and could not is a real
+                    # risk the run must show, not an absence of a trade.
+                    data_gaps.append(DataGap(signal.ticker, execution_date, "circuit_locked_sell_not_fillable"))
+                    continue
                 portfolio.sell(
                     signal.ticker, fill_prices[signal.ticker], execution_date, reason="signal", adtv_cr=signal.adtv_cr,
                 )
@@ -753,6 +766,11 @@ class BacktestOrchestrator:
             for signal in sorted((s for s in signals if s.action == "buy"), key=lambda s: -s.conviction):
                 if signal.ticker not in fill_prices:
                     data_gaps.append(DataGap(signal.ticker, execution_date, "no_price_for_buy_signal"))
+                    continue
+                if config.circuit_locked_lookup is not None and config.circuit_locked_lookup(
+                    signal.ticker, execution_date
+                ):
+                    data_gaps.append(DataGap(signal.ticker, execution_date, "circuit_locked_buy_not_fillable"))
                     continue
                 if signal.adtv_cr is None:
                     # 2026-07-20 (Truthful Review Gap #6): core/portfolio.py's

@@ -14,16 +14,26 @@ is no does not overstate returns a little — it invents them.
 Three filters, in the order they apply.
 
 1. TOP-N BY POINT-IN-TIME ADTV
-   The intended universe was always "top 800 by ADTV as of the rebalance
-   date". It was never actually in force: the 195 unconstrained Technical runs
-   carry universe_spec='curated', min_adtv_cr=None and max_tickers=800 — a CAP
-   on how many names a screen may return, not a liquidity RANKING. The
-   difference is not academic. The single largest trade in the entire history
-   (INDOTECH, +1,493.95%, replicated across six templates) was ranked 1,554th
-   by ADTV at entry; SERVOTECH (+1,059%) 1,253rd; JAIBALAJI (+1,038%) 1,305th.
-   All three would have been excluded by the filter that was believed to be
-   running. The headline outliers were, precisely, the names the universe rule
-   existed to keep out.
+   An ADTV filter WAS running — an earlier version of this docstring said it
+   was not, which was wrong. --max-tickers 800 routes through
+   config/universe.py::get_top_adtv_tickers, which genuinely ranks by ADTV.
+   The defect is subtler and worse: that helper ranks on the adtv_cr column of
+   TODAY'S universe CSV, one present-day snapshot, applied across 2009-2026.
+   A stock that became liquid BECAUSE of a rally was therefore in the
+   tradeable universe for every year before the rally — exactly when it was
+   untradeable. That is lookahead, and it is invisible in the run record,
+   which truthfully reports max_tickers=800.
+
+   INDOTECH: static CSV rank 671 (inside the top 800, tradeable from 2009),
+   real trailing-21-session rank 1,554th on its 2023-04-25 entry date, and the
+   source of the largest trade in the history (+1,493.95%, across six
+   templates). JAIBALAJI: static 726, PIT 1,305. SERVOTECH: static 792, PIT
+   1,253.
+
+   Scale, measured PIT-vs-static at top-800: 64% of the 2010 traded universe
+   was not in the real top 800, 55% in 2015, 43% in 2020, 15% in 2026. The
+   monotonic decay going backwards is the signature of lookahead rather than
+   noise.
 
 2. CIRCUIT-LOCKED BARS
    A stock locked at its circuit limit cannot be bought or sold at that price —
@@ -200,3 +210,43 @@ def filter_trades(
         n_dropped_blackout=n_blackout,
         n_output=len(out),
     )
+
+
+# Fraction of a ticker's bars that may be circuit-locked before the ticker
+# itself is withheld, rather than merely its locked DATES being unfillable.
+#
+# The threshold exists because "exclude every share that ever hits circuit"
+# does not survive contact with the data: 2,134 of 3,159 tickers with a real
+# trading history have locked at least once, so that rule would discard 68% of
+# the universe — including large caps that hit a 20% band once on a results
+# day. Worse, it would preferentially discard exactly the high-momentum names
+# the Technical screens are built to find, which is a bias, not a filter.
+#
+# 2% separates the two populations cleanly. Chronic lockers are a distinct
+# group (the worst sit at 48-71% of bars: INTEGRA, NUCENT, AQYLON, CURAA) and
+# are illiquid or manipulated names where no price is trustworthy, not merely
+# volatile ones. 896 tickers cross it universe-wide — but only 43 survive a
+# point-in-time top-800 ADTV screen, so this rule is a small, targeted
+# addition on top of the liquidity filter rather than a second blunt cut.
+CHRONIC_CIRCUIT_LOCK_PCT = 2.0
+
+# Minimum bars before a ticker's lock RATE means anything. A newly listed name
+# with 12 bars and one lock is not a chronic locker, it is a small sample.
+MIN_BARS_FOR_CHRONIC_JUDGEMENT = 250
+
+
+def chronic_circuit_tickers(
+    lock_stats: pd.DataFrame, threshold_pct: float = CHRONIC_CIRCUIT_LOCK_PCT,
+) -> set:
+    """Tickers to withhold entirely, from a frame of (ticker, n_bars, n_locked).
+
+    Separate from the per-bar rule on purpose. They answer different questions:
+    the per-bar rule says "this price was not fillable", which is a fact about
+    a date; this says "no price from this ticker is trustworthy", which is a
+    judgement about the security. Collapsing them would either let chronic
+    names trade on their unlocked days or discard sound names for one locked
+    afternoon.
+    """
+    eligible = lock_stats[lock_stats["n_bars"] >= MIN_BARS_FOR_CHRONIC_JUDGEMENT]
+    rate = 100.0 * eligible["n_locked"] / eligible["n_bars"]
+    return set(eligible.loc[rate >= threshold_pct, "ticker"])
