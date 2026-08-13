@@ -166,6 +166,27 @@ This file is the completed-items archive split out of `FeatureBacklog.md` on 202
 
 ## Architectural
 
+### A103 — Nifty Midcap 150 2022 index-history gap — CLOSED 2026-08-13
+
+The A97 size-index ingest left Nifty Midcap 150 with zero rows for the whole
+of 2022: the year's historical-PR CSV was simply absent from the supplied set,
+so any backtest window spanning 2022 and benchmarked against that index would
+have compared across a hole with nothing to signal it.
+
+The missing file was supplied and ingested (248 sessions, 2022-01-03 ..
+2022-12-30, all with real OHLC — inside the index's live history, which begins
+2019-01-14, so none of it is back-computed).
+
+Verified after the fact rather than assumed: all eight size indices now hold
+exactly 4,610 rows each, and a `lag()` scan over the whole series finds no
+remaining gap longer than 10 days in any of them.
+
+The other file noted as absent in the original A103 entry — Nifty 50 2025 —
+needed no action: the daily scraper already covers that year (249 rows).
+
+Ingest is idempotent (UPSERT on `(date, index_name)`, `DO NOTHING` by
+default), so re-running the full glob costs nothing and was not necessary.
+
 ### A1/A2/A3 — Morning Catch-Up redesign (macro capture + scheduling)
 `ingestion/scheduler/pipeline_scheduler.py:770-823`'s `schedule_morning_catchup`
 currently re-runs the same gap-backfill-then-today logic as the 18:00 job,
