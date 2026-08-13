@@ -142,6 +142,15 @@ export interface DataTableProps<TData> {
    * (header scrolls away with the page) for a short table that never needs
    * to scroll internally. */
   maxHeight?: string
+  /** Called when a row is activated, by click or by Enter/Space when the row
+   * has keyboard focus. Rows become focusable only when this is supplied, so
+   * tables without it keep a clean tab order.
+   *
+   * [2026-08-13] pages/technical/comparison.tsx has been passing this since it
+   * was written, but DataTable never accepted it — so the strategy drill-down
+   * panel on that page was unreachable: `selected` is set nowhere else, so
+   * `{selected?.lump && ...}` never rendered. */
+  onRowClick?: (row: TData) => void
 }
 
 /**
@@ -163,6 +172,7 @@ export function DataTable<TData>({
   facetFilter,
   facetFilters,
   maxHeight = 'calc(100vh - 320px)',
+  onRowClick,
 }: DataTableProps<TData>) {
   const allFacetFilters = React.useMemo(
     () => facetFilters ?? (facetFilter ? [facetFilter] : []),
@@ -507,7 +517,27 @@ export function DataTable<TData>({
                 const hiddenCells = collapseColumns ? allCells.filter((c) => isCollapsedPriority(c.column.id)) : []
                 return (
                   <React.Fragment key={row.id}>
-                    <TableRow>
+                    <TableRow
+                      {...(onRowClick
+                        ? {
+                            onClick: () => onRowClick(row.original),
+                            // Keyboard parity: a row that responds to a click
+                            // must respond to Enter/Space too, and be
+                            // reachable by tab. Only applied when the table
+                            // is actually interactive, so non-clickable
+                            // tables keep a clean tab order.
+                            onKeyDown: (e: React.KeyboardEvent<HTMLTableRowElement>) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                onRowClick(row.original)
+                              }
+                            },
+                            tabIndex: 0,
+                            role: 'button',
+                            className: 'cursor-pointer hover:bg-muted/50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring',
+                          }
+                        : {})}
+                    >
                       {collapseColumns ? (
                         <TableCell className="w-8 py-0">
                           <button

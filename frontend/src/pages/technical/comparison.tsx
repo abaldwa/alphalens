@@ -209,7 +209,12 @@ export function TechnicalComparisonPage() {
       : prev.length >= SERIES_COLOURS.length ? prev : [...prev, k]))
 
   return (
-    <AppShell>
+    // AppShell requires a title; this page rendered without one, leaving the
+    // top bar's heading undefined while the real heading sat inside a Card.
+    <AppShell
+      title="Technical Strategy Comparison"
+      description="Template-by-template backtest results, 2009 to 2026."
+    >
       <div className="flex flex-col gap-4">
         <Card>
           <CardHeader>
@@ -381,7 +386,11 @@ export function TechnicalComparisonPage() {
                         <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
                         <YAxis scale="log" domain={['auto', 'auto']} tick={{ fontSize: 11 }}
                                width={64} label={{ value: 'Index (log)', angle: -90, position: 'insideLeft', fontSize: 11 }} />
-                        <Tooltip formatter={(v: number) => v.toFixed(1)} />
+                        <Tooltip
+                          formatter={(v) =>
+                            typeof v === 'number' ? v.toFixed(1) : String(v)
+                          }
+                        />
                         <Legend />
                         {compareSeries.map((s, i) => (
                           <Line key={key(s)} type="monotone" dataKey={key(s)} dot={false}

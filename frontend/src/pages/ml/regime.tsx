@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, TickerLink, tickerColumn } from '@/lib/ui'
+import { AppShell, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, InfoTooltip, tickerColumn } from '@/lib/ui'
 import { apiGet } from '@/shared/api/client'
 
 function todayStr() {
@@ -106,7 +106,14 @@ export function MlRegimePage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['ml-regime-per-ticker', date],
-    queryFn: () => apiGet<PerTickerRegimeResponse>('/api/v1/macro/regime/per-ticker', { as_of: date }),
+    // `date` is nullable but the query is gated on `enabled` below, so it is
+    // never actually null here; apiGet's params reject null, and coercing to
+    // undefined keeps the key out of the query string rather than sending
+    // "as_of=null".
+    queryFn: () =>
+      apiGet<PerTickerRegimeResponse>('/api/v1/macro/regime/per-ticker', {
+        as_of: date ?? undefined,
+      }),
     enabled: !!date,
   })
 

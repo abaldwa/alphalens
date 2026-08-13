@@ -30,7 +30,7 @@ import type {
   MomentumStrategyConfigCreate,
   MomentumStrategyConfigUpdate,
   MomentumYoyReturnRow,
-  MomentumDynamicReportVariant,
+  MomentumStrategyCategory,
 } from './types'
 
 const CATEGORIES = ['all_risk', 'balanced', 'risk_managed', 'max_defensive'] as const
@@ -69,7 +69,7 @@ function fmtDate(v: string | null | undefined) {
 
 interface ConfigFormData {
   band_id: number
-  categories: string[]  // multi-select via checkboxes
+  categories: MomentumStrategyCategory[]  // multi-select via checkboxes
   lookback_months: number
   top_n: number
   grace_period: number
@@ -204,15 +204,19 @@ export function StrategyDeployPage() {
       top_n: config.top_n,
       grace_period: config.grace_period,
       rebalance_frequency: config.rebalance_frequency,
-      exit_rank: config.exit_rank,
-      trailing_stop_pct: config.trailing_stop_pct,
-      downtrend_filter_pct: config.downtrend_filter_pct,
-      hmm_regime_filter: config.hmm_regime_filter,
+      // The API response type marks these optional; ConfigFormData requires
+      // them (nullable). Coerce here rather than loosening the form type --
+      // a controlled input needs a defined value, and `undefined` would flip
+      // it to uncontrolled mid-edit.
+      exit_rank: config.exit_rank ?? null,
+      trailing_stop_pct: config.trailing_stop_pct ?? null,
+      downtrend_filter_pct: config.downtrend_filter_pct ?? null,
+      hmm_regime_filter: config.hmm_regime_filter ?? 'none',
       initial_capital: config.initial_capital,
       sip_amount: config.sip_amount,
       start_date: config.start_date,
-      rebalance_day_of_month: config.rebalance_day_of_month,
-      portfolio_id: config.portfolio_id,
+      rebalance_day_of_month: config.rebalance_day_of_month ?? null,
+      portfolio_id: config.portfolio_id ?? null,
     })
   }
 
@@ -279,13 +283,19 @@ export function StrategyDeployPage() {
     {
       accessorKey: 'trailing_stop_pct',
       header: 'Trailing Stop',
-      cell: ({ getValue }) => (getValue() ? fmtPct(getValue() / 100) : '—'),
+      cell: ({ getValue }) => {
+        const v = getValue<number | null>()
+        return v ? fmtPct(v / 100) : '—'
+      },
       meta: { align: 'center' as const },
     },
     {
       accessorKey: 'downtrend_filter_pct',
       header: 'Downtrend %',
-      cell: ({ getValue }) => (getValue() ? fmtPct(getValue() / 100) : '—'),
+      cell: ({ getValue }) => {
+        const v = getValue<number | null>()
+        return v ? fmtPct(v / 100) : '—'
+      },
       meta: { align: 'center' as const },
     },
     {
@@ -296,19 +306,19 @@ export function StrategyDeployPage() {
     {
       accessorKey: 'initial_capital',
       header: 'Initial Cap',
-      cell: ({ getValue }) => fmtInr(getValue()),
+      cell: ({ getValue }) => fmtInr(getValue<number | null>()),
       meta: { align: 'right' as const },
     },
     {
       accessorKey: 'sip_amount',
       header: 'SIP',
-      cell: ({ getValue }) => fmtInr(getValue()),
+      cell: ({ getValue }) => fmtInr(getValue<number | null>()),
       meta: { align: 'right' as const },
     },
     {
       accessorKey: 'start_date',
       header: 'Start Date',
-      cell: ({ getValue }) => fmtDate(getValue()),
+      cell: ({ getValue }) => fmtDate(getValue<string | null>()),
       meta: { align: 'center' as const },
     },
     {
@@ -386,13 +396,13 @@ export function StrategyDeployPage() {
     {
       accessorKey: 'sharpe',
       header: 'Sharpe',
-      cell: ({ getValue }) => fmtNum(getValue()),
+      cell: ({ getValue }) => fmtNum(getValue<number | null>()),
       meta: { align: 'right' as const },
     },
     {
       accessorKey: 'sortino',
       header: 'Sortino',
-      cell: ({ getValue }) => fmtNum(getValue()),
+      cell: ({ getValue }) => fmtNum(getValue<number | null>()),
       meta: { align: 'right' as const },
     },
     {

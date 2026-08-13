@@ -84,6 +84,20 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   return (await resp.json()) as T
 }
 
+/** PATCH for partial updates. The portfolios router serves PATCH (not PUT)
+ * for name/description/is_active, and pages/portfolios.tsx has been importing
+ * this since it was written — the export was simply never added, so the
+ * frontend build has been failing on it. */
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const url = buildUrl(path)
+  const resp = await doFetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  return (await resp.json()) as T
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const url = buildUrl(path)
   const resp = await doFetch(url, { method: 'DELETE' })

@@ -107,9 +107,14 @@ export interface MomentumExperimentationReport {
 // scripts/run_momentum_dynamic_report.py's consolidated All Risk/Balanced/
 // Risk-Managed/Max-Defensive strategy sweep across all 7 rank bands (1-50
 // through 501-800), surfaced via GET /api/v1/momentum/dynamic_report.
+/** The four cumulative momentum filter presets
+ * (features/momentum_strategy.py::build_category_presets). Named once so the
+ * report row, the deploy form and the API payload cannot drift apart. */
+export type MomentumStrategyCategory = 'all_risk' | 'balanced' | 'risk_managed' | 'max_defensive'
+
 export interface MomentumDynamicReportVariant {
   variant_id: string
-  strategy: 'all_risk' | 'balanced' | 'risk_managed' | 'max_defensive'
+  strategy: MomentumStrategyCategory
   band_id: number
   rank_start: number
   rank_end: number
@@ -204,7 +209,7 @@ export interface MomentumTriggerStatus {
 // POST/GET/PUT/DELETE /api/v1/momentum/configs
 export interface MomentumStrategyConfigCreate {
   band_id: number
-  category: 'all_risk' | 'balanced' | 'risk_managed' | 'max_defensive'
+  category: MomentumStrategyCategory
   lookback_months: number
   top_n: number
   grace_period: number
