@@ -32,6 +32,9 @@ import {
   shortLabel,
   strategyDetailUrl,
 } from './strategyKey.ts'
+import { EM_DASH, inr, pct, rate, rateDelta } from './format.ts'
+import { classifyRag, periodCagr, ragCounts } from './matrix.ts'
+import { crossesUnreliableHistory, resolveWindow } from './useReportParams.ts'
 import { adaptMomentumReport, adaptMomentumVariant } from './adapters/momentum.ts'
 import {
   adaptTechnicalReport,
@@ -627,6 +630,82 @@ ok(
     (ml.returns.cagrPreTax ?? 0) < 1,
   'all three adapters express CAGR as a fraction',
 )
+
+// ---------------------------------------------------------------------------
+console.log('\nformatters')
+
+// The rate rule made visible: a CAGR renders with a per-year suffix, a
+// point-in-time percentage does not. Reading a "24.3%" cell as a total over
+// ten years rather than a rate is the exact confusion the suffix prevents.
+eq(rate(0.2431), '24.3%/yr', 'rates carry a per-year suffix')
+eq(pct(0.2431), '24.3%', 'plain percentages do not')
+eq(rateDelta(0.031), '+3.1 pp/yr', 'an excess return is signed and in points per year')
+eq(rateDelta(-0.031), '-3.1 pp/yr', 'a negative excess keeps its sign')
+eq(rate(null), EM_DASH, 'null is an em dash')
+eq(rate(Number.NaN), EM_DASH, 'NaN is an em dash, never "NaN%"')
+eq(pct(0), '0.0%', 'a real zero still renders as zero, not as an em dash')
+eq(inr(15_000_000), '₹1.50 Cr', 'rupees abbreviate to crore')
+eq(inr(250_000), '₹2.50 L', 'and to lakh')
+
+// ---------------------------------------------------------------------------
+console.log('\nmatrix')
+
+const matrixCols = [
+  { key: 'FY2021', label: 'FY2021' },
+  { key: 'FY2022', label: 'FY2022' },
+  { key: 'FY2023', label: 'FY2023' },
+]
+const boundaries = { red: 0, green: 0.18 }
+
+// Geometric mean, not arithmetic: +50% then -50% is a loss, and the
+// arithmetic mean says it is flat.
+const flat = periodCagr({ FY2021: 0.5, FY2022: -0.5 }, matrixCols.slice(0, 2))
+ok(flat != null && flat < -0.13 && flat > -0.14, 'period CAGR compounds rather than averaging')
+
+// A year with no value is skipped, not counted as 0%. A strategy that did not
+// exist in FY2021 did not return zero in FY2021 — treating it as zero drags
+// its CAGR down and makes a young strategy look worse than it was.
+const partial = periodCagr({ FY2022: 0.2, FY2023: 0.2 }, matrixCols)
+eq(partial != null ? Number(partial.toFixed(4)) : null, 0.2, 'absent periods are skipped, not zeroed')
+eq(periodCagr({}, matrixCols), null, 'no periods at all yields null, not zero')
+
+const counts = ragCounts({ FY2021: -0.1, FY2022: 0.05, FY2023: 0.25 }, matrixCols, boundaries)
+eq(counts.red, 1, 'a negative year is red')
+eq(counts.amber, 1, 'a positive-but-below-target year is amber')
+eq(counts.green, 1, 'a year at or above the green boundary is green')
+eq(
+  ragCounts({ FY2021: null, FY2022: 0.25 }, matrixCols, boundaries).green,
+  1,
+  'a null year is counted in no band at all',
+)
+eq(classifyRag(0.18, boundaries), 'green', 'the green boundary is inclusive')
+eq(classifyRag(0, boundaries), 'amber', 'the red boundary is exclusive: flat is not a loss')
+
+// ---------------------------------------------------------------------------
+console.log('\nwindow selection')
+
+// Anchored to the report's latest date, not today: anchoring to today
+// silently shortens every window whenever the pipeline is a few days behind,
+// which it periodically is.
+eq(
+  resolveWindow('3y', '2026-03-31').startDate,
+  '2023-03-31',
+  'a 3y window is measured back from the latest available date',
+)
+eq(resolveWindow('max', '2026-03-31').startDate, null, 'max leaves the start open')
+eq(resolveWindow('5y', null).endDate, null, 'no data means no window')
+eq(
+  resolveWindow('3y', '2026-03-31', { startDate: '2011-01-01', endDate: '2020-01-01' }).startDate,
+  '2011-01-01',
+  'explicit custom dates win over the preset',
+)
+ok(
+  crossesUnreliableHistory(resolveWindow('20y' as never, '2026-03-31').startDate) ||
+    crossesUnreliableHistory('2007-01-01'),
+  'a pre-2009 window is flagged as unreliable history',
+)
+eq(crossesUnreliableHistory('2009-04-01'), false, 'the reliable-from date itself is not flagged')
+eq(crossesUnreliableHistory(null), false, 'an open start is not flagged')
 
 // ---------------------------------------------------------------------------
 console.log(`\n${checks - failures}/${checks} checks passed`)

@@ -241,7 +241,7 @@ export const PENDING_REASONS: Record<string, PendingField> = {
   'consistency.rolling': {
     backlogId: 'T13',
     reason:
-      'Rolling-window returns are not in the Technical report. Note the two channels also disagree on the definition — Momentum reports annualised CAGR, Technical median total return.',
+      'Rolling-window returns are not in this report. Where both channels do emit them they agree: annualised CAGR per window, never a total.',
   },
   'consistency.yoy': {
     backlogId: 'T13',
