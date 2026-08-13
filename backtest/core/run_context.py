@@ -159,6 +159,21 @@ class BacktestRunResult:
     # strategy never signalled). Never present these returns as fixed-base
     # returns — see AnnualResetConfig's docstring.
     fy_ledger: List[Dict[str, Any]] = field(default_factory=list)
+    # [STEP 5, 2026-08-13] One row per FY: assessed / paid / deferred /
+    # cash_after. Tax used to be deducted once from the closing value in
+    # _finalize, so every rupee of it compounded inside the portfolio for the
+    # rest of the run and was written off at the end. It is now a real cash
+    # outflow at each FY boundary, and this ledger is the audit trail.
+    #
+    # A non-zero `deferred` is not an error: a near-fully-invested book can owe
+    # more at 31 March than it holds in cash. It has to be VISIBLE, though,
+    # because an unpaid balance keeps compounding until settled — the exact
+    # effect being removed.
+    tax_ledger: List[Dict[str, Any]] = field(default_factory=list)
+    # Accounting identities broken by this run (backtest/ledger_invariants.py).
+    # Empty is the only acceptable value; a non-empty list means the simulation
+    # itself is wrong, not that the strategy performed badly.
+    ledger_violations: List[str] = field(default_factory=list)
     # Which of EXIT_POLICY_VARIANTS (backtest/core/engine.py) this run used —
     # threaded through from BacktestOrchestrator(exit_policy_variant=...) so
     # experiment comparison can group/filter runs by exit strategy. None for

@@ -39,6 +39,7 @@ import pandas as pd
 
 from backtest.core.horizon import HorizonBucket, sizing_for
 from backtest.instrumentation import NullTimer, RunTimer
+from backtest.ledger_invariants import check_all
 from systems.ml_signal_engine.models.exit.exit_intent import (
     EXIT_ACTION_EXIT,
     EXIT_ACTION_REDUCE,
@@ -698,6 +699,7 @@ class BacktestOrchestrator:
         )
         portfolio.prime_sip_schedule(config.trading_days)
         portfolio.prime_annual_reset_schedule(config.trading_days)
+        portfolio.prime_tax_schedule(config.trading_days)
 
         data_gaps: List[DataGap] = []
         # {ticker: consecutive trading days with no bar} for open positions.
@@ -754,6 +756,10 @@ class BacktestOrchestrator:
                 model_version = adapter.refit(as_of)
                 refit_log.append(RefitEvent(as_of_date=as_of, model_version=str(model_version)))
 
+            # Tax before SIP and before this date's sizing, so the year's
+            # first buys size against capital that has actually paid last
+            # year's bill rather than against money already owed.
+            portfolio.apply_due_fy_tax(as_of)
             portfolio.apply_due_sip_injections(as_of)
             # Annual-reset boundary handling runs BEFORE this date's sizing, so
             # the year's first buys size against the adjusted capital rather
@@ -1175,17 +1181,45 @@ class BacktestOrchestrator:
         distinct_tickers: List[str], trading_days: pd.DatetimeIndex, refit_log: Optional[List[RefitEvent]] = None,
         execution_timing: str = "same_day_close",
     ) -> BacktestRunResult:
-        tax_flows = fy_tax_cash_flows(portfolio.tax_transactions())
-        cash_flows = [(cf["date"], cf["amount"]) for cf in portfolio.cash_flows] + [
-            (d.isoformat(), amt) for d, amt in tax_flows
-        ]
-        # Tax is a real cash outflow — deduct it from the equity curve's final value too,
-        # not just from the XIRR cash-flow series, so final_capital reflects it.
-        total_tax = -sum(amt for _, amt in tax_flows)
+        # [STEP 5, 2026-08-13] Tax is now paid in cash at each FY boundary
+        # (StrategyPortfolio.apply_due_fy_tax), so it is already inside
+        # portfolio.cash_flows and already out of the equity curve. Re-deriving
+        # it here and subtracting again would charge it twice.
+        #
+        # The only amount left to settle is any liability the book could not
+        # fund from cash — a near-fully-invested portfolio can owe more at
+        # 31 March than it holds. That balance is real and unpaid, so it comes
+        # off the closing value.
         equity_curve = portfolio.equity_curve
-        if len(equity_curve) and total_tax:
+        if portfolio.deduct_tax_annually and portfolio.annual_reset is None:
+            cash_flows = [(cf["date"], cf["amount"]) for cf in portfolio.cash_flows]
+            outstanding = portfolio.deferred_tax_liability
+        else:
+            # annual_reset nets tax out of its own withdrawal, and a caller
+            # that switched annual deduction off keeps the previous
+            # end-of-run treatment.
+            tax_flows = fy_tax_cash_flows(portfolio.tax_transactions())
+            cash_flows = [(cf["date"], cf["amount"]) for cf in portfolio.cash_flows] + [
+                (d.isoformat(), amt) for d, amt in tax_flows
+            ]
+            outstanding = (
+                -sum(amt for _, amt in tax_flows) if portfolio.annual_reset is None else 0.0
+            )
+        if len(equity_curve) and outstanding:
             equity_curve = equity_curve.copy()
-            equity_curve.iloc[-1] = equity_curve.iloc[-1] - total_tax
+            equity_curve.iloc[-1] = equity_curve.iloc[-1] - outstanding
+
+        # STEP 5 gate. Recorded on every run, never only logged: an invariant
+        # whose result can be discarded silently is not a gate. These are
+        # accounting identities, so a violation is a bug in the simulation
+        # rather than a poor result — and each defect this refactor found was
+        # invisible in the metrics while breaking one of them.
+        ledger_violations = [str(v) for v in check_all(portfolio)]
+        if ledger_violations:
+            logger.error(
+                "ledger invariant violation(s) in run %s: %s",
+                run.run_id, "; ".join(ledger_violations),
+            )
 
         trade_pnls = [t.pnl_inr for t in portfolio.trades]
         trade_values = [t.entry_price * t.quantity for t in portfolio.trades]
@@ -1298,6 +1332,12 @@ class BacktestOrchestrator:
             # measure 3's actual deliverable — without carrying it out of the
             # portfolio here, an annual_reset run silently produces no ledger.
             fy_ledger=list(portfolio.fy_ledger),
+            # STEP 5: per-FY tax actually paid, and any balance the book could
+            # not fund from cash. Carried out of the portfolio for the same
+            # reason fy_ledger is — a ledger the run computes and then discards
+            # is a ledger nobody can check.
+            tax_ledger=list(portfolio.tax_ledger),
+            ledger_violations=ledger_violations,
             exit_policy_variant=self._exit_policy_variant,
             regime_label=regime_label,
             trade_log_path=str(trade_log_path),

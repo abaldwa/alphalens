@@ -179,6 +179,7 @@ class StrategyPortfolio:
         sip: Optional[SipConfig] = None,
         annual_reset: Optional["AnnualResetConfig"] = None,
         adtv_cap_fraction: float = DEFAULT_ADTV_CAP_FRACTION,
+        deduct_tax_annually: bool = True,
     ) -> None:
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
@@ -216,6 +217,28 @@ class StrategyPortfolio:
         # Opening capital of the FY currently in progress. Seeded with the
         # run's initial capital; each reset stamps the next year's value.
         self._current_fy_opening_capital = initial_capital
+
+        # ----- STEP 5: capital-gains tax as a real per-FY cash outflow -----
+        # Tax used to be deducted ONCE, from the final equity value, in
+        # _finalize. Two things were wrong with that. It contradicted the
+        # standing requirement that tax is paid every year, not at the end of
+        # the period; and, more materially, it left every rupee of tax in the
+        # portfolio COMPOUNDING for the rest of the run. A 17-year backtest
+        # traded all of its unpaid tax for sixteen more years and then wrote
+        # the bill off the closing balance.
+        self.deduct_tax_annually = deduct_tax_annually
+        self._tax_fy_dates: Optional[List[pd.Timestamp]] = None
+        self._tax_fy_idx = 0
+        self.total_tax_paid = 0.0
+        # Tax assessed but not yet payable from cash. A near-fully-invested
+        # book can owe more than it holds in cash at 31 March, and the honest
+        # options are to sell positions the strategy never signalled, to let
+        # cash go negative, or to carry the liability. Carrying it is the only
+        # one that neither invents a trade nor invents money: it is settled at
+        # the next boundary that has cash, and any balance still outstanding is
+        # deducted from the final equity.
+        self.deferred_tax_liability = 0.0
+        self.tax_ledger: List[Dict] = []
 
     # ===== SIP injection (generalized from momentum_backtest.py's _monthly_injection_dates) =====
     def _monthly_injection_dates(self, trading_days: pd.DatetimeIndex) -> List[pd.Timestamp]:
@@ -413,6 +436,73 @@ class StrategyPortfolio:
                 raise AssertionError(
                     f"annual_reset produced negative cash ({self.cash:.2f}) at {reset_date.date()} — "
                     "withdrawal should be capped by available cash"
+                )
+
+    def prime_tax_schedule(self, trading_days: pd.DatetimeIndex) -> None:
+        """FY-boundary dates at which tax falls due. Reuses the annual-reset
+        schedule's own FY-start derivation so the two can never disagree about
+        where a financial year ends — they did once, and the resulting ledger
+        had three years duplicated and three missing."""
+        self._tax_fy_dates = self._fy_start_dates(trading_days)
+        self._tax_fy_idx = 0
+
+    def apply_due_fy_tax(self, as_of_date) -> None:
+        """[STEP 5, 2026-08-13] Pay the closed FY's capital-gains tax in cash.
+
+        Previously tax was computed in _finalize and subtracted ONCE from the
+        final equity value. Every rupee of it therefore stayed in the portfolio
+        and compounded for the remainder of the run — a 17-year backtest traded
+        sixteen extra years on money it owed, then wrote the bill off the
+        closing balance. It also contradicted the standing requirement that tax
+        is applied every year rather than at the end of the period.
+
+        Inert for capital_mode='annual_reset': that path already computes the
+        FY's tax and nets it out of the withdrawal, so charging it again here
+        would take the same money twice. The two mechanisms are mutually
+        exclusive by construction rather than by a caller remembering.
+        """
+        if not self.deduct_tax_annually or self._tax_fy_dates is None:
+            return
+        if self.annual_reset is not None:
+            return
+
+        from backtest.core.tax import fy_net_tax
+
+        as_of = pd.Timestamp(as_of_date)
+        while self._tax_fy_idx < len(self._tax_fy_dates) and self._tax_fy_dates[self._tax_fy_idx] <= as_of:
+            boundary = self._tax_fy_dates[self._tax_fy_idx]
+            self._tax_fy_idx += 1
+
+            bd = boundary.date()
+            closed_fy_end = date_type(bd.year if bd.month >= 4 else bd.year - 1, 3, 31)
+            assessed = fy_net_tax(self._realised_tax_transactions_for_fy(closed_fy_end))
+
+            # Anything carried from an earlier year that cash could not cover.
+            due = assessed + self.deferred_tax_liability
+            paid = max(0.0, min(due, self.cash))
+            self.cash -= paid
+            self.total_tax_paid += paid
+            self.deferred_tax_liability = max(0.0, due - paid)
+
+            if paid > 0:
+                self.cash_flows.append({"date": str(bd), "amount": paid})
+
+            self.tax_ledger.append({
+                "fy_end": str(closed_fy_end),
+                "assessed": round(assessed, 2),
+                "paid": round(paid, 2),
+                # Non-zero means the book owed more than it held in cash. Not an
+                # error — a near-fully-invested portfolio genuinely can — but it
+                # must be visible, because the unpaid balance keeps compounding
+                # until it is settled, which is the very effect this fixes.
+                "deferred": round(self.deferred_tax_liability, 2),
+                "cash_after": round(self.cash, 2),
+            })
+
+            if self.cash < -1e-6:
+                raise AssertionError(
+                    f"tax payment produced negative cash ({self.cash:.2f}) at {bd} — "
+                    "payment must be capped by available cash and the remainder deferred"
                 )
 
     def apply_due_sip_injections(self, as_of_date) -> None:
