@@ -404,7 +404,7 @@ class BacktestOrchestrator:
     def __init__(
         self, feature_log_writer=None, regime_conn=None, regime_index_name: str = "Nifty 500",
         exit_model=None, technical_feature_lookup=None, exit_policy_variant: Optional[str] = None,
-        regime_method: Optional[str] = None,
+        regime_method: Optional[str] = None, benchmark_index_name: Optional[str] = None,
     ) -> None:
         """feature_log_writer: optional backtest.core.feature_log.FeatureLogWriter.
         None is valid — orchestration/metrics tests that don't need a live
@@ -467,6 +467,16 @@ class BacktestOrchestrator:
         self._feature_log_writer = feature_log_writer
         self._regime_conn = regime_conn
         self._regime_index_name = regime_index_name
+        # A98: the index a strategy is COMPARED AGAINST is a different
+        # parameter from the index its REGIME is detected on. One name drove
+        # both, so choosing a fairer benchmark for a midcap strategy also
+        # silently changed which periods it was allowed to trade in — the
+        # comparison and the results moved together and the run was no longer
+        # the same experiment.
+        #
+        # Defaults to the regime index so existing callers are unaffected,
+        # and every run records which index it actually used.
+        self._benchmark_index_name = benchmark_index_name or regime_index_name
         self._regime_method = regime_method
         self._exit_model = exit_model if exit_model is not None else _build_default_exit_model()
         self._technical_feature_lookup = technical_feature_lookup
@@ -941,7 +951,7 @@ class BacktestOrchestrator:
     def _build_benchmark_curve(
         self, start_date: date_type, end_date: date_type, starting_capital: float,
     ) -> Optional[pd.Series]:
-        """Real buy-and-hold equity curve for self._regime_index_name over
+        """Real buy-and-hold equity curve for self._benchmark_index_name over
         [start_date, end_date], normalised to `starting_capital` at the
         first real index bar in the window — the orchestrator's counterpart
         to BacktestEngine._build_benchmark_curve() (backtest/engine.py),
@@ -962,7 +972,7 @@ class BacktestOrchestrator:
                 WHERE index_name = ? AND date BETWEEN ? AND ? AND close > 0
                 ORDER BY date
                 """,
-                [self._regime_index_name, start_date, end_date],
+                [self._benchmark_index_name, start_date, end_date],
             ).fetchall()
         except Exception:
             logger.warning("benchmark curve unavailable; benchmark_cagr/excess_return stay unset", exc_info=True)
@@ -1260,6 +1270,7 @@ class BacktestOrchestrator:
             trade_returns_pct=[t.pnl_pct * 100 for t in portfolio.trades],
             n_open_positions=len(portfolio.positions),
             holding_days_all=holding_days + open_holding_days,
+            benchmark_index_name=self._benchmark_index_name,
         )
 
         from systems.regime.market_regime import METHOD_NAME

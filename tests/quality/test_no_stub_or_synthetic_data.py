@@ -157,7 +157,40 @@ KEYWORD_ALLOWLIST: dict[str, set[str]] = {
     "datastore/schema/create_signals.py": {"Phase 0.2 placeholder typed"},
     # DI-design comment ("tests can substitute a fake") — describes test
     # injection capability, not a production data fallback.
-    "features/matrix_builder.py": {"tests can substitute a fake"},
+    #
+    # [2026-08-13] The two "placeholder column" phrases describe columns that
+    # are deliberately all-NaN because that category is not computed on this
+    # path. A NaN that says "not computed" is the opposite of fabricated data
+    # — it is the honest alternative to inventing a value.
+    "features/matrix_builder.py": {
+        "tests can substitute a fake",
+        "raw per-ticker record DataFrame including a placeholder",
+        "placeholder columns instead)",
+    },
+    # [2026-08-13] Names fundamentals columns that are 100% NULL table-wide
+    # and never populated by any ingestion path — a documented data gap, not
+    # a stand-in value.
+    "ingestion/scheduler/daily_pipeline.py": {
+        "Structural metadata/placeholder columns that are 100% NULL",
+    },
+    # [2026-08-13] A validator slot that intentionally does only shape/sanity
+    # checks because FYERS is the trusted source here; it validates real data
+    # rather than substituting any.
+    "scripts/fyers_staged_backfill.py": {"Placeholder validator slot"},
+    # [2026-08-13] Describes the bug being fixed: one fabricated 187x gain in
+    # the trade book inflated later trades. Naming the defect, not shipping it.
+    "scripts/prorate_trades_from_date.py": {"inflated - one fake 187x gain"},
+    # [2026-08-13] States the script profiles the REAL feature path rather
+    # than a synthetic one — an assertion that no synthetic data is used.
+    "scripts/profile_one_feature_date.py": {"rather than a synthetic path"},
+    # [2026-08-13] HTML placeholder= attributes on a search input in generated
+    # reports. Browser UI text, not data.
+    "scripts/convert_momentum_csv_to_html.py": {'placeholder="Filter rows'},
+    "backtest/trade_book_html.py": {'placeholder="Filter rows'},
+    # [2026-08-13] Notes that these pure helpers are unit-testable against
+    # small synthetic trade lists — describing test inputs, which is exactly
+    # where synthetic data is legitimate.
+    "backtest/technical_reporting.py": {"synthetic trade lists"},
     # Detects an unedited literal ".env placeholder" string in a real
     # credentials file to decide whether to fall back to OAuth2 login —
     # the placeholder being checked for is the user's own un-filled

@@ -559,6 +559,9 @@ def _run_immediate(
     # None so every existing caller is byte-identical until it opts in.
     *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
     max_blackout_sessions=None,
+    # A98: the index this run is COMPARED against. None keeps the historical
+    # behaviour of reusing the regime index, so no existing caller changes.
+    benchmark_index_name=None,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -819,7 +822,8 @@ def _run_immediate(
 
             result = BacktestOrchestrator(
                 feature_log_writer=feature_log_writer, regime_conn=regime_conn,
-                regime_index_name=regime_index_name or "Nifty 500", exit_model=exit_model,
+                regime_index_name=regime_index_name or "Nifty 500",
+                benchmark_index_name=benchmark_index_name, exit_model=exit_model,
                 technical_feature_lookup=technical_feature_lookup, exit_policy_variant=saved_exit_policy_variant,
                 regime_method=regime_method,
             ).run(run, adapter, config)
@@ -853,6 +857,9 @@ def _run_deferred(
     # None so every existing caller is byte-identical until it opts in.
     *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
     max_blackout_sessions=None,
+    # A98: the index this run is COMPARED against. None keeps the historical
+    # behaviour of reusing the regime index, so no existing caller changes.
+    benchmark_index_name=None,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -1030,7 +1037,8 @@ def _run_deferred(
 
         result = BacktestOrchestrator(
             feature_log_writer=feature_log_writer, regime_conn=regime_conn,
-            regime_index_name=regime_index_name or "Nifty 500", exit_model=exit_model,
+            regime_index_name=regime_index_name or "Nifty 500",
+            benchmark_index_name=benchmark_index_name, exit_model=exit_model,
             technical_feature_lookup=technical_feature_lookup, exit_policy_variant=saved_exit_policy_variant,
             regime_method=regime_method,
         ).run(run, adapter, config)
@@ -1075,6 +1083,9 @@ def run_orchestrator_backtest(
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
     lookback_months: int = 6, run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
+    # A98: separate from regime_index_name. None means "compare against the
+    # regime index", which is the historical behaviour.
+    benchmark_index_name: Optional[str] = None,
     exit_policy_variant: str = "baseline",
     regime_method: Optional[str] = None,
     max_hold_days: Optional[int] = None,
@@ -1223,6 +1234,7 @@ def run_orchestrator_backtest(
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
         block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
+        benchmark_index_name=benchmark_index_name,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1303,6 +1315,15 @@ def main() -> None:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--report-suffix", default=None)
     parser.add_argument(
+        "--benchmark-index", default=None,
+        help=(
+            "Index this strategy's returns are COMPARED against. Separate from "
+            "--regime-index on purpose (A98): changing what you compare a "
+            "strategy to must not change which regimes it was allowed to "
+            "trade in. Defaults to --regime-index, the historical behaviour."
+        ),
+    )
+    parser.add_argument(
         "--regime-index", default="Nifty 500",
         help="Index (in market_regimes) for the per-Bull/Bear/Sideways performance breakdown. Pass '' to skip it.",
     )
@@ -1357,7 +1378,7 @@ def main() -> None:
             "(per-template stop/target/max-hold, all reachable; the DEFAULT), condition "
             "(exit when the entry thesis breaks), combined (risk_managed OR condition), "
             "trailing, atr_adaptive. Retired but still selectable so historical runs stay "
-            "reproducible: baseline (three of its four triggers were unreachable — 0.00% "
+            "reproducible: baseline (three of its four triggers were unreachable — 0.00%% "
             "time exits over 108,762 model-driven exits; use risk_managed instead), "
             "regime_conditional."
         ),
@@ -1480,6 +1501,7 @@ def main() -> None:
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months, run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
+        benchmark_index_name=args.benchmark_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
         pit_adtv_top_n=args.pit_adtv_top_n,
         block_circuit_fills=args.block_circuit_fills,

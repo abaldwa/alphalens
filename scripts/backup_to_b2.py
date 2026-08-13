@@ -105,28 +105,64 @@ _BACKUP_TARGETS: List[Tuple[Path, str]] = [
     (CONFIG_DIR, "config"),
 ]
 
-# Per-target rclone --exclude patterns.
+# Per-target rclone --include patterns: an ALLOWLIST, not a blocklist.
 #
-# [AS BUILT, 2026-08-10] normalised/ has grown from ~3.5GB to 40GB since
-# this job was written, and every added GB is non-authoritative — exactly
-# the class of file the raw/ and features/ exclusions already refuse to
-# carry. Uploading all 40GB blows well past B2's 10GB free tier and turns
-# a nightly job into an all-day one, for zero recovery value:
+# [AS BUILT, 2026-08-13] This was a blocklist (--exclude "*.bak*", "*.tmp",
+# "feature_panel_staging.duckdb") for three days, and it was already
+# broken when it was replaced. A blocklist fails OPEN: every new scratch
+# file in a backed-up directory ships until somebody remembers to exclude
+# it. On 2026-08-13 two manual safety copies —
 #
-#   *.bak*  / *.tmp                : point-in-time copies of the very DB
-#                                    sitting next to them (16.6GB as of
-#                                    2026-08-10, oldest dating to 07-04).
-#                                    The backup IS the off-machine copy;
-#                                    mirroring local copies of it is
-#                                    circular.
-#   feature_panel_staging.duckdb   : 18GB, re-derivable from normalised/
-#                                    via the hybrid backfill — same
-#                                    argument as datastore/features/.
+#     alphalens.duckdb.pre_ca_repair_20260813_114048     (3.11GB)
+#     alphalens.duckdb.pre_index_ingest_20260813_131146  (3.11GB)
 #
-# Excluded here rather than by pruning the local files, so that a stale
-# .bak nobody has cleaned up yet can never silently re-enter the archive.
-_BACKUP_EXCLUDES: Dict[str, List[str]] = {
-    "normalised": ["*.bak*", "*.tmp", "feature_panel_staging.duckdb"],
+# — matched none of the patterns ("*.bak*" does not match ".pre_ca_repair"),
+# so 6.2GB of scratch was queued for upload. That is the failure mode, not
+# a one-off: nobody is going to update a glob list every time they take an
+# ad-hoc copy before a risky migration.
+#
+# An allowlist fails CLOSED. Anything not named here is simply not backed
+# up, so a new scratch file is safe by default and the only maintenance
+# burden is remembering to add genuinely new *authoritative* data — which
+# is rare, reviewable, and loud when it goes wrong (a missing table at
+# restore time) rather than silent (a 3GB surprise on the bill).
+#
+# Empty list == take the whole directory (paper_trading/ and config/ are
+# small and wholly authoritative).
+_BACKUP_INCLUDES: Dict[str, List[str]] = {
+    # The canonical stores only. Not: *.bak*, *.pre_*, *.tmp, or
+    # feature_panel_staging.duckdb (re-derivable via the hybrid backfill,
+    # same argument as the datastore/features/ exclusion).
+    "normalised": [
+        "alphalens.duckdb",
+        "alphalens_fno_data.duckdb",
+        "fundamental_raw_cache.duckdb",
+        "pipeline_log.db",
+        "scheduler.db",
+        "macro_real_economy.parquet",
+        "mf_holdings/**",
+    ],
+    "signals": ["signals.duckdb", "signals_fno_data.duckdb"],
+    # models/ carries trained artifacts plus registry.json at the root and
+    # one subdirectory per model. _gainer_experiment/ is experiment scratch
+    # (1.3GB of checkpoint parquets that do not key on their own scope) and
+    # _archive_pre_a38/ is superseded, so neither is named.
+    "models": [
+        "registry.json",
+        "*.pt",
+        "*.json",
+        "multibagger/**",
+        "signal_5d/**",
+        "signal_21d/**",
+        "signal_63d/**",
+        "meta_labeler/**",
+        "conformal/**",
+        "hmm/**",
+        "pnd_detector/**",
+        "training_universe/**",
+    ],
+    "paper_trading": [],
+    "config": [],
 }
 
 # Per-directory timeout — generous for a home-connection upload of a few
@@ -152,6 +188,41 @@ def _b2_remote(remote_name: str) -> str:
     rclone reads for its b2 backend — see _rclone_env().
     """
     return f":b2:{BACKBLAZE_BUCKET}/{BACKUP_REMOTE_PATH}/{remote_name}"
+
+
+def _backup_enabled_now() -> bool:
+    """
+    Re-read BACKUP_ENABLED from the environment at call time.
+
+    [AS BUILT, 2026-08-13] config.settings evaluates BACKUP_ENABLED once,
+    at module import. The scheduler is a long-lived process that imports
+    settings at startup, so flipping the flag in .env had NO effect on it
+    — on 2026-08-10 the flag was set to true at 18:49 and the 22:30 job
+    still logged "daily_backup skipped: BACKUP_ENABLED is False", because
+    the value it saw was the one loaded at 18:31. Three nights of backups
+    were silently skipped against a .env that read true, and the only
+    symptom was a log line nobody was watching.
+
+    Note that re-reading os.environ alone is NOT enough: config.settings
+    calls load_dotenv() at import, which copies .env into os.environ once
+    and never again, so a long-lived process's os.environ is just as stale
+    as the imported constant. This re-parses the .env file itself
+    (override=True) before reading, so the flag takes effect on the next
+    scheduled run rather than on the next scheduler restart.
+
+    The imported constant remains the fallback for callers that set it
+    programmatically rather than through .env.
+    """
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=True)
+    except Exception as exc:  # dotenv missing or .env unreadable — fall back
+        logger.debug(f"backup: could not reload .env ({exc}); using import-time value")
+    raw = os.environ.get("BACKUP_ENABLED")
+    if raw is None:
+        return bool(BACKUP_ENABLED)
+    return raw.strip().lower() == "true"
 
 
 def _rclone_env() -> dict:
@@ -188,7 +259,7 @@ def run_backup(dry_run: bool = False) -> dict:
         (caller should treat this as "skip", not "failed" — see
         _execute_daily_backup_job in pipeline_scheduler.py).
     """
-    if not BACKUP_ENABLED:
+    if not _backup_enabled_now():
         raise RuntimeError(
             "BACKUP_ENABLED is False — set BACKBLAZE_KEY_ID/BACKBLAZE_APPLICATION_KEY/"
             "BACKBLAZE_BUCKET and BACKUP_ENABLED=true in .env once verified "
@@ -207,15 +278,26 @@ def run_backup(dry_run: bool = False) -> dict:
             continue
 
         cmd = ["rclone", "sync", str(local_dir), _b2_remote(remote_name), "--fast-list"]
-        for pattern in _BACKUP_EXCLUDES.get(remote_name, []):
-            cmd += ["--exclude", pattern]
+        # Allowlist: name what ships, then refuse everything else.
+        #
+        # Uses --filter rather than --include/--exclude deliberately.
+        # rclone warns that mixing --include with --exclude leaves the
+        # parse order "indeterminate" — which for an allowlist is the
+        # difference between shipping 5GB and shipping 23GB, decided by
+        # something outside our control. --filter rules are evaluated
+        # strictly in the order given, so "+ each allowed pattern" then a
+        # final "- **" catch-all is deterministic and fails closed.
+        includes = _BACKUP_INCLUDES.get(remote_name, [])
+        if includes:
+            for pattern in includes:
+                cmd += ["--filter", f"+ {pattern}"]
+            cmd += ["--filter", "- **"]
         if dry_run:
             cmd.append("--dry-run")
 
-        excluded = _BACKUP_EXCLUDES.get(remote_name, [])
         logger.info(
             f"backup: syncing {local_dir} -> b2:{BACKBLAZE_BUCKET}/{BACKUP_REMOTE_PATH}/{remote_name}"
-            + (f" (excluding {', '.join(excluded)})" if excluded else "")
+            + (f" (allowlist: {len(includes)} pattern(s))" if includes else " (whole directory)")
         )
         try:
             result = subprocess.run(

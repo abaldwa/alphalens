@@ -53,6 +53,11 @@ class BacktestMetrics:
     benchmark_cagr: Optional[float]  # None + benchmark_status flagged if fold predates 2023-07 (index_ohlcv gap)
     excess_return: Optional[float]
     benchmark_status: str  # "ok" | "insufficient_benchmark_history"
+    # A98: WHICH index the comparison was against. Without it, two runs'
+    # excess returns look comparable when they may be measured against
+    # different yardsticks — and a report cannot honestly label its own
+    # benchmark column. None only for runs predating this field.
+    benchmark_index_name: Optional[str] = None
     cash_position_series: List[Dict] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
     avg_days_held: Optional[float] = None  # mean (exit_date - entry_date).days across closed trades; None if n_trades == 0
     # 2026-08-01 (Technical-strategy Momentum-parity reporting) — n_trades
@@ -245,6 +250,7 @@ def compute_metrics(
     trade_returns_pct: Optional[List[float]] = None,
     n_open_positions: int = 0,
     holding_days_all: Optional[List[float]] = None,
+    benchmark_index_name: Optional[str] = None,
 ) -> BacktestMetrics:
     """
     Single entry point every adapter's backtest/walk-forward run calls once
@@ -316,6 +322,7 @@ def compute_metrics(
         benchmark_cagr=bench_cagr,
         excess_return=excess_return,
         benchmark_status=bench_status,
+        benchmark_index_name=benchmark_index_name,
         cash_position_series=cash_position_series or [],
         avg_days_held=(float(np.mean(holding_days)) if holding_days else None),
         total_trades=len(trade_pnls) + n_open_positions,
