@@ -664,6 +664,11 @@ def _run_immediate(
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
     benchmark_index_name=None,
+    # 2026-08-14: momentum's rank-drop grace, previously hardcoded to the
+    # MomentumAdapter default of 2 and therefore never swept despite being
+    # the lever that decides how long a winner is retained after leaving the
+    # top_n. 0 = sell the rebalance it drops out.
+    grace_cycles=2,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -816,6 +821,7 @@ def _run_immediate(
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
                 top_n=top_n, lookback_months=lookback_months,
                 sector_lookup=sector_map,
+                grace_cycles=grace_cycles,
                 min_adtv_cr=min_adtv_cr,
                 quality_gate=quality_gate or None,
                 downtrend_filter_pct=downtrend_filter_pct,
@@ -845,7 +851,7 @@ def _run_immediate(
             annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-                "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
+                "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles,
                 "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
                 "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
                 "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
@@ -982,6 +988,11 @@ def _run_deferred(
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
     benchmark_index_name=None,
+    # 2026-08-14: momentum's rank-drop grace, previously hardcoded to the
+    # MomentumAdapter default of 2 and therefore never swept despite being
+    # the lever that decides how long a winner is retained after leaving the
+    # top_n. 0 = sell the rebalance it drops out.
+    grace_cycles=2,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -1100,6 +1111,7 @@ def _run_deferred(
             price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
             top_n=top_n, lookback_months=lookback_months,
             sector_lookup=sector_map,
+            grace_cycles=grace_cycles,
             min_adtv_cr=min_adtv_cr,
             quality_gate=quality_gate or None,
             downtrend_filter_pct=downtrend_filter_pct,
@@ -1125,7 +1137,7 @@ def _run_deferred(
         annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
         config={
             "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-            "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
+            "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles,
             "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
             "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
             "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
@@ -1234,6 +1246,7 @@ def run_orchestrator_backtest(
     # A98: separate from regime_index_name. None means "compare against the
     # regime index", which is the historical behaviour.
     benchmark_index_name: Optional[str] = None,
+    grace_cycles: int = 2,
     exit_policy_variant: str = "baseline",
     regime_method: Optional[str] = None,
     max_hold_days: Optional[int] = None,
@@ -1382,7 +1395,7 @@ def run_orchestrator_backtest(
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
         block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
-        benchmark_index_name=benchmark_index_name,
+        benchmark_index_name=benchmark_index_name, grace_cycles=grace_cycles,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1478,6 +1491,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--top-n", type=int, default=10)
     parser.add_argument("--lookback-months", type=int, default=6, help="momentum channel only")
+    parser.add_argument(
+        "--grace-cycles", type=int, default=2,
+        help=(
+            "momentum channel only: rebalances a holding is retained after it drops out of the "
+            "top_n before being force-sold. 0 sells it the same rebalance it drops out. Was "
+            "hardcoded to 2 and unreachable until 2026-08-14, so no run before then swept it."
+        ),
+    )
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--report-suffix", default=None)
     parser.add_argument(
@@ -1679,7 +1700,8 @@ def main() -> None:
         start_date=args.start_date, end_date=args.end_date, capital_mode=args.capital_mode,
         initial_capital=args.initial_capital, sip_amount=args.sip_amount, universe_spec=args.universe_spec,
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
-        preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months, run_id=args.run_id,
+        preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months,
+        grace_cycles=args.grace_cycles, run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
