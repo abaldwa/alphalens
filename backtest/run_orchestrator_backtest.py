@@ -63,7 +63,7 @@ from backtest.adapters.technical_combo_adapter import TechnicalComboAdapter
 from backtest.batch_common import exclusive_backtest_lock
 from backtest.core.engine import ALL_EXIT_POLICY_VARIANTS, BacktestOrchestrator, OrchestratorConfig, build_exit_model_for_variant
 from backtest.core.feature_log import FeatureLogWriter
-from backtest.core.horizon import HorizonBucket
+from backtest.core.horizon import HorizonBucket, sizing_for
 from backtest.core.run_context import BacktestRun
 from backtest.core.run_store import save_run_result
 from backtest.trade_filters import ADTV_LOOKBACK_SESSIONS as PIT_ADTV_LOOKBACK_SESSIONS
@@ -81,6 +81,7 @@ from config.settings import (
 )
 from config.timezone import now_ist
 from strategies.definitions import DefinitionNotFound, technical_template_style
+from strategies.momentum_identity import registry_name
 from features.momentum_universe import (
     RANK_BANDS,
     all_yearly_full_rankings,
@@ -503,6 +504,8 @@ def _build_config(
 def _momentum_descriptor(
     top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
     circuit_band_pct, grace_cycles, exit_policy_variant, exit_rank=None,
+    *, rank_band_id=None, rebalance_cadence_days=None, quality_gate=None,
+    disable_buys_in_regime=None, orthogonalize_vs_size_beta=False,
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
     signals it emits.
@@ -525,6 +528,37 @@ def _momentum_descriptor(
     goes away. Encoding identity in a parsed string is the mess A89 exists to
     end -- but a key that collides is worse than a key that is ugly.
     """
+    # [ML40-2.4, 2026-08-15] Prefer the name of the strategy_registry row that
+    # DECLARES this run. ML41 registered the real grid as
+    # {category}_b{band}_{ranks}_lb{N}mo_{rebalance}_top{N}, and this generated
+    # string never matched it -- measured 2026-08-14, 10 of 93 ledger
+    # strategy_keys resolved to no row, and all 10 were momentum.
+    #
+    # grace_cycles and exit_variant are deliberately absent from the resolved
+    # name. They are run parameters, not strategy identity: strategy_signals'
+    # PK carries run_id, so two runs of one strategy under different exit
+    # policies never collide and stay distinguishable by joining backtest_runs.
+    # The FILTERS, which e6c97160 rightly added, survive -- they select the
+    # category, which is in the name.
+    #
+    # None means this parameter combination declares no strategy (an ad-hoc
+    # filter mix, an unswept cadence). That falls through to the legacy
+    # descriptor below, leaving the run visibly undeclared rather than handing
+    # it a plausible key that resolves to nothing -- the original defect.
+    resolved = registry_name(
+        rank_band_id=rank_band_id,
+        lookback_months=lookback_months,
+        rebalance_cadence_days=rebalance_cadence_days,
+        top_n=top_n,
+        min_adtv_cr=min_adtv_cr,
+        circuit_band_pct=circuit_band_pct,
+        quality_gate=quality_gate,
+        disable_buys_in_regime=disable_buys_in_regime,
+        orthogonalize_vs_size_beta=orthogonalize_vs_size_beta,
+    )
+    if resolved is not None:
+        return resolved
+
     parts = [f"top{top_n}", f"{lookback_months}m"]
     if min_adtv_cr is not None:
         parts.append(f"adtv{min_adtv_cr:g}")
@@ -972,6 +1006,7 @@ def _run_immediate(
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
                 "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles, "exit_rank": exit_rank,
                 "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
+                "strategy_name": descriptor,  # [ML40-2.4] the DECLARED name; canonical_strategy_key prefers it
                 "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
                 "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
                 "disable_buys_in_regime": disable_buys_in_regime,
@@ -1260,6 +1295,7 @@ def _run_deferred(
             "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
             "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles, "exit_rank": exit_rank,
             "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
+            "strategy_name": descriptor,  # [ML40-2.4] the DECLARED name; canonical_strategy_key prefers it
             "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
             "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
             "disable_buys_in_regime": disable_buys_in_regime,
@@ -1480,6 +1516,27 @@ def run_orchestrator_backtest(
         "momentum": _momentum_descriptor(
             top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
             circuit_band_pct, grace_cycles, exit_policy_variant, exit_rank,
+            rank_band_id=rank_band_id,
+            # [ML40-2.4] Momentum has no --rebalance-cadence-days flag: its
+            # cadence IS the resolved horizon bucket's default (see
+            # core/engine.py:928, which takes config.rebalance_cadence_days or
+            # falls back to exactly this). Taken from the same place the run
+            # will take it, so the name can never describe a cadence the run
+            # did not use.
+            rebalance_cadence_days=sizing_for(horizon).default_rebalance_cadence_days,
+            # Built the same way _run_immediate/_run_deferred build it (from
+            # the two score params) — the dict itself is assembled inside those
+            # functions and does not exist in this scope. Only its TRUTHINESS
+            # matters to the category match, but it is constructed rather than
+            # passed as a bool so the two sites cannot diverge on what counts
+            # as "a quality gate is set".
+            quality_gate={
+                k: v for k, v in (
+                    ("min_f_score", quality_gate_min_f_score),
+                    ("max_m_score", quality_gate_max_m_score),
+                ) if v is not None
+            },
+            disable_buys_in_regime=disable_buys_in_regime,
         ),
     }[channel]
     if not strategy_id:

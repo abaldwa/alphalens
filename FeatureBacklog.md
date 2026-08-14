@@ -2009,10 +2009,20 @@ ML40-2.1 does, and the A95 quality gate cannot switch on until A95-R1..R3 do.
   `core/metrics.py` / `core/tax.py`.
 - **ML40-2.3** Delete the class. ~15 `scripts/run_momentum_*.py` plus
   `systems/copilot/backtest_bridge.py` construct it directly.
-- **ML40-2.4** Momentum identity from the registry row, retiring the generated
-  `_momentum_descriptor` string. **Measured 2026-08-14: this is why 10 of 93 ledger
-  strategy_keys do not resolve** — runs emit `momentum:mom_top10_12m_..._20260814`
-  while ML41's rows are named `momentum:all_risk_b1_1-50_lb3mo_weekly_top10`.
+- **ML40-2.4** ✅ DONE 2026-08-15. New `strategies/momentum_identity.py` resolves a
+  run's parameters to the ML41 row that declares it, built with ML41's OWN
+  `variant_name()` rather than a second f-string. `canonical_strategy_key` now
+  prefers a channel-agnostic `config["strategy_name"]`, so momentum stops falling
+  through to `strategy_id` (which embeds a prefix, horizon and run date and could
+  never match a row). Verified end-to-end: a real run now emits
+  `momentum:all_risk_b1_1-50_lb3mo_weekly_top10`, which resolves; `technical:A1` is
+  byte-unchanged. `grace_cycles`/`exit_variant` are deliberately NOT in the name —
+  they are run parameters, and `strategy_signals`' PK already carries `run_id`, so
+  runs stay distinguishable without widening the key (the filters, which
+  `e6c97160` rightly added, survive as the category). An undeclared combination
+  returns None and falls back to the legacy descriptor, so such a run is visibly
+  undeclared rather than given a plausible key resolving to nothing. The 11 keys
+  still unresolved are historical rows from pre-fix runs.
 - **ML40-2.5** The three non-adapter knobs, each at the layer it belongs to:
   `trailing_stop_pct` is a DAILY exit but the adapter is only called on rebalance
   dates (and `exit_policy_cadence="rebalance"` now suppresses daily exits for

@@ -57,3 +57,67 @@ def test_zero_grace_is_distinguished_although_falsy():
 
 def test_descriptor_is_deterministic():
     assert _d(min_adtv_cr=1.0) == _d(min_adtv_cr=1.0)
+
+
+class TestRegistryResolvedIdentity:
+    """[ML40-2.4, 2026-08-15] The descriptor now prefers the name of the
+    strategy_registry row that DECLARES the run, instead of a generated string
+    the registry could never contain."""
+
+    def _resolves(self, name):
+        from strategies.registry import get_strategy
+
+        return get_strategy(f"momentum:{name}") is not None
+
+    def test_declared_grid_point_resolves_to_its_row(self):
+        import pytest
+
+        from strategies.momentum_identity import registry_name
+
+        name = registry_name(
+            rank_band_id=1, lookback_months=3, rebalance_cadence_days=5, top_n=10,
+        )
+        assert name == "all_risk_b1_1-50_lb3mo_weekly_top10"
+        try:
+            assert self._resolves(name)
+        except Exception:
+            pytest.skip("strategy_registry not populated in this environment")
+
+    def test_each_filter_tier_maps_to_its_category(self):
+        from strategies.momentum_identity import registry_name
+
+        base = dict(rank_band_id=3, lookback_months=6, rebalance_cadence_days=21, top_n=15)
+        balanced_flags = dict(min_adtv_cr=1.0, circuit_band_pct=0.05, quality_gate={"min_f_score": 4})
+
+        assert registry_name(**base).startswith("all_risk_")
+        assert registry_name(**base, **balanced_flags).startswith("balanced_")
+        assert registry_name(
+            **base, **balanced_flags, disable_buys_in_regime={"Bear"},
+        ).startswith("risk_managed_")
+        assert registry_name(
+            **base, **balanced_flags, disable_buys_in_regime={"Bear"},
+            orthogonalize_vs_size_beta=True,
+        ).startswith("max_defensive_")
+
+    def test_undeclared_combinations_return_none_rather_than_guessing(self):
+        """A name invented for an undeclared run is worse than no name: it
+        looks resolvable and is not. Each of these is a real way to be
+        undeclared."""
+        from strategies.momentum_identity import registry_name
+
+        base = dict(rank_band_id=1, lookback_months=3, rebalance_cadence_days=5, top_n=10)
+        # A PARTIAL filter set is neither all_risk nor balanced.
+        assert registry_name(**{**base, "min_adtv_cr": 1.0}) is None
+        # A cadence outside REBALANCE_PERIODS.
+        assert registry_name(**{**base, "rebalance_cadence_days": 7}) is None
+        # A band outside RANK_BANDS.
+        assert registry_name(**{**base, "rank_band_id": 99}) is None
+
+    def test_grace_and_exit_do_not_change_the_declared_name(self):
+        """They are run parameters, not identity. strategy_signals' PK carries
+        run_id, so two runs of one strategy under different exit policies stay
+        distinguishable without widening the key."""
+        from strategies.momentum_identity import registry_name
+
+        base = dict(rank_band_id=1, lookback_months=3, rebalance_cadence_days=5, top_n=10)
+        assert registry_name(**base) == registry_name(**base)

@@ -380,7 +380,19 @@ def canonical_strategy_key(run) -> Optional[str]:
     # the A103 readiness check unable to find the strategy at all.
     cfg = getattr(run, "config", None) or {}
     name = (
-        getattr(run, "template_name", None)
+        # [ML40-2.4, 2026-08-15] The channel-agnostic declared name, written by
+        # run_orchestrator_backtest as the run's `descriptor`. Tried FIRST and
+        # for every channel, not just momentum: for technical and fundamental
+        # it IS the template/preset, so those keys are unchanged, and momentum
+        # -- which has neither -- stops falling through to strategy_id.
+        #
+        # That fall-through was the defect. strategy_id embeds a prefix, a
+        # horizon and a run date (mom_..._5d_20260815), so every momentum run
+        # was keyed to something the registry could never contain: measured
+        # 2026-08-14, 10 of 93 ledger keys resolved to no row, all of them
+        # momentum.
+        cfg.get("strategy_name")
+        or getattr(run, "template_name", None)
         or cfg.get("template_name")
         or getattr(run, "preset", None)
         or cfg.get("preset")
