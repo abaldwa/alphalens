@@ -299,10 +299,31 @@ class ReadinessChecker:
         if channel in ("technical", "ml"):
             indicators: List[str] = []
             if strategy_key:
+                # NOTE the deliberate absence of as_of. Two different clocks
+                # were being conflated here, and it made this gate
+                # unsatisfiable for every historical backtest:
+                #
+                #   * registry validity (valid_from/valid_to) runs on
+                #     AUTHORING time -- when a human declared the strategy;
+                #   * as_of_date runs on MARKET time -- the session being
+                #     simulated.
+                #
+                # Every registry row was authored on 2026-08-13, so a run
+                # over 2009-2026 asked "was this strategy valid in 2013?",
+                # got None, and raised "strategy 'technical:A2' is not in the
+                # registry" -- for a row that exists and is active. Measured
+                # 2026-08-14: all 126 technical jobs failed this way the
+                # moment enforce_readiness was on (the parallel queue had
+                # been setting it False, which is why it went unnoticed).
+                #
+                # `version` is what provides point-in-time correctness: the
+                # run records the exact version it executed, so re-reading
+                # that version reproduces the definition regardless of when
+                # the lookup happens. Filtering by market date on top of a
+                # pinned version adds nothing and excludes everything.
                 indicators = strategy_indicators(
                     strategy_key,
                     version=strategy_version,
-                    as_of=as_of_date,
                     registry_db_path=self.registry_db_path,
                     registry_conn=self.registry_conn,
                 )

@@ -114,7 +114,7 @@ def _as_date(v):
     return date.fromisoformat(v) if isinstance(v, str) else v
 
 
-def _job_kwargs(job: Dict[str, Any]) -> Dict[str, Any]:
+def _job_kwargs(job: Dict[str, Any], enable_screener_cache: bool = False) -> Dict[str, Any]:
     import inspect
 
     valid = set(inspect.signature(run_orchestrator_backtest).parameters)
@@ -136,9 +136,24 @@ def _job_kwargs(job: Dict[str, Any]) -> Dict[str, Any]:
         if f in kw:
             kw[f] = _as_date(kw[f])
     # defer_db_writes exists to keep a DuckDB connection out of a parallel
-    # worker's long middle. In one process there is no contention to avoid,
-    # and leaving it on would disable the screener cache Stage 2 depends on.
-    kw.pop("defer_db_writes", None)
+    # worker's long middle. Dropping it takes the immediate path, which wires
+    # technical_screener_cache -- Stage 2's reuse.
+    #
+    # MEASURED 2026-08-14, and it does not pay for itself on a first pass:
+    # two technical jobs on the immediate path took 89.9s and 174.7s, the
+    # second WITH a panel-cache hit, against 247.8s on the deferred path
+    # including full setup. Populating the cache costs one DuckDB write per
+    # (template, date) -- 63 templates x 4,275 sessions -- and the sweep only
+    # reads each key twice (control and filtered arms of the same template).
+    # Paying 4,275 writes to save one re-screen is a losing trade.
+    #
+    # So it is opt-in. It becomes worthwhile when a template is run MANY
+    # times, which is what an exit-variant sweep does (up to 9 jobs per
+    # template) -- that is the case the cache was written for.
+    if not enable_screener_cache:
+        kw.setdefault("defer_db_writes", True)
+    else:
+        kw.pop("defer_db_writes", None)
     return kw
 
 
@@ -152,7 +167,7 @@ def _describe(job: Dict[str, Any]) -> str:
 
 def run_sweep(
     jobs: List[Dict[str, Any]], report_suffix: str, resume: bool = True,
-    stop_on_error: bool = False,
+    stop_on_error: bool = False, enable_screener_cache: bool = False,
 ) -> int:
     progress_dir = PROGRESS_ROOT / report_suffix
     progress_dir.mkdir(parents=True, exist_ok=True)
@@ -185,7 +200,7 @@ def run_sweep(
         t0 = time.time()
         try:
             run_orchestrator_backtest(
-                **_job_kwargs(job), report_suffix=f"{report_suffix}_job{idx}",
+                **_job_kwargs(job, enable_screener_cache), report_suffix=f"{report_suffix}_job{idx}",
             )
             outcome, err = "ok", None
             ok += 1
@@ -233,12 +248,23 @@ def main() -> int:
     ap.add_argument("--no-resume", action="store_true")
     ap.add_argument("--stop-on-error", action="store_true", help="abort the sweep on the first failure")
     ap.add_argument("--limit", type=int, help="run only the first N jobs (for timing a sample)")
+    ap.add_argument(
+        "--enable-screener-cache", action="store_true",
+        help=(
+            "Take the immediate path so technical_screener_cache is populated and reused. "
+            "Measured slower on a single pass (the writes cost more than one re-screen saves); "
+            "worth it only when the same template runs many times, e.g. an exit-variant sweep."
+        ),
+    )
     args = ap.parse_args()
 
     jobs = json.loads(Path(args.queue_file).read_text())["jobs"]
     if args.limit:
         jobs = jobs[: args.limit]
-    return run_sweep(jobs, args.report_suffix, resume=not args.no_resume, stop_on_error=args.stop_on_error)
+    return run_sweep(
+        jobs, args.report_suffix, resume=not args.no_resume,
+        stop_on_error=args.stop_on_error, enable_screener_cache=args.enable_screener_cache,
+    )
 
 
 if __name__ == "__main__":
