@@ -2034,3 +2034,50 @@ ML40-2.1 does, and the A95 quality gate cannot switch on until A95-R1..R3 do.
   3,219 rows — so R3 is now gated only on R1 and R2.
 - **A95-R4** (done 2026-08-14) Frontend reads the registry: `shared/api/strategies.ts`,
   `useStrategyDefinition.ts`, Definition card in `strategy-detail.tsx`.
+
+## Observations from the A95-R1 conversion (2026-08-14)
+
+Recorded because two of these change what "A95 done" can mean, and one is a
+governance gap that is not tracked anywhere else.
+
+**1. The registry can never hold the executable logic — only the declaration.**
+`features/fundamental_composites.SCORE_FUNCTIONS` maps 22 names to Python
+functions. A row cannot carry a callable. So "the backtest reads definitions
+instead of importing them" can only ever mean: the registry is authoritative for
+WHICH strategies exist, what their declared parameters are and what version is
+in force, while the implementations stay in code and are looked up BY NAME.
+A95-R3's guard test must assert that split, not the absence of imports — a
+literal no-imports rule is unsatisfiable and would be gamed rather than met.
+
+**2. `technical_adapter` does NOT import TEMPLATES.** It imports `ScreenerEngine`
+and delegates. `strategies/migrations/technical.py:34` says "screener, alert
+checker and backtest adapter all still import TEMPLATES", and for the adapter
+that is not true today. The only real technical consumer is
+`systems/technical_analysis/screener/engine.py:53`, which is A95-R2. A95-R1's
+technical half is therefore DONE as of `39be45d9` (both TEMPLATE_STYLE call
+sites converted); there is no third site.
+
+**3. GOVERNANCE GAP — the backtest accepts 4 "strategies" that are not declared
+anywhere.** `FundamentalAdapter` validates `--preset` against
+`SCREENER_PRESETS | SCORE_FUNCTIONS | BESPOKE_PRESETS` = 30 names. The registry
+holds 26, and it mirrors `STRATEGY_CATALOG` exactly (verified both directions
+empty), so F7 was faithful. The other 4 are raw score-function / preset names
+that were never catalogued strategies:
+
+  * `growth`, `quality`            -- SCORE_FUNCTIONS only
+  * `quality_compounder`, `turnaround` -- SCREENER_PRESETS only
+
+A run of one of these has no registry row, and therefore no declared definition,
+no filter list and no version. It cannot be explained by the Definition card, it
+cannot be deployed through A91, and its signals land in the ledger under a key
+that resolves to nothing. This is the fundamental-channel analogue of the 10
+unresolved momentum keys, and it is not the same problem as ML40-2.4 -- those
+keys point at rows that exist under a different name; these point at nothing.
+
+A95-R1's fundamental half is BLOCKED on deciding which of these is true:
+  (a) they ARE strategies -> register them, and validation reads the registry;
+  (b) they are a deliberate code-level escape hatch for ad-hoc scoring -> keep
+      them, but make the escape explicit and refuse to write ledger rows or
+      deploy from a run that used one.
+The two produce materially different code, so it is not a judgement call to make
+silently. Raised with the user 2026-08-14.
