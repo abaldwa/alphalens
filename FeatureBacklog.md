@@ -2087,3 +2087,69 @@ A95-R1's fundamental half is BLOCKED on deciding which of these is true:
       deploy from a run that used one.
 The two produce materially different code, so it is not a judgement call to make
 silently. Raised with the user 2026-08-14.
+
+## Making the 3 bespoke fundamental strategies expressible (design, 2026-08-15)
+
+User decision: no `bespoke_ref` escape hatch — express them. This is the spec.
+
+**Headline result: NO grammar extension is needed.** Four derived feature columns
+turn all three into flat AND-lists of plain scalar predicates. The predicate
+language stays as it is.
+
+That matters because the obvious reading of these strategies says otherwise.
+`net_net` compares `close <= 0.667 * ncav_per_share`, which looks like it needs a
+scaled column-vs-column op (`COL_VS_COL_OPS` carries no coefficient), and
+`piotroski_on_value` gates on `max(ev_ebit_yield, book_to_market) >= 0.84`, which
+looks like it needs OR — the predicate list is AND-composed and has no
+disjunction. Both disappear if the derived quantity becomes a column: one
+`price_to_ncav` ratio replaces the scaled comparison, one `value_z_max` replaces
+the disjunction. Computation belongs in the feature store; the predicate stays
+declarative. Adding arithmetic and OR to the grammar would instead put
+computation into the layer the one-generator rule is trying to keep declarative,
+and would have to be validated, executed and kept identical across screener,
+backtest and live.
+
+### Columns to add
+| Column | Derivation | For |
+|---|---|---|
+| `margin_of_safety` | `(min(sqrt(22.5*eps*bvps), 8.5*eps) - close) / intrinsic` | margin_of_safety |
+| `cfo_proxy` | `fcf + capex` | margin_of_safety |
+| `f_score` | Piotroski 0-9 from PIT financials + YoY quarter | piotroski_on_value |
+| `value_z_max` | `max(ev_ebit_yield, book_to_market)` (both already features) | piotroski_on_value |
+| `ncav_per_share` | `(current_assets - total_liabilities) * 1e7 / shares` | net_net |
+| `price_to_ncav` | `close / ncav_per_share` | net_net |
+
+`market_cap`, `debt_to_equity`, `interest_coverage`, `ev_ebit_yield` and
+`book_to_market` are already in FUNDAMENTAL_FEATURES (54 columns).
+
+### Resulting entry_criterion (replaces `not_yet_declarative`)
+```
+margin_of_safety   : margin_of_safety gte 0.3 AND debt_to_equity lt 0.7
+                     AND interest_coverage gt 3.0 AND cfo_proxy gt 0
+piotroski_on_value : f_score gte 8 AND value_z_max gte 0.84
+net_net            : ncav_per_share gt 0 AND price_to_ncav lte 0.67
+                     AND market_cap gt 50
+```
+Every threshold is the module constant, not a re-derivation: MARGIN_OF_SAFETY_
+THRESHOLD 0.3, SOLVENCY_MAX_DEBT_TO_EQUITY 0.7, SOLVENCY_MIN_INTEREST_COVERAGE
+3.0, PIOTROSKI_STRONG_GATE 8, CHEAP_ZSCORE_THRESHOLD 0.84, NCAV_DISCOUNT_
+THRESHOLD 0.67, LIQUIDITY_FLOOR_MARKET_CAP_CR 50.
+
+### Order of work, and why net_net is last
+`margin_of_safety` and `piotroski_on_value` have well-populated inputs and are
+both possible and useful. `net_net` is NOT: its own module docstring records that
+`current_assets` / `current_liabilities` / `non_current_liabilities` are
+systemically absent before ~2025 (`non_current_liabilities` is 0/NULL for every
+row before 2025-03-31), and a real 5-year orchestrator run produced exactly 0
+net_net trades. Promoting `ncav_per_share` yields a column that is almost
+entirely NaN across the backtestable window, so this makes net_net DECLARATIVE
+without making it USABLE. That blocker is an ingestion backfill, outside A95.
+
+### What remains, and its real cost
+Not a decision — an implementation with a heavy tail. The six columns must be
+computed in the fundamental feature pipeline and BACKFILLED across history before
+the predicates can be executed, because a strategy switched to predicates over an
+unpopulated column silently selects nothing. Note the standing hazard: feature
+Stage 2 overwrites date parquets wholesale, so this cannot be run on a ticker
+subset. Parity must then be asserted per strategy per date — declarative result
+identical to the imperative `passes` — before any execution path is switched.
