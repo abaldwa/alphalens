@@ -69,3 +69,5 @@ datastore/restore_staging/
 /queue_prio.json
 /queue_tf_fast.json
 /queue_mom_rankonly.json
+/fund2020.log
+/queue_fund_2020.json
