@@ -80,6 +80,7 @@ from config.settings import (
     DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
 )
 from config.timezone import now_ist
+from strategies.definitions import DefinitionNotFound, technical_template_style
 from features.momentum_universe import (
     RANK_BANDS,
     all_yearly_full_rankings,
@@ -94,7 +95,6 @@ from backtest.export_trade_book import export_trade_book
 from datastore.client import DataStoreClient
 from datastore.schema.create_backtest import create_backtest_schema
 from datastore.schema.create_strategy_catalog import create_strategy_catalog_schema
-from systems.technical_analysis.screener.templates import TEMPLATE_STYLE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -629,16 +629,17 @@ def _resolve_horizon_bucket(
 ) -> HorizonBucket:
     """Resolves the run's HorizonBucket: an explicit --horizon-bucket wins
     (full HorizonBucket value or a strategy_id short code, e.g. "21d");
-    omitted, it defaults per channel — Technical from the template's real
-    TEMPLATE_STYLE via the Explainer's published style->horizon table,
-    Fundamental from its preset, Momentum from its lookback_months (see
-    backtest/strategy_id.py's default_horizon_for_* docstrings).
+    omitted, it defaults per channel — Technical from the template's declared
+    style, read from its strategy_registry row (A95-R1) and mapped through the
+    Explainer's published style->horizon table; Fundamental from its preset,
+    Momentum from its lookback_months (see backtest/strategy_id.py's
+    default_horizon_for_* docstrings).
 
     For a combo run (--combo-templates), template_name is the caller's
     already-resolved "first template in the combo" convenience value (see
-    run_orchestrator_backtest's combo branch) — same TEMPLATE_STYLE lookup,
-    just resolved off one representative template rather than requiring an
-    explicit --horizon-bucket for every combo.
+    run_orchestrator_backtest's combo branch) — same registry lookup, just
+    resolved off one representative template rather than requiring an explicit
+    --horizon-bucket for every combo.
     """
     if horizon_bucket:
         if horizon_bucket in HORIZON_BUCKET_MAP:
@@ -651,9 +652,20 @@ def _resolve_horizon_bucket(
         )
 
     if channel == "technical":
-        if not template_name or template_name not in TEMPLATE_STYLE:
-            raise ValueError(f"cannot default horizon_bucket: unknown --template-name {template_name!r}")
-        return default_horizon_for_technical(TEMPLATE_STYLE[template_name])
+        if not template_name:
+            raise ValueError("cannot default horizon_bucket: --template-name is required for channel=technical")
+        # [A95-R1, 2026-08-14] The style comes from the strategy_registry row,
+        # not from an imported TEMPLATE_STYLE dict. Verified at switch-over:
+        # all 63 templates present, zero style mismatches between the two.
+        # A missing row raises rather than falling back to the dict — see
+        # strategies/definitions.py's NO SILENT FALLBACK note.
+        try:
+            style = technical_template_style(template_name)
+        except DefinitionNotFound as exc:
+            raise ValueError(
+                f"cannot default horizon_bucket: unknown --template-name {template_name!r} ({exc})"
+            ) from exc
+        return default_horizon_for_technical(style)
     if channel == "fundamental":
         if not preset:
             raise ValueError("cannot default horizon_bucket: --preset is required for channel=fundamental")

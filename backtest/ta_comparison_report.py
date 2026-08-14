@@ -128,7 +128,27 @@ def benchmark_cagr(start_date: str, end_date: str, index_name: str = "Nifty 500"
 def build_comparison(
     suffix: str, reports_dir: Path = REPORTS_DIR, tax_regime: str = "ltcg_12_5pct_1_25L",
 ) -> Dict[str, Any]:
-    from systems.technical_analysis.screener.templates import TEMPLATE_STYLE
+    # [A95-R1, 2026-08-14] Style comes from the strategy_registry row, not from
+    # an imported TEMPLATE_STYLE dict, so the report labels a run with the same
+    # declared style the backtest resolved its horizon from.
+    #
+    # Unlike the orchestrator's lookup this one TOLERATES a missing row and
+    # falls back to "Unknown" — deliberately, and it is not the silent fallback
+    # strategies/definitions.py forbids. This is a collation over historical
+    # report JSONs, some naming templates that no longer exist; the surrounding
+    # loop already treats one unreadable run as skippable rather than fatal, and
+    # failing the whole comparison because a retired template has no current row
+    # would lose every other strategy's numbers. Nothing is decided from this
+    # value; it is a display label.
+    from strategies.definitions import DefinitionNotFound, technical_template_style
+
+    def _style(template_name: Optional[str]) -> str:
+        if not template_name:
+            return "Unknown"
+        try:
+            return technical_template_style(template_name)
+        except DefinitionNotFound:
+            return "Unknown"
 
     bench_cache: Dict[tuple, Optional[float]] = {}
 
@@ -142,7 +162,7 @@ def build_comparison(
             failures.append({"report": path.name, "error": f"{type(exc).__name__}: {exc}"})
             logger.warning(f"ta_comparison_report: skipping {path.name} — {exc}")
             continue
-        row["style"] = TEMPLATE_STYLE.get(row.get("template_name"), "Unknown")
+        row["style"] = _style(row.get("template_name"))
         tax = row["taxes"][tax_regime]
         row["post_tax_pnl_inr"] = tax["post_tax_pnl_inr"]
         row["total_tax_inr"] = tax["total_tax_inr"]
