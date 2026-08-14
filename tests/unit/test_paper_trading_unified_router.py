@@ -19,6 +19,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(aq, "EXECUTIONS_DIR", root / "executions")
     monkeypatch.setattr(aq, "STATE_DIR", root / "state")
     monkeypatch.setattr(lr, "STATE_DIR", root / "state")
+    # A94: propose_today persists signals to the ledger, and persistence is ON
+    # by default. Without this the router tests write source="paper" rows into
+    # the REAL BACKTEST_DUCKDB_PATH — which they did, until this was added.
+    # Never the real DuckDB, not even briefly.
+    import config.settings as settings
+
+    monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "signals_ledger.duckdb")
     return TestClient(app)
 
 

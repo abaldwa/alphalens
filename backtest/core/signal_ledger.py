@@ -193,7 +193,21 @@ class SignalLedgerRecorder:
         just because this DB predates the A94 tables."""
         if self._schema_ensured:
             return
+        from config.settings import (
+            DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        )
         from datastore.schema.create_strategy_registry import create_strategy_registry_schema
 
-        create_strategy_registry_schema(db_path=self.db_path)
+        # A105: the backtest write-lock budget, matching strategies/db.py and
+        # the job's own writes. On the default budget this DDL loses the lock
+        # first, flush() swallows the failure, and the run's signals are lost
+        # while the run still reports success.
+        create_strategy_registry_schema(
+            db_path=self.db_path,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        )
         self._schema_ensured = True

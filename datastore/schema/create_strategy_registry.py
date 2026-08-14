@@ -247,6 +247,11 @@ def create_strategy_registry_schema(
 
     with get_duckdb_connection(
         db_path,
+        # A105: never cache this connection. It is opened from inside backtest
+        # jobs (SignalLedgerRecorder._ensure_schema); a pooled connection would
+        # hold BACKTEST_DUCKDB_PATH's lock for the rest of the job and starve
+        # the other queue workers it is racing.
+        persist=db_path is None,
         retry_attempts=retry_attempts,
         retry_base_delay_s=retry_base_delay_s,
         retry_max_delay_s=retry_max_delay_s,

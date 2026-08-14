@@ -54,6 +54,10 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from backtest.adapters.panel_filters import (
+    DEFAULT_DOWNTREND_LOOKBACK_DAYS,
+    apply_entry_filters,
+)
 from backtest.core.adtv import adtv_cr_for_ticker
 
 from backtest.core.engine import Signal
@@ -123,6 +127,16 @@ class FundamentalAdapter:
         db_conn: Optional[Any] = None, market_cap_lookup: Optional[Dict[str, float]] = None,
         price_panel: Optional[pd.DataFrame] = None, volume_panel: Optional[pd.DataFrame] = None,
         adtv_lookback_days: int = 20,
+        # 2026-08-14: the three panel-based entry filters. Until now this
+        # adapter accepted none of them and the orchestrator passed none,
+        # so a fundamental run with --min-adtv-cr reported the filter as
+        # applied and traded identically without it (measured: 168 vs 168
+        # trades, 0 buys changed, across all 26 presets). See
+        # backtest/adapters/panel_filters.py.
+        min_adtv_cr: Optional[float] = None,
+        circuit_band_pct: Optional[float] = None,
+        downtrend_filter_pct: Optional[float] = None,
+        downtrend_lookback_days: int = DEFAULT_DOWNTREND_LOOKBACK_DAYS,
     ) -> None:
         if preset not in BESPOKE_PRESETS and preset not in SCREENER_PRESETS and preset not in SCORE_FUNCTIONS:
             raise ValueError(
@@ -160,6 +174,10 @@ class FundamentalAdapter:
         self.price_panel = price_panel.sort_index() if price_panel is not None else None
         self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
         self.adtv_lookback_days = adtv_lookback_days
+        self.min_adtv_cr = min_adtv_cr
+        self.circuit_band_pct = circuit_band_pct
+        self.downtrend_filter_pct = downtrend_filter_pct
+        self.downtrend_lookback_days = downtrend_lookback_days
         # db_conn is intentionally NOT required at construction time (unlike
         # the initial version of this class) — callers that only have the
         # DUCKDB_PATH connection available inside a `with get_duckdb_
@@ -287,6 +305,22 @@ class FundamentalAdapter:
                 if matches_screener_preset(ratios, self.preset, sector=self._sector_lookup.get(row["ticker"])):
                     matched.append(row["ticker"])
                     self._last_ratios[row["ticker"]] = ratios
+
+        # Entry filters BEFORE the top_n cut, never after. Applying them to
+        # an already-selected top_n would leave the slots of rejected names
+        # empty, so a preset told to hold 10 would hold however many of its
+        # top 10 survived — under-deployed while reporting itself full.
+        # Filtering the candidate pool first keeps the count intact and
+        # matches MomentumAdapter._selection_pool.
+        matched = apply_entry_filters(
+            matched, as_of_date,
+            price_panel=self.price_panel, volume_panel=self.volume_panel,
+            min_adtv_cr=self.min_adtv_cr,
+            circuit_band_pct=self.circuit_band_pct,
+            downtrend_filter_pct=self.downtrend_filter_pct,
+            adtv_lookback_days=self.adtv_lookback_days,
+            downtrend_lookback_days=self.downtrend_lookback_days,
+        )
 
         target = set(matched[: self.top_n]) if len(matched) <= self.top_n else set(
             sorted(matched, key=lambda t: -_composite_strength(self._last_ratios[t]))[: self.top_n]

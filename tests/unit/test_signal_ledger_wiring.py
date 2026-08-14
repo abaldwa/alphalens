@@ -290,11 +290,15 @@ class TestRunReadinessGate:
 
         monkeypatch.setattr(eng, "_enforce_run_readiness", eng._enforce_run_readiness)
         import backtest.core.readiness as rd
+        import strategies.registry as reg
         monkeypatch.setattr(rd, "ReadinessChecker", lambda *a, **k: _Checker())
+        # The gate skips unregistered strategies (nothing to derive
+        # prerequisites from); stub a registered one so the sampling path runs.
+        monkeypatch.setattr(reg, "get_strategy", lambda *a, **k: {"version": 1})
 
         class _Cfg:
             trading_days = [date(2026, 1, d) for d in range(1, 29)]
-            universe = ["RELIANCE"]
+            universe_provider = staticmethod(lambda as_of: ["RELIANCE"])
             readiness_sample_dates = 5
             readiness_is_fatal = False
             signal_ledger_db_path = None
@@ -323,12 +327,14 @@ class TestRunReadinessGate:
             def check(self, *a, **k):
                 return _R()
 
+        import strategies.registry as reg
         monkeypatch.setattr(rd, "ReadinessChecker", lambda *a, **k: _Checker())
         monkeypatch.setattr(rd, "record_blocked", lambda *a, **k: 0)
+        monkeypatch.setattr(reg, "get_strategy", lambda *a, **k: {"version": 1})
 
         class _Cfg:
             trading_days = [date(2026, 1, 5)]
-            universe = ["RELIANCE"]
+            universe_provider = staticmethod(lambda as_of: ["RELIANCE"])
             readiness_sample_dates = 1
             readiness_is_fatal = True
             signal_ledger_db_path = None
@@ -347,7 +353,7 @@ class TestRunReadinessGate:
 
         class _Cfg:
             trading_days = []
-            universe = []
+            universe_provider = None
             readiness_sample_dates = 5
             readiness_is_fatal = False
             signal_ledger_db_path = None

@@ -142,6 +142,14 @@ def _job_to_cmd(job: Dict[str, Any], job_index: int, report_suffix: str) -> List
             # omitted (the flag's absence already means "off").
             if value:
                 cmd.append(flag)
+        elif isinstance(value, (list, tuple)):
+            # 2026-08-14: str(["bear"]) is "['bear']", and the orchestrator
+            # then splits it on "," into ["['bear']"] -- a regime name that
+            # matches nothing, so disable_buys_in_regime silently became a
+            # no-op and the job reported itself as bear-gated while running
+            # ungated. The same applied to combo_templates. Both CLI flags
+            # take a comma-separated string, so build one.
+            cmd += [flag, ",".join(str(v) for v in value)]
         else:
             cmd += [flag, str(value)]
     cmd += ["--report-suffix", f"{report_suffix}_job{job_index}"]

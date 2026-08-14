@@ -35,7 +35,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from datastore.api.db import get_duckdb_connection
+from strategies.db import open_connection
 from strategies.predicates import PredicateError, validate_predicates
 
 logger = logging.getLogger(__name__)
@@ -461,11 +461,12 @@ class _ConnCtx:
     def __enter__(self):
         if self._conn is not None:
             return self._conn
-        if self._db_path is None:
-            from config.settings import BACKTEST_DUCKDB_PATH
-
-            self._db_path = BACKTEST_DUCKDB_PATH
-        self._ctx = get_duckdb_connection(self._db_path)
+        # A105: strategies/db.py, not a bare get_duckdb_connection. This is
+        # read by resolve_strategy_version at the START of every backtest
+        # job; on the API's short default budget it loses the race against
+        # other workers' write tails and the run silently records
+        # strategy_version=UNVERSIONED instead of the version it executed.
+        self._ctx = open_connection(self._db_path)
         self._conn = self._ctx.__enter__()
         return self._conn
 

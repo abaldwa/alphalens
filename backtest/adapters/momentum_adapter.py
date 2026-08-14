@@ -53,6 +53,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
+from backtest.adapters.panel_filters import adtv_series, is_circuit_locked
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
 from backtest.momentum_backtest import decide_grace_transitions
@@ -265,19 +266,11 @@ class MomentumAdapter:
     # ===== liquidity =====
     def _adtv_series(self, tickers: List[str], as_of_date: date_type) -> pd.Series:
         """Trailing adtv_lookback_days-day average daily traded value (INR
-        crore) per ticker — price(t) * volume(t), no forward-fill, NaN days
-        simply don't contribute to the mean. Same formula (and same
-        never-assume-liquid-on-missing-data handling) as
-        MomentumBacktester._adtv_cr, vectorized across the pool."""
-        if self.volume_panel is None or self.price_panel is None or not tickers:
-            return pd.Series(dtype=float)
-        cols = [t for t in tickers if t in self.volume_panel.columns and t in self.price_panel.columns]
-        if not cols:
-            return pd.Series(dtype=float)
-        ts = pd.Timestamp(as_of_date)
-        window_prices = self.price_panel[cols].loc[:ts].tail(self.adtv_lookback_days)
-        window_volume = self.volume_panel[cols].loc[:ts].tail(self.adtv_lookback_days)
-        return ((window_prices * window_volume) / 1e7).mean(skipna=True)
+        crore) per ticker. Delegates to panel_filters.adtv_series, which is
+        the single implementation shared with FundamentalAdapter (A93)."""
+        return adtv_series(
+            self.price_panel, self.volume_panel, tickers, as_of_date, self.adtv_lookback_days,
+        )
 
     def _adtv_cr(self, ticker: str, as_of_date: date_type) -> Optional[float]:
         """Single-ticker ADTV, or None if volume_panel wasn't supplied or
@@ -333,22 +326,9 @@ class MomentumAdapter:
 
     def _is_circuit_locked(self, as_of_date: date_type, ticker: str) -> bool:
         """True if `ticker`'s realized 1-day return into `as_of_date` meets
-        or exceeds circuit_band_pct in either direction — a coarse proxy
-        for "likely circuit-locked, don't trust this close as a fillable
-        price" (real bands vary 5/10/20% by tier). False on insufficient
-        history: missing data never locks a ticker."""
-        if self.circuit_band_pct is None or self.price_panel is None or ticker not in self.price_panel.columns:
-            return False
-        idx = self.price_panel.index
-        ts = pd.Timestamp(as_of_date)
-        pos = idx.searchsorted(ts)
-        if pos <= 0 or pos >= len(idx):
-            return False
-        prev_price = self.price_panel[ticker].iloc[pos - 1]
-        cur_price = self.price_panel[ticker].iloc[pos]
-        if pd.isna(prev_price) or pd.isna(cur_price) or prev_price <= 0:
-            return False
-        return abs((cur_price - prev_price) / prev_price) >= self.circuit_band_pct
+        or exceeds circuit_band_pct in either direction. Delegates to
+        panel_filters.is_circuit_locked (single implementation, A93)."""
+        return is_circuit_locked(self.price_panel, ticker, as_of_date, self.circuit_band_pct)
 
     def _regime_for_date(self, as_of: date_type) -> Optional[str]:
         """Self-fetched regime lookup, same source/segments shape as

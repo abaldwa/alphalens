@@ -37,7 +37,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from datastore.api.db import get_duckdb_connection
+from strategies.db import open_connection
 
 logger = logging.getLogger(__name__)
 
@@ -277,11 +277,10 @@ class _ConnCtx:
     def __enter__(self):
         if self._conn is not None:
             return self._conn
-        if self._db_path is None:
-            from config.settings import BACKTEST_DUCKDB_PATH
-
-            self._db_path = BACKTEST_DUCKDB_PATH
-        self._ctx = get_duckdb_connection(self._db_path)
+        # A105: strategies/db.py, not a bare get_duckdb_connection — the
+        # ledger write runs inside a backtest job's deferred tail and needs
+        # that path's write-lock retry budget, not the API's default.
+        self._ctx = open_connection(self._db_path)
         self._conn = self._ctx.__enter__()
         return self._conn
 

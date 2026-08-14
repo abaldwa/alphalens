@@ -371,9 +371,19 @@ def canonical_strategy_key(run) -> Optional[str]:
     else.
     """
     channel = getattr(run, "channel", None)
+    # template_name/preset live in run.config, NOT as attributes on the run --
+    # run_orchestrator_backtest puts them in the config dict. Reading only the
+    # attributes (as this did) always fell through to strategy_id, so every
+    # run was keyed "technical:ta_a1_63d_20260814" instead of "technical:A1".
+    # That silently broke three things at once: ledger rows filed under a key
+    # the registry does not know, strategy_version therefore unresolvable, and
+    # the A103 readiness check unable to find the strategy at all.
+    cfg = getattr(run, "config", None) or {}
     name = (
         getattr(run, "template_name", None)
+        or cfg.get("template_name")
         or getattr(run, "preset", None)
+        or cfg.get("preset")
         or getattr(run, "strategy_id", None)
     )
     if not channel or not name:
@@ -447,29 +457,60 @@ def _enforce_run_readiness(*, run, config, strategy_key: str, strategy_version) 
     # DatetimeIndex, and `index or []` raises "truth value is ambiguous".
     raw_days = getattr(config, "trading_days", None)
     days = list(raw_days) if raw_days is not None else []
-    raw_universe = getattr(config, "universe", None)
-    if raw_universe is None:
-        raw_universe = getattr(run, "universe", None)
-    universe = list(raw_universe) if raw_universe is not None else []
-    if not days or not universe:
+
+    n = max(1, int(config.readiness_sample_dates))
+    step = max(1, len(days) // n) if days else 1
+    sample = days[::step][:n]
+
+    # OrchestratorConfig exposes universe_provider(as_of), NOT a `universe`
+    # attribute -- the universe is point-in-time and differs per date. An
+    # earlier version of this function looked for config.universe, found
+    # nothing, and logged "readiness not enforced" on every real run: the
+    # gate was inert in exactly the case it was written for, and only the
+    # smoke test caught it. Take the universe from the provider, per sampled
+    # date, which is also the universe the generator will actually see.
+    provider = getattr(config, "universe_provider", None)
+    if not days or provider is None:
         # Nothing to probe against. Silence here would be indistinguishable
         # from a pass, so say so.
         logger.warning(
-            "%s: readiness not enforced — no trading_days/universe on the config",
+            "%s: readiness not enforced — no trading_days/universe_provider on the config",
             strategy_key,
         )
         return
 
-    n = max(1, int(config.readiness_sample_dates))
-    step = max(1, len(days) // n)
-    sample = days[::step][:n]
+    from strategies.registry import get_strategy
+    from config.settings import BACKTEST_DUCKDB_PATH
+
+    # A strategy that is not in the registry cannot have its prerequisites
+    # derived (they come from its entry predicates), so there is nothing to
+    # check. Momentum is the live case: its 1,200 registry rows are not keyed
+    # by the run's strategy_id yet (A89/ML41). Say so once, rather than
+    # raising ReadinessError on every sampled date.
+    try:
+        if get_strategy(strategy_key, db_path=BACKTEST_DUCKDB_PATH) is None:
+            logger.info(
+                "%s: not in strategy_registry — readiness not checked (prerequisites "
+                "are derived from the registered entry predicates)", strategy_key,
+            )
+            return
+    except Exception:
+        logger.exception("%s: registry lookup failed; skipping readiness", strategy_key)
+        return
+
     checker = ReadinessChecker()
 
     unready = []
     for as_of in sample:
+        as_of_date = as_of.date() if hasattr(as_of, "date") else as_of
         try:
+            universe = list(provider(as_of_date) or [])
+            if not universe:
+                # A date with no tradeable universe is a real condition (before
+                # ADTV history exists, for instance), not an unready one.
+                continue
             verdict = checker.check(
-                run.channel, as_of, universe=universe, strategy_key=strategy_key,
+                run.channel, as_of_date, universe=universe, strategy_key=strategy_key,
             )
         except Exception:
             logger.exception(

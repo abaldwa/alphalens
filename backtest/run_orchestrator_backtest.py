@@ -245,7 +245,22 @@ def _fetch_real_ohlcv(
         from_dt = pd.Timestamp(start_date)
         to_dt = pd.Timestamp(end_date)
         bulk = client.get_ohlcv_bulk(from_dt, to_dt)
-    bulk = bulk[bulk["ticker"].isin(ticker_set)][["date", "ticker", "close", "volume"]]
+    # high/low are carried, not dropped: _build_config detects circuit-locked
+    # bars as high == low on positive volume, and A85 made that detection the
+    # DEFAULT. Projecting to close/volume only (as this did) meant the
+    # detection raised KeyError('high') on every run the moment it stopped
+    # being opt-in — it had never executed on this path before. Keep the
+    # projection explicit rather than passing the frame through untouched, so
+    # a column this function relies on cannot be silently dropped upstream.
+    _NEEDED = ["date", "ticker", "close", "volume", "high", "low"]
+    missing = [c for c in _NEEDED if c not in bulk.columns]
+    if missing:
+        raise ValueError(
+            f"OHLCV source is missing {missing}; circuit-lock detection needs "
+            "high/low. A snapshot built before this column set was required "
+            "must be rebuilt (delete it and re-run to refetch)."
+        )
+    bulk = bulk[bulk["ticker"].isin(ticker_set)][_NEEDED]
 
     counts = bulk.groupby("ticker").size()
     keep = counts[counts >= min_history_days].index
@@ -750,10 +765,29 @@ def _run_immediate(
             # would show for the same date, purely due to this extra floor.
             # Documented, not unified, in this pass — see the matching note
             # in datastore/api/routers/fundamentals.py.
+            # 2026-08-14: the regime gate needs the deferred _regime_conn
+            # wiring TechnicalAdapter/MomentumAdapter get below, which this
+            # adapter has no equivalent of. Refuse rather than accept-and-
+            # ignore: silently dropping it is precisely the defect being
+            # fixed here, and a run that reports a bear gate it never
+            # applied is worse than one that won't start.
+            if disable_buys_in_regime:
+                raise ValueError(
+                    "--disable-buys-in-regime is not supported for channel=fundamental: "
+                    "FundamentalAdapter has no regime connection, so the gate would be "
+                    "silently inert. Drop the flag, or use the technical/momentum channel."
+                )
             adapter = FundamentalAdapter(
                 preset=preset, top_n=top_n, sector_lookup=sector_map,
                 market_cap_lookup=_real_market_cap_map(),
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+                # Previously omitted entirely — see panel_filters.py. Without
+                # these, --min-adtv-cr/--circuit-band-pct/--downtrend-filter-pct
+                # were accepted, recorded in config_json, shown in the report,
+                # and applied to nothing.
+                min_adtv_cr=min_adtv_cr,
+                circuit_band_pct=circuit_band_pct,
+                downtrend_filter_pct=downtrend_filter_pct,
             )
         elif channel == "momentum":
             adapter = MomentumAdapter(
@@ -943,6 +977,15 @@ def _run_deferred(
             block_circuit_fills=block_circuit_fills,
             max_blackout_sessions=max_blackout_sessions,
         )
+    # A103 readiness is OFF on the deferred path, deliberately. The point of
+    # defer_db_writes is that no live BACKTEST_DUCKDB_PATH connection is held
+    # between the OHLCV fetch and the short tail, so parallel workers never
+    # contend. The readiness check reads strategy_registry, and doing that per
+    # job put a registry read in the middle of every worker -- which collided
+    # with other workers' write-lock tails and failed jobs outright (observed
+    # at --max-workers 3). Readiness belongs ONCE at queue level, before any
+    # worker starts, not inside each job. Tracked as A105.
+    config.enforce_readiness = False
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
     # Hoisted out of the technical branch — see the matching note in
@@ -1011,10 +1054,23 @@ def _run_deferred(
     elif channel == "fundamental":
         if not preset:
             raise ValueError("channel=fundamental requires --preset")
+        # Same fix as the immediate path above (2026-08-14). This is the
+        # branch the parallel queue actually runs (defer_db_writes=True), so
+        # every filtered fundamental sweep to date went through here
+        # unfiltered.
+        if disable_buys_in_regime:
+            raise ValueError(
+                "--disable-buys-in-regime is not supported for channel=fundamental: "
+                "FundamentalAdapter has no regime connection, so the gate would be "
+                "silently inert. Drop the flag, or use the technical/momentum channel."
+            )
         adapter = FundamentalAdapter(
             preset=preset, top_n=top_n, sector_lookup=sector_map,
             market_cap_lookup=_real_market_cap_map(),
             price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
+            min_adtv_cr=min_adtv_cr,
+            circuit_band_pct=circuit_band_pct,
+            downtrend_filter_pct=downtrend_filter_pct,
         )
     elif channel == "momentum":
         adapter = MomentumAdapter(
