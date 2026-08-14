@@ -635,6 +635,21 @@ class OrchestratorConfig:
     # aborting mid-sweep would fail a 400-job queue on its first strategy
     # whose feature happened to be sparse. The refusal is always recorded.
     readiness_is_fatal: bool = False
+    # 2026-08-14. "daily" = the exit policy is evaluated every trading day,
+    # independent of rebalance cadence (the original behaviour, and correct
+    # for Technical/ML, whose signals ARE daily). "rebalance" = it is
+    # evaluated only on rebalance dates, alongside rotation.
+    #
+    # Momentum must use "rebalance". Momentum is a periodic strategy: it ranks
+    # the universe every N days and holds the top_n until the next ranking.
+    # Under a daily exit pass a position stopped out on day 3 left its slot
+    # empty for the remaining 60 days of a 63-day cadence, because entries are
+    # only ever created on rebalance dates. Measured on 2026-08-14: lb6
+    # top_n=10 held a MEDIAN of 1 position and a mean of 1.55; lb3 top_n=10
+    # held a mean of 3.86. Those runs' CAGRs describe a book that was 15-40%
+    # deployed with the rest idle in cash, which is not the strategy anyone
+    # configured or read the results of.
+    exit_policy_cadence: Literal["daily", "rebalance"] = "daily"
 
 
 class BacktestOrchestrator:
@@ -1052,7 +1067,11 @@ class BacktestOrchestrator:
                 self._check_blackouts(
                     portfolio, config, prices, as_of, blackout_streak, last_seen_price, data_gaps,
                 )
-                self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
+                # Skipped entirely under exit_policy_cadence="rebalance": for a
+                # periodic strategy an exit between rebalances is a slot that
+                # cannot be refilled until the next one (see the field's note).
+                if config.exit_policy_cadence == "daily":
+                    self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
                 portfolio.record_equity(as_of, prices)
                 continue
 

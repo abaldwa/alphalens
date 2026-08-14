@@ -442,6 +442,27 @@ def _build_config(
     )
 
 
+def _exit_policy_cadence_for(channel: str) -> str:
+    """Whether this channel's exit policy is evaluated daily or only on
+    rebalance dates. See OrchestratorConfig.exit_policy_cadence.
+
+    Momentum is a periodic strategy: it ranks the universe every N days and
+    holds the selection until the next ranking. Its entries therefore exist
+    ONLY on rebalance dates, so a daily exit emptied a slot that could not be
+    refilled for up to a full cadence. Measured on 2026-08-14 at top_n=10:
+    lb6 held a median of 1 position, lb3 a mean of 3.86.
+
+    Technical and ML stay daily because their signals genuinely are daily —
+    a technical stop is part of the strategy, not an accident of cadence.
+
+    Fundamental is structurally periodic in the same way momentum is (its
+    adapter also cuts a ranked list at top_n on rebalance dates) and is left
+    on "daily" here pending its own measurement rather than being changed as
+    a side effect of the momentum fix.
+    """
+    return "rebalance" if channel == "momentum" else "daily"
+
+
 def build_technical_feature_lookup(engine=None):
     """Callable[[ticker, as_of_date], Dict[str, float]] returning that
     ticker's real technical indicator snapshot (sma_200_ratio, rsi_14,
@@ -657,6 +678,7 @@ def _run_immediate(
             block_circuit_fills=block_circuit_fills,
             max_blackout_sessions=max_blackout_sessions,
         )
+        config.exit_policy_cadence = _exit_policy_cadence_for(channel)
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
         # price/volume panels from the same ohlcv pull momentum's branch
         # below already uses — passed to Technical/Fundamental too so their
@@ -986,6 +1008,7 @@ def _run_deferred(
     # at --max-workers 3). Readiness belongs ONCE at queue level, before any
     # worker starts, not inside each job. Tracked as A105.
     config.enforce_readiness = False
+    config.exit_policy_cadence = _exit_policy_cadence_for(channel)
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
     # Hoisted out of the technical branch — see the matching note in
