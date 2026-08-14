@@ -500,6 +500,48 @@ def _build_config(
     )
 
 
+def _momentum_descriptor(
+    top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
+    circuit_band_pct, grace_cycles, exit_policy_variant,
+) -> str:
+    """Momentum's identity string, covering every parameter that changes the
+    signals it emits.
+
+    Technical and Fundamental name themselves with a template or a preset.
+    Momentum has no such name, so this was `f"top{top_n}_{lookback_months}m"`
+    -- two parameters out of seven. Measured 2026-08-14: a control run and a
+    filtered run of the same lookback produced the SAME strategy_key, so both
+    wrote to strategy_signals under one identity and the ledger could no
+    longer say which variant emitted a given buy. That is the one question
+    the ledger exists to answer.
+
+    Only non-default components are appended, so an unfiltered run keeps the
+    exact key it had before this change and existing rows stay addressable.
+
+    This is a stopgap, not the destination. The 1,680 registry rows already
+    carry real names (`balanced_b3_101-150_lb3mo_monthly_top10`), where the
+    category prefix IS the filter set; once momentum runs are addressable as
+    registry rows (ML40), identity comes from there and this generated string
+    goes away. Encoding identity in a parsed string is the mess A89 exists to
+    end -- but a key that collides is worse than a key that is ugly.
+    """
+    parts = [f"top{top_n}", f"{lookback_months}m"]
+    if min_adtv_cr is not None:
+        parts.append(f"adtv{min_adtv_cr:g}")
+    if downtrend_filter_pct is not None:
+        parts.append(f"dt{downtrend_filter_pct:g}")
+    if circuit_band_pct is not None:
+        parts.append(f"cb{circuit_band_pct:g}")
+    # grace_cycles=2 is the historical default; only a deviation is named.
+    if grace_cycles != 2:
+        parts.append(f"g{grace_cycles}")
+    # The exit policy changes which sells are emitted, so two runs differing
+    # only in it are genuinely different strategies.
+    if exit_policy_variant and exit_policy_variant != "risk_managed":
+        parts.append(str(exit_policy_variant))
+    return "_".join(parts)
+
+
 def _exit_policy_cadence_for(channel: str) -> str:
     """Whether this channel's exit policy is evaluated daily or only on
     rebalance dates. See OrchestratorConfig.exit_policy_cadence.
@@ -1413,7 +1455,10 @@ def run_orchestrator_backtest(
     descriptor = {
         "technical": ("+".join(combo_templates) if combo_templates else template_name),
         "fundamental": preset,
-        "momentum": f"top{top_n}_{lookback_months}m",
+        "momentum": _momentum_descriptor(
+            top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
+            circuit_band_pct, grace_cycles, exit_policy_variant,
+        ),
     }[channel]
     if not strategy_id:
         # Codified strategy_id (backtest/strategy_id.py)
