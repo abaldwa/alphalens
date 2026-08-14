@@ -100,6 +100,20 @@ def technical_template_style(template_name: str) -> str:
     return str(style)
 
 
+def assert_declared(channel: str, name: str) -> Dict[str, Any]:
+    """Raise unless `name` is a declared strategy on `channel`; return its row.
+
+    The validation an adapter runs on its own strategy argument. Previously
+    each adapter checked membership of whichever Python dicts it happened to
+    import, which meant a name could be runnable without being declared — see
+    the four fundamental presets registered on 2026-08-15.
+
+    Returns the row so a caller that needs the definition does not pay a second
+    lookup; the memoisation above makes that free anyway.
+    """
+    return get_definition(channel, name)
+
+
 def clear_cache() -> None:
     """Drop the memoised rows.
 

@@ -2022,10 +2022,16 @@ ML40-2.1 does, and the A95 quality gate cannot switch on until A95-R1..R3 do.
   divergence is already declared in `filter_registry` as `adtv_capped_sizing`.
 
 ### A95 remainder — make the registries load-bearing
-- **A95-R1** The backtest must READ definitions instead of importing them:
-  `run_orchestrator_backtest.py:97` imports `TEMPLATE_STYLE`, `technical_adapter`
-  imports `TEMPLATES`, `fundamental_adapter` reads `STRATEGY_CATALOG`.
-  `strategies/migrations/technical.py:34` explicitly assigns this to A95.
+- **A95-R1** ✅ DONE 2026-08-15. Both `TEMPLATE_STYLE` call sites now read the
+  registry row (`39be45d9`), and `FundamentalAdapter` validates `--preset`
+  against the registry instead of the union of three Python dicts. The four
+  undeclared presets (`growth`, `quality`, `quality_compounder`, `turnaround`)
+  were registered first — user chose option (a), register them, over keeping an
+  explicit escape hatch — so all 30 runnable names now resolve, verified 30/30,
+  with a bogus preset still rejected. `technical_adapter` never imported
+  `TEMPLATES` (it delegates to `ScreenerEngine`), so there was no third site.
+  A new test asserts the general property, not just the fix: every RUNNABLE
+  preset must be DECLARED.
 - **A95-R2** Screener (`systems/technical_analysis/screener/engine.py:53`), the
   alert checker and daily inference must read the same rows.
 - **A95-R3** Switch on the `tests/quality/` guard enforcing the AGENTS.md

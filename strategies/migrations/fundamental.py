@@ -116,8 +116,71 @@ def preset_predicates(preset: str) -> List[Dict[str, Any]]:
     return preds
 
 
+def _uncatalogued() -> Dict[str, Dict[str, Any]]:
+    """The runnable-but-undeclared names, as STRATEGY_CATALOG-shaped metadata.
+
+    [A95-R1, 2026-08-15] FundamentalAdapter validates --preset against
+    SCREENER_PRESETS | SCORE_FUNCTIONS | BESPOKE_PRESETS -- 30 names -- while
+    STRATEGY_CATALOG, and therefore this migration, described 26. The other four
+    were runnable strategies with no registry row: no declared definition, no
+    filter list, no version. A run using one could not be explained by the
+    report's Definition card, could not be deployed through A91, and wrote
+    ledger signals under a key that resolved to nothing.
+
+    Confirmed 2026-08-14 that this was NOT an incomplete F7 migration: the
+    registry mirrored STRATEGY_CATALOG exactly, empty in both directions. These
+    four were simply never catalogued.
+
+    Registering them (the user's decision, 2026-08-15, over the alternative of
+    keeping them as an explicit escape hatch) makes the registry authoritative
+    for every name the adapter will accept, which is what lets that validation
+    read the registry instead of the dicts.
+
+    `backtested: False` is asserted rather than guessed -- none of these four
+    appear in the 26-strategy fundamental sweep. Categories mirror what the
+    catalogue uses for their nearest kin so they group sensibly in the picker.
+    """
+    return {
+        # SCORE_FUNCTIONS-only: rankings, so empty entry_criterion by the same
+        # rule composite_score entries already follow.
+        "growth": {
+            "kind": "composite_score",
+            "label": "Growth (raw score)",
+            "description": "Rank by the growth composite score. Uncatalogued ranking function, registered by A95-R1 so every runnable preset has a definition.",
+            "category": "Growth",
+            "backtested": False,
+        },
+        "quality": {
+            "kind": "composite_score",
+            "label": "Quality (raw score)",
+            "description": "Rank by the quality composite score. Uncatalogued ranking function, registered by A95-R1 so every runnable preset has a definition.",
+            "category": "Quality",
+            "backtested": False,
+        },
+        # SCREENER_PRESETS-only: real threshold screens, so these migrate
+        # losslessly into predicates via preset_predicates(), sign convention
+        # included -- quality_compounder's negative debt_to_equity threshold is
+        # exactly the case that docstring warns about.
+        "quality_compounder": {
+            "kind": "preset",
+            "label": "Quality Compounder",
+            "description": "Threshold screen for consistently profitable, low-leverage compounders. Uncatalogued preset, registered by A95-R1.",
+            "category": "Quality",
+            "backtested": False,
+        },
+        "turnaround": {
+            "kind": "preset",
+            "label": "Turnaround",
+            "description": "Threshold screen for businesses recovering from a weak base. Uncatalogued preset, registered by A95-R1.",
+            "category": "Contrarian",
+            "backtested": False,
+        },
+    }
+
+
 def build_rows() -> List[Dict[str, Any]]:
-    """One payload per STRATEGY_CATALOG entry."""
+    """One payload per STRATEGY_CATALOG entry, plus the four uncatalogued but
+    runnable names (see _uncatalogued)."""
     from features.fundamental_composites import (
         SCORE_FUNCTIONS,
         SCREENER_PRESETS,
@@ -129,8 +192,17 @@ def build_rows() -> List[Dict[str, Any]]:
     except ImportError:  # pragma: no cover - adapter import is heavy
         BESPOKE_PRESETS = ()
 
+    catalogue = dict(STRATEGY_CATALOG)
+    for name, meta in _uncatalogued().items():
+        if name in catalogue:
+            # It graduated into STRATEGY_CATALOG upstream. The catalogue wins;
+            # carrying a second description here would be the drift this whole
+            # migration exists to remove.
+            continue
+        catalogue[name] = meta
+
     rows: List[Dict[str, Any]] = []
-    for name, meta in STRATEGY_CATALOG.items():
+    for name, meta in catalogue.items():
         kind = meta.get("kind")
         definition: Dict[str, Any] = {
             "kind": kind,

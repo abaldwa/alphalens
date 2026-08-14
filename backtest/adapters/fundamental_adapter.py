@@ -72,6 +72,7 @@ from features.fundamental_composites import (
 )
 from features.governance import GOVERNANCE_FEATURES
 from systems.fundamental_analysis.quality.net_net import LIQUIDITY_FLOOR_MARKET_CAP_CR
+from strategies.definitions import assert_declared as _assert_declared_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -138,11 +139,23 @@ class FundamentalAdapter:
         downtrend_filter_pct: Optional[float] = None,
         downtrend_lookback_days: int = DEFAULT_DOWNTREND_LOOKBACK_DAYS,
     ) -> None:
-        if preset not in BESPOKE_PRESETS and preset not in SCREENER_PRESETS and preset not in SCORE_FUNCTIONS:
-            raise ValueError(
-                f"Unknown screener preset {preset!r}. "
-                f"Valid: {list(SCREENER_PRESETS.keys()) + list(BESPOKE_PRESETS) + list(SCORE_FUNCTIONS.keys())}"
-            )
+        # [A95-R1, 2026-08-15] Which presets are valid is now the registry's
+        # answer, not the union of three Python dicts.
+        #
+        # The dicts still hold the IMPLEMENTATIONS — SCORE_FUNCTIONS maps names
+        # to callables and a row cannot carry a callable — so they are still
+        # imported and still dispatched through below. What moved is the
+        # DECLARATION: the set of names that constitute a strategy. That split
+        # is the most the registry can be authoritative for, and A95-R3's guard
+        # asserts it rather than asserting the absence of imports.
+        #
+        # This check accepted 4 names the registry did not describe (growth,
+        # quality, quality_compounder, turnaround) until they were registered
+        # on 2026-08-15. A run of one had no definition, no filter list and no
+        # version: unexplainable in the report, undeployable via A91, and its
+        # ledger signals keyed to nothing. Reading the registry here is what
+        # makes that state unreachable rather than merely fixed once.
+        _assert_declared_strategy("fundamental", preset)
         if top_n <= 0:
             raise ValueError("top_n must be positive")
         self.preset = preset

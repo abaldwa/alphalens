@@ -15,9 +15,56 @@ def _panel(rows):
 
 
 class TestInitialization:
-    def test_rejects_unknown_preset(self):
-        with pytest.raises(ValueError, match="Unknown screener preset"):
+    def test_rejects_undeclared_preset(self):
+        """[A95-R1, 2026-08-15] The rejection now comes from strategy_registry
+        rather than from the union of three Python dicts, so the message names
+        the registry and the migration to run.
+
+        DefinitionNotFound subclasses ValueError (via RegistryError), so this
+        stays a ValueError for every existing caller — what changed is which
+        source decides, not the exception contract.
+
+        The stronger property is asserted below: a name that is RUNNABLE must
+        also be DECLARED. That is what stops a strategy existing in code but
+        not in the registry, which is the state four fundamental presets were
+        in until 2026-08-15."""
+        with pytest.raises(ValueError, match="no strategy_registry row"):
             FundamentalAdapter(preset="not_a_real_preset")
+
+    def test_every_runnable_preset_is_declared(self):
+        """Guards the gap that motivated A95-R1 rather than just its fix.
+
+        The adapter dispatches on SCREENER_PRESETS / SCORE_FUNCTIONS /
+        BESPOKE_PRESETS. Any name in those dicts is runnable, so any name NOT
+        in the registry is a strategy with no definition, no filter list and no
+        version — unexplainable in the report, undeployable via A91, and its
+        ledger signals keyed to a row that does not exist.
+
+        Skipped without the registry DB: the rest of this file is pure
+        construction logic and must stay runnable in CI with no database."""
+        from strategies.definitions import DefinitionNotFound, get_definition
+        from features.fundamental_composites import SCORE_FUNCTIONS, SCREENER_PRESETS
+        from backtest.adapters.fundamental_adapter import BESPOKE_PRESETS
+
+        runnable = sorted(set(SCREENER_PRESETS) | set(SCORE_FUNCTIONS) | set(BESPOKE_PRESETS))
+        try:
+            get_definition("fundamental", runnable[0])
+        except DefinitionNotFound:
+            pytest.skip("strategy_registry not populated in this environment")
+        except Exception as exc:  # no DB at all
+            pytest.skip(f"strategy_registry unavailable: {type(exc).__name__}")
+
+        undeclared = []
+        for name in runnable:
+            try:
+                get_definition("fundamental", name)
+            except DefinitionNotFound:
+                undeclared.append(name)
+        assert not undeclared, (
+            f"runnable but undeclared: {undeclared}. Register them in "
+            "strategies/migrations/fundamental.py — a strategy the backtest will "
+            "run must have a registry row."
+        )
 
     def test_rejects_non_positive_top_n(self):
         with pytest.raises(ValueError):
