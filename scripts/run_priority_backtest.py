@@ -181,7 +181,29 @@ class Progress:
         return out
 
     def completed_indices(self) -> Dict[int, str]:
+        """Every recorded outcome, keyed by job index — the run's ledger.
+
+        Last write wins, so a job killed and later re-run reads as whatever
+        it finished as. Do NOT use this to decide what --resume skips; see
+        succeeded_indices.
+        """
         return {r["idx"]: r.get("outcome", "unknown") for r in self.records()}
+
+    def succeeded_indices(self) -> set:
+        """Job indices --resume may skip: the ones that actually succeeded.
+
+        Observed live on 2026-08-14: resume skipped anything with a recorded
+        line at all, so the momentum job the memory governor killed was
+        dropped from the run entirely and its report never written. A memory
+        event must cost time, never silently delete a strategy from the
+        results -- the deletion is invisible, and the missing strategy would
+        simply be absent from the comparison nobody was told was incomplete.
+
+        Failures are retried on resume for the same reason: a job that died
+        because the box was under pressure deserves another attempt, and one
+        that fails deterministically will fail again visibly and cheaply.
+        """
+        return {r["idx"] for r in self.records() if r.get("outcome") == "ok"}
 
     def durations_by_channel(self) -> Dict[str, List[float]]:
         """Observed per-job durations, grouped by channel.
@@ -227,7 +249,9 @@ class Supervisor:
         self.mem_floor_seen = available_mb() or 0.0
         self.kills = 0
 
-        done = self.progress.completed_indices() if resume else {}
+        # Only successes are skipped. A killed or failed job is retried, and
+        # keeps its place in channel-priority order (see succeeded_indices).
+        done = self.progress.succeeded_indices() if resume else set()
         self.pending = [j for j in self.jobs if j["_idx"] not in done]
         self.done_count = len(done)
         self.total = len(self.jobs)
@@ -254,6 +278,27 @@ class Supervisor:
         except psutil.Error:
             return 0.0
 
+    def _requeue(self, job: Dict[str, Any]) -> None:
+        """Put a killed job back at its priority position, not at the end.
+
+        Appending was the obvious thing and it was wrong: observed live on
+        2026-08-14, a killed momentum job landed behind all 177 technical and
+        fundamental jobs, so the highest-priority channel would have finished
+        last. The whole point of the ordering is that momentum results arrive
+        first, and a memory event must not silently invert that.
+
+        It goes AFTER the pending jobs of its own channel rather than at the
+        very front, so a job that is killed repeatedly cannot starve its
+        siblings by being retried ahead of them every time.
+        """
+        rank = CHANNEL_PRIORITY.get(job.get("channel"), 99)
+        pos = len(self.pending)
+        for i, other in enumerate(self.pending):
+            if CHANNEL_PRIORITY.get(other.get("channel"), 99) > rank:
+                pos = i
+                break
+        self.pending.insert(pos, job)
+
     def _enforce_memory(self) -> None:
         avail = available_mb()
         if avail is None:
@@ -263,6 +308,7 @@ class Supervisor:
             return
 
         # Below the hard floor: kill the single largest job and requeue it.
+        # (see _requeue for where it lands -- NOT the back of the queue)
         # One victim per poll, deliberately -- killing several at once would
         # usually be an overreaction to a transient spike.
         idx, entry = max(self.running.items(), key=lambda kv: self._rss_mb(kv[1]["proc"]))
@@ -280,7 +326,7 @@ class Supervisor:
             "at": datetime.now().isoformat(timespec="seconds"),
         })
         del self.running[idx]
-        self.pending.append(entry["job"])
+        self._requeue(entry["job"])
         self.kills += 1
         if self.max_workers > 1:
             # Concurrency is the variable we actually control. Having proven
