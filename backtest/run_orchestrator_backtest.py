@@ -51,7 +51,7 @@ import time
 import uuid
 from datetime import date as date_type
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -193,6 +193,31 @@ HORIZON_BUCKET_MAP = {b.value: b for b in HorizonBucket}
 
 
 def _fetch_real_ohlcv(
+    max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type,
+    ohlcv_snapshot_dir: Optional[str] = None,
+) -> pd.DataFrame:
+    """Memoised wrapper over _fetch_real_ohlcv_uncached (A87 Stage 1).
+
+    Measured 39.5s per call and identical for every strategy in a sweep, so
+    running many strategies in one process now builds it once. A single run
+    in its own subprocess is unaffected -- the cache is per-process and
+    empty at start.
+
+    The frame is shared, not copied (see shared_panels.get_ohlcv): treat the
+    return value as read-only.
+    """
+    from backtest import shared_panels
+
+    key = shared_panels.ohlcv_key(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
+    return shared_panels.get_ohlcv(
+        key,
+        lambda: _fetch_real_ohlcv_uncached(
+            max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir,
+        ),
+    )
+
+
+def _fetch_real_ohlcv_uncached(
     max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type,
     ohlcv_snapshot_dir: Optional[str] = None,
 ) -> pd.DataFrame:
@@ -346,20 +371,62 @@ def _build_pit_adtv_panel(ohlcv: pd.DataFrame, lookback: int) -> pd.DataFrame:
     return turnover.rolling(lookback, min_periods=max(2, lookback // 3)).mean().shift(1)
 
 
-def _build_config(
-    ohlcv: pd.DataFrame, sector_map: Dict[str, str], top_n_by_adtv: Optional[int] = None,
-    block_circuit_fills: bool = False, max_blackout_sessions: Optional[int] = None,
-) -> OrchestratorConfig:
+def _build_config_artifacts(ohlcv, top_n_by_adtv, block_circuit_fills) -> Dict[str, Any]:
+    """The expensive, strategy-independent derivations of one OHLCV frame.
+
+    Split out of _build_config so a sweep can share them (A87 Stage 1).
+    Measured 12.7s per call, and every strategy in a sweep produced a
+    byte-identical result. Nothing strategy-specific may be computed here --
+    that is the property that makes sharing safe.
+    """
     trading_days = pd.DatetimeIndex(sorted(ohlcv["date"].unique()))
     price_map = {(row.ticker, row.date.date()): row.close for row in ohlcv.itertuples(index=False)}
 
     # Each ticker's real trading dates as sorted int64 day-ordinals — a
-    # fast per-(ticker, as_of) presence check via binary search, built
-    # once from the OHLCV already fetched (see module docstring).
+    # fast per-(ticker, as_of) presence check via binary search.
     ticker_dates: Dict[str, np.ndarray] = {
         ticker: np.sort(group["date"].to_numpy().astype("datetime64[D]").astype(np.int64))
         for ticker, group in ohlcv.groupby("ticker")
     }
+
+    adtv_panel = _build_pit_adtv_panel(ohlcv, PIT_ADTV_LOOKBACK_SESSIONS) if top_n_by_adtv else None
+
+    # Circuit-locked bars: high == low on a day that actually traded. See
+    # _build_config's own note for why volume > 0 is required.
+    locked_bars = set()
+    if block_circuit_fills:
+        locked = ohlcv[(ohlcv["high"] == ohlcv["low"]) & (ohlcv["volume"] > 0)]
+        locked_bars = {
+            (row.ticker, row.date.date() if hasattr(row.date, "date") else row.date)
+            for row in locked.itertuples(index=False)
+        }
+
+    return {
+        "trading_days": trading_days, "price_map": price_map, "ticker_dates": ticker_dates,
+        "adtv_panel": adtv_panel, "locked_bars": locked_bars,
+    }
+
+
+def _build_config(
+    ohlcv: pd.DataFrame, sector_map: Dict[str, str], top_n_by_adtv: Optional[int] = None,
+    block_circuit_fills: bool = False, max_blackout_sessions: Optional[int] = None,
+) -> OrchestratorConfig:
+    # A87 Stage 1: trading_days / price_map / ticker_dates are pure functions
+    # of the OHLCV frame, so a sweep sharing one frame shares these too. The
+    # cache key is the frame's own identity plus the two options below that
+    # change what is derived from it -- never the strategy, which must not be
+    # able to influence the universe it is simulated against.
+    from backtest import shared_panels
+
+    _artifacts = shared_panels.get_artifacts(
+        shared_panels.artifact_key(id(ohlcv), top_n_by_adtv, block_circuit_fills),
+        lambda: _build_config_artifacts(ohlcv, top_n_by_adtv, block_circuit_fills),
+    )
+    trading_days = _artifacts["trading_days"]
+    price_map = _artifacts["price_map"]
+    ticker_dates = _artifacts["ticker_dates"]
+    adtv_panel = _artifacts["adtv_panel"]
+    locked_bars = _artifacts["locked_bars"]
 
     # [2026-08-13] Point-in-time ADTV ranking. The universe was ALREADY being
     # truncated to "top 800 by ADTV" via config.universe.get_top_adtv_tickers,
@@ -378,10 +445,7 @@ def _build_config(
     #
     # None preserves the previous behaviour exactly for callers that do not
     # opt in, so this is inert until a run asks for it.
-    adtv_panel = (
-        _build_pit_adtv_panel(ohlcv, PIT_ADTV_LOOKBACK_SESSIONS)
-        if top_n_by_adtv else None
-    )
+    # (built in _build_config_artifacts above, shared across the sweep)
 
     def universe_provider(as_of: date_type) -> List[str]:
         as_of_ordinal = np.datetime64(as_of, "D").astype(np.int64)
@@ -421,13 +485,7 @@ def _build_config(
     # volume > 0 is required: a flat bar with no volume is a carried-forward
     # price on a non-trading day, not a lock, and treating those as locks
     # would withhold dormant small caps for the wrong reason.
-    locked_bars = set()
-    if block_circuit_fills:
-        locked = ohlcv[(ohlcv["high"] == ohlcv["low"]) & (ohlcv["volume"] > 0)]
-        locked_bars = {
-            (row.ticker, row.date.date() if hasattr(row.date, "date") else row.date)
-            for row in locked.itertuples(index=False)
-        }
+    # (locked_bars built in _build_config_artifacts above, shared across the sweep)
 
     return OrchestratorConfig(
         trading_days=trading_days,
