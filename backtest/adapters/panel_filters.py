@@ -45,7 +45,7 @@ from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
-from features.momentum_strategy import trailing_momentum_from_panel
+from features.momentum_signal import downtrend_tickers as _downtrend_tickers
 
 logger = logging.getLogger(__name__)
 
@@ -109,14 +109,16 @@ def downtrend_tickers(
 ) -> List[str]:
     """Tickers down by at least `downtrend_filter_pct` over the trailing
     window -- i.e. the ones a buy should not be opened into."""
-    if downtrend_filter_pct is None or price_panel is None or len(tickers) == 0:
-        return []
-    short_term = trailing_momentum_from_panel(
-        price_panel, list(tickers), str(as_of_date), lookback_days,
+    # Delegates to features/, which is where the momentum primitive layer
+    # lives. Calling trailing_momentum_from_panel directly from inside
+    # backtest/ registers as a second momentum generator with
+    # tests/quality/test_one_generator_per_channel.py -- correctly, since a
+    # filter module that re-derives momentum is one refactor away from
+    # re-deriving the selection. This module was that violation on
+    # 2026-08-14 until the primitive moved.
+    return _downtrend_tickers(
+        price_panel, list(tickers), str(as_of_date), downtrend_filter_pct, lookback_days,
     )
-    if short_term.empty:
-        return []
-    return list(short_term[short_term <= -downtrend_filter_pct].index)
 
 
 def apply_entry_filters(

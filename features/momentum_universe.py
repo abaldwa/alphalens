@@ -43,12 +43,31 @@ from config.universe import load_universe_raw
 logger = logging.getLogger(__name__)
 
 # (band_id, rank_start, rank_end) — 1-indexed, inclusive on both ends.
+# 2026-08-14, user-specified band design. Seven bands spanning rank 1-800,
+# replacing the previous five, which stopped at 200 and could not express
+# the bottom three bands the per-band momentum sweep has always used
+# (scripts/run_momentum_recommended_strategies.py kept 201-250/251-500/
+# 501-800 as a LOCAL constant precisely because they were missing here --
+# so --rank-band-id could not run three of the five bands under test).
+#
+# Band ids 1-4 keep their historical numbers so existing rows, reports and
+# paper-trading strategies that reference them still resolve. 100-150 and
+# 150-200 became 101-150 and 151-200: rank 150 previously belonged to two
+# bands at once, which double-counted one stock across two "distinct"
+# universes.
+#
+# NOTE the same overlap remains by design at 200/300/500 (200-300, 300-500,
+# 500-800 share their boundary ranks with the band below). Left exactly as
+# specified rather than silently corrected -- flag it if unintended, since
+# a boundary stock is then in two band universes simultaneously.
 RANK_BANDS: List[tuple] = [
     (1, 1, 50),
     (2, 51, 100),
-    (3, 100, 150),
-    (4, 150, 200),
-    (5, 100, 200),
+    (3, 101, 150),
+    (4, 151, 200),
+    (6, 200, 300),
+    (7, 300, 500),
+    (8, 500, 800),
 ]
 
 

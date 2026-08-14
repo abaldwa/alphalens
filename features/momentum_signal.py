@@ -17,7 +17,7 @@ own independent ranking — never blended into one composite score.
 """
 
 import logging
-from typing import Any, List
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -184,6 +184,33 @@ def trailing_momentum_from_panel(
     valid = start_prices.notna() & end_prices.notna() & (start_prices != 0)
     returns = (end_prices[valid] / start_prices[valid]) - 1.0
     return returns.astype(float)
+
+
+def downtrend_tickers(
+    price_panel: pd.DataFrame, tickers: List[str], as_of_date: str,
+    downtrend_filter_pct: Optional[float], lookback_days: int = 20,
+) -> List[str]:
+    """Tickers down by at least `downtrend_filter_pct` over the trailing
+    window — the ones a buy must not be opened into.
+
+    Lives here, beside trailing_momentum_from_panel, because it is a
+    threshold TEST on the momentum primitive, not a ranking. That
+    distinction is enforced: tests/quality/test_one_generator_per_channel.py
+    treats any call to trailing_momentum_from_panel from inside backtest/
+    as a second momentum generator, and it is right to — a filter module
+    that re-derives momentum is one refactor away from re-deriving the
+    selection. Callers in backtest/ import this instead.
+
+    A ticker with no history over the window stays eligible: missing data
+    is not evidence of a downtrend, and excluding on it would silently
+    shrink the candidate set for exactly the names least covered.
+    """
+    if downtrend_filter_pct is None or price_panel is None or not len(tickers):
+        return []
+    short_term = trailing_momentum_from_panel(price_panel, list(tickers), as_of_date, lookback_days)
+    if short_term.empty:
+        return []
+    return list(short_term[short_term <= -downtrend_filter_pct].index)
 
 
 def top_n_by_momentum(

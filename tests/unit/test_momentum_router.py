@@ -302,11 +302,17 @@ class TestContributions:
 
 
 class TestStrategies:
-    def test_list_strategies_returns_5_rank_bands(self, client):
+    def test_list_strategies_returns_one_per_rank_band(self, client):
+        """Asserted against RANK_BANDS rather than a literal count. The
+        count was hardcoded to 5 and broke when the band design went to
+        seven on 2026-08-14; a test that pins the source of truth instead
+        of a number does not need editing when the design changes again."""
+        from features.momentum_universe import RANK_BANDS
+
         resp = client.get("/api/v1/momentum/strategies")
         assert resp.status_code == 200, resp.text
         strategies = resp.json()
-        assert len(strategies) == 5
+        assert len(strategies) == len(RANK_BANDS)
         assert momentum_router.DEFAULT_STRATEGY_ID in {s["strategy_id"] for s in strategies}
 
 
