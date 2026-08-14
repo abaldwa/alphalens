@@ -2040,10 +2040,16 @@ ML40-2.1 does, and the A95 quality gate cannot switch on until A95-R1..R3 do.
   PROVEN — `tests/unit/test_registry_templates.py` asserts, across all 63
   templates, that conditions are byte-identical to templates.py and that
   category/description/key_display_features/exit_* all match. No grammar work was
-  needed: T15 stored conditions verbatim. `screen()` itself is NOT yet switched —
-  that edit changes what the live scheduler and API screen on, so it is held for a
-  deliberate, observed cutover rather than bundled with the loader. The remaining
-  fundamental piece is blocked on A106.
+  needed: T15 stored conditions verbatim. **CUTOVER DONE 2026-08-15**: `screen()` and
+  `list_templates()` now resolve from the registry. Verified empirically before
+  committing — all 63 templates screened against the real 2026-08-13 panel (2,317
+  tickers) registry-fed vs templates.py-fed produced **0 selection differences** —
+  and the live API still serves 63 templates and runs A1. No fallback to
+  TEMPLATE_MAP: a fallback would be taken silently on every registry outage, which
+  is how the second declaration would quietly return. Note this puts a DB read on a
+  path that previously touched only Parquet. The scheduler was `inactive (dead)` at
+  cutover, so the first real exercise is the next daily cycle — watch it before
+  A95-R3 flips the gate on. The remaining fundamental piece is blocked on A106.
 - **A95-R3** Switch on the `tests/quality/` guard enforcing the AGENTS.md
   invariants. It would fail today. No longer blocked on the four channel
   migrations — T15/ML41/F7/ML42 are all ✅ as of this audit and the registry holds

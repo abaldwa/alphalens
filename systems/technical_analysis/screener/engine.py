@@ -50,7 +50,6 @@ from config.settings import FEATURES_DAILY_DIR
 from datastore.api.utils.feature_store import resolve_date
 from systems.technical_analysis.screener.templates import (
     TEMPLATE_MAP,
-    TEMPLATES,
     ScreenerTemplate,
 )
 
@@ -480,13 +479,43 @@ class ScreenerEngine:
         ---------------
         SPEC-TA-005: GET /api/v1/ta/screener/run/{template_name}
         """
-        if template_name not in TEMPLATE_MAP:
+        # [A95-R2 cutover, 2026-08-15] The template comes from its
+        # strategy_registry row, not from the in-memory TEMPLATE_MAP.
+        #
+        # Proven equivalent before switching: tests/unit/test_registry_templates.py
+        # asserts, across all 63 templates, that the stored conditions are
+        # byte-identical to templates.py and that category/description/
+        # key_display_features/exit_* all match. T15 stored conditions verbatim,
+        # so this reads back the same dicts _screen_df already evaluates.
+        #
+        # Why it is worth a new dependency: the report, the deploy page and the
+        # API all explain a strategy from its row. While the screener selected
+        # from the Python list there were two declarations of one entry
+        # criterion, and nothing would have crashed if they diverged -- the
+        # screener would simply have picked stocks on one definition while every
+        # surface described another.
+        #
+        # NOTE this puts a DB read on a path that previously touched only
+        # Parquet. It is one indexed lookup on a 63-row table against the
+        # Parquet load below, but it does mean the screener now needs the
+        # registry to be reachable. Deliberately NOT given a fallback to
+        # TEMPLATE_MAP: a fallback would be taken silently on every registry
+        # outage, which is how the second declaration would quietly come back.
+        from systems.technical_analysis.screener.registry_templates import (
+            load_template,
+            template_exists,
+        )
+
+        if not template_exists(template_name):
+            # KeyError with the available names is a published contract
+            # (SPEC-TA-005), so the registry's own DefinitionNotFound is
+            # translated rather than allowed to surface here.
             raise KeyError(
                 f"Unknown template '{template_name}'. "
                 f"Available: {sorted(TEMPLATE_MAP.keys())}"
             )
 
-        template = TEMPLATE_MAP[template_name]
+        template = load_template(template_name)
         resolved = resolve_date(date)
         if resolved is None:
             logger.warning("No feature Parquet available for date '%s'", date)
@@ -560,6 +589,13 @@ class ScreenerEngine:
         ---------------
         SPEC-TA-005: GET /api/v1/ta/screener/templates
         """
+        # [A95-R2 cutover, 2026-08-15] Listed from the registry, same source
+        # screen() now resolves against — so the picker cannot offer a template
+        # that screen() would then refuse, which is exactly what two
+        # declarations of the same set would eventually produce.
+        # list_templates() is already name-ordered.
+        from systems.technical_analysis.screener.registry_templates import list_templates
+
         return [
             TemplateInfo(
                 name=t.name,
@@ -567,5 +603,5 @@ class ScreenerEngine:
                 description=t.description,
                 condition_count=len(t.conditions),
             )
-            for t in sorted(TEMPLATES, key=lambda x: x.name)
+            for t in list_templates()
         ]
