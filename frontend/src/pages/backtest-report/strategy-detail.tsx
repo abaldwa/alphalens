@@ -26,6 +26,8 @@ import { MatrixTable } from '@/features/backtest-report/ui/MatrixTable'
 import { TradesLink } from '@/features/backtest-report/ui/TradesLink'
 import { EM_DASH, days, inr, num, pct, rate, rateDelta } from '@/features/backtest-report/core/format'
 import { useReportData } from '@/features/backtest-report/data/useReportData'
+import { useStrategyDefinition } from '@/features/backtest-report/data/useStrategyDefinition'
+import type { RegistryFilter, RegistryStrategy } from '@/shared/api/strategies'
 import type { StrategyReport, StrategySetup } from '@/features/backtest-report/core/types'
 
 function Field({
@@ -140,11 +142,142 @@ function PendingNote({ report }: { report: StrategyReport }) {
   )
 }
 
+/**
+ * The strategy's DEFINITION, straight from strategy_registry (A95).
+ *
+ * Distinct from the "Setup" card below it, and deliberately so: Setup shows
+ * what THIS RUN was configured with, read off the run row. This card shows
+ * what the strategy IS, read off the registry. When they disagree, that is a
+ * real finding — a run executed against a definition that has since been
+ * revised — and it is only visible because the two are fetched from different
+ * places rather than one being derived from the other.
+ */
+function DefinitionCard({
+  strategy,
+  filters,
+  isLoading,
+  error,
+}: {
+  strategy: RegistryStrategy | undefined
+  filters: RegistryFilter[]
+  isLoading: boolean
+  error: Error | null
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Definition</CardTitle>
+        <CardDescription>
+          From <span className="font-mono text-xs">strategy_registry</span> — the same row the
+          backtest and any deployment read, not re-derived from the run.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading definition…</p>
+        ) : error ? (
+          // Surfaced, not swallowed: a missing definition means this run
+          // cannot be traced to a declared strategy, which is worth seeing.
+          <p className="text-sm text-muted-foreground">
+            Definition unavailable — {error.message}
+          </p>
+        ) : !strategy ? (
+          <p className="text-sm text-muted-foreground">
+            This run carries no registry entry. Runs recorded before the strategy was migrated
+            into <span className="font-mono text-xs">strategy_registry</span> have no definition
+            to show.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <Field label="Label" value={strategy.display_label} />
+              <Field label="Category" value={strategy.category} />
+              <Field
+                label="Version"
+                value={strategy.version}
+                hint="The definition revision. A run must be explained with the version it executed against."
+              />
+              <Field label="Status" value={strategy.status} />
+              <Field label="Valid from" value={strategy.valid_from} />
+              <Field label="Valid to" value={strategy.valid_to ?? 'current'} />
+            </dl>
+
+            {strategy.description ? (
+              <p className="text-sm text-muted-foreground">{strategy.description}</p>
+            ) : null}
+
+            <div>
+              <h4 className="mb-1 text-xs font-medium text-muted-foreground">
+                Entry criterion
+                {strategy.entry_criterion.length > 0
+                  ? ` (${strategy.entry_criterion.length}, in order)`
+                  : ''}
+              </h4>
+              {strategy.entry_criterion.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  None declared — this strategy selects by ranking rather than by predicates.
+                </p>
+              ) : (
+                // Rendered in declared order and never sorted: for a composing
+                // entry criterion the order is part of the meaning.
+                <ol className="space-y-1">
+                  {strategy.entry_criterion.map((p, i) => (
+                    <li key={i} className="font-mono text-xs tabular-nums">
+                      {[p.feature, p.op, p.feature2 ?? (p.value as string | number | undefined)]
+                        .filter((x) => x !== undefined && x !== null)
+                        .join(' ')}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+
+            <div>
+              <h4 className="mb-1 text-xs font-medium text-muted-foreground">Exit criterion</h4>
+              <p className="font-mono text-xs">
+                {(strategy.exit_criterion?.variant as string | undefined) ?? EM_DASH}
+              </p>
+            </div>
+
+            <div>
+              <h4 className="mb-1 text-xs font-medium text-muted-foreground">
+                Filters {filters.length > 0 ? `(${filters.length})` : ''}
+              </h4>
+              {filters.length === 0 ? (
+                <p className="text-sm text-muted-foreground">None declared.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {filters.map((f) => (
+                    <li key={f.filter_id} className="text-xs">
+                      <span className="font-mono">{f.filter_id}</span>
+                      {f.name ? <span className="text-muted-foreground"> — {f.name}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {strategy.source_ref ? (
+              <p className="text-xs text-muted-foreground">
+                Source: <span className="font-mono">{strategy.source_ref}</span>
+              </p>
+            ) : null}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function BacktestStrategyDetailPage() {
   const { key = '' } = useParams<{ key: string }>()
   const decoded = decodeURIComponent(key)
   const { strategies, isLoading } = useReportData()
   const report = strategies.find((s) => s.key === decoded)
+  // The report's own key IS the registry key (A89 made the engine emit it),
+  // so no client-side parsing is needed to look the definition up — which is
+  // the whole point of A95.
+  const definition = useStrategyDefinition(report?.key)
 
   if (isLoading) {
     return (
@@ -186,6 +319,13 @@ export function BacktestStrategyDetailPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
+        <DefinitionCard
+          strategy={definition.strategy}
+          filters={definition.filters}
+          isLoading={definition.isLoading}
+          error={definition.error}
+        />
+
         <Card>
           <CardHeader>
             <CardTitle>Returns</CardTitle>
