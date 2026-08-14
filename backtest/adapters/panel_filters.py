@@ -46,6 +46,8 @@ from typing import Dict, List, Optional, Sequence
 import pandas as pd
 
 from features.momentum_signal import downtrend_tickers as _downtrend_tickers
+from features.momentum_strategy import adtv_cr as _adtv_cr
+from features.momentum_strategy import is_circuit_locked as _is_circuit_locked
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +68,16 @@ def adtv_series(
     to the mean rather than being imputed. A ticker absent from either panel
     is absent from the result -- callers must treat that as "unknown", never
     as "liquid" (see apply_entry_filters).
+
+    [ML40, 2026-08-14] Delegates to features.momentum_strategy.adtv_cr rather
+    than keeping the byte-identical copy that used to live here. Same reason
+    downtrend_tickers below delegates: features/ is the shared primitive
+    layer, and two copies of a liquidity estimate is two answers to "is this
+    name tradeable" waiting to drift apart.
     """
-    if price_panel is None or volume_panel is None or len(tickers) == 0:
+    if price_panel is None:
         return pd.Series(dtype=float)
-    cols = [t for t in tickers if t in volume_panel.columns and t in price_panel.columns]
-    if not cols:
-        return pd.Series(dtype=float)
-    ts = pd.Timestamp(as_of_date)
-    window_prices = price_panel[cols].loc[:ts].tail(lookback_days)
-    window_volume = volume_panel[cols].loc[:ts].tail(lookback_days)
-    return ((window_prices * window_volume) / 1e7).mean(skipna=True)
+    return _adtv_cr(price_panel, volume_panel, pd.Timestamp(as_of_date), list(tickers), lookback_days)
 
 
 def is_circuit_locked(
@@ -88,18 +90,13 @@ def is_circuit_locked(
     A coarse proxy for "this close is probably not a fillable price" -- real
     NSE bands vary 5/10/20% by tier. False on insufficient history: missing
     data must never lock a ticker, or a data gap becomes a trading decision.
+
+    [ML40, 2026-08-14] Delegates to features.momentum_strategy.is_circuit_locked,
+    which is now the single implementation. This copy's `pos >= len(idx)`
+    bound check was the safer of the two and was carried over there, so the
+    delegation loses nothing.
     """
-    if circuit_band_pct is None or price_panel is None or ticker not in price_panel.columns:
-        return False
-    idx = price_panel.index
-    pos = idx.searchsorted(pd.Timestamp(as_of_date))
-    if pos <= 0 or pos >= len(idx):
-        return False
-    prev_price = price_panel[ticker].iloc[pos - 1]
-    cur_price = price_panel[ticker].iloc[pos]
-    if pd.isna(prev_price) or pd.isna(cur_price) or prev_price <= 0:
-        return False
-    return abs((cur_price - prev_price) / prev_price) >= circuit_band_pct
+    return _is_circuit_locked(price_panel, pd.Timestamp(as_of_date), ticker, circuit_band_pct)
 
 
 def downtrend_tickers(

@@ -75,6 +75,11 @@ _ORCHESTRATOR_FLAGS = {
     "channel", "strategy_id", "horizon_bucket", "start_date", "end_date", "capital_mode", "initial_capital",
     "sip_amount", "universe_spec", "max_tickers", "min_history_days", "template_name", "preset", "top_n",
     "lookback_months", "grace_cycles", "exit_variant", "regime_method",
+    # [ML40, 2026-08-14] Momentum's asymmetric exit band. Like grace_cycles
+    # before it, this lever existed only inside MomentumBacktester and was
+    # unreachable from any queue, so none of the 500+ momentum runs to date
+    # varied it. It changes which sells are emitted, so it is per-job.
+    "exit_rank",
     # 2026-08-01 Momentum-parity Technical filters (backtest/run_orchestrator_backtest.py
     # --max-hold-days/--min-adtv-cr/etc.) — see that script's argparse block.
     "max_hold_days", "min_adtv_cr", "quality_gate_min_f_score", "quality_gate_max_m_score",

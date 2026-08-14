@@ -17,6 +17,35 @@ from datastore.api.db import close_all_connections, get_duckdb_connection
 from datastore.schema import create_normalised
 
 
+def _patch_momentum(monkeypatch, fn):
+    """Inject a deterministic momentum ranking into both binding sites.
+
+    [ML40, 2026-08-14] These tests used to patch
+    `backtest.momentum_backtest.trailing_momentum_from_panel`. That name is
+    gone from the engine: ranking moved to the shared
+    features.momentum_strategy.rank_universe, so both engines rank through one
+    implementation and the module no longer imports the primitive at all
+    (which is what clears the `duplicate_momentum_ranking` quality gate).
+
+    Two sites are patched, not one, because the single name the engine used to
+    expose has become two distinct bindings:
+      * features.momentum_strategy — bound into rank_universe, i.e. THE ranking.
+      * features.momentum_signal   — bound into downtrend_tickers, i.e. the
+        short-window reversal filter.
+    They were the same function object when the engine held one import, and
+    the downtrend tests depend on their stub seeing both calls, so patching
+    only one would silently leave the real implementation running for the
+    other and make those tests assert against half-real data.
+    """
+    import features.momentum_signal as _msig
+    import features.momentum_strategy as _mstrat
+
+    monkeypatch.setattr(_mstrat, "trailing_momentum_from_panel", fn)
+    monkeypatch.setattr(_msig, "trailing_momentum_from_panel", fn)
+
+
+
+
 def _seed_ohlcv(db_path, ticker, date_str, close):
     with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
         conn.execute(
@@ -165,7 +194,7 @@ class TestDecideGraceTransitionsRegressionAgainstBacktester:
             call_idx["i"] = min(i + 1, len(rankings_by_call) - 1)
             return rankings_by_call[i]
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", fake_momentum)
+        _patch_momentum(monkeypatch, fake_momentum)
 
         engine = mb.MomentumBacktester(
             price_panel=panel,

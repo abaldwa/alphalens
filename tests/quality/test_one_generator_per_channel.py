@@ -132,15 +132,23 @@ KNOWN_VIOLATIONS: frozenset[Tuple[str, str, str]] = frozenset({
         "ml",
         "PHASE-4: give ml_adapter a real generate_signals",
     ),
-    # MomentumBacktester.run() re-ranks momentum inline instead of calling
-    # MomentumAdapter. This is the literal backtest-vs-live divergence this
-    # gate is named for: the adapter and this loop apply the same filters in
-    # separately maintained code.
-    (
-        "duplicate_momentum_ranking",
-        "backtest/momentum_backtest.py",
-        "PHASE-3: delete MomentumBacktester, route through MomentumAdapter",
-    ),
+    # [ML40, 2026-08-14] `duplicate_momentum_ranking` /
+    # backtest/momentum_backtest.py is RESOLVED and its entry deleted, per the
+    # "fixing a violation must delete its entry" rule above.
+    #
+    # What actually changed: MomentumBacktester.run() no longer ranks or
+    # filters inline. Both it and MomentumAdapter now call the same
+    # features/momentum_strategy.py functions — rank_universe (the ranking),
+    # select_buy_pool (the filter chain), keep_set_for_exit (the asymmetric
+    # exit band), decide_grace_transitions and sticky_promoted_holdings. The
+    # engine imports no momentum primitive at all any more, which is why this
+    # gate now finds zero offenders rather than being appeased.
+    #
+    # NOTE the class itself still exists: ~15 scripts and systems/copilot
+    # construct it, so deleting it is a separate step. That is fine for THIS
+    # rule, which asks that the ranking have one implementation, not that
+    # there be one class — the same standard DELEGATING_COMPOSITES applies to
+    # TechnicalComboAdapter. It is tracked as the remainder of ML40.
     # Legacy-engine importers. Each one pins backtest/engine.py in place.
     (
         "legacy_engine_import",

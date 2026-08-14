@@ -727,3 +727,72 @@ def _a94_ledger_never_touches_the_real_db(tmp_path, monkeypatch):
     import config.settings as settings
 
     monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "a94_ledger.duckdb")
+
+
+class TestAsymmetricExitRank:
+    """exit_rank (ML40, 2026-08-14) — the last selection-side knob that lived
+    only in MomentumBacktester, now shared via
+    features.momentum_strategy.keep_set_for_exit.
+
+    Fixture: 4 tickers whose 1-day trailing returns rank D > C > B > A. With
+    top_n=1 the target set is always {D}, so B/C's fate is decided purely by
+    whether exit_rank keeps them out of grace.
+    """
+
+    def _ranked_panel(self):
+        # Each ticker rises at a distinct constant rate, so the 1-day
+        # trailing-return ranking is stable and D > C > B > A every day.
+        n = 6
+        return _panel({
+            "A": [100.0 * (1.001 ** i) for i in range(n)],
+            "B": [100.0 * (1.002 ** i) for i in range(n)],
+            "C": [100.0 * (1.003 ** i) for i in range(n)],
+            "D": [100.0 * (1.004 ** i) for i in range(n)],
+        }, n)
+
+    def _run(self, exit_rank, cycles=3):
+        panel = self._ranked_panel()
+        adapter = MomentumAdapter(
+            price_panel=panel, top_n=1, lookback_months=1, grace_cycles=0, exit_rank=exit_rank,
+        )
+        adapter.lookback_days = 1  # 1-day momentum so the short fixture has real history
+        universe = ["A", "B", "C", "D"]
+        # Seed a holding in B, which is rank 3 of 4 — inside exit_rank=3 but
+        # outside top_n=1.
+        adapter._held_grace = {"B": None}
+        emitted = []
+        for i in range(1, cycles + 1):
+            emitted.append(adapter.generate_signals(universe, panel.index[i].date(), HorizonBucket.D21))
+        return adapter, emitted
+
+    def test_held_name_inside_the_exit_band_is_not_sold(self):
+        """B ranks 3rd; with exit_rank=3 it stays 'kept' and never enters
+        grace, so no sell is ever emitted for it."""
+        adapter, emitted = self._run(exit_rank=3)
+        sells = {s.ticker for batch in emitted for s in batch if s.action == "sell"}
+        assert "B" not in sells
+        assert adapter._held_grace.get("B") is None  # core, grace never started
+
+    def test_symmetric_default_sells_the_same_name(self):
+        """Same fixture, exit_rank=None: B leaves the top_n immediately and,
+        with grace_cycles=0, is sold. This is the control proving the test
+        above measures exit_rank and not the fixture."""
+        _, emitted = self._run(exit_rank=None)
+        sells = {s.ticker for batch in emitted for s in batch if s.action == "sell"}
+        assert "B" in sells
+
+    def test_name_outside_the_exit_band_still_exits(self):
+        """A ranks 4th, outside exit_rank=3, so the band does not protect it —
+        exit_rank rides winners, it does not disable exits."""
+        panel = self._ranked_panel()
+        adapter = MomentumAdapter(
+            price_panel=panel, top_n=1, lookback_months=1, grace_cycles=0, exit_rank=3,
+        )
+        adapter.lookback_days = 1
+        adapter._held_grace = {"A": None}
+        sells = set()
+        for i in range(1, 4):
+            for s in adapter.generate_signals(["A", "B", "C", "D"], panel.index[i].date(), HorizonBucket.D21):
+                if s.action == "sell":
+                    sells.add(s.ticker)
+        assert "A" in sells

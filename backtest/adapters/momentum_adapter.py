@@ -56,11 +56,13 @@ import pandas as pd
 from backtest.adapters.panel_filters import adtv_series, is_circuit_locked
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
-from backtest.momentum_backtest import decide_grace_transitions
-from features.momentum_signal import (
-    lookback_trading_days,
-    orthogonalize_momentum_vs_factors,
-    trailing_momentum_from_panel,
+from features.momentum_signal import lookback_trading_days
+from features.momentum_strategy import (
+    decide_grace_transitions,
+    keep_set_for_exit,
+    rank_universe,
+    select_buy_pool,
+    sticky_promoted_holdings,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,7 @@ class MomentumAdapter:
         volume_weighted: bool = False,
         rank_start: Optional[int] = None,
         yearly_rank_lookup: Optional[Dict[str, Dict[str, int]]] = None,
+        exit_rank: Optional[int] = None,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -207,6 +210,23 @@ class MomentumAdapter:
             produces — the FULL ranking, not the band slice, since the
             ranks that matter here are the ones above the band.
             Both None (the default) is today's unchanged behavior.
+
+        exit_rank : (ML40, 2026-08-14) asymmetric exit band, the last
+            selection-side knob that lived only in MomentumBacktester. Entry
+            is still the top_n; a HELD position does not begin its grace
+            countdown until its momentum rank falls beyond exit_rank
+            (exit_rank >= top_n). With top_n=10 and exit_rank=15 a winner
+            that slips to rank 12 is ridden rather than rotated out. Applied
+            via the shared features.momentum_strategy.keep_set_for_exit, the
+            same function MomentumBacktester now uses, so the two engines
+            cannot implement "ride winners" differently.
+
+            Ranked on RAW momentum across the whole ranked universe, not on
+            the filtered buy pool — a held name that a buy-side filter
+            (illiquidity, circuit-lock, quality) removed from selection must
+            not be force-exited by that filter, matching this adapter's
+            standing rule that a filter blocks an entry and never causes a
+            liquidation. None (default) keeps the symmetric behavior.
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -245,6 +265,7 @@ class MomentumAdapter:
         }
         self.min_momentum = min_momentum
         self.volume_weighted = volume_weighted
+        self.exit_rank = exit_rank
         self.rank_start = rank_start
         self.yearly_rank_lookup = {
             pd.Timestamp(k): v for k, v in (yearly_rank_lookup or {}).items()
@@ -362,53 +383,48 @@ class MomentumAdapter:
         return regime is not None and regime in self.disable_buys_in_regime
 
     def _selection_pool(self, momentum: pd.Series, as_of_date: date_type) -> pd.Series:
-        """Momentum scores restricted to tickers eligible to be SELECTED
-        into the target set this rebalance — filters applied in exactly the
-        order MomentumBacktester.run() applies them (quality -> approximated
-        mcap -> orthogonalization -> liquidity -> circuit-lock -> downtrend
-        -> min_momentum). Deliberately never consulted when deciding an
-        already-held ticker's grace/sell status: a filter must not force a
-        liquidation, only block a new entry."""
-        pool = momentum
+        """Momentum scores restricted to tickers eligible to be SELECTED into
+        the target set this rebalance. Deliberately never consulted when
+        deciding an already-held ticker's grace/sell status: a filter must not
+        force a liquidation, only block a new entry.
 
-        if self.quality_gate and not pool.empty:
-            failing = [t for t in pool.index if not self._passes_quality_gate(t)]
-            pool = pool.drop(index=failing)
+        [ML40, 2026-08-14] The filter chain itself is no longer implemented
+        here. It is features.momentum_strategy.select_buy_pool — the same call
+        MomentumBacktester.run() now makes — so the ordering (quality ->
+        approximated mcap -> orthogonalization -> liquidity -> circuit-lock ->
+        downtrend -> HMM regime) and every filter's never-exclude-on-missing-
+        data convention exist once rather than in two engines that were being
+        kept in step by hand.
 
-        if self.exclude_approximated_mcap and self.approximation_flags and not pool.empty:
-            applicable_starts = [d for d in self.approximation_flags if d <= pd.Timestamp(as_of_date)]
-            if applicable_starts:
-                flags = self.approximation_flags[max(applicable_starts)]
-                pool = pool.drop(index=[t for t in pool.index if flags.get(t)])
-
-        # Rank/select on the residual after regressing out size/beta, not
-        # raw momentum. orthogonalize_momentum_vs_factors itself no-ops
-        # (returns fewer/no rows) when too few tickers have both values;
-        # those keep their raw score rather than being silently excluded.
-        if self.orthogonalize_vs_size_beta and self.market_cap_panel is not None and not pool.empty:
-            mcap_history = self.market_cap_panel.loc[:pd.Timestamp(as_of_date)]
-            mcap_row = mcap_history.iloc[-1] if not mcap_history.empty else pd.Series(dtype=float)
-            mcap_for_pool = mcap_row.reindex(pool.index)
-            beta_for_pool = pd.Series(
-                {t: self.beta_map[t] for t in pool.index if t in self.beta_map}, dtype=float
-            ).reindex(pool.index)
-            residual = orthogonalize_momentum_vs_factors(pool, mcap_for_pool, beta_for_pool)
-            pool = residual.combine_first(pool)
-
-        if self.min_adtv_cr is not None and not pool.empty:
-            adtv = self._adtv_series(list(pool.index), as_of_date).reindex(pool.index)
-            illiquid = adtv[adtv.isna() | (adtv < self.min_adtv_cr)].index
-            pool = pool.drop(index=[t for t in illiquid if t in pool.index])
-
-        if self.circuit_band_pct is not None and not pool.empty:
-            pool = pool.drop(index=[t for t in pool.index if self._is_circuit_locked(as_of_date, t)])
-
-        if self.downtrend_filter_pct is not None and not pool.empty:
-            short_term = trailing_momentum_from_panel(
-                self.price_panel, list(pool.index), str(as_of_date), self.downtrend_lookback_days,
-            )
-            sharply_down = short_term[short_term <= -self.downtrend_filter_pct].index
-            pool = pool.drop(index=[t for t in sharply_down if t in pool.index])
+        min_momentum stays here rather than moving into select_buy_pool: it is
+        a floor on the SCORE, applied after every filter has run, and
+        MomentumBacktester applies it at the same point (its `eligible` line).
+        """
+        pool = select_buy_pool(
+            momentum,
+            pd.Timestamp(as_of_date),
+            price_panel=self.price_panel,
+            # This adapter has no separate forward-filled panel; its
+            # circuit-lock check has always read the raw panel, and
+            # panel_filters.is_circuit_locked (used by _is_circuit_locked
+            # below) does the same. Passing the raw panel keeps that
+            # behaviour byte-identical rather than silently introducing
+            # forward-filled prices into this adapter's decisions.
+            price_panel_ffilled=self.price_panel,
+            volume_panel=self.volume_panel,
+            quality_scores=self.quality_scores,
+            quality_gate=self.quality_gate,
+            approximation_flags=self.approximation_flags,
+            exclude_approximated_mcap=self.exclude_approximated_mcap,
+            orthogonalize_vs_size_beta=self.orthogonalize_vs_size_beta,
+            market_cap_panel=self.market_cap_panel,
+            beta_map=self.beta_map,
+            min_adtv_cr=self.min_adtv_cr,
+            adtv_lookback_days=self.adtv_lookback_days,
+            circuit_band_pct=self.circuit_band_pct,
+            downtrend_filter_pct=self.downtrend_filter_pct,
+            downtrend_lookback_days=self.downtrend_lookback_days,
+        )
 
         if self.min_momentum is not None and not pool.empty:
             pool = pool[pool > self.min_momentum]
@@ -425,24 +441,17 @@ class MomentumAdapter:
         by construction this can never introduce a ticker that isn't
         already held — a promoted name that was never bought, or that has
         already fully exited, is not in _held_grace and therefore not
-        returned here."""
-        if self.rank_start is None or not self.yearly_rank_lookup or not self._held_grace:
-            return []
-        applicable_starts = [d for d in self.yearly_rank_lookup if d <= pd.Timestamp(as_of_date)]
-        if not applicable_starts:
-            return []
-        ranks = self.yearly_rank_lookup[max(applicable_starts)]
-        in_universe = set(universe)
-        promoted = []
-        for ticker in self._held_grace:
-            if ticker in in_universe:
-                continue
-            rank = ranks.get(ticker)
-            # No rank at all (left the tracked universe/delisted) or a
-            # worse-or-equal rank (demoted) => no special treatment.
-            if rank is not None and rank < self.rank_start:
-                promoted.append(ticker)
-        return promoted
+        returned here.
+
+        [ML40, 2026-08-14] The rule itself is
+        features.momentum_strategy.sticky_promoted_holdings — this method is
+        now the binding of this adapter's state to that shared function. The
+        logic was copied into momentum_strategy.py on 2026-08-09 and left
+        duplicated here; that second copy is gone."""
+        return sticky_promoted_holdings(
+            self._held_grace, universe, pd.Timestamp(as_of_date),
+            self.rank_start, self.yearly_rank_lookup,
+        )
 
     def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
         # Sticky-promotion (Phase 3): extend the ranking pool BEFORE
@@ -453,9 +462,8 @@ class MomentumAdapter:
         sticky = self._sticky_promoted_holdings(universe, as_of_date)
         if sticky:
             universe = list(universe) + sorted(sticky)
-        momentum = trailing_momentum_from_panel(
-            self.price_panel, universe, str(as_of_date), self.lookback_days
-        )
+        # [ML40] One ranking implementation, shared with MomentumBacktester.
+        momentum = rank_universe(self.price_panel, universe, as_of_date, self.lookback_days)
         self._last_momentum = momentum
         if momentum.empty:
             # No fabricated ranking when there isn't enough real history yet
@@ -468,9 +476,15 @@ class MomentumAdapter:
             if not pool.empty else set()
         )
 
+        # [ML40] Asymmetric exit band. keep_set is `target` when exit_rank is
+        # None, so the default path is unchanged. Computed from RAW momentum,
+        # not `pool`, so a buy-side filter can block an entry without
+        # force-exiting a name already held — see exit_rank's docstring.
+        keep_set = keep_set_for_exit(momentum, target, self.exit_rank)
+
         # Grace bookkeeping BEFORE emitting anything: a held ticker outside
-        # `target` only becomes a sell once its grace is exhausted.
-        updated_grace = decide_grace_transitions(self._held_grace, target, self.grace_cycles)
+        # `keep_set` only becomes a sell once its grace is exhausted.
+        updated_grace = decide_grace_transitions(self._held_grace, keep_set, self.grace_cycles)
         buys_disabled = self._is_buys_disabled(as_of_date)
 
         signals: List[Signal] = []

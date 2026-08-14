@@ -16,6 +16,35 @@ import pytest
 import backtest.momentum_backtest as mb
 
 
+def _patch_momentum(monkeypatch, fn):
+    """Inject a deterministic momentum ranking into both binding sites.
+
+    [ML40, 2026-08-14] These tests used to patch
+    `backtest.momentum_backtest.trailing_momentum_from_panel`. That name is
+    gone from the engine: ranking moved to the shared
+    features.momentum_strategy.rank_universe, so both engines rank through one
+    implementation and the module no longer imports the primitive at all
+    (which is what clears the `duplicate_momentum_ranking` quality gate).
+
+    Two sites are patched, not one, because the single name the engine used to
+    expose has become two distinct bindings:
+      * features.momentum_strategy — bound into rank_universe, i.e. THE ranking.
+      * features.momentum_signal   — bound into downtrend_tickers, i.e. the
+        short-window reversal filter.
+    They were the same function object when the engine held one import, and
+    the downtrend tests depend on their stub seeing both calls, so patching
+    only one would silently leave the real implementation running for the
+    other and make those tests assert against half-real data.
+    """
+    import features.momentum_signal as _msig
+    import features.momentum_strategy as _mstrat
+
+    monkeypatch.setattr(_mstrat, "trailing_momentum_from_panel", fn)
+    monkeypatch.setattr(_msig, "trailing_momentum_from_panel", fn)
+
+
+
+
 def _flat_price_panel(tickers, n_days, price=100.0):
     dates = pd.date_range("2026-01-01", periods=n_days, freq="D")
     return pd.DataFrame({t: [price] * n_days for t in tickers}, index=dates)
@@ -71,7 +100,7 @@ class TestSIP:
         panel = _flat_price_panel(["A"], len(dates))
         panel.index = dates
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -96,7 +125,7 @@ class TestSIP:
     def test_no_sip_leaves_cash_flows_as_single_contribution(self, monkeypatch):
         dates = pd.date_range("2026-01-01", periods=10, freq="D")
         panel = _flat_price_panel(["A"], len(dates))
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -120,8 +149,8 @@ class TestMinMomentumFilter:
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
         # A ranks #1 by momentum but its momentum is negative; B is #2 but positive.
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": -0.05, "B": 0.02})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": -0.05, "B": 0.02})
         )
 
         engine = mb.MomentumBacktester(
@@ -141,8 +170,8 @@ class TestMinMomentumFilter:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": -0.05, "B": 0.02})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": -0.05, "B": 0.02})
         )
 
         engine = mb.MomentumBacktester(
@@ -173,7 +202,7 @@ class TestDowntrendFilter:
                 return pd.Series({"A": -0.08, "B": -0.01})
             return pd.Series({"A": 0.30, "B": 0.10})  # main lookback: A ranks #1
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", fake_momentum)
+        _patch_momentum(monkeypatch, fake_momentum)
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -199,7 +228,7 @@ class TestDowntrendFilter:
                 return pd.Series({"A": -0.02, "B": -0.01})  # both under the 5% threshold
             return pd.Series({"A": 0.30, "B": 0.10})
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", fake_momentum)
+        _patch_momentum(monkeypatch, fake_momentum)
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -216,8 +245,8 @@ class TestDowntrendFilter:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.30, "B": 0.10})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.30, "B": 0.10})
         )
 
         engine = mb.MomentumBacktester(
@@ -249,7 +278,7 @@ class TestTransactionLedger:
         def fake_momentum(price_panel, tickers_arg, as_of_date, lookback_days):
             return pd.Series(rankings_by_date[pd.Timestamp(as_of_date)])
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", fake_momentum)
+        _patch_momentum(monkeypatch, fake_momentum)
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -281,8 +310,8 @@ class TestTransactionLedger:
         panel = _flat_price_panel(tickers, 3)
         dates = panel.index
 
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0})
         )
 
         engine = mb.MomentumBacktester(
@@ -318,7 +347,7 @@ class TestPriceRowNotBrokenByStaggeredListings:
         # history, not a data gap to be guessed around.
         panel["LATE"] = [None, None, None, 50.0, 51.0]
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series(dtype=float))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series(dtype=float))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -353,7 +382,7 @@ class TestGracePeriod:
         def fake_momentum(price_panel, tickers_arg, as_of_date, lookback_days):
             return pd.Series(rankings_by_date[pd.Timestamp(as_of_date)])
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", fake_momentum)
+        _patch_momentum(monkeypatch, fake_momentum)
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -408,7 +437,7 @@ class TestGracePeriod:
         def fake_momentum(price_panel, tickers_arg, as_of_date, lookback_days):
             return pd.Series(rankings_by_date[pd.Timestamp(as_of_date)])
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", fake_momentum)
+        _patch_momentum(monkeypatch, fake_momentum)
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -437,7 +466,7 @@ class TestBufferExhaustion:
         def fake_momentum(price_panel, tickers_arg, as_of_date, lookback_days):
             return pd.Series(rankings_by_date[pd.Timestamp(as_of_date)])
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", fake_momentum)
+        _patch_momentum(monkeypatch, fake_momentum)
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -472,8 +501,8 @@ class TestLiquidityAndCircuitFilters:
         dates = panel.index
         # A has real volume -> liquid; B has zero volume -> illiquid, excluded.
         volume = pd.DataFrame({"A": [1_000_000] * 3, "B": [0] * 3}, index=dates)
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.02, "B": 0.05})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.02, "B": 0.05})
         )
 
         engine = mb.MomentumBacktester(
@@ -493,7 +522,7 @@ class TestLiquidityAndCircuitFilters:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -514,7 +543,7 @@ class TestLiquidityAndCircuitFilters:
         # notional -> max_qty_by_adtv = 500/100 = 5 shares, far below what
         # investable_per_slot alone would buy with a 1,000,000 starting capital.
         volume = pd.DataFrame({"A": [100] * 2}, index=dates)
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -537,7 +566,7 @@ class TestLiquidityAndCircuitFilters:
         # hits 0 this day -> force-sell attempted but deferred).
         # Day 2: 130 (no move vs day1, not locked -> sold).
         panel = pd.DataFrame({"A": [100.0, 130.0, 130.0]}, index=dates)
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series(dtype=float))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series(dtype=float))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -564,8 +593,8 @@ class TestLiquidityAndCircuitFilters:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.02})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.02})
         )
 
         engine = mb.MomentumBacktester(
@@ -585,7 +614,7 @@ class TestLiquidityAndCircuitFilters:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -610,8 +639,8 @@ class TestVolumeWeightedMomentum:
         dates = panel.index
         # A has 10x the volume of B -> A should get proportionally more capital.
         volume = pd.DataFrame({"A": [100_000] * 2, "B": [10_000] * 2}, index=dates)
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.03})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.03})
         )
 
         engine = mb.MomentumBacktester(
@@ -634,8 +663,8 @@ class TestVolumeWeightedMomentum:
         panel = _flat_price_panel(tickers, 2, price=100.0)
         dates = panel.index
         volume = pd.DataFrame({"A": [100_000] * 2, "B": [10_000] * 2}, index=dates)
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.03})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.03})
         )
 
         engine = mb.MomentumBacktester(
@@ -656,8 +685,8 @@ class TestVolumeWeightedMomentum:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2, price=100.0)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.03})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.05, "B": 0.03})
         )
 
         engine = mb.MomentumBacktester(
@@ -683,7 +712,7 @@ class TestRegimeConditioning:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 3)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         regime_series = pd.Series(["high_vol", "high_vol", "high_vol"], index=dates)
 
@@ -705,7 +734,7 @@ class TestRegimeConditioning:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         regime_series = pd.Series(["normal", "normal"], index=dates)
 
@@ -726,7 +755,7 @@ class TestRegimeConditioning:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -744,7 +773,7 @@ class TestRegimeConditioning:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 1.0}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 1.0}))
 
         # regime_series exists but has no entries on/before the rebalance
         # dates (e.g. real benchmark history starts later than the
@@ -773,8 +802,8 @@ class TestFactorOrthogonalization:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
         )
 
         engine = mb.MomentumBacktester(
@@ -793,8 +822,8 @@ class TestFactorOrthogonalization:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
         )
 
         engine = mb.MomentumBacktester(
@@ -819,8 +848,8 @@ class TestQualityGatedMomentum:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
         )
 
         engine = mb.MomentumBacktester(
@@ -841,8 +870,8 @@ class TestQualityGatedMomentum:
         tickers = ["A", "B"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(
-            mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
+        _patch_momentum(
+            monkeypatch, lambda *a, **kw: pd.Series({"A": 0.10, "B": 0.05})
         )
 
         engine = mb.MomentumBacktester(
@@ -863,7 +892,7 @@ class TestQualityGatedMomentum:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.10}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 0.10}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -882,7 +911,7 @@ class TestQualityGatedMomentum:
         tickers = ["A"]
         panel = _flat_price_panel(tickers, 2)
         dates = panel.index
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": 0.10}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": 0.10}))
 
         engine = mb.MomentumBacktester(
             price_panel=panel,
@@ -1000,7 +1029,7 @@ class TestAsymmetricExitRank:
                 self._i = min(self._i + 1, len(self._seq) - 1)
                 return pd.Series(r)
 
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", _Fake(rankings))
+        _patch_momentum(monkeypatch, _Fake(rankings))
         engine = mb.MomentumBacktester(
             price_panel=panel,
             yearly_universes={str(dates[0].date()): tickers},
@@ -1042,7 +1071,7 @@ class TestTrailingStop:
         tickers = ["A"]
         dates = pd.date_range("2026-01-01", periods=len(prices), freq="D")
         panel = pd.DataFrame({"A": prices}, index=dates)
-        monkeypatch.setattr(mb, "trailing_momentum_from_panel", lambda *a, **kw: pd.Series({"A": momentum}))
+        _patch_momentum(monkeypatch, lambda *a, **kw: pd.Series({"A": momentum}))
         engine = mb.MomentumBacktester(
             price_panel=panel,
             yearly_universes={str(dates[0].date()): tickers},

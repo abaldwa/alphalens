@@ -42,10 +42,12 @@ from typing import Dict, List, Optional, Set
 import pandas as pd
 
 from backtest.costs import IndianTransactionCosts
-from features.momentum_signal import orthogonalize_momentum_vs_factors, trailing_momentum_from_panel
 from features.momentum_strategy import (
     compute_fy_net_tax,
     fy_end_dates_through,
+    keep_set_for_exit,
+    rank_universe,
+    select_buy_pool,
     select_forced_sell_for_shortfall,
 )
 
@@ -769,81 +771,37 @@ class MomentumBacktester:
                 injection_idx += 1
 
             universe = self._active_universe(date)
-            if self.momentum_panel is not None and date in self.momentum_panel.index:
-                raw = self.momentum_panel.loc[date].reindex(universe)
-                momentum = raw.dropna()
-            else:
-                momentum = trailing_momentum_from_panel(self.price_panel, universe, str(date.date()), self.lookback_days)
+            # [ML40, 2026-08-14] Ranking and the whole buy-side filter chain
+            # are no longer implemented here. Both are the shared
+            # features.momentum_strategy functions that MomentumAdapter also
+            # calls, so the two engines cannot answer "what does this
+            # strategy hold today" differently — the divergence
+            # tests/quality/test_one_generator_per_channel.py is named for.
+            momentum = rank_universe(
+                self.price_panel, universe, date, self.lookback_days, momentum_panel=self.momentum_panel,
+            )
 
-            selection_pool = momentum
-
-            if self.quality_gate and not selection_pool.empty:
-                failing = [t for t in selection_pool.index if not self._passes_quality_gate(t)]
-                selection_pool = selection_pool.drop(index=failing)
-
-            if self.exclude_approximated_mcap and self.approximation_flags and not selection_pool.empty:
-                applicable_starts = [d for d in self.approximation_flags if d <= date]
-                if applicable_starts:
-                    flags = self.approximation_flags[max(applicable_starts)]
-                    approximated = [t for t in selection_pool.index if flags.get(t)]
-                    selection_pool = selection_pool.drop(index=approximated)
-
-            # orthogonalize_vs_size_beta (Fix B3): rank/select on the
-            # residual after regressing out size/beta, not raw momentum.
-            # Silently no-ops (returns selection_pool unchanged) if
-            # market_cap_panel/beta_map are missing or too few tickers
-            # have both values this rebalance — see
-            # orthogonalize_momentum_vs_factors' own docstring.
-            if self.orthogonalize_vs_size_beta and self.market_cap_panel is not None and not selection_pool.empty:
-                mcap_history = self.market_cap_panel.loc[:date]
-                mcap_row = mcap_history.iloc[-1] if not mcap_history.empty else pd.Series(dtype=float)
-                mcap_for_pool = mcap_row.reindex(selection_pool.index)
-                beta_for_pool = pd.Series(
-                    {t: self.beta_map[t] for t in selection_pool.index if t in self.beta_map}
-                ).reindex(selection_pool.index)
-                residual = orthogonalize_momentum_vs_factors(selection_pool, mcap_for_pool, beta_for_pool)
-                # Tickers dropped by the regression (missing mcap/beta)
-                # keep their original raw momentum score rather than
-                # being silently excluded from selection.
-                selection_pool = residual.combine_first(selection_pool)
-
-            adtv = pd.Series(dtype=float)
-            if self.min_adtv_cr is not None and not selection_pool.empty:
-                adtv = self._adtv_cr(date, list(selection_pool.index))
-                # NaN (no volume data) is excluded, same as below-threshold
-                # — never assumed liquid on missing data.
-                illiquid = adtv[adtv.isna() | (adtv < self.min_adtv_cr)].index
-                selection_pool = selection_pool.drop(index=[t for t in illiquid if t in selection_pool.index])
-
-            if self.circuit_band_pct is not None and not selection_pool.empty:
-                locked = [t for t in selection_pool.index if self._is_circuit_locked(date, t)]
-                selection_pool = selection_pool.drop(index=locked)
-
-            if self.downtrend_filter_pct is not None and not selection_pool.empty:
-                short_term = trailing_momentum_from_panel(
-                    self.price_panel, list(selection_pool.index), str(date.date()), self.downtrend_lookback_days
-                )
-                # Tickers with no short-term-window history stay eligible
-                # (never excluded on missing data) — only a confirmed
-                # >=threshold drop over the window excludes a ticker.
-                sharply_down = short_term[short_term <= -self.downtrend_filter_pct].index
-                selection_pool = selection_pool.drop(index=[t for t in sharply_down if t in selection_pool.index])
-
-            # Per-ticker HMM regime filter: exclude bearish (and optionally
-            # sideways) regime tickers from new buys. Missing regime data
-            # never excludes (same convention as other optional filters).
-            if self.per_ticker_hmm_regime and not selection_pool.empty:
-                bearish_tickers = set()
-                for ticker in selection_pool.index:
-                    if ticker in self.per_ticker_hmm_regime:
-                        regime_df = self.per_ticker_hmm_regime[ticker]
-                        # Get most recent regime on or before this rebalance date
-                        eligible_regimes = regime_df.loc[:date]
-                        if not eligible_regimes.empty:
-                            latest_regime = eligible_regimes["hmm_regime"].iloc[-1]
-                            if pd.notna(latest_regime) and latest_regime in self.disable_hmm_regimes:
-                                bearish_tickers.add(ticker)
-                selection_pool = selection_pool.drop(index=[t for t in bearish_tickers if t in selection_pool.index])
+            selection_pool = select_buy_pool(
+                momentum,
+                date,
+                price_panel=self.price_panel,
+                price_panel_ffilled=self.price_panel_ffilled,
+                volume_panel=self.volume_panel,
+                quality_scores=self.quality_scores,
+                quality_gate=self.quality_gate,
+                approximation_flags=self.approximation_flags,
+                exclude_approximated_mcap=self.exclude_approximated_mcap,
+                orthogonalize_vs_size_beta=self.orthogonalize_vs_size_beta,
+                market_cap_panel=self.market_cap_panel,
+                beta_map=self.beta_map,
+                min_adtv_cr=self.min_adtv_cr,
+                adtv_lookback_days=self.adtv_lookback_days,
+                circuit_band_pct=self.circuit_band_pct,
+                downtrend_filter_pct=self.downtrend_filter_pct,
+                downtrend_lookback_days=self.downtrend_lookback_days,
+                per_ticker_hmm_regime=self.per_ticker_hmm_regime,
+                disable_hmm_regimes=self.disable_hmm_regimes,
+            )
 
             eligible = selection_pool[selection_pool > self.min_momentum] if self.min_momentum is not None else selection_pool
             target_set = set(eligible.sort_values(ascending=False).head(self.top_n).index) if not eligible.empty else set()
@@ -938,10 +896,8 @@ class MomentumBacktester:
             # only a name at rank > 15 starts its grace countdown.  This
             # directly implements the "ride winners" design intent that the
             # symmetric top_n threshold was missing.
-            if self.exit_rank is not None and not rank_series.empty:
-                keep_set = set(rank_series[rank_series <= self.exit_rank].index) | target_set
-            else:
-                keep_set = target_set
+            # [ML40] Shared with MomentumAdapter — see keep_set_for_exit.
+            keep_set = keep_set_for_exit(momentum, target_set, self.exit_rank)
 
             # 1. Update grace status for currently-held names (see
             #    decide_grace_transitions' docstring for why this is a

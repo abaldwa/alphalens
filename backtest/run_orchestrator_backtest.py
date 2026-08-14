@@ -502,7 +502,7 @@ def _build_config(
 
 def _momentum_descriptor(
     top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
-    circuit_band_pct, grace_cycles, exit_policy_variant,
+    circuit_band_pct, grace_cycles, exit_policy_variant, exit_rank=None,
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
     signals it emits.
@@ -535,6 +535,11 @@ def _momentum_descriptor(
     # grace_cycles=2 is the historical default; only a deviation is named.
     if grace_cycles != 2:
         parts.append(f"g{grace_cycles}")
+    # [ML40] exit_rank widens the band a held name must leave before its
+    # grace countdown starts, so it changes which SELLS are emitted. Two runs
+    # differing only in it are different strategies and must not share a key.
+    if exit_rank is not None:
+        parts.append(f"xr{exit_rank}")
     # The exit policy changes which sells are emitted, so two runs differing
     # only in it are genuinely different strategies.
     if exit_policy_variant and exit_policy_variant != "risk_managed":
@@ -769,6 +774,7 @@ def _run_immediate(
     # the lever that decides how long a winner is retained after leaving the
     # top_n. 0 = sell the rebalance it drops out.
     grace_cycles=2,
+    exit_rank=None,
 ):
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -922,6 +928,7 @@ def _run_immediate(
                 top_n=top_n, lookback_months=lookback_months,
                 sector_lookup=sector_map,
                 grace_cycles=grace_cycles,
+                exit_rank=exit_rank,
                 min_adtv_cr=min_adtv_cr,
                 quality_gate=quality_gate or None,
                 downtrend_filter_pct=downtrend_filter_pct,
@@ -951,7 +958,7 @@ def _run_immediate(
             annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-                "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles,
+                "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles, "exit_rank": exit_rank,
                 "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
                 "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
                 "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
@@ -1093,6 +1100,7 @@ def _run_deferred(
     # the lever that decides how long a winner is retained after leaving the
     # top_n. 0 = sell the rebalance it drops out.
     grace_cycles=2,
+    exit_rank=None,
 ):
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -1212,6 +1220,7 @@ def _run_deferred(
             top_n=top_n, lookback_months=lookback_months,
             sector_lookup=sector_map,
             grace_cycles=grace_cycles,
+            exit_rank=exit_rank,
             min_adtv_cr=min_adtv_cr,
             quality_gate=quality_gate or None,
             downtrend_filter_pct=downtrend_filter_pct,
@@ -1237,7 +1246,7 @@ def _run_deferred(
         annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
         config={
             "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-            "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles,
+            "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles, "exit_rank": exit_rank,
             "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
             "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
             "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
@@ -1347,6 +1356,7 @@ def run_orchestrator_backtest(
     # regime index", which is the historical behaviour.
     benchmark_index_name: Optional[str] = None,
     grace_cycles: int = 2,
+    exit_rank: Optional[int] = None,
     exit_policy_variant: str = "baseline",
     regime_method: Optional[str] = None,
     max_hold_days: Optional[int] = None,
@@ -1457,7 +1467,7 @@ def run_orchestrator_backtest(
         "fundamental": preset,
         "momentum": _momentum_descriptor(
             top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
-            circuit_band_pct, grace_cycles, exit_policy_variant,
+            circuit_band_pct, grace_cycles, exit_policy_variant, exit_rank,
         ),
     }[channel]
     if not strategy_id:
@@ -1498,7 +1508,7 @@ def run_orchestrator_backtest(
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
         block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
-        benchmark_index_name=benchmark_index_name, grace_cycles=grace_cycles,
+        benchmark_index_name=benchmark_index_name, grace_cycles=grace_cycles, exit_rank=exit_rank,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1600,6 +1610,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "momentum channel only: rebalances a holding is retained after it drops out of the "
             "top_n before being force-sold. 0 sells it the same rebalance it drops out. Was "
             "hardcoded to 2 and unreachable until 2026-08-14, so no run before then swept it."
+        ),
+    )
+    parser.add_argument(
+        "--exit-rank", type=int, default=None,
+        help=(
+            "momentum channel only [ML40, 2026-08-14]: asymmetric exit band. Entry stays the "
+            "top_n, but a HELD position does not begin its grace countdown until its momentum "
+            "rank falls beyond this value (must be >= --top-n to have any effect). With "
+            "--top-n 10 --exit-rank 15, a winner that slips to rank 12 is ridden instead of "
+            "rotated out. Omitted (the default) keeps the symmetric behaviour where leaving "
+            "the top_n starts the countdown immediately. Previously reachable only by "
+            "constructing MomentumBacktester directly, so no orchestrator run has swept it."
         ),
     )
     parser.add_argument("--run-id", default=None)
@@ -1804,7 +1826,7 @@ def main() -> None:
         initial_capital=args.initial_capital, sip_amount=args.sip_amount, universe_spec=args.universe_spec,
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months,
-        grace_cycles=args.grace_cycles, run_id=args.run_id,
+        grace_cycles=args.grace_cycles, exit_rank=args.exit_rank, run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,

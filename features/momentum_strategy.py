@@ -40,7 +40,11 @@ from typing import Dict, List, Optional, Set
 import pandas as pd
 
 from backtest.momentum_tax import LTCG_HOLDING_DAYS, LTCG_RATE, STCG_RATE
-from features.momentum_signal import orthogonalize_momentum_vs_factors, trailing_momentum_from_panel
+from features.momentum_signal import (
+    downtrend_tickers,
+    orthogonalize_momentum_vs_factors,
+    trailing_momentum_from_panel,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +98,77 @@ def build_category_presets(
         "risk_managed": risk_managed,
         "max_defensive": max_defensive,
     }
+
+
+# ---------------------------------------------------------------------------
+# The momentum ranking itself — the ONE implementation
+# ---------------------------------------------------------------------------
+# [ML40, 2026-08-14] Both momentum engines used to rank the universe with
+# their own inline call to trailing_momentum_from_panel: MomentumAdapter in
+# generate_signals(), MomentumBacktester in run(). Two call sites means two
+# places the ranking's date handling, its momentum_panel short-circuit and its
+# missing-data convention can drift, which is exactly the backtest-vs-live
+# divergence tests/quality/test_one_generator_per_channel.py exists to catch
+# (its `duplicate_momentum_ranking` rule names momentum_backtest.py directly).
+#
+# This function is that one implementation. It lives here rather than in
+# either engine because features/ is the shared primitive layer both sides
+# legitimately compose — the same reason select_buy_pool and
+# decide_grace_transitions already live here.
+def rank_universe(
+    price_panel: pd.DataFrame,
+    universe: List[str],
+    date,
+    lookback_days: int,
+    momentum_panel: Optional[pd.DataFrame] = None,
+) -> pd.Series:
+    """Trailing-momentum score per ticker in `universe`, as of `date`.
+
+    `momentum_panel` is an optional PRE-COMPUTED wide momentum panel (date
+    index, ticker columns). When supplied AND it carries a row for this exact
+    date, that row is used instead of recomputing from prices — the
+    fast path MomentumBacktester already had. Tickers with no score on that
+    row are dropped, never defaulted: a NaN means "no real momentum value for
+    this ticker on this date", which is not the same as zero momentum.
+
+    Falls back to computing from `price_panel` whenever no panel row is
+    available, so the two paths agree on the same missing-data convention.
+
+    `date` may be a datetime.date, a pd.Timestamp or an ISO string — the two
+    callers historically passed different types (the adapter a date, the
+    backtester a Timestamp), and normalising here is what lets them share
+    one function instead of each formatting the date its own way.
+    """
+    ts = pd.Timestamp(date)
+    if momentum_panel is not None and ts in momentum_panel.index:
+        return momentum_panel.loc[ts].reindex(universe).dropna()
+    return trailing_momentum_from_panel(price_panel, universe, str(ts.date()), lookback_days)
+
+
+def keep_set_for_exit(
+    momentum: pd.Series,
+    target_set: Set[str],
+    exit_rank: Optional[int],
+) -> Set[str]:
+    """The set a held position must fall OUT of before its grace countdown
+    starts — the asymmetric exit band (Tier 1, 2026-08-08).
+
+    Entry stays the top_n (`target_set`). With `exit_rank` set, a held name is
+    still considered "kept" while its raw momentum rank is <= exit_rank, so a
+    winner that slips from rank 10 to rank 12 under top_n=10/exit_rank=15 is
+    ridden rather than rotated out. Only a name beyond exit_rank begins grace.
+
+    None (the default) returns `target_set` unchanged — the symmetric
+    behaviour where leaving the top_n immediately starts the countdown.
+
+    Extracted from MomentumBacktester.run()'s inline block (ML40, 2026-08-14)
+    so MomentumAdapter can apply the identical rule; ranks are computed with
+    method="min" so ties share the better rank, matching the original.
+    """
+    if exit_rank is None or momentum.empty:
+        return target_set
+    ranks = momentum.rank(ascending=False, method="min")
+    return set(ranks[ranks <= exit_rank].index) | target_set
 
 
 # ---------------------------------------------------------------------------
@@ -167,12 +242,21 @@ def is_circuit_locked(
     forward-filled close series) meets/exceeds circuit_band_pct in either
     direction — a coarse proxy for "likely circuit-locked, don't trust
     this close as a fillable price". False (never locked) when
-    circuit_band_pct is None, or on insufficient history."""
-    if circuit_band_pct is None or ticker not in price_panel_ffilled.columns:
+    circuit_band_pct is None, or on insufficient history.
+
+    [ML40, 2026-08-14] This is now the single implementation:
+    backtest/adapters/panel_filters.py::is_circuit_locked delegates here
+    rather than keeping the second copy it had. The `pos >= len(idx)` bound
+    below came from that copy and was MISSING here — searchsorted returns
+    len(idx) for a date past the panel's end, so this version raised
+    IndexError where the other returned False. Keeping the safer of the two
+    behaviours is the point of having one.
+    """
+    if circuit_band_pct is None or price_panel_ffilled is None or ticker not in price_panel_ffilled.columns:
         return False
     idx = price_panel_ffilled.index
-    pos = idx.searchsorted(date)
-    if pos <= 0:
+    pos = idx.searchsorted(pd.Timestamp(date))
+    if pos <= 0 or pos >= len(idx):
         return False
     prev_price = price_panel_ffilled[ticker].iloc[pos - 1]
     cur_price = price_panel_ffilled[ticker].iloc[pos]
@@ -294,8 +378,36 @@ def select_buy_pool(
         # original raw momentum score rather than being silently excluded.
         pool = residual.combine_first(pool)
 
-    if min_adtv_cr is not None and not pool.empty:
-        adtv = adtv_cr(price_panel, volume_panel, date, list(pool.index), adtv_lookback_days)
+    if min_adtv_cr is not None and not pool.empty and volume_panel is not None:
+        # [ML40, 2026-08-14] Two DIFFERENT missing-data cases, which the two
+        # engines used to conflate in opposite directions:
+        #
+        #   (a) No volume panel at all -> the filter cannot be evaluated for
+        #       anyone. Skipped entirely (the `volume_panel is not None` guard
+        #       above). This is a run-configuration omission, not evidence
+        #       about any ticker, and MomentumBacktester's docstring has always
+        #       promised min_adtv_cr is a no-op here. Excluding the whole
+        #       universe instead would turn a forgotten argument into an empty
+        #       book that still reports itself as a liquidity-filtered run.
+        #
+        #   (b) Volume panel present, but THIS ticker has no data in it ->
+        #       excluded. Here the absence really is about the ticker, and the
+        #       standing rule applies: never assume liquid on missing data.
+        #
+        # `.reindex(pool.index)` is what implements (b) and is load-bearing.
+        # adtv_cr returns a row only for tickers present in BOTH panels, so a
+        # ticker missing from the volume panel was absent from this Series
+        # rather than NaN in it — and therefore never matched the `isna()`
+        # test, never got dropped, and was silently treated as LIQUID.
+        #
+        # MomentumAdapter had the reindex and was correct; this shared
+        # function (and so MomentumBacktester, which inlined the same
+        # unguarded form) did not. Consolidating the two exposed the
+        # divergence — the reason ML40 exists. Taking the safer behaviour
+        # means a MomentumBacktester run that supplies a volume panel can now
+        # exclude thinly-covered names it previously bought: a fix, not a
+        # regression, but it does change results for such runs.
+        adtv = adtv_cr(price_panel, volume_panel, date, list(pool.index), adtv_lookback_days).reindex(pool.index)
         illiquid = adtv[adtv.isna() | (adtv < min_adtv_cr)].index
         pool = pool.drop(index=[t for t in illiquid if t in pool.index])
 
@@ -304,11 +416,14 @@ def select_buy_pool(
         pool = pool.drop(index=locked)
 
     if downtrend_filter_pct is not None and not pool.empty:
-        short_term = trailing_momentum_from_panel(price_panel, list(pool.index), str(date.date()), downtrend_lookback_days)
         # Tickers with no short-term-window history stay eligible (never
-        # excluded on missing data) — only a confirmed >=threshold drop
-        # over the window excludes a ticker.
-        sharply_down = short_term[short_term <= -downtrend_filter_pct].index
+        # excluded on missing data) — only a confirmed >=threshold drop over
+        # the window excludes a ticker. [ML40] Delegates to momentum_signal's
+        # downtrend_tickers, the same helper panel_filters already calls,
+        # instead of re-deriving the threshold test from the raw primitive.
+        sharply_down = downtrend_tickers(
+            price_panel, list(pool.index), str(date.date()), downtrend_filter_pct, downtrend_lookback_days,
+        )
         pool = pool.drop(index=[t for t in sharply_down if t in pool.index])
 
     if per_ticker_hmm_regime and not pool.empty:
