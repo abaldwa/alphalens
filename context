@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Lightweight CLI wrapper to run the context-system CLI from repository root.
+# Usage: ./context <args>
+# Example: ./context bootstrap --project="AlphaLens"
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_PYTHON="$ROOT_DIR/.venv/bin/python3"
+
+if [ -x "$VENV_PYTHON" ]; then
+  export PYTHONPATH="$ROOT_DIR/context-system${PYTHONPATH:+:${PYTHONPATH}}"
+  exec "$VENV_PYTHON" -m src.cli "$@"
+fi
+
+export PYTHONPATH="$ROOT_DIR/context-system${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m src.cli "$@"

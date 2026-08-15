@@ -1,3 +1,8 @@
 {
-    "python.analysis.typeCheckingMode": "strict"
+  "task.allowAutomaticTasks": true,
+  "task.presentation.reveal": "silent",
+  "contextSystem.project": "AlphaLens",
+  "contextSystem.autoInject": true,
+  "contextSystem.sessionStartHook": "context session start --auto",
+  "python.analysis.typeCheckingMode": "strict"
 }

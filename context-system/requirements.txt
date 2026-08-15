@@ -1,0 +1,5 @@
+typer[all]
+httpx
+sentence-transformers
+numpy
+python-dotenv

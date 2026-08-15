@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy._Backend"
+
+[project]
+name = "alphalens"
+version = "0.1.0"
+description = "AlphaLens — Quantitative trading research & automation platform"
+license = { text = "Proprietary" }
+requires-python = ">=3.11"
+
+# ── flake8 (via flake8-pyproject) ───────────────────────────────────────
+[tool.flake8]
+max-line-length = 120
+extend-ignore = [
+    "E127", "E203", "E221", "E222", "E241", "E242",
+    "E272", "E302", "E303", "E305", "E402", "E501", "W605",
+]
+exclude = [".git", ".venv", "__pycache__", "build", "dist"]
+per-file-ignores = [
+    # __init__.py files commonly have unused imports for re-export
+    "*/__init__.py: F401",
+]
+
+# ── mypy ────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+strict = true
+follow_imports = "skip"
+ignore_missing_imports = true
+warn_unused_ignores = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+disallow_any_unimported = false
+disallow_any_expr = false
+disallow_any_decorated = false
+disallow_any_explicit = false
+disallow_any_generics = true
+disallow_subclassing_any = false
+
+[[tool.mypy.overrides]]
+module = [
+    "tests.*",
+]
+ignore_errors = true
+
+# Per-module strictness — gradually widen scope from strict-ignore to
+# strict-check as each module is cleaned up.  Modules not listed inherit
+# the root-level `strict = true / follow_imports = skip`.
+[[tool.mypy.overrides]]
+module = [
+    "backtest.core.tax",
+    "backtest.core.metrics",
+    "backtest.core.report",
+    "features.*",
+    "config.*",
+]
+follow_imports = "normal"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+# ── pytest ──────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+filterwarnings = [
+    "ignore::DeprecationWarning:fastapi.*:",
+    "ignore::DeprecationWarning:pydantic.*:",
+    "ignore::DeprecationWarning:starlette.*:",
+]
+markers = [
+    "slow: marks tests as slow (duration > 10s), skipped by default",
+    "network: requires network access, skipped by default",
+    "quality: quality-gate invariant checks",
+]
+addopts = "-p no:cacheprovider"
+
+# ── coverage ────────────────────────────────────────────────────────────
+[tool.coverage.run]
+source = ["datastore", "ingestion", "features", "systems", "backtest", "config"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "dashboard/static/vendor/*",
+    "*/__init__.py",
+    "scripts/*",
+    "*/migrations/*",
+]
+data_file = ".coverage"
+
+[tool.coverage.report]
+precision = 2
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "coverage_html"

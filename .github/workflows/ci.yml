@@ -1,0 +1,82 @@
+# .github/workflows/ci.yml
+# GitHub Actions CI for AlphaLens.
+#
+# Runs on every push and pull request to main:
+#   1. pre-commit (ruff + flake8 linting)
+#   2. mypy type checking (strict mode, follow_imports=skip)
+#   3. pytest unit + quality tests with coverage (minimum 65%)
+#
+# Skipped in CI (run locally or on a self-hosted runner with DuckDB files):
+#   - tests/integration/ (need real or seeded DuckDB)
+#   - tests/quality/test_no_stub_or_synthetic_data.py (needs production DB)
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "feature/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  UV_CACHE_DIR: /tmp/.uv-cache
+
+jobs:
+  lint:
+    name: Lint (ruff + flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run ruff
+        run: uv run ruff check .
+
+      - name: Run flake8
+        run: uv run flake8 .
+
+  typecheck:
+    name: Type-check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run mypy
+        run: uv run mypy .
+        continue-on-error: true  # gradual widening — see mypy.ini
+
+  test:
+    name: Test & coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run unit tests with coverage
+        run: uv run pytest tests/unit tests/quality --cov --cov-fail-under=65 -q
+        env:
+          # Use in-memory DuckDB by default where possible.
+          ALPHALENS_ENV: test

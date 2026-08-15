@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run context session-start hook",
+      "type": "shell",
+      "command": "mkdir -p \"${workspaceFolder}/.vscode\" && cd \"${workspaceFolder}\" && ${env:HOME}/.context-system/hooks/session-start.sh || true; echo \"$(date -Iseconds) - session-start hook task triggered\" >> \"${workspaceFolder}/.vscode/context_hook_ran.log\"",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "focus": false,
+        "showReuseMessage": false
+      },
+      "problemMatcher": [],
+      "runOptions": {
+        "runOn": "folderOpen",
+        "reevaluateOnRerun": true,
+        "instanceLimit": 1
+      }
+    }
+  ]
+}
