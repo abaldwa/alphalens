@@ -176,6 +176,7 @@ class TestQueuedFeatureBackfillJobWaitsForPipelineLock:
         import contextlib
 
         import ingestion.scheduler.pipeline_scheduler as sched_mod
+        import ingestion.scheduler.scheduler_jobs as _sj
 
         # First two lock attempts are busy (pipeline running), third is free.
         lock_results = iter([False, False, True])
@@ -184,9 +185,12 @@ class TestQueuedFeatureBackfillJobWaitsForPipelineLock:
         def fake_lock():
             yield next(lock_results)
 
+        # A46: _execute_queued_feature_backfill_job lives in scheduler_jobs
+        # and uses its own module-local bindings — patch them there.
         monkeypatch.setattr(sched_mod, "pipeline_run_lock", fake_lock)
+        monkeypatch.setattr(_sj, "pipeline_run_lock", fake_lock)
         sleeps = []
-        monkeypatch.setattr(sched_mod.time, "sleep", lambda s: sleeps.append(s))
+        monkeypatch.setattr(_sj.time, "sleep", lambda s: sleeps.append(s))
 
         run_calls = []
 
@@ -198,10 +202,12 @@ class TestQueuedFeatureBackfillJobWaitsForPipelineLock:
             lambda cmd, **kw: (run_calls.append(cmd), _FakeResult())[1],
         )
         heartbeats = []
-        monkeypatch.setattr(
-            sched_mod, "_record_heartbeat",
-            lambda job_id, status, error=None, **kw: heartbeats.append((job_id, status, error)),
-        )
+
+        def _hb(job_id, status, error=None, **kw):
+            heartbeats.append((job_id, status, error))
+
+        monkeypatch.setattr(sched_mod, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         _execute_queued_feature_backfill_job(
             "2023-01-01", "2023-01-10", "test_run", poll_interval_seconds=1,
@@ -216,21 +222,25 @@ class TestQueuedFeatureBackfillJobWaitsForPipelineLock:
         import contextlib
 
         import ingestion.scheduler.pipeline_scheduler as sched_mod
+        import ingestion.scheduler.scheduler_jobs as _sj
 
         @contextlib.contextmanager
         def always_busy():
             yield False
 
         monkeypatch.setattr(sched_mod, "pipeline_run_lock", always_busy)
-        monkeypatch.setattr(sched_mod.time, "sleep", lambda s: None)
+        monkeypatch.setattr(_sj, "pipeline_run_lock", always_busy)
+        monkeypatch.setattr(_sj.time, "sleep", lambda s: None)
 
         run_calls = []
         monkeypatch.setattr("subprocess.run", lambda cmd, **kw: run_calls.append(cmd))
         heartbeats = []
-        monkeypatch.setattr(
-            sched_mod, "_record_heartbeat",
-            lambda job_id, status, error=None, **kw: heartbeats.append((job_id, status, error)),
-        )
+
+        def _hb(job_id, status, error=None, **kw):
+            heartbeats.append((job_id, status, error))
+
+        monkeypatch.setattr(sched_mod, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         _execute_queued_feature_backfill_job(
             "2023-01-01", "2023-01-10", "test_run2",

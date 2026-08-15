@@ -361,6 +361,7 @@ class TestBackfillCatchupScheduling:
     def test_execute_backfill_catchup_runs_with_valid_cached_token(self, monkeypatch):
         """A valid same-day cached token must let the catch-up proceed and call run_backfill."""
         import ingestion.scheduler.pipeline_scheduler as ps
+        import ingestion.scheduler.scheduler_jobs as _sj
         from ingestion.scrapers.fyers_backfill import FYERSBackfill
 
         monkeypatch.setattr(FYERSBackfill, "_load_cached_token", lambda self: "good-token")
@@ -368,7 +369,13 @@ class TestBackfillCatchupScheduling:
         monkeypatch.setattr("config.universe.get_tickers", lambda: ["AAA", "BBB"])
 
         heartbeat_calls = []
-        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        def _hb(*a, **k):
+            heartbeat_calls.append((a, k))
+        # A46: _execute_backfill_catchup lives in scheduler_jobs and calls its
+        # own module-local _record_heartbeat binding — patch it there too.
+        monkeypatch.setattr(ps, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         run_backfill_calls = []
         monkeypatch.setattr(
@@ -422,13 +429,18 @@ class TestFnoLateCatchupScheduling:
 
     def test_skips_on_non_trading_day(self, monkeypatch):
         import ingestion.scheduler.pipeline_scheduler as ps
+        import ingestion.scheduler.scheduler_jobs as _sj
         from datetime import datetime as dt_cls
 
-        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 8, 1))  # a Saturday
-        monkeypatch.setattr(ps, "is_trading_day", lambda d: False)
+        monkeypatch.setattr(_sj, "now_ist", lambda: dt_cls(2026, 8, 1))  # a Saturday
+        monkeypatch.setattr(_sj, "is_trading_day", lambda d: False)
 
         heartbeat_calls = []
-        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        def _hb(*a, **k):
+            heartbeat_calls.append((a, k))
+        monkeypatch.setattr(ps, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         cm = CheckpointManager(in_memory=True)
         ps._execute_fno_late_catchup_job(cm)
@@ -437,14 +449,19 @@ class TestFnoLateCatchupScheduling:
 
     def test_success_recomputes_features_when_already_ran_off_stale_data(self, monkeypatch):
         import ingestion.scheduler.pipeline_scheduler as ps
+        import ingestion.scheduler.scheduler_jobs as _sj
         from datetime import datetime as dt_cls
 
         today = date(2026, 7, 30)
-        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
-        monkeypatch.setattr(ps, "is_trading_day", lambda d: True)
+        monkeypatch.setattr(_sj, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
+        monkeypatch.setattr(_sj, "is_trading_day", lambda d: True)
 
         heartbeat_calls = []
-        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        def _hb(*a, **k):
+            heartbeat_calls.append((a, k))
+        monkeypatch.setattr(ps, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         recompute_calls = []
         import ingestion.scheduler.daily_pipeline as dp
@@ -467,11 +484,17 @@ class TestFnoLateCatchupScheduling:
         nothing stale to fix — it'll naturally pick up today's now-
         available F&O data whenever it does run."""
         import ingestion.scheduler.pipeline_scheduler as ps
+        import ingestion.scheduler.scheduler_jobs as _sj
         from datetime import datetime as dt_cls
 
-        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
-        monkeypatch.setattr(ps, "is_trading_day", lambda d: True)
-        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: None)
+        monkeypatch.setattr(_sj, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
+        monkeypatch.setattr(_sj, "is_trading_day", lambda d: True)
+
+        def _hb(*a, **k):
+            return None
+
+        monkeypatch.setattr(ps, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         recompute_calls = []
         import ingestion.scheduler.daily_pipeline as dp
@@ -485,13 +508,18 @@ class TestFnoLateCatchupScheduling:
 
     def test_download_fno_failure_records_failed_heartbeat(self, monkeypatch):
         import ingestion.scheduler.pipeline_scheduler as ps
+        import ingestion.scheduler.scheduler_jobs as _sj
         from datetime import datetime as dt_cls
 
-        monkeypatch.setattr(ps, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
-        monkeypatch.setattr(ps, "is_trading_day", lambda d: True)
+        monkeypatch.setattr(_sj, "now_ist", lambda: dt_cls(2026, 7, 30, 21, 0))
+        monkeypatch.setattr(_sj, "is_trading_day", lambda d: True)
 
         heartbeat_calls = []
-        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        def _hb(*a, **k):
+            heartbeat_calls.append((a, k))
+        monkeypatch.setattr(ps, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         import ingestion.scheduler.daily_pipeline as dp
 
@@ -571,8 +599,12 @@ class TestMFHoldingsScheduling:
 
     def test_execute_mf_holdings_job_runs_ingestion_for_the_determined_month(self, monkeypatch):
         import ingestion.scheduler.pipeline_scheduler as ps
+        import ingestion.scheduler.scheduler_jobs as _sj
 
-        monkeypatch.setattr(ps, "_determine_groww_live_snapshot_month", lambda: (2026, 5))
+        def _det():
+            return (2026, 5)
+        monkeypatch.setattr(ps, "_determine_groww_live_snapshot_month", _det)
+        monkeypatch.setattr(_sj, "_determine_groww_live_snapshot_month", _det)
         monkeypatch.setattr("ingestion.scrapers.groww_mf_holdings.register_all_amcs", lambda: 49)
 
         ingestion_calls = []
@@ -582,7 +614,11 @@ class TestMFHoldingsScheduling:
         )
 
         heartbeat_calls = []
-        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        def _hb(*a, **k):
+            heartbeat_calls.append((a, k))
+        monkeypatch.setattr(ps, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         ps._execute_mf_holdings_job()
 
@@ -597,6 +633,7 @@ class TestMFHoldingsScheduling:
 
     def test_execute_mf_holdings_job_records_failure_heartbeat_on_unexpected_exception(self, monkeypatch):
         import ingestion.scheduler.pipeline_scheduler as ps
+        import ingestion.scheduler.scheduler_jobs as _sj
 
         def boom():
             raise ValueError("network broke")
@@ -604,7 +641,11 @@ class TestMFHoldingsScheduling:
         monkeypatch.setattr("ingestion.scrapers.groww_mf_holdings.register_all_amcs", boom)
 
         heartbeat_calls = []
-        monkeypatch.setattr(ps, "_record_heartbeat", lambda *a, **k: heartbeat_calls.append((a, k)))
+
+        def _hb(*a, **k):
+            heartbeat_calls.append((a, k))
+        monkeypatch.setattr(ps, "_record_heartbeat", _hb)
+        monkeypatch.setattr(_sj, "_record_heartbeat", _hb)
 
         ps._execute_mf_holdings_job()
 
@@ -779,6 +820,7 @@ class TestPipelineRunLockPerStepScope:
         continuously end-to-end and nothing else could ever interleave."""
         import config.settings as settings_mod
         import ingestion.scheduler.pipeline_scheduler as ps_mod
+        import ingestion.scheduler.pipeline_steps as _ps_steps
 
         monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
 
@@ -791,7 +833,10 @@ class TestPipelineRunLockPerStepScope:
                 acquisitions.append(acquired)
                 yield acquired
 
+        # A46: run_steps_for_date lives in pipeline_steps and uses its own
+        # binding — patch both the facade and the consumer submodule.
         monkeypatch.setattr(ps_mod, "pipeline_run_lock", counting_lock)
+        monkeypatch.setattr(_ps_steps, "pipeline_run_lock", counting_lock)
 
         executed = []
 
@@ -816,6 +861,7 @@ class TestPipelineRunLockPerStepScope:
         instead of wrongly marking it done."""
         import config.settings as settings_mod
         import ingestion.scheduler.pipeline_scheduler as ps_mod
+        import ingestion.scheduler.pipeline_steps as _ps_steps
 
         monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
 
@@ -832,6 +878,7 @@ class TestPipelineRunLockPerStepScope:
                 yield False  # a "competing process" holds it from the 3rd acquisition onward
 
         monkeypatch.setattr(ps_mod, "pipeline_run_lock", fake_lock)
+        monkeypatch.setattr(_ps_steps, "pipeline_run_lock", fake_lock)
 
         executed = []
 
@@ -851,6 +898,7 @@ class TestPipelineRunLockPerStepScope:
         (defer entirely) exactly as before this change, not False."""
         import config.settings as settings_mod
         import ingestion.scheduler.pipeline_scheduler as ps_mod
+        import ingestion.scheduler.pipeline_steps as _ps_steps
 
         monkeypatch.setattr(settings_mod, "PIPELINE_RUN_LOCK_PATH", tmp_path / "pipeline_run.lock")
 
@@ -859,6 +907,7 @@ class TestPipelineRunLockPerStepScope:
             yield False
 
         monkeypatch.setattr(ps_mod, "pipeline_run_lock", fake_lock)
+        monkeypatch.setattr(_ps_steps, "pipeline_run_lock", fake_lock)
 
         executed = []
 

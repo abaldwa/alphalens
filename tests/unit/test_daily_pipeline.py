@@ -824,12 +824,13 @@ class TestRunDailyPipelineOnceRecordsPipelineRuns:
 
         monkeypatch.setattr(settings, "PIPELINE_LOG_DB_PATH", sqlite_path)
 
-        from ingestion.scheduler import pipeline_scheduler
+        # A46: run_startup_sequence lives in pipeline_startup and uses its own
+        # module-local detect_gaps/is_trading_day bindings — the facade does
+        # not re-export these.
+        import ingestion.scheduler.pipeline_startup as _psu
 
-        monkeypatch.setattr(
-            pipeline_scheduler, "detect_gaps", lambda today=None, db_path=None: []
-        )
-        monkeypatch.setattr(pipeline_scheduler, "is_trading_day", lambda d: True)
+        monkeypatch.setattr(_psu, "detect_gaps", lambda today=None, db_path=None: [])
+        monkeypatch.setattr(_psu, "is_trading_day", lambda d: True)
 
         def _all_succeed(run_date, step_name):
             return None

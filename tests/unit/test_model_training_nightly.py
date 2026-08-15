@@ -96,9 +96,12 @@ class TestExecuteModelTrainingJobForGroup:
         registry_path.write_text(json.dumps(registry))
 
         triggered = []
+        import ingestion.scheduler.scheduler_jobs as _sj
+        # A46: _execute_model_training_job lives in scheduler_jobs and calls
+        # its own local _trigger_model_retrain binding — patch that, not the
+        # facade.
         monkeypatch.setattr(
-            "ingestion.scheduler.pipeline_scheduler._trigger_model_retrain",
-            lambda model_name: triggered.append(model_name),
+            _sj, "_trigger_model_retrain", lambda model_name: triggered.append(model_name)
         )
 
         _execute_model_training_job_for_group("phase2")
