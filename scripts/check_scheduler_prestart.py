@@ -10,7 +10,6 @@ Exit code 0 means safe to start scheduler; non-zero indicates a condition
 that should be resolved first.
 """
 import subprocess
-import sys
 
 import duckdb
 

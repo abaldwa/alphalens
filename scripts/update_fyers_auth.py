@@ -10,7 +10,6 @@ Usage:
 """
 import os
 import sys
-from pathlib import Path
 
 from ingestion.scrapers.fyers_backfill import FYERSBackfill
 
