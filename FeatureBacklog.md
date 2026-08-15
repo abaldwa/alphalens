@@ -2179,3 +2179,110 @@ unpopulated column silently selects nothing. Note the standing hazard: feature
 Stage 2 overwrites date parquets wholesale, so this cannot be run on a ticker
 subset. Parity must then be asserted per strategy per date — declarative result
 identical to the imperative `passes` — before any execution path is switched.
+
+## Branch runbook: `feature/unified-backtest-report-ui` — remaining steps (2026-08-15)
+
+Written because the scheduler is to be started **exactly once**. It has been down
+~24h and a day of ingestion is outstanding, and it takes the `alphalens.duckdb`
+write lock for the duration, so anything that wants that lock — or that wants to
+be *validated by* a daily cycle — has to be settled on one side of that start or
+the other. The ordering below is derived from which steps the scheduler actually
+executes, not from item numbering.
+
+### What a scheduler run does and does not exercise
+
+Established by reading `ingestion/scheduler/daily_pipeline.py`'s step list rather
+than assuming:
+
+- `step_check_ta_alerts` → `systems/technical_analysis/alerts/daily_alert_checker.py`.
+  **This is the only scheduler step that touches A95's cutover surface**, and today
+  it does NOT go through it — see Stage 1.
+- `step_compute_momentum` → `features/momentum_live.py`, which calls
+  `backtest.momentum_backtest.decide_grace_transitions`. That module was rewritten
+  by ML40 Phase 1, so this step *is* a live exercise of the consolidation, and it is
+  the one place the grace rule runs against real money-shaped state.
+- `step_paper_trade`, `step_run_models`, `step_write_signals` reach data through the
+  DataStore API and are untouched by this branch's changes.
+- Nothing else in the pipeline reads `strategy_registry`.
+
+Correcting a claim made earlier in this file (A95-R2's note, "the first real
+exercise is the next daily cycle"): that is **false as written**. The alert checker
+bypasses `ScreenerEngine.screen()`, so a scheduler run in the current state would
+not exercise the registry cutover at all. Stage 1 is what makes that sentence true.
+
+### Stage 1 — before the scheduler is started
+
+**S1.1 — A95-R2, alert-checker half.** `daily_alert_checker.py:33` imports
+`TEMPLATES` and line 220 iterates it directly, calling the private
+`ScreenerEngine._screen_df` per template. That bypass is deliberate and
+performance-motivated (one Parquet load for all 63 templates instead of 63), so
+the fix is **not** to route it through `screen()` — that would undo the batching.
+The fix is to change where the *list* comes from: `registry_templates.list_templates()`
+instead of `TEMPLATES`, leaving the batched `_screen_df` loop intact. `_TEMPLATE_CATEGORY`
+at line 73 is a module-level dict comprehension over `TEMPLATES` and must move
+inside the call — a module-level registry read would execute at import time, which
+puts a DB dependency on importing the module.
+
+Acceptance: same 63 template names, and for one real date the per-template match
+counts are identical registry-fed vs `TEMPLATES`-fed. This is the same parity shape
+already used for the `screen()` cutover, which produced 0 differences across 2,317
+tickers.
+
+**S1.2 — decide the cross-database question this opens.** The registry lives in
+`backtest.duckdb`; the scheduler writes `alphalens.duckdb`. After S1.1 the daily
+pipeline acquires a read on `backtest.duckdb` that it never needed before. If a
+backtest queue holds that file's write lock, `step_check_ta_alerts` can block or
+fail on a path that previously touched only Parquet. This is the concrete reason
+the scheduler must run **before** the backtest queue is restarted, not alongside it.
+
+**S1.3 — full suite green, committed, pushed.** `tests/unit` + `tests/quality`.
+
+### Stage 2 — start the scheduler (the single start)
+
+Run it and watch these specifically, in this order of interest:
+
+1. `check_ta_alerts` — first real registry-fed alert run. Compare the row count
+   written to `ta_signals` against the prior day's; a large drop means the registry
+   listing returned fewer templates than the Python list.
+2. `compute_momentum` — first live run of the ML40-consolidated
+   `decide_grace_transitions`. Check `momentum_rebalance_suggestions` is written on
+   a rebalance day and that all 5 rank bands produced rankings.
+3. `compute_features` — the OOM-prone step; chunk size is pinned at 150.
+4. The ingestion backlog itself: verify the missing day's OHLCV lands and
+   `data_integrity_check` passes.
+
+### Stage 3 — after the scheduler cycle completes
+
+**S3.1 — A95-R3.** Switch on the `tests/quality/` guard. It must assert the
+**declaration/implementation split** — that no consumer imports a definition
+source directly — and NOT merely the absence of imports, per this file's A95-R1
+observation. Gated on S1.1 because the alert checker would fail it today.
+
+**S3.2 — ML40-2.1.** Unify `MomentumBacktester`'s simulation loop with
+`backtest/core/portfolio.py`. Largest remaining item and the sole blocker for A83.
+Touches no live path, so it is safe to do with the scheduler running.
+
+**S3.3 — ML40-2.2**, then **ML40-2.3** (delete the class; ~15 scripts plus
+`systems/copilot/backtest_bridge.py` construct it), then **ML40-2.5**.
+
+**S3.4 — A83** (shared report contract; unblocked by S3.2), then **A104**, **FE5**, **T8**.
+
+### Held deliberately, not forgotten
+
+- **A106** — the six derived fundamental columns and their backfill. Attended run
+  only, with the memory governor watching, and it must not overlap the scheduler or
+  a backtest queue. It blocks the fundamental half of A95-R2, which is why that half
+  is not in Stage 1.
+- **Column computation** — parked at user request.
+
+### One finding recorded, no action proposed yet
+
+`features/momentum_live.py:36` ranks via `momentum_signal.trailing_momentum`
+(SQL-backed) while the backtest ranks via `rank_universe` →
+`trailing_momentum_from_panel` (panel-backed). These are two implementations of the
+same arithmetic, co-located in one module. ML40 Phase 1 unified the two *backtest*
+engines; it did not touch this seam, and the "one generator for backtest, paper
+trade and live" rule points at it. Not scheduled here because there is no evidence
+yet that the two disagree — establishing that (or not) is a measurement, and it
+belongs after Stage 2, when a live ranking for the same date exists to compare
+against a panel ranking.
