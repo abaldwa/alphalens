@@ -137,7 +137,8 @@ class TestDefaultSelection:
     @pytest.mark.parametrize(
         "band,expected",
         [(1, "Nifty 50"), (2, "Nifty Next 50"), (3, "Nifty Midcap 100"),
-         (4, "Nifty Midcap 150"), (5, "Nifty Midcap 150")],
+         (4, "Nifty Midcap 150"), (6, "Nifty Smallcap 250"),
+         (7, "Nifty Smallcap 250"), (8, "Nifty Microcap 250")],
     )
     def test_rank_band_maps_to_a_size_matched_index(self, band, expected):
         """A rank 150-200 band measured against Nifty 500 is scored partly on

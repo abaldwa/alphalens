@@ -236,8 +236,10 @@ def test_daily_alert_checker_writes_correct_table():
         ]
         assert "ta_signals" in tables, "ta_signals table was not created"
 
-        # Write the fake results
-        checker._write_all_results(conn, "2026-07-02", {"A1": fake_results})
+        # Write the fake results (category map mirrors what run() builds)
+        template_category = {"A1": "momentum"}
+
+        checker._write_all_results(conn, "2026-07-02", {"A1": fake_results}, template_category)
 
         # Verify row count and values
         rows = conn.execute(
@@ -255,7 +257,7 @@ def test_daily_alert_checker_writes_correct_table():
             assert abs(float(r[3]) - 1.0) < 1e-6
 
         # Test idempotency: write the same batch again (ON CONFLICT DO UPDATE)
-        checker._write_all_results(conn, "2026-07-02", {"A1": fake_results})
+        checker._write_all_results(conn, "2026-07-02", {"A1": fake_results}, template_category)
         rows_after = conn.execute(
             "SELECT COUNT(*) FROM ta_signals"
         ).fetchone()[0]

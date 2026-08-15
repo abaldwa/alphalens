@@ -2293,12 +2293,14 @@ def _write_ta_results_direct(resolved: str, template_results: dict) -> None:
     from config.settings import SIGNALS_DUCKDB_PATH
     from datastore.api.db import get_duckdb_connection
     from systems.technical_analysis.alerts.daily_alert_checker import DailyAlertChecker
+    from systems.technical_analysis.screener.registry_templates import list_templates
 
     checker = DailyAlertChecker()
+    template_category = {t.name: t.category for t in list_templates()}
     SIGNALS_DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
         checker._ensure_db_and_table(conn)
-        checker._write_all_results(conn, resolved, template_results)
+        checker._write_all_results(conn, resolved, template_results, template_category)
 
 
 def _write_ta_results_via_api(date_str: str, resolved: str, template_results: dict, total_matches: int) -> list:
@@ -2306,14 +2308,16 @@ def _write_ta_results_via_api(date_str: str, resolved: str, template_results: di
     import httpx
 
     from config.settings import DATASTORE_API_BASE_URL
-    from systems.technical_analysis.alerts.daily_alert_checker import _TEMPLATE_CATEGORY
+    from systems.technical_analysis.screener.registry_templates import list_templates
+
+    template_category = {t.name: t.category for t in list_templates()}
 
     rows = [
         {
             "date": resolved,
             "ticker": r.ticker,
             "template_name": r.template_name,
-            "category": _TEMPLATE_CATEGORY.get(r.template_name, "custom"),
+            "category": template_category.get(r.template_name, "custom"),
             "score": r.score,
             "matched_conditions": r.matched_conditions,
             "total_conditions": r.total_conditions,

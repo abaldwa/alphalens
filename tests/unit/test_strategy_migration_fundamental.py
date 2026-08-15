@@ -93,7 +93,10 @@ class TestKinds:
     def test_covers_the_whole_catalog(self):
         from features.fundamental_composites import STRATEGY_CATALOG
 
-        assert len(build_rows()) == len(STRATEGY_CATALOG)
+        # [A95-R1] the migration intentionally admits the four uncatalogued
+        # but runnable names on top of STRATEGY_CATALOG (see the migration
+        # module's _uncatalogued()), so it is larger than the catalogue.
+        assert len(build_rows()) == len(STRATEGY_CATALOG) + 4
 
     def test_every_criterion_validates(self):
         for row in build_rows():

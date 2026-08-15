@@ -30,7 +30,7 @@ from config.settings import SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from datastore.api.utils.feature_store import resolve_date
 from systems.technical_analysis.screener.engine import ScreenerEngine, ScreenerResult
-from systems.technical_analysis.screener.templates import TEMPLATES
+from systems.technical_analysis.screener.registry_templates import list_templates
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +69,9 @@ ON CONFLICT (date, ticker, template_name) DO UPDATE SET
     key_values = EXCLUDED.key_values
 """
 
-# Template name → category map (built once at import time for fast lookup)
-_TEMPLATE_CATEGORY: Dict[str, str] = {t.name: t.category for t in TEMPLATES}
+# Template name → category map is built at runtime from the registry to avoid
+# importing DB-backed rows at module import time (long-lived process safety).
+
 
 
 class DailyAlertChecker:
@@ -113,6 +114,7 @@ class DailyAlertChecker:
         conn,
         date_str: str,
         template_results: Dict[str, List[ScreenerResult]],
+        template_category: Dict[str, str],
     ) -> int:
         """Upsert every template's full-match rows for one date in a
         single bulk statement (see _BULK_UPSERT_SQL's docstring note for
@@ -138,7 +140,7 @@ class DailyAlertChecker:
                 date_str,
                 r.ticker,
                 r.template_name,
-                _TEMPLATE_CATEGORY.get(r.template_name, "custom"),
+                template_category.get(r.template_name, "custom"),
                 r.score,
                 r.matched_conditions,
                 r.total_conditions,
@@ -204,20 +206,23 @@ class DailyAlertChecker:
             )
             return None, {}
 
-        logger.info("DailyAlertChecker: evaluating 42 templates for date %s", resolved)
+        logger.info("DailyAlertChecker: evaluating templates for date %s", resolved)
 
-        # Load the date's feature Parquet ONCE and reuse it across all 42
-        # templates, rather than calling ScreenerEngine.screen() per template
-        # (each of which re-reads the same file from disk) — a real
-        # inefficiency for bulk historical backfills over many dates
-        # (scripts/backfill_ta_signals.py), harmless but wasteful for the
-        # single-date live daily case this was originally written for.
+        # Load the date's feature Parquet ONCE and reuse it across all
+        # templates, rather than calling ScreenerEngine.screen() per
+        # template (each of which re-reads the same file from disk).
         df = self._engine._load_df(resolved)  # noqa: SLF001 — same module family, no public API needed for this
+
+        # Fetch the declared templates from the registry at call time so a
+        # long-lived process (API/scheduler) picks up edits without restart.
+        template_list = list_templates()
+        # expose for callers that need the same list (run() uses this)
+        self._last_template_list = template_list
 
         template_results: Dict[str, List[ScreenerResult]] = {}
         total_matches = 0
 
-        for template in TEMPLATES:
+        for template in template_list:
             try:
                 if df is None:
                     full_matches = []
@@ -235,7 +240,7 @@ class DailyAlertChecker:
                 template_results[template.name] = []
 
         logger.info(
-            "DailyAlertChecker: %d total full matches across 42 templates for %s",
+            "DailyAlertChecker: %d total full matches across templates for %s",
             total_matches,
             resolved,
         )
@@ -278,8 +283,13 @@ class DailyAlertChecker:
 
         # Write all results to the signals DuckDB in a single connection
         # SPEC-SCHED-013: persist=False releases the lock immediately on exit
+        # Build the template category map from the same runtime list so the
+        # writer and the evaluator agree on categories without a module-level
+        # import-time DB dependency.
+        template_category = {t.name: t.category for t in getattr(self, "_last_template_list", list_templates())}
+
         with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False) as conn:
             self._ensure_db_and_table(conn)
-            self._write_all_results(conn, resolved, template_results)
+            self._write_all_results(conn, resolved, template_results, template_category)
 
         return {name: len(res) for name, res in template_results.items()}

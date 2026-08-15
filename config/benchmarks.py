@@ -65,12 +65,23 @@ SIZE_INDICES = [
 # Momentum's market-cap rank bands (features/momentum_universe.py::RANK_BANDS)
 # mapped to the index that actually represents what they hold. Nifty Next 50
 # is ranks ~51-100 by construction, which is why band 2 maps to it exactly.
+#
+# The bands were redrawn 2026-08-14 from five (stopping at rank 200) to seven
+# (spanning 1-800): 1-50, 51-100, 101-150, 151-200, 200-300, 300-500, 500-800.
+# Band ids 1-4 kept their historical numbers; id 5 (100-200) vanished, and ids
+# 6/7/8 were added. Below maps each against the NSE size-tier that best matches
+# what it holds (standard Nifty construction: ranks 101-250 midcap, 251-500
+# smallcap, 501+ microcap):
+#   200-300 splits the midcap/smallcap seam at 250, so it takes Smallcap 250 --
+#    the next distinct tier below the Midcap 150 that bands 3/4 already claim.
 RANK_BAND_BENCHMARKS: Dict[int, str] = {
-    1: "Nifty 50",         # ranks 1-50
-    2: "Nifty Next 50",    # ranks 51-100
-    3: "Nifty Midcap 100",  # ranks 100-150
-    4: "Nifty Midcap 150",  # ranks 150-200
-    5: "Nifty Midcap 150",  # ranks 100-200
+    1: "Nifty 50",             # ranks 1-50
+    2: "Nifty Next 50",        # ranks 51-100
+    3: "Nifty Midcap 100",     # ranks 101-150
+    4: "Nifty Midcap 150",     # ranks 151-200
+    6: "Nifty Smallcap 250",   # ranks 200-300 (straddles the 250 midcap/smallcap seam)
+    7: "Nifty Smallcap 250",   # ranks 300-500 (the 251-500 smallcap tier)
+    8: "Nifty Microcap 250",   # ranks 500-800 (the 501+ microcap tier)
 }
 
 # The regime index is a separate decision from the benchmark index (A98).

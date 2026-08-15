@@ -501,7 +501,14 @@ FYERS_MAX_CALLS_PER_DAY = 1000
 # threads via FYERSBackfill's module-level _GlobalRateLimiter, not
 # per-thread — see that class's docstring for why per-thread pacing
 # alone doesn't prevent bursts past this.
-FYERS_RATE_LIMIT_SLEEP_SECONDS = 0.35
+#
+# [2026-08-15, live-regression] The 0.35s pacing that worked on 08-10
+# (2049 tickers / 717s, zero 429s) now gets 429 "request limit reached"
+# on nearly every call — FYERS tightened the account/app limit (code
+# unchanged since 5232b335). Measured sustainable rate is ~1 call / 10s
+# right now. Bumped to 2.0s (≈30/min) as a safe middle ground; if 429s
+# persist, raise further toward 10s.
+FYERS_RATE_LIMIT_SLEEP_SECONDS = 2.0
 FYERS_HISTORY_MAX_DAYS_PER_CALL = 365  # FYERS daily-resolution history API window limit
 BACKFILL_YEARS = 5
 
