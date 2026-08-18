@@ -919,3 +919,33 @@ every channel while the cadence is an input, so `periods_per_year` must
 exist and must default to None.
 
 Mutation-validated.
+
+## §14 — D2 + A3-technical delivered (2026-08-18)
+
+`backtest/core/live_signal_runner.py` — `LiveSignalRunner`, the third caller of
+the one generator per channel, alongside `BacktestOrchestrator` and
+`PaperTradingRunner`. It owns no selection logic: `signals_for()` gates on
+readiness, delegates to `adapter.generate_signals`, and records the result in
+the A94 ledger with `source="live"`; `target_holdings()` is its buy-side, in the
+adapter's own ranking order.
+
+The A103 readiness gate moved to `backtest/core/readiness_gate.py`
+(`check_readiness`), shared by the paper and live runners. `PaperTradingRunner`
+now calls it instead of holding its own copy — behaviour identical, and its 26
+existing tests still pass unchanged.
+
+**A3-technical (harness slot filled).** `build_technical_parity_report` diffs the
+live holdings path against the backtested rule for template A1 on the latest
+real trading day: **zero diff** (mutation-validated — truncating
+`target_holdings` to 5 makes the test fail). A second test measures the D1/D3
+gap directly: held names are a strict subset of the alert feed's full matches,
+so today the two paths agree about what matched; D3 removes the possibility
+that they stop agreeing.
+
+`tests/quality/mypy_baseline.json` regenerated (1,166 → 1,165): extracting the
+readiness gate cleared `backtest/paper_trading/live_runner.py`'s last entry.
+
+### Checkpoint — step 11 (D1/D3/D4) needs review before it ships
+D3 changes what the live technical holdings actually are (`daily_alert_checker`
+and the adapter start sharing one `ScreenerEngine` evaluation), and §9 lists it
+as a user-review checkpoint. D2 is wired but nothing has been cut over to it.
