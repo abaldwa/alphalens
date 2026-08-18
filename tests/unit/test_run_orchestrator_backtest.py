@@ -300,6 +300,10 @@ class TestMomentumRankBandWiring:
         close_all_connections()
 
         # Ranks by close (equal shares): AAA 1, BBB 2, CCC 3, DDD 4.
+        # [2026-08-18] A RANGE of bars, not a single date: the universe rule is
+        # now top-N-by-ADTV first, and its window ends STRICTLY BEFORE the
+        # decision date, so a one-bar fixture would leave every date with no
+        # liquidity history and an empty universe.
         rows = [("AAA", 400.0), ("BBB", 300.0), ("CCC", 200.0), ("DDD", 100.0)]
         with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
             for ticker, close in rows:
@@ -308,34 +312,46 @@ class TestMomentumRankBandWiring:
                     "announcement_date, shares_outstanding) VALUES (?, 2025, 1, '2025-12-01', '2025-12-01', ?)",
                     [ticker, 1_000_000],
                 )
-                conn.execute(
-                    "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, "
-                    "delivery_qty, delivery_pct) VALUES ('2026-01-02', ?, ?, ?, ?, ?, 1000, 500, 50.0)",
-                    [ticker, close, close, close, close],
-                )
+                for day in pd.bdate_range("2026-01-01", "2026-12-31"):
+                    conn.execute(
+                        "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, "
+                        "delivery_qty, delivery_pct) VALUES (?, ?, ?, ?, ?, ?, 1000, 500, 50.0)",
+                        [day.date(), ticker, close, close, close, close],
+                    )
 
         monkeypatch.setattr(ro, "DUCKDB_PATH", db_path)
         universe_df = pd.DataFrame({"ticker": [t for t, _ in rows]})
         monkeypatch.setattr("config.universe.load_universe_raw", lambda: universe_df)
         return db_path
 
+    @staticmethod
+    def _trading_days():
+        return pd.DatetimeIndex(pd.bdate_range("2026-01-01", "2026-12-31"))
+
     def test_builds_provider_flags_and_rank_lookup_for_the_requested_band(self, seeded_db):
         # RANK_BANDS band 2 is rank 51-100, far past this 4-ticker fixture,
         # so exercise the plumbing with band 1 (rank 1-50) and assert the
         # rank_start it reports back matches RANK_BANDS.
-        wiring = _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
+        wiring = _momentum_rank_band_wiring(
+            1, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
+        )
 
         assert wiring["rank_start"] == 1
+        # All four are liquid, so the band is the market-cap order within them.
         assert wiring["universe_provider"](date(2026, 6, 30)) == ["AAA", "BBB", "CCC", "DDD"]
         # Real PIT shares_outstanding on record -> nothing approximated.
-        assert wiring["approximation_flags"]["2026-01-02"] == {
+        assert wiring["approximation_flags"]["2026-01-01"] == {
             "AAA": False, "BBB": False, "CCC": False, "DDD": False
         }
         # Full ranking (not the band slice) for sticky promotion.
-        assert wiring["yearly_rank_lookup"]["2026-01-02"] == {"AAA": 1, "BBB": 2, "CCC": 3, "DDD": 4}
+        assert wiring["yearly_rank_lookup"]["2026-01-01"] == {"AAA": 1, "BBB": 2, "CCC": 3, "DDD": 4}
 
-    def test_universe_is_empty_before_the_first_year_start(self, seeded_db):
-        wiring = _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
+    def test_universe_is_empty_before_the_first_refresh(self, seeded_db):
+        """No back-dating the first snapshot onto earlier dates — that would be
+        look-ahead."""
+        wiring = _momentum_rank_band_wiring(
+            1, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
+        )
         assert wiring["universe_provider"](date(2025, 12, 31)) == []
 
     def test_uses_include_delisted_so_survivorship_bias_is_not_reintroduced(self, seeded_db):
@@ -351,7 +367,9 @@ class TestMomentumRankBandWiring:
             return real(conn, start, end, **kwargs)
 
         with patch.object(ro, "all_yearly_full_rankings", _spy):
-            _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
+            _momentum_rank_band_wiring(
+                1, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
+            )
 
         assert seen["include_delisted"] is True
         # One round trip total — the band slice, the approximation flags and
@@ -360,7 +378,9 @@ class TestMomentumRankBandWiring:
 
     def test_unknown_band_id_is_rejected(self, seeded_db):
         with pytest.raises(ValueError, match="unknown rank_band_id"):
-            _momentum_rank_band_wiring(99, date(2026, 1, 1), date(2026, 12, 31))
+            _momentum_rank_band_wiring(
+                99, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
+            )
 
 
 class TestFeatureLogSpillIsNotOnTmpfs:

@@ -528,42 +528,72 @@ def universe_snapshot_date(
     return eligible[-1] if eligible else None
 
 
+#: A ticker whose last real bar is older than this is not tradeable today --
+#: not yet listed, suspended, or already delisted. Same tolerance
+#: run_orchestrator_backtest's generic provider uses, and adopted here for the
+#: same reason: a stale price is not evidence that a stock can be bought.
+UNIVERSE_STALENESS_TOLERANCE_DAYS = 10
+
+
 def liquid_universe(
     normalised_conn: Any, as_of_date: str, top_n: int = ADTV_UNIVERSE_TOP_N,
-    lookback_sessions: int = ADTV_LOOKBACK_SESSIONS, include_delisted: bool = False,
+    lookback_sessions: int = ADTV_LOOKBACK_SESSIONS, include_delisted: bool = True,
 ) -> List[str]:
     """The top `top_n` tickers by trailing ADTV as of `as_of_date`.
 
-    Step 1 of the universe definition. Reads real turnover from
-    ohlcv_adjusted; a ticker with no volume history in the window is absent,
-    never assumed liquid — the standing missing-data convention.
+    Step 1 of the universe definition. Three conventions, each load-bearing:
+
+    * **The window ends STRICTLY BEFORE as_of_date.** Ranking on liquidity
+      that includes the day's own bar uses volume that had not printed when
+      the decision was made -- and on a day a name spikes on news, that is
+      exactly the lookahead that promotes the stock you could not have bought.
+    * **A ticker whose last bar is stale is excluded** (see
+      UNIVERSE_STALENESS_TOLERANCE_DAYS). Liquidity a fortnight ago is not
+      evidence that a suspended stock is tradeable now.
+    * **include_delisted defaults True.** A stock alive on a past as_of_date
+      belongs in that date's universe even though it later delisted; leaving
+      it out is survivorship bias, and a relative-strength strategy is where
+      vanishing losers flatter results most. This is momentum's own
+      2026-07-20 fix, kept.
+
+    A ticker with no volume history in the window is absent, never assumed
+    liquid -- the standing missing-data convention.
     """
     candidates = _all_candidate_tickers(include_delisted=include_delisted, normalised_conn=normalised_conn)
     if not candidates:
         return []
+    stale_floor = (pd.Timestamp(as_of_date) - pd.Timedelta(days=UNIVERSE_STALENESS_TOLERANCE_DAYS)).date()
     placeholders = ",".join("?" for _ in candidates)
     rows = normalised_conn.execute(
         f"""
-        WITH recent AS (
-            SELECT ticker, date, close * volume AS turnover,
-                   ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) AS rn
+        WITH traded AS (
+            SELECT ticker, date, close * volume AS turnover
             FROM ohlcv_adjusted
-            WHERE date <= ? AND ticker IN ({placeholders}) AND volume > 0
+            WHERE date < ? AND ticker IN ({placeholders}) AND volume > 0
+        ),
+        recent AS (
+            SELECT ticker, turnover,
+                   ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) AS rn
+            FROM traded
+        ),
+        last_bar AS (
+            SELECT ticker, max(date) AS last_date FROM traded GROUP BY ticker
         )
-        SELECT ticker, avg(turnover) AS adtv
-        FROM recent WHERE rn <= ?
-        GROUP BY ticker
+        SELECT r.ticker, avg(r.turnover) AS adtv
+        FROM recent r JOIN last_bar l ON l.ticker = r.ticker
+        WHERE r.rn <= ? AND l.last_date >= ?
+        GROUP BY r.ticker
         ORDER BY adtv DESC
         LIMIT ?
         """,
-        [as_of_date, *candidates, lookback_sessions, top_n],
+        [as_of_date, *candidates, lookback_sessions, stale_floor, top_n],
     ).fetchall()
     return [str(r[0]) for r in rows]
 
 
 def momentum_band_universe(
     normalised_conn: Any, as_of_date: str, rank_start: int, rank_end: int,
-    *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N, include_delisted: bool = False,
+    *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N, include_delisted: bool = True,
 ) -> List[str]:
     """The band's constituents on `as_of_date`: liquid universe first, then
     market-cap rank within it.
@@ -584,3 +614,37 @@ def momentum_band_universe(
     ranked["rank"] = ranked.index + 1
     band = ranked[(ranked["rank"] >= rank_start) & (ranked["rank"] <= rank_end)]
     return [str(t) for t in band["ticker"]]
+
+
+def build_momentum_universe_provider(
+    normalised_conn: Any, trading_days: pd.DatetimeIndex, rank_start: int, rank_end: int,
+    *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N, include_delisted: bool = True,
+) -> Callable[[date_type], List[str]]:
+    """A `UniverseProvider` over the 21-trading-day grid, for backtests.
+
+    Resolves momentum_band_universe() ONCE per grid point and closes over the
+    result, so a run costs one query per refresh (~205 for a 17-year window)
+    rather than one per trading day (~4,300). The returned callable does no
+    DB access at all, which matters because the orchestrator calls it inside
+    its loop.
+
+    This is the same definition live and paper trading call directly — the
+    grid is a caching boundary, not a second rule. A date before the first
+    refresh yields an empty universe rather than back-dating the first
+    snapshot onto it, which would be look-ahead.
+    """
+    snapshots = {
+        refresh_date: momentum_band_universe(
+            normalised_conn, str(refresh_date.date()), rank_start, rank_end,
+            top_n_by_adtv=top_n_by_adtv, include_delisted=include_delisted,
+        )
+        for refresh_date in universe_refresh_dates(trading_days)
+    }
+
+    def universe_provider(as_of: date_type) -> List[str]:
+        snapshot_date = universe_snapshot_date(trading_days, as_of)
+        if snapshot_date is None:
+            return []
+        return list(snapshots.get(snapshot_date, []))
+
+    return universe_provider

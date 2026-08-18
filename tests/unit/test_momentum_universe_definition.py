@@ -127,3 +127,95 @@ class TestBandComposition:
 
     def test_the_default_universe_is_the_top_800(self):
         assert ADTV_UNIVERSE_TOP_N == 800
+
+
+class TestLookaheadAndStaleness:
+    """The three conventions adopted from the orchestrator's generic provider
+    (2026-08-18), each of which momentum's own band provider lacked."""
+
+    def test_the_adtv_window_ends_strictly_before_as_of(self, conn):
+        """A spike on as_of_date itself must not promote a ticker: that volume
+        had not printed when the decision was made."""
+        # T5 is the least liquid. Give it an enormous bar ON the decision date.
+        conn.execute(
+            "INSERT INTO ohlcv_adjusted VALUES ('T5', DATE '2026-06-30', 100.0, 999999999)"
+        )
+        assert liquid_universe(conn, "2026-06-30", top_n=2) == ["T0", "T1"]
+        # The same bar one day earlier DOES count — proving the test is
+        # measuring the boundary, not simply ignoring the row.
+        conn.execute(
+            "INSERT INTO ohlcv_adjusted VALUES ('T5', DATE '2026-06-26', 100.0, 999999999)"
+        )
+        assert "T5" in liquid_universe(conn, "2026-06-30", top_n=2)
+
+    def test_a_ticker_that_stopped_trading_is_excluded(self, conn):
+        """Liquidity a fortnight ago is not evidence a suspended stock can be
+        bought now."""
+        conn.execute("DELETE FROM ohlcv_adjusted WHERE ticker = 'T0' AND date > DATE '2026-06-01'")
+        assert "T0" not in liquid_universe(conn, "2026-06-30", top_n=6)
+        # ...but it was tradeable back when it was still printing bars.
+        assert "T0" in liquid_universe(conn, "2026-06-02", top_n=6)
+
+    def test_delisted_names_are_included_by_default(self, monkeypatch, conn):
+        """Survivorship bias: a stock alive on a past date belongs in that
+        date's universe even though it later delisted. Momentum's 2026-07-20
+        fix, kept — a relative-strength strategy is where vanishing losers
+        flatter results most."""
+        seen = {}
+
+        def _candidates(include_delisted=False, normalised_conn=None):
+            seen["include_delisted"] = include_delisted
+            return [f"T{i}" for i in range(6)]
+
+        monkeypatch.setattr(mu, "_all_candidate_tickers", _candidates)
+        liquid_universe(conn, AS_OF)
+        assert seen["include_delisted"] is True
+        momentum_band_universe(conn, AS_OF, 1, 50)
+        assert seen["include_delisted"] is True
+
+
+class TestTheBacktestProviderIsTheSameDefinition:
+    """The 21-day grid is a caching boundary, not a second rule: the provider
+    a backtest calls must return exactly what live/paper get from
+    momentum_band_universe on the snapshot date."""
+
+    def test_the_provider_matches_a_direct_call_on_the_snapshot_date(self, conn):
+        from features.momentum_universe import build_momentum_universe_provider
+
+        days = pd.DatetimeIndex(pd.bdate_range("2026-05-01", "2026-06-30"))
+        provider = build_momentum_universe_provider(conn, days, 1, 3, top_n_by_adtv=3)
+        snapshot = universe_snapshot_date(days, days[25])
+        assert provider(days[25].date()) == momentum_band_universe(
+            conn, str(snapshot.date()), 1, 3, top_n_by_adtv=3
+        )
+
+    def test_membership_is_held_between_refreshes(self, conn):
+        """A name must not leave the universe on a day no strategy trades."""
+        from features.momentum_universe import build_momentum_universe_provider
+
+        days = pd.DatetimeIndex(pd.bdate_range("2026-05-01", "2026-06-30"))
+        provider = build_momentum_universe_provider(conn, days, 1, 3, top_n_by_adtv=3)
+        grid_start = days.get_loc(universe_refresh_dates(days)[1])
+        held = {tuple(provider(days[i].date())) for i in range(grid_start, grid_start + 5)}
+        assert len(held) == 1
+
+    def test_bands_beyond_rank_200_are_not_truncated_away(self, monkeypatch):
+        """Regression: _momentum_rank_band_wiring called
+        all_yearly_full_rankings without max_rank, defaulting to
+        MAX_TRACKED_RANK=200, so bands 6/7/8 (201-300, 301-500, 501-800)
+        sliced past the end of the frame and were EMPTY for every year."""
+        c = duckdb.connect(":memory:")
+        c.execute("CREATE TABLE ohlcv_adjusted (ticker VARCHAR, date DATE, close DOUBLE, volume BIGINT)")
+        c.execute("CREATE TABLE fundamentals (ticker VARCHAR, announcement_date VARCHAR, shares_outstanding DOUBLE)")
+        tickers = [f"S{i:03d}" for i in range(260)]
+        for i, ticker in enumerate(tickers):
+            c.execute("INSERT INTO fundamentals VALUES (?, ?, ?)", [ticker, "2025-01-01", float(260 - i) * 1e6])
+            for day in pd.bdate_range("2026-05-01", "2026-06-30"):
+                c.execute(
+                    "INSERT INTO ohlcv_adjusted VALUES (?, ?, ?, ?)",
+                    [ticker, day.date(), 100.0, 10_000 * (260 - i)],
+                )
+        monkeypatch.setattr(mu, "_all_candidate_tickers", lambda **kw: tickers)
+        band = momentum_band_universe(c, "2026-06-30", 201, 250, top_n_by_adtv=260)
+        c.close()
+        assert len(band) == 50, "band 201-250 must not be empty"

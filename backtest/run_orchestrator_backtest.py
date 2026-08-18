@@ -89,9 +89,10 @@ from config.timezone import now_ist
 from strategies.definitions import DefinitionNotFound, technical_template_style
 from strategies.momentum_identity import registry_name
 from features.momentum_universe import (
+    MAX_TRACKED_RANK,
     RANK_BANDS,
     all_yearly_full_rankings,
-    build_yearly_rank_band_universe_provider,
+    build_momentum_universe_provider,
     yearly_band_approximation_flags_from_rankings,
     yearly_rank_lookup_from_rankings,
 )
@@ -316,6 +317,7 @@ UNIVERSE_STALENESS_TOLERANCE_DAYS = 10
 
 def _momentum_rank_band_wiring(
     rank_band_id: int, start_date: date_type, end_date: date_type,
+    trading_days: pd.DatetimeIndex,
 ) -> Dict[str, Any]:
     """
     (2026-08-05, Momentum engine consolidation Phase 2) Everything the
@@ -355,14 +357,28 @@ def _momentum_rank_band_wiring(
     _, rank_start, rank_end = band
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         yearly_rankings = all_yearly_full_rankings(
-            conn, start_date.isoformat(), end_date.isoformat(), include_delisted=True,
+            conn, start_date.isoformat(), end_date.isoformat(),
+            max_rank=max(rank_end, MAX_TRACKED_RANK), include_delisted=True,
         )
-    return {
-        "rank_start": rank_start,
-        "universe_provider": build_yearly_rank_band_universe_provider(yearly_rankings, rank_start, rank_end),
-        "approximation_flags": yearly_band_approximation_flags_from_rankings(yearly_rankings, rank_start, rank_end),
-        "yearly_rank_lookup": yearly_rank_lookup_from_rankings(yearly_rankings),
-    }
+        return {
+            "rank_start": rank_start,
+            # [2026-08-18] THE shared definition: top 800 by ADTV, then market-cap
+            # rank within that set, on the 21-trading-day grid. Replaces
+            # build_yearly_rank_band_universe_provider, whose yearly market-cap
+            # ranking carried no liquidity gate at all and truncated at
+            # MAX_TRACKED_RANK=200 -- which silently emptied bands 6, 7 and 8
+            # (201-300, 301-500, 501-800) for every orchestrator run.
+            #
+            # Live and paper call momentum_band_universe directly; the provider
+            # only adds per-grid-point caching, so there is still one rule.
+            "universe_provider": build_momentum_universe_provider(
+                conn, trading_days, rank_start, rank_end,
+            ),
+            "approximation_flags": yearly_band_approximation_flags_from_rankings(
+                yearly_rankings, rank_start, rank_end,
+            ),
+            "yearly_rank_lookup": yearly_rank_lookup_from_rankings(yearly_rankings),
+        }
 
 
 def _build_pit_adtv_panel(ohlcv: pd.DataFrame, lookback: int) -> pd.DataFrame:
@@ -909,7 +925,7 @@ def _run_immediate(
         # every existing momentum job on _build_config's generic universe,
         # unchanged.
         momentum_band = (
-            _momentum_rank_band_wiring(rank_band_id, start_date, end_date)
+            _momentum_rank_band_wiring(rank_band_id, start_date, end_date, config.trading_days)
             if channel == "momentum" and rank_band_id is not None
             else None
         )
@@ -1246,7 +1262,7 @@ def _run_deferred(
         quality_gate["max_m_score"] = quality_gate_max_m_score
     # See the matching note in _run_immediate.
     momentum_band = (
-        _momentum_rank_band_wiring(rank_band_id, start_date, end_date)
+        _momentum_rank_band_wiring(rank_band_id, start_date, end_date, config.trading_days)
         if channel == "momentum" and rank_band_id is not None
         else None
     )
