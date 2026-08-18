@@ -1067,3 +1067,44 @@ until something is deployed — which is the correct behaviour, not a gap.
 Mutation-validated: turning the per-deployment `continue` into a `break`, having
 the endpoint skip the queue, and letting a caller's `top_n` override momentum's
 declared one each fail their test.
+
+## §18 — Momentum sizing policy decided and implemented (2026-08-18)
+
+Three user decisions, taken after the ML40-2.1 parity diff exposed that the
+shared loop ran momentum at roughly 45% invested:
+
+1. **`investable_pct = 1.0`** — momentum is fully invested. Its equal-weight
+   slot is `1/top_n` (6.67% at top_n=15); the D21 bucket's 3% ceiling would
+   clip that to less than half.
+2. **No sector diversification** — momentum's risk control is the universe
+   itself, the top 800 names by ADTV. `max_sector_pct` goes to 1.0.
+3. **`top_n` is honoured** — the book is divided into the strategy's own slot
+   count.
+
+**Implementation.** `OrchestratorConfig` gains `n_target_positions` and
+`sizing_overrides`. The orchestrator now derives the slot count as
+`config.n_target_positions or adapter.top_n`, falling back to
+StrategyPortfolio's 10 only for an adapter that declares no top_n — it
+previously passed nothing, so EVERY strategy on EVERY channel sized for 10
+slots regardless of its top_n. `run_orchestrator_backtest._sizing_overrides_for`
+returns momentum's two overrides and `None` for every other channel; this is
+deliberately not a global change.
+
+**Measured effect** (band 101-150, 2018-2019, unfiltered top-15): shared-loop
+CAGR **0.98% → 2.80%**, against the standalone's ~3.2%/yr. Buys move 54 → 49
+(bigger positions, so cash binds slightly sooner).
+
+### The parity gap is NOT a sizing problem — corrected finding
+
+An instrumented `can_buy` over the same window: **62 accepted, 1 rejected, out
+of 63 offers**. Sizing caps, the sector cap, cash and the ADTV floor rejected
+essentially nothing. The orchestrator was never OFFERED the other buys, so the
+remaining 75-vs-49 gap lives in `MomentumAdapter`'s rotation rule versus
+`MomentumBacktester`'s, not in the portfolio. It is cumulative: the two agree
+exactly through 2018 (14/14, 6/6, 3/3) and diverge progressively through 2019
+(4 vs 1, 4 vs 0, 4 vs 0). That is the next thing to isolate before H4.
+
+Two earlier attributions in §17's diff were wrong and are retracted: the caps
+were never binding (raising them 3%→5% and 20%→25% changed the buy count not at
+all), and the first 10-year run was misconfigured — it omitted
+`exit_policy_cadence="rebalance"`, which every real momentum run sets.

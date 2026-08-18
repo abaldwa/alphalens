@@ -47,7 +47,12 @@ from systems.ml_signal_engine.models.exit.exit_intent import (
     validate_actions,
 )
 from backtest.core.metrics import compute_metrics
-from backtest.core.portfolio import AnnualResetConfig, SipConfig, StrategyPortfolio
+from backtest.core.portfolio import (
+    DEFAULT_N_TARGET_POSITIONS,
+    AnnualResetConfig,
+    SipConfig,
+    StrategyPortfolio,
+)
 from backtest.portfolio import (
     EXIT_REDUCE_THRESHOLD,
     EXIT_URGENT_THRESHOLD,
@@ -693,6 +698,25 @@ class OrchestratorConfig:
     # deployed with the rest idle in cash, which is not the strategy anyone
     # configured or read the results of.
     exit_policy_cadence: Literal["daily", "rebalance"] = "daily"
+    # [2026-08-18, user decision] How many equal-weight slots the book is
+    # divided into. None -> the adapter's own top_n, which is what a top-N
+    # strategy means by "a slot"; only if the adapter declares no top_n does
+    # StrategyPortfolio's default of 10 apply.
+    #
+    # Until now the orchestrator never passed this, so EVERY strategy sized
+    # for 10 slots regardless of its top_n: a top_n=15 strategy computed
+    # 10% equal-weight slots for a book it intended to split 15 ways.
+    n_target_positions: Optional[int] = None
+    # Per-run overrides onto the horizon bucket's HorizonSizingPolicy
+    # (max_position_pct / max_sector_pct / min_holding_days). None keeps the
+    # bucket's defaults, which is right for Technical/Fundamental/ML.
+    #
+    # Momentum overrides both caps by explicit user decision (2026-08-18):
+    # it is fully invested (investable_pct=1.0, so the equal-weight 1/top_n
+    # slot must not be clipped by a 3% ceiling), and it takes NO sector
+    # diversification — its risk control is the universe itself, the top 800
+    # names by ADTV. See run_orchestrator_backtest.py::_sizing_overrides_for.
+    sizing_overrides: Optional[Dict[str, Any]] = None
 
 
 class BacktestOrchestrator:
@@ -1010,9 +1034,19 @@ class BacktestOrchestrator:
                 regime_label=str(_label),
                 top_up_after_loss=bool(getattr(run, "annual_reset_top_up_after_loss", True)),
             )
+        # The adapter's top_n IS the slot count for a top-N strategy; an
+        # explicit config value overrides it, and only an adapter with no
+        # top_n at all falls through to StrategyPortfolio's own default.
+        n_target = (
+            config.n_target_positions
+            or getattr(adapter, "top_n", None)
+            or DEFAULT_N_TARGET_POSITIONS
+        )
         portfolio = StrategyPortfolio(
             initial_capital=run.initial_capital, horizon_bucket=run.horizon_bucket, sip=sip,
             annual_reset=annual_reset,
+            sizing_overrides=config.sizing_overrides,
+            n_target_positions=int(n_target),
         )
         portfolio.prime_sip_schedule(config.trading_days)
         portfolio.prime_annual_reset_schedule(config.trading_days)

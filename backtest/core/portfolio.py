@@ -42,7 +42,7 @@ imported) and backtest.costs.IndianTransactionCosts unchanged.
 import logging
 from dataclasses import dataclass
 from datetime import date as date_type
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
@@ -52,7 +52,17 @@ from backtest.costs import IndianTransactionCosts
 from backtest.portfolio import Position, Trade
 from config.settings import MIN_ADT_INR
 
+#: Every date-taking method here accepts whatever its caller already holds -- a
+#: datetime.date, a pandas Timestamp, or an ISO string -- and normalises with
+#: pd.Timestamp(). Naming that union once beats annotating it (or leaving it
+#: untyped) at each of the nine call sites.
+DateLike = Union[str, date_type, pd.Timestamp]
+
 logger = logging.getLogger(__name__)
+
+#: Slot count for an adapter that declares no top_n. ONE declaration, shared
+#: with BacktestOrchestrator, which passes the adapter's top_n when it has one.
+DEFAULT_N_TARGET_POSITIONS = 10
 
 DEFAULT_ADTV_CAP_FRACTION = 0.10  # a position may not exceed 10% of trailing ADTV — Truthful Review Gap #6
 
@@ -173,8 +183,8 @@ class StrategyPortfolio:
         self,
         initial_capital: float,
         horizon_bucket: HorizonBucket,
-        sizing_overrides: Optional[dict] = None,
-        n_target_positions: int = 10,
+        sizing_overrides: Optional[Dict[str, Any]] = None,
+        n_target_positions: int = DEFAULT_N_TARGET_POSITIONS,
         costs: Optional[IndianTransactionCosts] = None,
         sip: Optional[SipConfig] = None,
         annual_reset: Optional["AnnualResetConfig"] = None,
@@ -196,9 +206,9 @@ class StrategyPortfolio:
 
         self.positions: Dict[str, Position] = {}
         self.trades: List[Trade] = []
-        self._equity_curve: List[Dict] = []
-        self._cash_position_series: List[Dict] = []
-        self.cash_flows: List[Dict] = [{"date": None, "amount": -initial_capital}]  # date stamped by caller on first record
+        self._equity_curve: List[Dict[str, Any]] = []
+        self._cash_position_series: List[Dict[str, Any]] = []
+        self.cash_flows: List[Dict[str, Any]] = [{"date": None, "amount": -initial_capital}]  # date stamped by caller on first record
         self.total_contributed = initial_capital
         self._sip_injection_dates: Optional[List[pd.Timestamp]] = None
         self._sip_injection_idx = 0
@@ -209,7 +219,7 @@ class StrategyPortfolio:
         self.annual_reset = annual_reset
         self._annual_reset_dates: Optional[List[pd.Timestamp]] = None
         self._annual_reset_idx = 0
-        self.fy_ledger: List[Dict] = []
+        self.fy_ledger: List[Dict[str, Any]] = []
         # Post-tax total actually taken out (the real cash flow), and the
         # gross-of-tax equivalent for comparison — see apply_due_annual_reset.
         self.total_withdrawn = 0.0
@@ -238,7 +248,7 @@ class StrategyPortfolio:
         # the next boundary that has cash, and any balance still outstanding is
         # deducted from the final equity.
         self.deferred_tax_liability = 0.0
-        self.tax_ledger: List[Dict] = []
+        self.tax_ledger: List[Dict[str, Any]] = []
 
     # ===== SIP injection (generalized from momentum_backtest.py's _monthly_injection_dates) =====
     def _monthly_injection_dates(self, trading_days: pd.DatetimeIndex) -> List[pd.Timestamp]:
@@ -296,7 +306,7 @@ class StrategyPortfolio:
 
         return [t for t in self.tax_transactions() if financial_year_end(t.sell_date) == fy_end]
 
-    def apply_due_annual_reset(self, as_of_date, prices: Dict[str, float]) -> None:
+    def apply_due_annual_reset(self, as_of_date: DateLike, prices: Dict[str, float]) -> None:
         """At each FY boundary: withdraw booked-and-liquid profit after tax, or
         top the base back up after a losing year. Positions are never touched —
         see AnnualResetConfig's docstring for why the base is allowed to drift
@@ -446,7 +456,7 @@ class StrategyPortfolio:
         self._tax_fy_dates = self._fy_start_dates(trading_days)
         self._tax_fy_idx = 0
 
-    def apply_due_fy_tax(self, as_of_date) -> None:
+    def apply_due_fy_tax(self, as_of_date: DateLike) -> None:
         """[STEP 5, 2026-08-13] Pay the closed FY's capital-gains tax in cash.
 
         Previously tax was computed in _finalize and subtracted ONCE from the
@@ -505,7 +515,7 @@ class StrategyPortfolio:
                     "payment must be capped by available cash and the remainder deferred"
                 )
 
-    def apply_due_sip_injections(self, as_of_date) -> None:
+    def apply_due_sip_injections(self, as_of_date: DateLike) -> None:
         """Apply every SIP contribution due on or before as_of_date. Contributions
         between rebalances sit in cash, unused, until the next rebalance deploys
         them — same treatment as momentum_backtest.py's existing behavior."""
@@ -565,7 +575,7 @@ class StrategyPortfolio:
         sector_value = sum(
             pos.quantity * prices.get(t, pos.entry_price) for t, pos in self.positions.items() if pos.sector == sector
         )
-        return sector_value / equity
+        return float(sector_value / equity)
 
     def can_buy(
         self, ticker: str, sector: str, price: float, prices: Dict[str, float], adtv_cr: Optional[float] = None,
@@ -603,7 +613,7 @@ class StrategyPortfolio:
         return True
 
     def buy(
-        self, ticker: str, sector: str, price: float, date, prices: Dict[str, float],
+        self, ticker: str, sector: str, price: float, date: DateLike, prices: Dict[str, float],
         adtv_cr: Optional[float] = None, entry_atr_pct: Optional[float] = None,
         template: Optional[str] = None, pillar: Optional[str] = None,
         market_cap_rank: Optional[int] = None,
@@ -626,7 +636,7 @@ class StrategyPortfolio:
         return position
 
     def sell(
-        self, ticker: str, price: float, date, reason: str = "signal", adtv_cr: Optional[float] = None,
+        self, ticker: str, price: float, date: DateLike, reason: str = "signal", adtv_cr: Optional[float] = None,
     ) -> Optional[Trade]:
         """Enforces the horizon bucket's min_holding_days floor (Truthful Review
         applies here too) unless reason indicates a forced exit (delisting/merger
@@ -644,7 +654,7 @@ class StrategyPortfolio:
         return self._close(position, position.quantity, price, date, reason, adtv_cr)
 
     def reduce_position(
-        self, ticker: str, price: float, date, fraction: float = 0.5,
+        self, ticker: str, price: float, date: DateLike, fraction: float = 0.5,
         reason: str = "exit_model_reduce", adtv_cr: Optional[float] = None,
     ) -> Optional[Trade]:
         """Partially close a position — the 60-80 urgency band's action.
@@ -681,7 +691,7 @@ class StrategyPortfolio:
             self.positions.pop(ticker, None)
         return trade
 
-    def force_close(self, ticker: str, price: float, date, reason: str = "forced_close") -> Optional[Trade]:
+    def force_close(self, ticker: str, price: float, date: DateLike, reason: str = "forced_close") -> Optional[Trade]:
         """Delisting/merger reconciliation hook (Truthful Review Gap #4) — always
         allowed regardless of min_holding_days, since the position is disappearing
         whether the strategy wants to exit or not."""
@@ -690,7 +700,10 @@ class StrategyPortfolio:
             return None
         return self._close(position, position.quantity, price, date, reason, None)
 
-    def _close(self, position: Position, qty: int, price: float, date, reason: str, adtv_cr, partial: bool = False) -> Trade:
+    def _close(
+        self, position: Position, qty: int, price: float, date: DateLike, reason: str,
+        adtv_cr: Optional[float], partial: bool = False,
+    ) -> Trade:
         cost = self.costs.compute_roundtrip_cost(position.entry_price, qty, adtv_cr)
         proceeds = price * qty - cost
         entry_basis = position.entry_price * qty
@@ -712,9 +725,9 @@ class StrategyPortfolio:
 
     def total_equity(self, prices: Dict[str, float]) -> float:
         positions_value = sum(pos.quantity * prices.get(t, pos.entry_price) for t, pos in self.positions.items())
-        return self.cash + positions_value
+        return float(self.cash + positions_value)
 
-    def record_equity(self, date, prices: Dict[str, float]) -> None:
+    def record_equity(self, date: DateLike, prices: Dict[str, float]) -> None:
         self._equity_curve.append({"date": date, "equity": self.total_equity(prices)})
         self._cash_position_series.append({"date": date, "cash": self.cash})
 
@@ -726,7 +739,7 @@ class StrategyPortfolio:
         return pd.Series(df["equity"].values, index=pd.to_datetime(df["date"]))
 
     @property
-    def cash_position_series(self) -> List[Dict]:
+    def cash_position_series(self) -> List[Dict[str, Any]]:
         return self._cash_position_series
 
     @property

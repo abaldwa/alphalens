@@ -51,7 +51,7 @@ import time
 import uuid
 from datetime import date as date_type
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -61,10 +61,16 @@ from backtest.adapters.momentum_adapter import MomentumAdapter
 from backtest.adapters.technical_adapter import TechnicalAdapter
 from backtest.adapters.technical_combo_adapter import TechnicalComboAdapter
 from backtest.batch_common import exclusive_backtest_lock
-from backtest.core.engine import ALL_EXIT_POLICY_VARIANTS, BacktestOrchestrator, OrchestratorConfig, build_exit_model_for_variant
+from backtest.core.engine import (
+    ALL_EXIT_POLICY_VARIANTS,
+    BacktestOrchestrator,
+    OrchestratorConfig,
+    TechnicalFeatureLookup,
+    build_exit_model_for_variant,
+)
 from backtest.core.feature_log import FeatureLogWriter
 from backtest.core.horizon import HorizonBucket, sizing_for
-from backtest.core.run_context import BacktestRun
+from backtest.core.run_context import BacktestRun, BacktestRunResult
 from backtest.core.run_store import save_run_result
 from backtest.trade_filters import ADTV_LOOKBACK_SESSIONS as PIT_ADTV_LOOKBACK_SESSIONS
 from backtest.run_phase1_backtest import _real_market_cap_map, _real_sector_map
@@ -308,7 +314,9 @@ def _fetch_real_ohlcv_uncached(
 UNIVERSE_STALENESS_TOLERANCE_DAYS = 10
 
 
-def _momentum_rank_band_wiring(rank_band_id: int, start_date: date_type, end_date: date_type) -> dict:
+def _momentum_rank_band_wiring(
+    rank_band_id: int, start_date: date_type, end_date: date_type,
+) -> Dict[str, Any]:
     """
     (2026-08-05, Momentum engine consolidation Phase 2) Everything the
     momentum channel needs to run against a real market-cap RANK BAND
@@ -372,7 +380,9 @@ def _build_pit_adtv_panel(ohlcv: pd.DataFrame, lookback: int) -> pd.DataFrame:
     return turnover.rolling(lookback, min_periods=max(2, lookback // 3)).mean().shift(1)
 
 
-def _build_config_artifacts(ohlcv, top_n_by_adtv, block_circuit_fills) -> Dict[str, Any]:
+def _build_config_artifacts(
+    ohlcv: pd.DataFrame, top_n_by_adtv: Optional[int], block_circuit_fills: bool,
+) -> Dict[str, Any]:
     """The expensive, strategy-independent derivations of one OHLCV frame.
 
     Split out of _build_config so a sweep can share them (A87 Stage 1).
@@ -385,7 +395,7 @@ def _build_config_artifacts(ohlcv, top_n_by_adtv, block_circuit_fills) -> Dict[s
 
     # Each ticker's real trading dates as sorted int64 day-ordinals — a
     # fast per-(ticker, as_of) presence check via binary search.
-    ticker_dates: Dict[str, np.ndarray] = {
+    ticker_dates: Dict[str, "np.ndarray[Any, Any]"] = {
         ticker: np.sort(group["date"].to_numpy().astype("datetime64[D]").astype(np.int64))
         for ticker, group in ohlcv.groupby("ticker")
     }
@@ -449,7 +459,7 @@ def _build_config(
     # (built in _build_config_artifacts above, shared across the sweep)
 
     def universe_provider(as_of: date_type) -> List[str]:
-        as_of_ordinal = np.datetime64(as_of, "D").astype(np.int64)
+        as_of_ordinal: np.int64 = np.datetime64(as_of, "D").astype(np.int64)
         lower_bound = as_of_ordinal - UNIVERSE_STALENESS_TOLERANCE_DAYS
         candidates = []
         for ticker, dates in ticker_dates.items():
@@ -502,10 +512,13 @@ def _build_config(
 
 
 def _momentum_descriptor(
-    top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
-    circuit_band_pct, grace_cycles, exit_policy_variant, exit_rank=None,
-    *, rank_band_id=None, rebalance_cadence_days=None, quality_gate=None,
-    disable_buys_in_regime=None, orthogonalize_vs_size_beta=False,
+    top_n: int, lookback_months: int, min_adtv_cr: Optional[float],
+    downtrend_filter_pct: Optional[float], circuit_band_pct: Optional[float],
+    grace_cycles: int, exit_policy_variant: Optional[str], exit_rank: Optional[int] = None,
+    *, rank_band_id: Optional[int] = None, rebalance_cadence_days: Optional[int] = None,
+    quality_gate: Optional[Dict[str, float]] = None,
+    disable_buys_in_regime: Optional[List[str]] = None,
+    orthogonalize_vs_size_beta: bool = False,
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
     signals it emits.
@@ -557,7 +570,7 @@ def _momentum_descriptor(
         orthogonalize_vs_size_beta=orthogonalize_vs_size_beta,
     )
     if resolved is not None:
-        return resolved
+        return str(resolved)
 
     parts = [f"top{top_n}", f"{lookback_months}m"]
     if min_adtv_cr is not None:
@@ -581,7 +594,7 @@ def _momentum_descriptor(
     return "_".join(parts)
 
 
-def _exit_policy_cadence_for(channel: str) -> str:
+def _exit_policy_cadence_for(channel: str) -> Literal["daily", "rebalance"]:
     """Whether this channel's exit policy is evaluated daily or only on
     rebalance dates. See OrchestratorConfig.exit_policy_cadence.
 
@@ -602,7 +615,35 @@ def _exit_policy_cadence_for(channel: str) -> str:
     return "rebalance" if channel == "momentum" else "daily"
 
 
-def build_technical_feature_lookup(engine=None):
+def _sizing_overrides_for(channel: str, top_n: int) -> Optional[Dict[str, Any]]:
+    """Per-channel overrides onto the horizon bucket's HorizonSizingPolicy.
+
+    [2026-08-18, explicit user decision] Momentum runs:
+
+      * FULLY INVESTED (investable_pct = 1.0). Its equal-weight slot is
+        therefore 1/top_n of the book -- 6.67% at top_n=15 -- which the D21
+        bucket's 3% ceiling would clip to less than half. The ceiling is
+        raised to exactly the slot size, so the equal-weight rule is what
+        sizes a position and the cap never silently becomes the real rule.
+      * WITHOUT sector diversification. Momentum's risk control is the
+        universe itself: the top 800 names by ADTV. A 20% sector cap is a
+        different strategy's risk model, and applying it here rejects buys
+        the strategy's own rules selected.
+
+    Every other channel keeps its bucket defaults -- these limits exist for
+    good reasons there, and this is deliberately not a global change.
+    """
+    if channel != "momentum":
+        return None
+    return {
+        # 1.0 = "no cap beyond the equal-weight slot"; expressed as the slot
+        # size itself so a future top_n change carries the ceiling with it.
+        "max_position_pct": 1.0 / max(int(top_n), 1),
+        "max_sector_pct": 1.0,
+    }
+
+
+def build_technical_feature_lookup(engine: Optional[Any] = None) -> TechnicalFeatureLookup:
     """Callable[[ticker, as_of_date], Dict[str, float]] returning that
     ticker's real technical indicator snapshot (sma_200_ratio, rsi_14,
     adx_14, etc. — the full daily feature Parquet row) as of a date —
@@ -652,7 +693,8 @@ def build_technical_feature_lookup(engine=None):
         row = df.loc[df["ticker"] == ticker]
         if row.empty:
             return {}
-        return row.iloc[0].to_dict()
+        values: Dict[str, float] = row.iloc[0].to_dict()
+        return values
 
     return lookup
 
@@ -710,11 +752,13 @@ def _resolve_horizon_bucket(
 
 
 @contextlib.contextmanager
-def _no_regime_conn():
+def _no_regime_conn() -> Iterator[None]:
     yield None
 
 
-def _build_drawdown_regime_labels(conn, index_name: str, bear_drawdown_pct: float) -> Dict[date_type, str]:
+def _build_drawdown_regime_labels(
+    conn: Any, index_name: str, bear_drawdown_pct: float,
+) -> Dict[date_type, str]:
     """date -> "bear"/"bull" from a running-peak drawdown on `index_name`'s
     real closes in index_ohlcv (2026-08-09, see --bear-drawdown-pct).
 
@@ -743,9 +787,9 @@ def _build_drawdown_regime_labels(conn, index_name: str, bear_drawdown_pct: floa
 
 
 def _persist_run_result(
-    conn, run_id: str, channel: str, descriptor: str, run_date, result,
+    conn: Any, run_id: str, channel: str, descriptor: str, run_date: date_type, result: Any,
     template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
-    saved_exit_policy_variant: str, regime_method: Optional[str], report_suffix: Optional[str],
+    saved_exit_policy_variant: Optional[str], regime_method: Optional[str], report_suffix: Optional[str],
 ) -> None:
     """The DB-writing tail shared by both run_orchestrator_backtest() code
     paths (immediate and defer_db_writes) — save_run_result + strategy_catalog
@@ -801,27 +845,34 @@ def _persist_run_result(
 
 
 def _run_immediate(
-    channel, start_date, end_date, run_id, strategy_id, horizon, descriptor, run_date,
-    capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
-    template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
-    exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
-    quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-    bear_drawdown_pct,
-    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
+    channel: str, start_date: date_type, end_date: date_type, run_id: str, strategy_id: str,
+    horizon: HorizonBucket, descriptor: str, run_date: date_type,
+    capital_mode: str, initial_capital: float, sip_amount: Optional[float],
+    universe_spec: str, max_tickers: Optional[int], min_history_days: int,
+    template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
+    report_suffix: Optional[str], regime_index_name: Optional[str],
+    exit_policy_variant: str, regime_method: Optional[str], max_hold_days: Optional[int],
+    min_adtv_cr: Optional[float], quality_gate_min_f_score: Optional[float],
+    quality_gate_max_m_score: Optional[float], downtrend_filter_pct: Optional[float],
+    circuit_band_pct: Optional[float], disable_buys_in_regime: Optional[List[str]],
+    bear_drawdown_pct: Optional[float],
+    combo_templates: Optional[List[str]], precomputed_matches_dir: Optional[Any],
+    prefetch_feature_parquets: bool, rank_band_id: Optional[int], ohlcv_snapshot_dir: Optional[Any],
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
-    *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
-    max_blackout_sessions=None,
+    *, annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
+    block_circuit_fills: bool = False,
+    max_blackout_sessions: Optional[int] = None,
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
-    benchmark_index_name=None,
+    benchmark_index_name: Optional[str] = None,
     # 2026-08-14: momentum's rank-drop grace, previously hardcoded to the
     # MomentumAdapter default of 2 and therefore never swept despite being
     # the lever that decides how long a winner is retained after leaving the
     # top_n. 0 = sell the rebalance it drops out.
-    grace_cycles=2,
-    exit_rank=None,
-):
+    grace_cycles: int = 2,
+    exit_rank: Optional[int] = None,
+) -> BacktestRunResult:
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
     exclusive_backtest_lock and one live BACKTEST_DUCKDB_PATH connection
@@ -836,6 +887,7 @@ def _run_immediate(
             max_blackout_sessions=max_blackout_sessions,
         )
         config.exit_policy_cadence = _exit_policy_cadence_for(channel)
+        config.sizing_overrides = _sizing_overrides_for(channel, top_n)
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
         # price/volume panels from the same ohlcv pull momentum's branch
         # below already uses — passed to Technical/Fundamental too so their
@@ -1128,27 +1180,34 @@ def _run_immediate(
 
 
 def _run_deferred(
-    channel, start_date, end_date, run_id, strategy_id, horizon, descriptor, run_date,
-    capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
-    template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
-    exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
-    quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-    bear_drawdown_pct,
-    combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
+    channel: str, start_date: date_type, end_date: date_type, run_id: str, strategy_id: str,
+    horizon: HorizonBucket, descriptor: str, run_date: date_type,
+    capital_mode: str, initial_capital: float, sip_amount: Optional[float],
+    universe_spec: str, max_tickers: Optional[int], min_history_days: int,
+    template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
+    report_suffix: Optional[str], regime_index_name: Optional[str],
+    exit_policy_variant: str, regime_method: Optional[str], max_hold_days: Optional[int],
+    min_adtv_cr: Optional[float], quality_gate_min_f_score: Optional[float],
+    quality_gate_max_m_score: Optional[float], downtrend_filter_pct: Optional[float],
+    circuit_band_pct: Optional[float], disable_buys_in_regime: Optional[List[str]],
+    bear_drawdown_pct: Optional[float],
+    combo_templates: Optional[List[str]], precomputed_matches_dir: Optional[Any],
+    prefetch_feature_parquets: bool, rank_band_id: Optional[int], ohlcv_snapshot_dir: Optional[Any],
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
-    *, annual_reset_spec=None, pit_adtv_top_n=None, block_circuit_fills=False,
-    max_blackout_sessions=None,
+    *, annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
+    block_circuit_fills: bool = False,
+    max_blackout_sessions: Optional[int] = None,
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
-    benchmark_index_name=None,
+    benchmark_index_name: Optional[str] = None,
     # 2026-08-14: momentum's rank-drop grace, previously hardcoded to the
     # MomentumAdapter default of 2 and therefore never swept despite being
     # the lever that decides how long a winner is retained after leaving the
     # top_n. 0 = sell the rebalance it drops out.
-    grace_cycles=2,
-    exit_rank=None,
-):
+    grace_cycles: int = 2,
+    exit_rank: Optional[int] = None,
+) -> BacktestRunResult:
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
     full rationale. OHLCV fetch through simulation runs with NO
@@ -1175,6 +1234,7 @@ def _run_deferred(
     # worker starts, not inside each job. Tracked as A105.
     config.enforce_readiness = False
     config.exit_policy_cadence = _exit_policy_cadence_for(channel)
+    config.sizing_overrides = _sizing_overrides_for(channel, top_n)
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
     # Hoisted out of the technical branch — see the matching note in
@@ -1428,7 +1488,7 @@ def run_orchestrator_backtest(
     annual_reset_top_up_after_loss: bool = True,
     annual_reset_ltcg_exemption: Optional[float] = None,
     annual_reset_regime_label: Optional[str] = None,
-) -> dict:
+) -> Dict[str, Any]:
     """
     ohlcv_snapshot_dir : (2026-08-05, FeatureBacklog A73 remaining gap —
         batch-sweep OHLCV reuse) — when set, _fetch_real_ohlcv reads/writes
@@ -1539,12 +1599,25 @@ def run_orchestrator_backtest(
             disable_buys_in_regime=disable_buys_in_regime,
         ),
     }[channel]
-    if not strategy_id:
-        # Codified strategy_id (backtest/strategy_id.py)
-        strategy_id = build_strategy_id(channel, descriptor, horizon, as_of=run_date.date())
+    if descriptor is None:
+        # technical without a template, or fundamental without a preset. Every
+        # caller path validates this earlier; the guard is here because a None
+        # descriptor would otherwise reach build_strategy_id and name the run
+        # "None", which is unrecoverable once it is in the registry.
+        raise ValueError(
+            f"channel={channel!r} produced no descriptor — a technical run needs "
+            "--template-name/--combo-templates and a fundamental run needs --preset"
+        )
+    # Bound to its own name rather than reassigned: the parameter is
+    # Optional[str], and every path below needs the resolved, definitely-present
+    # id. Reassigning left it Optional to a type checker that cannot see
+    # build_strategy_id's return type (the pre-commit hook's isolated env).
+    resolved_strategy_id: str = strategy_id or build_strategy_id(
+        channel, descriptor, horizon, as_of=run_date.date(),  # codified id, backtest/strategy_id.py
+    )
 
     logger.info(
-        f"orchestrator backtest starting: channel={channel} strategy_id={strategy_id} "
+        f"orchestrator backtest starting: channel={channel} strategy_id={resolved_strategy_id} "
         f"run_id={run_id} horizon_bucket={horizon.value}"
     )
     # exclusive_backtest_lock (user-confirmed requirement: backtests run
@@ -1568,7 +1641,7 @@ def run_orchestrator_backtest(
 
     run_fn = _run_deferred if defer_db_writes else _run_immediate
     result = run_fn(
-        channel, start_date, end_date, run_id, strategy_id, horizon, descriptor, run_date,
+        channel, start_date, end_date, run_id, resolved_strategy_id, horizon, descriptor, run_date,
         capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
         template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
         exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
@@ -1583,7 +1656,7 @@ def run_orchestrator_backtest(
     runtime_seconds = time.monotonic() - run_started
     logger.info(f"orchestrator backtest finished in {runtime_seconds:.1f}s: {json.dumps(result.metrics, default=str)}")
 
-    report = result.to_dict()
+    report: Dict[str, Any] = result.to_dict()
     report["runtime_seconds"] = runtime_seconds
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     suffix = report_suffix or run_id
