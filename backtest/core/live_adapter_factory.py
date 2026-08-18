@@ -190,7 +190,6 @@ def build_live_adapter(
             top_n=int(declared["top_n"]),
             lookback_months=int(declared["lookback_months"]),
             sector_lookup=_known_sectors(sector_lookup),
-            grace_cycles=int(declared.get("grace_cycles") or 0),
             rank_start=declared.get("rank_start"),
             **kwargs,
         )

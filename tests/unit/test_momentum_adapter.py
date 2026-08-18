@@ -185,59 +185,6 @@ def _rising_panel(n_days=200, start="2020-01-01"):
     return _panel(prices, n_days, start)
 
 
-class TestGracePeriod:
-    """2026-08-05 Phase 1 item 2: dropout no longer sells immediately —
-    grace is decided by momentum_backtest.decide_grace_transitions."""
-
-    def test_dropout_is_not_sold_until_grace_is_exhausted(self):
-        n_days = 200
-        panel = _rising_panel(n_days)
-        adapter = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=6, grace_cycles=2)
-        as_of = panel.index[-1].date()
-        adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        assert adapter._currently_held == {"C", "D"}
-
-        # Shrink the target to {D} only: C drops out and enters grace (2).
-        adapter.top_n = 1
-        first = adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        assert [s.action for s in first] == []  # no sell yet — grace 2
-        assert adapter._held_grace["C"] == 2
-
-        second = adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        assert second == []  # grace 2 -> 1
-        assert adapter._held_grace["C"] == 1
-
-        third = adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        # grace 1 -> 0, which is exhausted: the sell fires on this call
-        assert [(s.ticker, s.action) for s in third] == [("C", "sell")]
-        assert "C" not in adapter._currently_held
-
-    def test_reentering_target_resets_grace_with_no_sell_rebuy_churn(self):
-        n_days = 200
-        panel = _rising_panel(n_days)
-        adapter = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=6, grace_cycles=2)
-        as_of = panel.index[-1].date()
-        adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        adapter.top_n = 1
-        adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        assert adapter._held_grace["C"] == 2
-
-        adapter.top_n = 2  # C is back in the top-N
-        signals = adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        assert signals == []  # no sell, and no re-buy either — it was never sold
-        assert adapter._held_grace["C"] is None  # core again
-
-    def test_grace_cycles_zero_sells_on_the_next_rebalance(self):
-        n_days = 200
-        panel = _rising_panel(n_days)
-        adapter = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=6, grace_cycles=0)
-        as_of = panel.index[-1].date()
-        adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        adapter.top_n = 1
-        signals = adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        assert [(s.ticker, s.action) for s in signals] == [("C", "sell")]
-
-
 class TestAdtvFloor:
     def test_illiquid_ticker_is_excluded_from_selection(self):
         n_days = 200
@@ -271,14 +218,16 @@ class TestAdtvFloor:
         panel = _rising_panel(n_days)
         volumes = _panel({t: [10_000.0] * n_days for t in "ABCD"}, n_days)
         adapter = MomentumAdapter(
-            price_panel=panel, volume_panel=volumes, top_n=1, lookback_months=6, grace_cycles=5,
+            price_panel=panel, volume_panel=volumes, top_n=1, lookback_months=6,
         )
         as_of = panel.index[-1].date()
         adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
         assert adapter._currently_held == {"D"}
         adapter.min_adtv_cr = 1e9  # nothing can pass now
         signals = adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        assert signals == []  # D enters grace, is NOT immediately liquidated
+        # A buy-side filter must never force a sell: D is still the top-ranked
+        # name on raw momentum, so it is held, it is simply not re-bought.
+        assert signals == []
         assert adapter._currently_held == {"D"}
 
 
@@ -300,7 +249,7 @@ class TestCircuitLock:
 
     def test_locked_ticker_is_not_force_sold_and_sells_once_unlocked(self):
         panel = self._panel_with_spike()
-        adapter = MomentumAdapter(price_panel=panel, top_n=1, lookback_months=6, grace_cycles=0)
+        adapter = MomentumAdapter(price_panel=panel, top_n=1, lookback_months=6)
         earlier = panel.index[-5].date()
         adapter.generate_signals(["A", "D"], earlier, HorizonBucket.D21)
         assert adapter._currently_held == {"D"}
@@ -393,7 +342,7 @@ class TestRegimeConditioning:
     def _adapter(self, panel, regime, **kw):
         adapter = MomentumAdapter(
             price_panel=panel, top_n=1, lookback_months=6,
-            disable_buys_in_regime={"bear"}, grace_cycles=0, **kw,
+            disable_buys_in_regime={"bear"}, **kw,
         )
         adapter._regime_conn = object()  # non-None so _regime_for_date consults the cache
         adapter._regime_segments_cache = [
@@ -489,51 +438,6 @@ class TestExcludeApproximatedMcap:
         assert {s.ticker for s in on.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)} == {"C"}
 
 
-class TestMinMomentumFloor:
-    def test_floor_is_strict_and_never_pads_to_top_n(self):
-        n_days = 200
-        # A is flat (momentum exactly 0.0), B/C rise.
-        panel = _rising_panel(n_days)
-        as_of = panel.index[-1].date()
-        adapter = MomentumAdapter(price_panel=panel, top_n=4, lookback_months=6, min_momentum=0.0)
-        buys = {s.ticker for s in adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)}
-        assert buys == {"B", "C", "D"}  # A's 0.0 is NOT > 0.0, and no padding happens
-        assert len(buys) < 4
-
-
-class TestVolumeWeightedSizing:
-    def test_size_multiplier_reflects_relative_adtv(self):
-        n_days = 200
-        panel = _rising_panel(n_days)
-        volumes = _panel(
-            {"A": [10_000.0] * n_days, "B": [10_000.0] * n_days,
-             "C": [10_000.0] * n_days, "D": [30_000.0] * n_days},
-            n_days,
-        )
-        adapter = MomentumAdapter(
-            price_panel=panel, volume_panel=volumes, top_n=2, lookback_months=6, volume_weighted=True,
-        )
-        as_of = panel.index[-1].date()
-        signals = adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
-        by_ticker = {s.ticker: s.size_multiplier for s in signals}
-        assert by_ticker["D"] > 1.0 > by_ticker["C"]
-        assert abs((by_ticker["D"] + by_ticker["C"]) / 2 - 1.0) < 1e-9  # mean multiplier is 1.0
-
-    def test_no_multiplier_when_not_opted_in(self):
-        panel = _rising_panel()
-        adapter = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=6)
-        signals = adapter.generate_signals(["A", "B", "C", "D"], panel.index[-1].date(), HorizonBucket.D21)
-        assert all(s.size_multiplier is None for s in signals)
-
-    def test_missing_volume_panel_falls_back_to_equal_weight_with_a_warning(self, caplog):
-        panel = _rising_panel()
-        adapter = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=6, volume_weighted=True)
-        with caplog.at_level("WARNING"):
-            signals = adapter.generate_signals(["A", "B", "C", "D"], panel.index[-1].date(), HorizonBucket.D21)
-        assert all(s.size_multiplier is None for s in signals)
-        assert any("volume_weighted=True but no volume_panel" in r.message for r in caplog.records)
-
-
 class TestStickyPromotion:
     """2026-08-05 Momentum engine consolidation Phase 3.
 
@@ -574,7 +478,7 @@ class TestStickyPromotion:
         )
 
     def test_promoted_holding_is_not_force_sold_while_still_competitive(self, panel):
-        adapter = self._adapter(panel, self.PROMOTED_LOOKUP, grace_cycles=0)
+        adapter = self._adapter(panel, self.PROMOTED_LOOKUP)
         # Year 1: A is in the band's list and is bought.
         first = panel.index[140].date()
         buys = {s.ticker for s in adapter.generate_signals(["A", "B", "C"], first, HorizonBucket.D21) if s.action == "buy"}
@@ -585,11 +489,10 @@ class TestStickyPromotion:
         second = panel.index[145].date()
         signals = adapter.generate_signals(["B", "C"], second, HorizonBucket.D21)
         assert [s.ticker for s in signals if s.action == "sell"] == []
-        # Still a CORE holding (grace None), not merely surviving on grace.
-        assert adapter._held_grace["A"] is None
+        assert "A" in adapter._currently_held
 
     def test_promoted_holding_still_exits_normally_once_momentum_drops(self, panel):
-        adapter = self._adapter(panel, self.PROMOTED_LOOKUP, grace_cycles=0)
+        adapter = self._adapter(panel, self.PROMOTED_LOOKUP)
         adapter.generate_signals(["A", "B", "C"], panel.index[140].date(), HorizonBucket.D21)
         adapter.generate_signals(["B", "C"], panel.index[145].date(), HorizonBucket.D21)
         assert "A" in adapter._currently_held
@@ -605,8 +508,8 @@ class TestStickyPromotion:
     def test_promoted_holding_survives_grace_that_would_otherwise_have_sold_it(self, panel):
         """Direct A/B against an otherwise-identical adapter with the rule
         off — the ONLY difference is rank_start/yearly_rank_lookup."""
-        sticky = self._adapter(panel, self.PROMOTED_LOOKUP, grace_cycles=0)
-        plain = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=1, grace_cycles=0)
+        sticky = self._adapter(panel, self.PROMOTED_LOOKUP)
+        plain = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=1)
         first, second = panel.index[140].date(), panel.index[145].date()
         for adapter in (sticky, plain):
             adapter.generate_signals(["A", "B", "C"], first, HorizonBucket.D21)
@@ -618,7 +521,7 @@ class TestStickyPromotion:
 
     def test_demoted_holding_gets_no_special_treatment(self, panel):
         # Same setup, but A's rank is WORSE than the band start -> demoted.
-        adapter = self._adapter(panel, self.DEMOTED_LOOKUP, grace_cycles=0)
+        adapter = self._adapter(panel, self.DEMOTED_LOOKUP)
         adapter.generate_signals(["A", "B", "C"], panel.index[140].date(), HorizonBucket.D21)
         signals = adapter.generate_signals(["B", "C"], panel.index[145].date(), HorizonBucket.D21)
         # Sold on grace expiry exactly as it would have been before Phase 3,
@@ -629,13 +532,13 @@ class TestStickyPromotion:
     def test_holding_with_no_rank_at_all_gets_no_special_treatment(self, panel):
         # A dropped out of the tracked ranking entirely (delisted / fell
         # below MAX_TRACKED_RANK) — never assigned a fabricated rank.
-        adapter = self._adapter(panel, {"2019-01-01": {"B": 60, "C": 70}}, grace_cycles=0)
+        adapter = self._adapter(panel, {"2019-01-01": {"B": 60, "C": 70}})
         adapter.generate_signals(["A", "B", "C"], panel.index[140].date(), HorizonBucket.D21)
         signals = adapter.generate_signals(["B", "C"], panel.index[145].date(), HorizonBucket.D21)
         assert {s.ticker for s in signals if s.action == "sell"} == {"A"}
 
     def test_promoted_ticker_already_exited_is_never_rebought(self, panel):
-        adapter = self._adapter(panel, self.PROMOTED_LOOKUP, grace_cycles=0)
+        adapter = self._adapter(panel, self.PROMOTED_LOOKUP)
         adapter.generate_signals(["A", "B", "C"], panel.index[140].date(), HorizonBucket.D21)
         adapter.generate_signals(["B", "C"], panel.index[145].date(), HorizonBucket.D21)
         adapter.generate_signals(["B", "C"], panel.index[-1].date(), HorizonBucket.D21)
@@ -653,7 +556,7 @@ class TestStickyPromotion:
         """Sanity check on the "by construction" argument: the rule only
         ever ADDS held tickers, so a promoted ticker that is independently
         present in `universe` is unaffected and buys as usual."""
-        adapter = self._adapter(panel, self.PROMOTED_LOOKUP, grace_cycles=0)
+        adapter = self._adapter(panel, self.PROMOTED_LOOKUP)
         signals = adapter.generate_signals(["A", "B", "C"], panel.index[140].date(), HorizonBucket.D21)
         assert "A" in {s.ticker for s in signals if s.action == "buy"}
 
@@ -661,9 +564,9 @@ class TestStickyPromotion:
         """Regression guard: omitting rank_start/yearly_rank_lookup must
         produce a byte-identical signal sequence to an adapter built before
         Phase 3 existed."""
-        with_defaults = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=1, grace_cycles=1)
+        with_defaults = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=1)
         explicit_none = MomentumAdapter(
-            price_panel=panel, top_n=2, lookback_months=1, grace_cycles=1,
+            price_panel=panel, top_n=2, lookback_months=1,
             rank_start=None, yearly_rank_lookup=None,
         )
         dates = [panel.index[i].date() for i in (140, 145, 160, 180, 199)]
@@ -680,7 +583,7 @@ class TestStickyPromotion:
 
     def test_rule_is_inert_without_a_rank_lookup(self, panel):
         """rank_start alone (no lookup) must not change anything."""
-        adapter = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=1, grace_cycles=0, rank_start=51)
+        adapter = MomentumAdapter(price_panel=panel, top_n=2, lookback_months=1, rank_start=51)
         adapter.generate_signals(["A", "B", "C"], panel.index[140].date(), HorizonBucket.D21)
         signals = adapter.generate_signals(["B", "C"], panel.index[145].date(), HorizonBucket.D21)
         assert {s.ticker for s in signals if s.action == "sell"} == {"A"}
@@ -729,70 +632,41 @@ def _a94_ledger_never_touches_the_real_db(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "a94_ledger.duckdb")
 
 
-class TestAsymmetricExitRank:
-    """exit_rank (ML40, 2026-08-14) — the last selection-side knob that lived
-    only in MomentumBacktester, now shared via
-    features.momentum_strategy.keep_set_for_exit.
 
-    Fixture: 4 tickers whose 1-day trailing returns rank D > C > B > A. With
-    top_n=1 the target set is always {D}, so B/C's fate is decided purely by
-    whether exit_rank keeps them out of grace.
-    """
+class TestPlainListSwap:
+    """[2026-08-18, user decision] The rotation is a plain list swap: this
+    period's top_n is List 2, what is held is List 1. Sell what left, buy what
+    entered — no grace cycles, no asymmetric exit band."""
 
-    def _ranked_panel(self):
-        # Each ticker rises at a distinct constant rate, so the 1-day
-        # trailing-return ranking is stable and D > C > B > A every day.
-        n = 6
-        return _panel({
-            "A": [100.0 * (1.001 ** i) for i in range(n)],
-            "B": [100.0 * (1.002 ** i) for i in range(n)],
-            "C": [100.0 * (1.003 ** i) for i in range(n)],
-            "D": [100.0 * (1.004 ** i) for i in range(n)],
-        }, n)
+    def test_a_name_that_leaves_the_top_n_is_sold_the_same_rebalance(self):
+        """The behaviour grace_cycles used to delay by two periods."""
+        n_days = 200
+        rising = _rising_panel(n_days)
+        adapter = MomentumAdapter(price_panel=rising, top_n=1, lookback_months=6)
+        as_of = rising.index[-1].date()
+        adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
+        held_first = set(adapter._currently_held)
+        assert len(held_first) == 1
 
-    def _run(self, exit_rank, cycles=3):
-        panel = self._ranked_panel()
-        adapter = MomentumAdapter(
-            price_panel=panel, top_n=1, lookback_months=1, grace_cycles=0, exit_rank=exit_rank,
-        )
-        adapter.lookback_days = 1  # 1-day momentum so the short fixture has real history
-        universe = ["A", "B", "C", "D"]
-        # Seed a holding in B, which is rank 3 of 4 — inside exit_rank=3 but
-        # outside top_n=1.
-        adapter._held_grace = {"B": None}
-        emitted = []
-        for i in range(1, cycles + 1):
-            emitted.append(adapter.generate_signals(universe, panel.index[i].date(), HorizonBucket.D21))
-        return adapter, emitted
+        # Restrict the universe so the held name is no longer rankable at all.
+        remaining = sorted({"A", "B", "C", "D"} - held_first)
+        signals = adapter.generate_signals(remaining, as_of, HorizonBucket.D21)
+        sold = {s.ticker for s in signals if s.action == "sell"}
+        assert sold == held_first, "a name outside the top_n must sell immediately"
 
-    def test_held_name_inside_the_exit_band_is_not_sold(self):
-        """B ranks 3rd; with exit_rank=3 it stays 'kept' and never enters
-        grace, so no sell is ever emitted for it."""
-        adapter, emitted = self._run(exit_rank=3)
-        sells = {s.ticker for batch in emitted for s in batch if s.action == "sell"}
-        assert "B" not in sells
-        assert adapter._held_grace.get("B") is None  # core, grace never started
+    def test_the_adapter_exposes_no_grace_or_exit_band_knobs(self):
+        """Deprecated 2026-08-18. A caller that still passes one should fail
+        loudly rather than have it silently ignored."""
+        panel = _rising_panel(200)
+        for kwarg in ("grace_cycles", "exit_rank", "min_momentum", "volume_weighted"):
+            with pytest.raises(TypeError):
+                MomentumAdapter(price_panel=panel, top_n=1, **{kwarg: 1})
 
-    def test_symmetric_default_sells_the_same_name(self):
-        """Same fixture, exit_rank=None: B leaves the top_n immediately and,
-        with grace_cycles=0, is sold. This is the control proving the test
-        above measures exit_rank and not the fixture."""
-        _, emitted = self._run(exit_rank=None)
-        sells = {s.ticker for batch in emitted for s in batch if s.action == "sell"}
-        assert "B" in sells
-
-    def test_name_outside_the_exit_band_still_exits(self):
-        """A ranks 4th, outside exit_rank=3, so the band does not protect it —
-        exit_rank rides winners, it does not disable exits."""
-        panel = self._ranked_panel()
-        adapter = MomentumAdapter(
-            price_panel=panel, top_n=1, lookback_months=1, grace_cycles=0, exit_rank=3,
-        )
-        adapter.lookback_days = 1
-        adapter._held_grace = {"A": None}
-        sells = set()
-        for i in range(1, 4):
-            for s in adapter.generate_signals(["A", "B", "C", "D"], panel.index[i].date(), HorizonBucket.D21):
-                if s.action == "sell":
-                    sells.add(s.ticker)
-        assert "A" in sells
+    def test_feature_vector_no_longer_reports_grace(self):
+        panel = _rising_panel(200)
+        adapter = MomentumAdapter(price_panel=panel, top_n=1, lookback_months=6)
+        as_of = panel.index[-1].date()
+        adapter.generate_signals(["A", "B", "C", "D"], as_of, HorizonBucket.D21)
+        vector = adapter.feature_vector("D", as_of)
+        assert "grace_remaining" not in vector
+        assert vector["in_top_n"] is True

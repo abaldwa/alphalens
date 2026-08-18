@@ -1,7 +1,6 @@
 {
  "backtest/adapters/ml_adapter.py": 1,
  "backtest/adapters/ml_dual_write.py": 1,
- "backtest/adapters/momentum_adapter.py": 4,
  "backtest/adapters/technical_adapter.py": 7,
  "backtest/adapters/technical_combo_adapter.py": 2,
  "backtest/artifacts.py": 2,

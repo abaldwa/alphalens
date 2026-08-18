@@ -36,7 +36,7 @@ as every other optional filter in this module.
 """
 
 from datetime import date as _date
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Union
 
 import pandas as pd
 
@@ -452,13 +452,13 @@ def select_buy_pool(
 # Sticky-promotion — ported from backtest/adapters/momentum_adapter.py
 # ---------------------------------------------------------------------------
 def sticky_promoted_holdings(
-    held_grace: Dict[str, Optional[int]],
+    held: Iterable[str],
     universe: List[str],
     date: pd.Timestamp,
     rank_start: Optional[int],
     yearly_rank_lookup: Optional[Dict[pd.Timestamp, Dict[str, int]]],
 ) -> List[str]:
-    """Currently-held (or in-grace) tickers that have been PROMOTED out of
+    """Currently-held tickers that have been PROMOTED out of
     the active band (missing from `universe`) but should still be ranked
     and allowed to genuinely compete for a top_n slot on their real
     momentum score, instead of being force-exited purely because they
@@ -466,15 +466,18 @@ def sticky_promoted_holdings(
     yearly_rank_lookup are supplied — opt-in, matching every other
     optional filter's default-off convention.
 
-    Ported as-is from backtest/adapters/momentum_adapter.py's
-    _sticky_promoted_holdings (2026-08-05) — the one behavior
-    MomentumBacktester didn't have. Only reads held_grace, never `target`
-    or the price panel, so by construction this can never introduce a
-    ticker that isn't already held — a promoted name that was never
-    bought, or has already fully exited, isn't in held_grace and is not
-    returned.
+    Promotion is judged on MARKET-CAP rank only (2026-08-18 user decision) —
+    never on ADTV rank. A name that falls out of the liquid universe is sold,
+    because liquidity is a tradability constraint rather than a ranking
+    artifact.
+
+    Only reads `held`, never `target` or the price panel, so by construction
+    this can never introduce a ticker that isn't already held — a promoted
+    name that was never bought, or has already fully exited, isn't in `held`
+    and is not returned.
     """
-    if rank_start is None or not yearly_rank_lookup or not held_grace:
+    held = list(held)
+    if rank_start is None or not yearly_rank_lookup or not held:
         return []
     applicable_starts = [d for d in yearly_rank_lookup if d <= date]
     if not applicable_starts:
@@ -482,7 +485,7 @@ def sticky_promoted_holdings(
     ranks = yearly_rank_lookup[max(applicable_starts)]
     in_universe = set(universe)
     promoted = []
-    for ticker in held_grace:
+    for ticker in held:
         if ticker in in_universe:
             continue
         rank = ranks.get(ticker)

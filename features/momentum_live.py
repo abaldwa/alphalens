@@ -8,17 +8,17 @@ Consumers: ingestion/scheduler/daily_pipeline.py (step_compute_momentum),
 
 Live plumbing around the already-validated ML38 backtest logic
 (features/momentum_universe.py, features/momentum_signal.py,
-backtest/momentum_backtest.py's decide_grace_transitions) — no new
-ranking/momentum/grace math is introduced here, only the "what does this
+features/momentum_strategy.py) — no new ranking/momentum math is
+introduced here, only the "what does this
 mean for today's real portfolio" wiring.
 
 Production configuration (2026-07-14 user decision, after two robustness
-checks — rebalance-date offset 0-10 trading days, grace period 1/2/3
+checks — rebalance-date offset 0-10 trading days
 months — showed this variant is stable while higher-CAGR variants found
 via parameter sweeps were overfit to lucky calendar alignment; see
 FeatureBacklog.md ML38):
     top 15 stocks / 6-month trailing lookback / monthly rebalance /
-    grace = 2 rebalance cycles — held constant across all 5 rank-band
+    held constant across all rank-band
     strategies below (2026-07-15 user request: select which market-cap
     rank band to track via a dashboard dropdown, rather than a single
     hardcoded band). Each rank band is otherwise fully independent: its
@@ -33,7 +33,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
-from backtest.momentum_backtest import decide_grace_transitions
 from features.momentum_signal import (
     load_price_panel,
     load_volume_panel,
@@ -44,7 +43,7 @@ from features.momentum_universe import RANK_BANDS, current_momentum_band_univers
 
 logger = logging.getLogger(__name__)
 
-# [C1 2026-08-18] top_n / lookback_months / grace_cycles are NOT declared
+# [C1 2026-08-18] top_n / lookback_months are NOT declared
 # here any more. They are per-strategy parameters that strategy_registry
 # already declares in each row's definition_json, and pinning them as module
 # constants applied ONE value to every band -- so two registry strategies
@@ -54,9 +53,9 @@ logger = logging.getLogger(__name__)
 # The registry now answers. `REGISTRY_KEY_TEMPLATE` renders the key each live
 # strategy corresponds to; see strategies/migrations/momentum.py for the
 # naming scheme. Verified at the time of the change: all 7 live strategies
-# resolve, and every one declares top_n=15 / lookback_months=6 /
-# grace_cycles=2 -- exactly the constants removed here, so this rewiring
-# changes no live behaviour today. It changes where the answer comes from.
+# resolve, and every one declares top_n=15 / lookback_months=6 -- exactly the
+# constants removed here, so this rewiring changes no live behaviour today.
+# It changes where the answer comes from.
 #
 # The category is fixed to all_risk because that is what this path actually
 # runs: it applies no filters at all. The registry's other three categories
@@ -143,13 +142,13 @@ def _declared_params(registry_key: str) -> Dict[str, Any]:
     if row is None:
         raise StrategyParamsUnavailable(
             f"strategy_registry has no active row for {registry_key!r}. The live "
-            "path reads top_n/lookback_months/grace_cycles from the registry "
+            "path reads top_n/lookback_months from the registry "
             "(PHASE-C1); it will not guess them. Run "
             "strategies/migrations/momentum.py if the registry is unpopulated."
         )
     definition = row.get("definition") or {}
     missing = [
-        k for k in ("top_n", "lookback_months", "grace_cycles")
+        k for k in ("top_n", "lookback_months")
         if definition.get(k) is None
     ]
     if missing:
@@ -164,9 +163,9 @@ def _declared_params(registry_key: str) -> Dict[str, Any]:
 def strategy_params(strategy_id: str) -> Dict[str, Any]:
     """The registry-declared parameters for one live strategy.
 
-    This is the ONLY way this module learns top_n, lookback_months or
-    grace_cycles. There is no module-level default to fall back to, by
-    design -- see the C1 note at the top of this file."""
+    This is the ONLY way this module learns top_n and lookback_months. There
+    is no module-level default to fall back to, by design -- see the C1 note
+    at the top of this file."""
     return _declared_params(get_strategy(strategy_id)["registry_key"])
 
 # select_buy_pool kwargs that each registry filter_id maps onto, and the
@@ -485,65 +484,37 @@ def compute_rebalance_suggestions(
     rebalance_date: str,
     current_open_trades: List[Dict[str, Any]],
     strategy_id: str = DEFAULT_STRATEGY_ID,
-    grace_cycles: Optional[int] = None,
     universe: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Diffs currently-held tickers (from momentum_trades' open rows)
-    against rebalance_date's fresh strategy_id-band top-15 ranking,
-    applying the exact grace-period rule the validated backtest uses
-    (backtest.momentum_backtest.decide_grace_transitions) — never a
-    second hand-written copy of that rule.
+    """Diffs currently-held tickers (from momentum_trades' open rows) against
+    rebalance_date's fresh top_n ranking for strategy_id's band.
 
-    current_open_trades : rows shaped like momentum_trades' open
-        positions, each a dict with at least "ticker" and
-        "grace_remaining" (None if never dropped out of top_n since
-        entry; an int if currently in a grace countdown from a prior
-        rebalance — the caller is expected to track/pass this forward
-        from the previous rebalance's suggestions).
+    [2026-08-18, user decision] A plain list swap, the same rule
+    MomentumAdapter applies: everything in the new top_n and not held is an
+    "add"; everything held and not in the new top_n is an "exit". Grace
+    cycles are deprecated, so there is no "grace_hold" state and no
+    grace_remaining to carry forward between rebalances -- a name that leaves
+    the list leaves the book.
 
-    Returns a list of {"ticker", "action", "momentum_rank",
-    "grace_remaining"} dicts, action in {"add", "exit", "grace_hold"}:
-      - "add": in this rebalance's top_n, not currently held.
-      - "exit": currently held, grace period fully elapsed (force-sell).
-      - "grace_hold": currently held, out of top_n, still within grace
-        (informational — no action needed yet, but flags what's at risk).
-    Tickers that are both currently held AND still in top_n produce no
-    row (nothing to do).
+    current_open_trades : rows shaped like momentum_trades' open positions,
+        each a dict with at least "ticker".
+
+    Returns a list of {"ticker", "action", "momentum_rank"} dicts, action in
+    {"add", "exit"}. A ticker both held AND still in the top_n produces no
+    row -- nothing to do.
     """
     ranking = compute_daily_ranking(normalised_conn, rebalance_date, strategy_id=strategy_id, universe=universe)
     target_set: Set[str] = set(ranking.loc[ranking["in_top_n"], "ticker"]) if not ranking.empty else set()
     rank_by_ticker = dict(zip(ranking["ticker"], ranking["momentum_rank"])) if not ranking.empty else {}
-
-    # None means "use what the registry declares for this strategy". An
-    # explicit argument still wins, so a caller exploring a different grace
-    # period can still do so -- it just can no longer happen by accident.
-    if grace_cycles is None:
-        grace_cycles = int(strategy_params(strategy_id)["grace_cycles"])
-
-    held_grace = {t["ticker"]: t.get("grace_remaining") for t in current_open_trades}
-    updated_grace = decide_grace_transitions(held_grace, target_set, grace_cycles)
+    held = {t["ticker"] for t in current_open_trades}
 
     suggestions: List[Dict[str, Any]] = []
-
-    for ticker in target_set:
-        if ticker not in held_grace:
-            suggestions.append({
-                "ticker": ticker, "action": "add",
-                "momentum_rank": rank_by_ticker.get(ticker), "grace_remaining": None,
-            })
-
-    for ticker, grace_remaining in updated_grace.items():
-        if ticker in target_set:
-            continue  # back in top_n / never dropped out — nothing to do
-        if grace_remaining is not None and grace_remaining <= 0:
-            suggestions.append({
-                "ticker": ticker, "action": "exit",
-                "momentum_rank": rank_by_ticker.get(ticker), "grace_remaining": grace_remaining,
-            })
-        else:
-            suggestions.append({
-                "ticker": ticker, "action": "grace_hold",
-                "momentum_rank": rank_by_ticker.get(ticker), "grace_remaining": grace_remaining,
-            })
-
+    for ticker in sorted(target_set - held):
+        suggestions.append({
+            "ticker": ticker, "action": "add", "momentum_rank": rank_by_ticker.get(ticker),
+        })
+    for ticker in sorted(held - target_set):
+        suggestions.append({
+            "ticker": ticker, "action": "exit", "momentum_rank": rank_by_ticker.get(ticker),
+        })
     return suggestions

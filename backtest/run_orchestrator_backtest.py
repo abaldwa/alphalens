@@ -535,7 +535,7 @@ def _build_config(
 def _momentum_descriptor(
     top_n: int, lookback_months: int, min_adtv_cr: Optional[float],
     downtrend_filter_pct: Optional[float], circuit_band_pct: Optional[float],
-    grace_cycles: int, exit_policy_variant: Optional[str], exit_rank: Optional[int] = None,
+    exit_policy_variant: Optional[str],
     *, rank_band_id: Optional[int] = None, rebalance_cadence_days: Optional[int] = None,
     quality_gate: Optional[Dict[str, float]] = None,
     disable_buys_in_regime: Optional[List[str]] = None,
@@ -568,7 +568,7 @@ def _momentum_descriptor(
     # string never matched it -- measured 2026-08-14, 10 of 93 ledger
     # strategy_keys resolved to no row, and all 10 were momentum.
     #
-    # grace_cycles and exit_variant are deliberately absent from the resolved
+    # exit_variant is deliberately absent from the resolved
     # name. They are run parameters, not strategy identity: strategy_signals'
     # PK carries run_id, so two runs of one strategy under different exit
     # policies never collide and stay distinguishable by joining backtest_runs.
@@ -600,14 +600,6 @@ def _momentum_descriptor(
         parts.append(f"dt{downtrend_filter_pct:g}")
     if circuit_band_pct is not None:
         parts.append(f"cb{circuit_band_pct:g}")
-    # grace_cycles=2 is the historical default; only a deviation is named.
-    if grace_cycles != 2:
-        parts.append(f"g{grace_cycles}")
-    # [ML40] exit_rank widens the band a held name must leave before its
-    # grace countdown starts, so it changes which SELLS are emitted. Two runs
-    # differing only in it are different strategies and must not share a key.
-    if exit_rank is not None:
-        parts.append(f"xr{exit_rank}")
     # The exit policy changes which sells are emitted, so two runs differing
     # only in it are genuinely different strategies.
     if exit_policy_variant and exit_policy_variant != "risk_managed":
@@ -887,12 +879,6 @@ def _run_immediate(
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
     benchmark_index_name: Optional[str] = None,
-    # 2026-08-14: momentum's rank-drop grace, previously hardcoded to the
-    # MomentumAdapter default of 2 and therefore never swept despite being
-    # the lever that decides how long a winner is retained after leaving the
-    # top_n. 0 = sell the rebalance it drops out.
-    grace_cycles: int = 2,
-    exit_rank: Optional[int] = None,
 ) -> BacktestRunResult:
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -1046,8 +1032,6 @@ def _run_immediate(
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
                 top_n=top_n, lookback_months=lookback_months,
                 sector_lookup=sector_map,
-                grace_cycles=grace_cycles,
-                exit_rank=exit_rank,
                 min_adtv_cr=min_adtv_cr,
                 quality_gate=quality_gate or None,
                 downtrend_filter_pct=downtrend_filter_pct,
@@ -1077,7 +1061,7 @@ def _run_immediate(
             annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-                "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles, "exit_rank": exit_rank,
+                "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
                 "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
                 "strategy_name": descriptor,  # [ML40-2.4] the DECLARED name; canonical_strategy_key prefers it
                 "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
@@ -1222,12 +1206,6 @@ def _run_deferred(
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
     benchmark_index_name: Optional[str] = None,
-    # 2026-08-14: momentum's rank-drop grace, previously hardcoded to the
-    # MomentumAdapter default of 2 and therefore never swept despite being
-    # the lever that decides how long a winner is retained after leaving the
-    # top_n. 0 = sell the rebalance it drops out.
-    grace_cycles: int = 2,
-    exit_rank: Optional[int] = None,
 ) -> BacktestRunResult:
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -1347,8 +1325,6 @@ def _run_deferred(
             price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
             top_n=top_n, lookback_months=lookback_months,
             sector_lookup=sector_map,
-            grace_cycles=grace_cycles,
-            exit_rank=exit_rank,
             min_adtv_cr=min_adtv_cr,
             quality_gate=quality_gate or None,
             downtrend_filter_pct=downtrend_filter_pct,
@@ -1374,7 +1350,7 @@ def _run_deferred(
         annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
         config={
             "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
-            "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant, "grace_cycles": grace_cycles, "exit_rank": exit_rank,
+            "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
             "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
             "strategy_name": descriptor,  # [ML40-2.4] the DECLARED name; canonical_strategy_key prefers it
             "quality_gate_min_f_score": quality_gate_min_f_score, "quality_gate_max_m_score": quality_gate_max_m_score,
@@ -1484,8 +1460,6 @@ def run_orchestrator_backtest(
     # A98: separate from regime_index_name. None means "compare against the
     # regime index", which is the historical behaviour.
     benchmark_index_name: Optional[str] = None,
-    grace_cycles: int = 2,
-    exit_rank: Optional[int] = None,
     exit_policy_variant: str = "baseline",
     regime_method: Optional[str] = None,
     max_hold_days: Optional[int] = None,
@@ -1596,7 +1570,7 @@ def run_orchestrator_backtest(
         "fundamental": preset,
         "momentum": _momentum_descriptor(
             top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,
-            circuit_band_pct, grace_cycles, exit_policy_variant, exit_rank,
+            circuit_band_pct, exit_policy_variant,
             rank_band_id=rank_band_id,
             # [ML40-2.4] Momentum has no --rebalance-cadence-days flag: its
             # cadence IS the resolved horizon bucket's default (see
@@ -1671,7 +1645,7 @@ def run_orchestrator_backtest(
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
         block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
-        benchmark_index_name=benchmark_index_name, grace_cycles=grace_cycles, exit_rank=exit_rank,
+        benchmark_index_name=benchmark_index_name,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1767,26 +1741,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--top-n", type=int, default=10)
     parser.add_argument("--lookback-months", type=int, default=6, help="momentum channel only")
-    parser.add_argument(
-        "--grace-cycles", type=int, default=2,
-        help=(
-            "momentum channel only: rebalances a holding is retained after it drops out of the "
-            "top_n before being force-sold. 0 sells it the same rebalance it drops out. Was "
-            "hardcoded to 2 and unreachable until 2026-08-14, so no run before then swept it."
-        ),
-    )
-    parser.add_argument(
-        "--exit-rank", type=int, default=None,
-        help=(
-            "momentum channel only [ML40, 2026-08-14]: asymmetric exit band. Entry stays the "
-            "top_n, but a HELD position does not begin its grace countdown until its momentum "
-            "rank falls beyond this value (must be >= --top-n to have any effect). With "
-            "--top-n 10 --exit-rank 15, a winner that slips to rank 12 is ridden instead of "
-            "rotated out. Omitted (the default) keeps the symmetric behaviour where leaving "
-            "the top_n starts the countdown immediately. Previously reachable only by "
-            "constructing MomentumBacktester directly, so no orchestrator run has swept it."
-        ),
-    )
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--report-suffix", default=None)
     parser.add_argument(
@@ -1989,7 +1943,7 @@ def main() -> None:
         initial_capital=args.initial_capital, sip_amount=args.sip_amount, universe_spec=args.universe_spec,
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months,
-        grace_cycles=args.grace_cycles, exit_rank=args.exit_rank, run_id=args.run_id,
+        run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,
         exit_policy_variant=args.exit_variant, regime_method=args.regime_method,

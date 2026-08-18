@@ -17,30 +17,33 @@ to backtest/engine.py: backtest/momentum_backtest.py (the existing
 standalone MomentumBacktester, which backs currently-published external
 results) is NOT modified. This adapter reuses its underlying PURE
 functions — features/momentum_signal.py's trailing_momentum_from_panel /
-orthogonalize_momentum_vs_factors and momentum_backtest.py's own
-decide_grace_transitions (imported, never re-implemented) — rather than
-touching MomentumBacktester's class itself.
+orthogonalize_momentum_vs_factors — rather than touching
+MomentumBacktester's class itself.
 
-2026-08-05 (Momentum engine consolidation, Phase 1): every remaining
-real MomentumBacktester feature is ported here so the standalone engine
-can eventually be retired — grace-period churn reduction, ADTV liquidity
-floor, circuit-lock proxy, downtrend filter, quality gate,
-regime-conditioning, size/beta orthogonalization,
-exclude_approximated_mcap, the min_momentum floor and volume-weighted
-position sizing. Every one of them defaults to off/None, so the queue
-jobs that already ran through this adapter behave EXACTLY as before
-unless a caller opts in. `rebalance_offset_days` is deliberately NOT
-ported (a retired overfitting-robustness research knob, not a strategy
-feature). SIP cash injection and FY-netted tax are handled generically
-by StrategyPortfolio/core/tax.py for every channel and need no
-adapter-level logic here.
+[2026-08-18, user decision] Pure-play momentum is a plain rank rotation:
+rank the band, hold the top_n, and on each rebalance sell what left the list
+and buy what entered it. Seven knobs were deprecated with that decision and
+are gone from this adapter — grace cycles, the asymmetric exit band
+(exit_rank), ADTV-capped sizing, trailing stops, per-ticker HMM regime, the
+min_momentum floor and volume-weighted sizing. What remains is the buy-side
+filter chain (liquidity floor, circuit-lock proxy, downtrend, quality gate,
+regime-conditioning, size/beta orthogonalization, exclude_approximated_mcap),
+all still default-off, plus sticky promotion.
+
+Momentum strategies under the TECHNICAL umbrella are unaffected: they are
+Technical strategies, they use technical indicators, and they run through
+TechnicalAdapter. This class is only for the pure-play band strategies.
+
+SIP cash injection and FY-netted tax are handled generically by
+StrategyPortfolio/core/tax.py for every channel and need no adapter-level
+logic here.
 
 State note: BacktestOrchestrator's StrategyAdapter protocol has no
 portfolio-state parameter — generate_signals() only receives the
 universe/date/horizon_bucket. A rank-rotation strategy needs to know
 what it currently holds to decide sells (fell out of the top N) vs buys
 (entered the top N), so this adapter tracks its own holdings state
-(_held_grace: {ticker: grace_remaining}), updated at the end of each
+(_held: the ticker set), updated at the end of each
 generate_signals() call — valid because BacktestOrchestrator always
 calls generate_signals() exactly once per rebalance date, in date order,
 and executes the returned signals before the next call (verified in
@@ -58,8 +61,6 @@ from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
 from features.momentum_signal import lookback_trading_days
 from features.momentum_strategy import (
-    decide_grace_transitions,
-    keep_set_for_exit,
     rank_universe,
     select_buy_pool,
     sticky_promoted_holdings,
@@ -75,14 +76,13 @@ class MomentumAdapter:
         self, price_panel: pd.DataFrame, top_n: int = 10, lookback_months: int = 6,
         sector_lookup: Optional[Dict[str, str]] = None, volume_panel: Optional[pd.DataFrame] = None,
         adtv_lookback_days: int = 20,
-        grace_cycles: int = 2,
         min_adtv_cr: Optional[float] = None,
         circuit_band_pct: Optional[float] = None,
         downtrend_filter_pct: Optional[float] = None,
         downtrend_lookback_days: int = 20,
         quality_scores: Optional[Dict[str, Dict[str, float]]] = None,
         quality_gate: Optional[Dict[str, float]] = None,
-        regime_conn=None,
+        regime_conn: Optional[Any] = None,
         regime_index_name: str = "Nifty 500",
         regime_method: Optional[str] = None,
         disable_buys_in_regime: Optional[Set[str]] = None,
@@ -91,11 +91,8 @@ class MomentumAdapter:
         beta_map: Optional[Dict[str, float]] = None,
         exclude_approximated_mcap: bool = False,
         approximation_flags: Optional[Dict[str, Dict[str, bool]]] = None,
-        min_momentum: Optional[float] = None,
-        volume_weighted: bool = False,
         rank_start: Optional[int] = None,
         yearly_rank_lookup: Optional[Dict[str, Dict[str, int]]] = None,
-        exit_rank: Optional[int] = None,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -116,25 +113,18 @@ class MomentumAdapter:
             `_adtv_cr()` already uses — so core/portfolio.py's existing
             ADTV hard cap (DEFAULT_ADTV_CAP_FRACTION) actually engages
             instead of silently being bypassed. Also required for
-            min_adtv_cr / volume_weighted to do anything.
+            min_adtv_cr to do anything.
 
-        Ported from MomentumBacktester (2026-08-05, Phase 1) — all default
-        to off, preserving this adapter's prior behavior exactly:
+        The buy-side filter chain, all default-off (2026-08-18: retained;
+        the seven knobs listed in the module docstring were deprecated):
 
-        grace_cycles : churn reduction. A held ticker that drops out of
-            the top_n is kept for this many more rebalances before a sell
-            Signal is emitted, unless it re-enters first (grace resets, no
-            sell/rebuy round trip). Decided by the SHARED pure function
-            momentum_backtest.decide_grace_transitions, so this adapter,
-            the standalone engine and features/momentum_live.py can never
-            drift apart.
         min_adtv_cr / adtv_lookback_days : liquidity FLOOR (distinct from
             core/portfolio.py's ADTV position-SIZE cap, which is generic
             and already applies once Signal.adtv_cr is populated) — a
             ticker whose trailing ADTV is below the floor, or unknown
             (NaN/no volume data), is dropped from the selection pool.
             Never assumed liquid on missing data; never applied to an
-            already-held ticker's grace/sell evaluation.
+            already-held ticker's sell evaluation.
         circuit_band_pct : circuit-lock proxy — a ticker whose realized
             1-day return into this date is >= this magnitude is treated as
             "close probably not fillable" and skipped for BOTH new buys
@@ -152,7 +142,7 @@ class MomentumAdapter:
             (systems.regime.regime_store, the same source
             BacktestOrchestrator._regime_for_date reads) is in
             disable_buys_in_regime, NEW buys are suppressed this date;
-            existing holdings still run grace/sell normally
+            existing holdings still sell normally
             (skip-don't-force-liquidate, same as circuit-lock). Uses the
             self-fetched regime_conn pattern TechnicalAdapter already
             established rather than an injected regime Series, so both
@@ -169,16 +159,6 @@ class MomentumAdapter:
             bool}}, the shape
             features.momentum_universe.yearly_band_approximation_flags_from_rankings
             already produces.
-        min_momentum : only tickers scoring STRICTLY above this floor are
-            eligible for the target set — a rebalance may end up holding
-            fewer than top_n names rather than padding with a
-            below-floor pick.
-        volume_weighted : scale each new buy's position size by that
-            ticker's trailing ADTV relative to the target set's mean ADTV
-            (mirrors MomentumBacktester._volume_weights), carried to the
-            orchestrator on Signal.size_multiplier. Falls back to equal
-            weight with a one-time warning when volume_panel is missing.
-
         rank_start / yearly_rank_lookup : (2026-08-05, Momentum engine
             consolidation Phase 3) the "sticky-promotion" rule. With a
             rank-band universe (features.momentum_universe), each year's
@@ -186,20 +166,23 @@ class MomentumAdapter:
             so a holding that GREW out of its band — promoted to a
             smaller-numbered, higher-market-cap band — silently vanishes
             from `universe` at the next year boundary and gets force-sold
-            by grace expiry, purely for having done well. That's an
-            artifact of how the universe is sliced, not a strategy
-            decision. When both are supplied, a currently-held (or
-            in-grace) ticker whose rank on the active year_start is
-            STRICTLY better (smaller) than this adapter's own rank_start
-            is re-added to the ranking pool, so it competes on real
-            momentum and exits only through the normal Exit Criteria
-            (falls out of top_n, then exhausts grace).
+            purely for having done well. That's an artifact of how the
+            universe is sliced, not a strategy decision. When both are
+            supplied, a currently-held ticker whose rank on the active
+            year_start is STRICTLY better (smaller) than this adapter's own
+            rank_start is re-added to the ranking pool, so it competes on
+            real momentum and exits only by falling out of the top_n.
+
+            [2026-08-18] Promotion is judged on MARKET-CAP rank only, never
+            on ADTV rank: a name that falls out of the liquid universe is
+            sold, because liquidity is a tradability constraint rather than
+            a ranking artifact.
 
             Deliberately asymmetric: a DEMOTED holding (worse-or-equal
             rank) and one with no rank at all (dropped out of the tracked
             universe / delisted) get NO special treatment — they fall
-            through to the unchanged grace-then-sell path. And because
-            only tickers already in _held_grace are ever added, a promoted
+            through to the unchanged sell path. And because
+            only tickers already held are ever added, a promoted
             ticker that is not held (including one that already fully
             exited) can never be bought back in through this path.
 
@@ -211,22 +194,6 @@ class MomentumAdapter:
             ranks that matter here are the ones above the band.
             Both None (the default) is today's unchanged behavior.
 
-        exit_rank : (ML40, 2026-08-14) asymmetric exit band, the last
-            selection-side knob that lived only in MomentumBacktester. Entry
-            is still the top_n; a HELD position does not begin its grace
-            countdown until its momentum rank falls beyond exit_rank
-            (exit_rank >= top_n). With top_n=10 and exit_rank=15 a winner
-            that slips to rank 12 is ridden rather than rotated out. Applied
-            via the shared features.momentum_strategy.keep_set_for_exit, the
-            same function MomentumBacktester now uses, so the two engines
-            cannot implement "ride winners" differently.
-
-            Ranked on RAW momentum across the whole ranked universe, not on
-            the filtered buy pool — a held name that a buy-side filter
-            (illiquidity, circuit-lock, quality) removed from selection must
-            not be force-exited by that filter, matching this adapter's
-            standing rule that a filter blocks an entry and never causes a
-            liquidation. None (default) keeps the symmetric behavior.
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -244,7 +211,6 @@ class MomentumAdapter:
         self._sector_lookup = sector_lookup or {}
         self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
         self.adtv_lookback_days = adtv_lookback_days
-        self.grace_cycles = grace_cycles
         self.min_adtv_cr = min_adtv_cr
         self.circuit_band_pct = circuit_band_pct
         self.downtrend_filter_pct = downtrend_filter_pct
@@ -255,7 +221,7 @@ class MomentumAdapter:
         self._regime_index_name = regime_index_name
         self._regime_method = regime_method
         self.disable_buys_in_regime = disable_buys_in_regime or set()
-        self._regime_segments_cache: Optional[List[dict]] = None
+        self._regime_segments_cache: Optional[List[Dict[str, Any]]] = None
         self.orthogonalize_vs_size_beta = orthogonalize_vs_size_beta
         self.market_cap_panel = market_cap_panel.sort_index() if market_cap_panel is not None else None
         self.beta_map = beta_map or {}
@@ -263,26 +229,19 @@ class MomentumAdapter:
         self.approximation_flags = {
             pd.Timestamp(k): v for k, v in (approximation_flags or {}).items()
         }
-        self.min_momentum = min_momentum
-        self.volume_weighted = volume_weighted
-        self.exit_rank = exit_rank
         self.rank_start = rank_start
         self.yearly_rank_lookup = {
             pd.Timestamp(k): v for k, v in (yearly_rank_lookup or {}).items()
         }
-        self._volume_weighted_fallback_warned = False
-        # {ticker: grace_remaining} — None = "core" holding (in the latest
-        # target set), an int = rebalances left before a forced sell.
-        self._held_grace: Dict[str, Optional[int]] = {}
+        # [2026-08-18] What this adapter believes it holds. A plain set:
+        # grace cycles are gone, so a name is held or it is not.
+        self._held: Set[str] = set()
         self._last_momentum: pd.Series = pd.Series(dtype=float)
 
     @property
-    def _currently_held(self) -> set:
-        """Every ticker this adapter believes it holds, core or in-grace.
-        Kept as a read-only view over _held_grace so callers/tests that
-        only care about membership (and feature_vector below) don't have
-        to know about grace bookkeeping."""
-        return set(self._held_grace)
+    def _currently_held(self) -> Set[str]:
+        """Every ticker this adapter believes it holds."""
+        return set(self._held)
 
     # ===== liquidity =====
     def _adtv_series(self, tickers: List[str], as_of_date: date_type) -> pd.Series:
@@ -301,26 +260,6 @@ class MomentumAdapter:
             return None
         value = series[ticker]
         return float(value) if pd.notna(value) else None
-
-    def _volume_weights(self, target: Set[str], as_of_date: date_type) -> Optional[Dict[str, float]]:
-        """Per-ticker size multiplier for volume_weighted=True:
-        adtv_ticker / mean(adtv over target), so an average-liquidity name
-        gets 1.0 (identical to equal weighting). None (equal weight
-        everywhere) when there's no usable volume data — mirrors
-        MomentumBacktester._volume_weights, including its one-time warning."""
-        if self.volume_panel is None:
-            if not self._volume_weighted_fallback_warned:
-                logger.warning(
-                    "MomentumAdapter: volume_weighted=True but no volume_panel was supplied — "
-                    "falling back to equal-weighted position sizing."
-                )
-                self._volume_weighted_fallback_warned = True
-            return None
-        adtv = self._adtv_series(sorted(target), as_of_date)
-        adtv = adtv[adtv.notna() & (adtv > 0)]
-        if adtv.empty:
-            return None
-        return (adtv / adtv.mean()).to_dict()
 
     # ===== entry filters, all ported verbatim from MomentumBacktester =====
     def _passes_quality_gate(self, ticker: str) -> bool:
@@ -349,7 +288,7 @@ class MomentumAdapter:
         """True if `ticker`'s realized 1-day return into `as_of_date` meets
         or exceeds circuit_band_pct in either direction. Delegates to
         panel_filters.is_circuit_locked (single implementation, A93)."""
-        return is_circuit_locked(self.price_panel, ticker, as_of_date, self.circuit_band_pct)
+        return bool(is_circuit_locked(self.price_panel, ticker, as_of_date, self.circuit_band_pct))
 
     def _regime_for_date(self, as_of: date_type) -> Optional[str]:
         """Self-fetched regime lookup, same source/segments shape as
@@ -374,7 +313,8 @@ class MomentumAdapter:
                 self._regime_segments_cache = []
         from systems.regime.regime_store import regime_known_as_of
 
-        return regime_known_as_of(self._regime_segments_cache, as_of)
+        label: Optional[str] = regime_known_as_of(self._regime_segments_cache, as_of)
+        return label
 
     def _is_buys_disabled(self, as_of_date: date_type) -> bool:
         if not self.disable_buys_in_regime:
@@ -385,7 +325,7 @@ class MomentumAdapter:
     def _selection_pool(self, momentum: pd.Series, as_of_date: date_type) -> pd.Series:
         """Momentum scores restricted to tickers eligible to be SELECTED into
         the target set this rebalance. Deliberately never consulted when
-        deciding an already-held ticker's grace/sell status: a filter must not
+        deciding an already-held ticker's sell status: a filter must not
         force a liquidation, only block a new entry.
 
         [ML40, 2026-08-14] The filter chain itself is no longer implemented
@@ -426,21 +366,19 @@ class MomentumAdapter:
             downtrend_lookback_days=self.downtrend_lookback_days,
         )
 
-        if self.min_momentum is not None and not pool.empty:
-            pool = pool[pool > self.min_momentum]
 
         return pool
 
     def _sticky_promoted_holdings(self, universe: List[str], as_of_date: date_type) -> List[str]:
-        """Currently-held (or in-grace) tickers that have been PROMOTED out
+        """Currently-held tickers that have been PROMOTED out
         of this adapter's band and so are missing from `universe`, but
         should still be ranked — see the rank_start/yearly_rank_lookup
         docstring. Empty (this rule fully off) unless both were supplied.
 
-        Only reads self._held_grace, never `target` or the price panel, so
+        Only reads self._held, never `target` or the price panel, so
         by construction this can never introduce a ticker that isn't
         already held — a promoted name that was never bought, or that has
-        already fully exited, is not in _held_grace and therefore not
+        already fully exited, is not in _held and therefore not
         returned here.
 
         [ML40, 2026-08-14] The rule itself is
@@ -449,7 +387,7 @@ class MomentumAdapter:
         logic was copied into momentum_strategy.py on 2026-08-09 and left
         duplicated here; that second copy is gone."""
         return sticky_promoted_holdings(
-            self._held_grace, universe, pd.Timestamp(as_of_date),
+            self._held, universe, pd.Timestamp(as_of_date),
             self.rank_start, self.yearly_rank_lookup,
         )
 
@@ -470,62 +408,71 @@ class MomentumAdapter:
             # (No-Mock-Data Policy) — just hold whatever's already held.
             return []
 
+        # BUY side: the filtered pool. Every entry filter is buy-side only.
         pool = self._selection_pool(momentum, as_of_date)
         target = (
             set(pool.sort_values(ascending=False).head(self.top_n).index)
             if not pool.empty else set()
         )
 
-        # [ML40] Asymmetric exit band. keep_set is `target` when exit_rank is
-        # None, so the default path is unchanged. Computed from RAW momentum,
-        # not `pool`, so a buy-side filter can block an entry without
-        # force-exiting a name already held — see exit_rank's docstring.
-        keep_set = keep_set_for_exit(momentum, target, self.exit_rank)
+        # HOLD side: the same cut on RAW momentum, before any filter. A
+        # buy-side filter must never force a sell — a held name that goes
+        # briefly illiquid, gaps down, or fails the quality gate is not
+        # thereby a sell decision, it is merely not a fresh buy. Deciding
+        # sells off the filtered pool would turn every entry filter into an
+        # exit rule nobody asked for.
+        keep = (
+            set(momentum.sort_values(ascending=False).head(self.top_n).index)
+            if not momentum.empty else set()
+        )
 
-        # Grace bookkeeping BEFORE emitting anything: a held ticker outside
-        # `keep_set` only becomes a sell once its grace is exhausted.
-        updated_grace = decide_grace_transitions(self._held_grace, keep_set, self.grace_cycles)
+        # [2026-08-18, user decision] The rotation is a plain list swap: this
+        # period's top_n is List 2, what we hold is List 1. Anything held and
+        # no longer in List 2 is sold; anything in List 2 and not held is
+        # bought. Grace cycles and the asymmetric exit band are gone — a name
+        # that leaves the top_n leaves the book.
+        #
+        # Sticky promotion survives, and is the one exception: a held name
+        # missing from `universe` because it grew out of this band (by MARKET
+        # CAP, never ADTV) was already added to the ranking pool above, so if
+        # it still earns a top_n slot it stays. If it does not, it sells here
+        # like anything else.
         buys_disabled = self._is_buys_disabled(as_of_date)
-
         signals: List[Signal] = []
-        new_held: Dict[str, Optional[int]] = {}
+        new_held: Set[str] = set()
 
-        for ticker in sorted(updated_grace):
-            grace_remaining = updated_grace[ticker]
-            if grace_remaining is not None and grace_remaining <= 0:
-                if self._is_circuit_locked(as_of_date, ticker):
-                    # Left open at an unfillable close and re-evaluated next
-                    # rebalance (grace stays exhausted, so it sells then).
-                    new_held[ticker] = grace_remaining
-                    continue
-                signals.append(Signal(
-                    ticker=ticker, action="sell", sector=self._sector_lookup.get(ticker, "Unknown"),
-                    conviction=0.0, adtv_cr=self._adtv_cr(ticker, as_of_date),
-                ))
+        for ticker in sorted(self._held):
+            if ticker in keep:
+                new_held.add(ticker)
                 continue
-            new_held[ticker] = grace_remaining
+            if self._is_circuit_locked(as_of_date, ticker):
+                # Unfillable at this close: left open and re-evaluated next
+                # rebalance rather than booked at a price nobody could get.
+                new_held.add(ticker)
+                continue
+            signals.append(Signal(
+                ticker=ticker, action="sell", sector=self._sector_lookup.get(ticker, "Unknown"),
+                conviction=0.0, adtv_cr=self._adtv_cr(ticker, as_of_date),
+            ))
 
-        new_entrants = [] if buys_disabled else sorted(target - set(self._held_grace))
-        volume_weights = self._volume_weights(target, as_of_date) if self.volume_weighted else None
+        new_entrants = [] if buys_disabled else sorted(target - self._held)
         for ticker in new_entrants:
             if self._is_circuit_locked(as_of_date, ticker):
-                # Skipped this rebalance only; target is recomputed fresh
-                # each call, so it's naturally reconsidered next time.
+                # Skipped this rebalance only; target is recomputed fresh each
+                # call, so it is naturally reconsidered next time.
                 continue
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
                 conviction=float(momentum.get(ticker, 0.0)), adtv_cr=self._adtv_cr(ticker, as_of_date),
-                size_multiplier=(volume_weights or {}).get(ticker),
             ))
-            new_held[ticker] = None
+            new_held.add(ticker)
 
-        self._held_grace = new_held
+        self._held = new_held
         return signals
 
     def feature_vector(self, ticker: str, as_of_date: date_type) -> Dict[str, Any]:
         return {
             "trailing_momentum": float(self._last_momentum.get(ticker)) if ticker in self._last_momentum.index else None,
             "lookback_days": self.lookback_days,
-            "in_top_n": ticker in self._held_grace and self._held_grace[ticker] is None,
-            "grace_remaining": self._held_grace.get(ticker),
+            "in_top_n": ticker in self._held,
         }

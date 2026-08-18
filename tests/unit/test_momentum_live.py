@@ -260,7 +260,7 @@ class TestDecideGraceTransitionsRegressionAgainstBacktester:
 
 
 class TestComputeRebalanceSuggestions:
-    def test_mixed_add_exit_grace_hold(self, normalised_db, monkeypatch):
+    def test_a_name_that_left_the_top_n_exits_the_same_rebalance(self, normalised_db, monkeypatch):
         _patch_params(monkeypatch, top_n=2, lookback_months=1)
         dates = pd.bdate_range("2026-01-01", periods=30)
         # AAA, BBB will rank top-2 (highest returns); CCC ranks lowest.
@@ -268,40 +268,38 @@ class TestComputeRebalanceSuggestions:
         _seed_daily_series(normalised_db, "BBB", dates, [100] * 29 + [140])
         _seed_daily_series(normalised_db, "CCC", dates, [100] * 29 + [101])
 
-        current_open_trades = [
-            {"ticker": "BBB", "grace_remaining": None},  # already core, stays core
-            {"ticker": "CCC", "grace_remaining": None},  # about to drop out -> grace starts
-        ]
+        current_open_trades = [{"ticker": "BBB"}, {"ticker": "CCC"}]
 
         with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
             suggestions = ml.compute_rebalance_suggestions(
                 conn, str(dates[-1].date()), current_open_trades,
-                grace_cycles=2, universe=["AAA", "BBB", "CCC"],
+                universe=["AAA", "BBB", "CCC"],
             )
 
         by_ticker = {s["ticker"]: s for s in suggestions}
         assert by_ticker["AAA"]["action"] == "add"
-        assert "BBB" not in by_ticker  # held and still core -> nothing to do
-        assert by_ticker["CCC"]["action"] == "grace_hold"
-        assert by_ticker["CCC"]["grace_remaining"] == 2
+        assert "BBB" not in by_ticker  # held and still in the top_n -> nothing to do
+        # [2026-08-18] Grace cycles are deprecated: CCC left the list, so it
+        # exits now rather than being held for two more rebalances.
+        assert by_ticker["CCC"]["action"] == "exit"
 
-    def test_grace_exhausted_produces_exit(self, normalised_db, monkeypatch):
+    def test_a_held_name_outside_the_top_n_exits(self, normalised_db, monkeypatch):
         _patch_params(monkeypatch, top_n=1, lookback_months=1)
         dates = pd.bdate_range("2026-01-01", periods=30)
         _seed_daily_series(normalised_db, "AAA", dates, [100] * 29 + [150])
         _seed_daily_series(normalised_db, "BBB", dates, [100] * 29 + [101])
 
-        current_open_trades = [{"ticker": "BBB", "grace_remaining": 1}]
+        current_open_trades = [{"ticker": "BBB"}]
 
         with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
             suggestions = ml.compute_rebalance_suggestions(
                 conn, str(dates[-1].date()), current_open_trades,
-                grace_cycles=2, universe=["AAA", "BBB"],
+                universe=["AAA", "BBB"],
             )
 
         by_ticker = {s["ticker"]: s for s in suggestions}
         assert by_ticker["BBB"]["action"] == "exit"
-        assert by_ticker["BBB"]["grace_remaining"] == 0
+        assert "grace_remaining" not in by_ticker["BBB"]
 
     def test_empty_portfolio_suggests_all_adds(self, normalised_db, monkeypatch):
         _patch_params(monkeypatch, top_n=2, lookback_months=1)
@@ -311,7 +309,7 @@ class TestComputeRebalanceSuggestions:
 
         with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
             suggestions = ml.compute_rebalance_suggestions(
-                conn, str(dates[-1].date()), [], grace_cycles=2, universe=["AAA", "BBB"],
+                conn, str(dates[-1].date()), [], universe=["AAA", "BBB"],
             )
 
         assert {s["ticker"]: s["action"] for s in suggestions} == {"AAA": "add", "BBB": "add"}

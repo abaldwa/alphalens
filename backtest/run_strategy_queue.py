@@ -74,12 +74,9 @@ _QUEUE_ONLY_ORCHESTRATOR_FIELDS = {"min_dsr_threshold"}
 _ORCHESTRATOR_FLAGS = {
     "channel", "strategy_id", "horizon_bucket", "start_date", "end_date", "capital_mode", "initial_capital",
     "sip_amount", "universe_spec", "max_tickers", "min_history_days", "template_name", "preset", "top_n",
-    "lookback_months", "grace_cycles", "exit_variant", "regime_method",
-    # [ML40, 2026-08-14] Momentum's asymmetric exit band. Like grace_cycles
-    # before it, this lever existed only inside MomentumBacktester and was
-    # unreachable from any queue, so none of the 500+ momentum runs to date
-    # varied it. It changes which sells are emitted, so it is per-job.
-    "exit_rank",
+    "lookback_months", "exit_variant", "regime_method",
+    # [2026-08-18] grace_cycles and exit_rank are gone: momentum's rotation is
+    # a plain list swap, so neither lever exists to sweep.
     # 2026-08-01 Momentum-parity Technical filters (backtest/run_orchestrator_backtest.py
     # --max-hold-days/--min-adtv-cr/etc.) — see that script's argparse block.
     "max_hold_days", "min_adtv_cr", "quality_gate_min_f_score", "quality_gate_max_m_score",
@@ -242,7 +239,7 @@ def _compute_and_write_dsr(job: Dict[str, Any], job_index: int, suffix: str, n_t
         ) as conn:
             update_dsr(conn, run_id, dsr, n_trials_so_far, post_hoc=False)
         logger.info(f"run_strategy_queue: job[{job_index}] dsr={dsr:.3f} (n_trials={n_trials_so_far}, n_obs={n_obs})")
-        return dsr
+        return float(dsr)
     except Exception:
         logger.warning(f"run_strategy_queue: DSR computation failed for job[{job_index}] — leaving unset", exc_info=True)
         return None

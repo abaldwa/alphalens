@@ -17,7 +17,7 @@ import pytest
 from backtest.run_orchestrator_backtest import _momentum_descriptor as descriptor
 
 CONTROL = dict(top_n=10, lookback_months=3, min_adtv_cr=None, downtrend_filter_pct=None,
-               circuit_band_pct=None, grace_cycles=2, exit_policy_variant="risk_managed")
+               circuit_band_pct=None, exit_policy_variant="risk_managed")
 
 
 def _d(**over):
@@ -39,7 +39,6 @@ def test_an_unfiltered_run_keeps_its_historical_key():
     ("min_adtv_cr", 1.0),
     ("downtrend_filter_pct", 0.15),
     ("circuit_band_pct", 0.05),
-    ("grace_cycles", 0),
     ("exit_policy_variant", "unconstrained"),
 ])
 def test_every_signal_changing_parameter_is_in_the_key(field, value):
@@ -48,11 +47,13 @@ def test_every_signal_changing_parameter_is_in_the_key(field, value):
     assert _d(**{field: value}) != _d()
 
 
-def test_zero_grace_is_distinguished_although_falsy():
-    """0 is falsy; a truthiness guard would drop it and re-collide the
-    rank-drop-only runs with the default-grace ones."""
-    assert _d(grace_cycles=0) != _d()
-    assert "g0" in _d(grace_cycles=0)
+def test_the_deprecated_levers_are_not_accepted():
+    """[2026-08-18] grace_cycles and exit_rank were part of momentum's
+    identity because they changed which sells were emitted. Both are
+    deprecated, so passing one must fail rather than silently do nothing."""
+    for field in ("grace_cycles", "exit_rank"):
+        with pytest.raises(TypeError):
+            _d(**{field: 0})
 
 
 def test_descriptor_is_deterministic():

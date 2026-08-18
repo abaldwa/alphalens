@@ -121,15 +121,15 @@ def test_missing_registry_row_raises_instead_of_defaulting(monkeypatch):
 
 
 def test_partially_declared_row_raises(monkeypatch):
-    """A row that declares top_n but not grace_cycles is worse than no row:
-    it would silently supply two real values and one invented one. The
-    registry is authoritative for all three or for none."""
+    """A row that declares top_n but not lookback_months is worse than no
+    row: it would silently supply one real value and one invented one. The
+    registry is authoritative for both or for neither."""
     momentum_live._declared_params.cache_clear()
     monkeypatch.setattr(
         "strategies.registry.get_strategy",
-        lambda *a, **k: {"definition": {"top_n": 15, "lookback_months": 6}},
+        lambda *a, **k: {"definition": {"top_n": 15}},
     )
-    with pytest.raises(momentum_live.StrategyParamsUnavailable, match="grace_cycles"):
+    with pytest.raises(momentum_live.StrategyParamsUnavailable, match="lookback_months"):
         momentum_live.strategy_params(momentum_live.DEFAULT_STRATEGY_ID)
     momentum_live._declared_params.cache_clear()
 
