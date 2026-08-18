@@ -478,3 +478,186 @@ Verified against the code, not against this document's own claims.
 
 Everything in Phase H that could be done without touching a simulation is now
 done. The remainder of this plan is gated on those two items, in that order.
+
+---
+
+## 9. Execution plan — A through H in dependency order (2026-08-18)
+
+§4 gives the phases; this section gives the **order to actually build them in**,
+which is not the same thing. Two constraints reshuffle it:
+
+- **A3 gates C, D and E** (the plan's own rule) — so A3 is not "phase A work to
+  get out of the way", it is the long pole and must start first.
+- **A3 for a channel is only writable once that channel has a live path worth
+  diffing.** For Momentum the live path exists (`compute_daily_ranking`); for
+  ML it does not exist at all (H5), and for Technical the holdings side does not
+  exist yet (D2). So A3 is built **per channel, next to the channel's fix**, not
+  as one up-front monolith. This is the single correction this section makes to
+  §4's ordering.
+
+### Work order
+
+| # | Item | Depends on | Behaviour change | Parallelizable |
+|---|---|---|---|---|
+| 1 | **A1** widen the gate to `datastore/` + module-level selection fns | — | none | ✅ |
+| 2 | **A2** no-hardcoded-params test | — | none | ✅ |
+| 3 | **A3-core** parity harness *skeleton* + Momentum case | A1/A2 land first so the gate names what A3 must diff | none (fails red) | — |
+| 4 | **C1** de-hardcode `momentum_live` from the registry | A2, A3-core | live momentum params become per-strategy | — |
+| 5 | **C2/C3** `rank_universe`+`select_buy_pool` in the live path | C1 | **live momentum picks change** | — |
+| 6 | **B1/B2** dual-write live signals into `strategy_signals` | C2 (write the corrected picks, not the old ones) | none (additive) | ✅ with 7 |
+| 7 | **E1** collapse the 5 `PRESET_EXCLUDED_SECTORS` sites | — | none if done as pure de-dup | ✅ with 6 |
+| 8 | **A3-fundamental + E2/E3** routers become thin readers | E1 | fundamental API results change | — |
+| 9 | **H3** one metrics entry point per channel | H1, H2 (done) | none | ✅ with 7/8 |
+| 10 | **D2** `LiveSignalRunner` + **A3-technical** | A3-core, H3 | new holdings path (not yet wired) | — |
+| 11 | **D1/D3/D4** re-scope `ta_signals`, share the ScreenerEngine eval | D2 | **live technical holdings change** | — |
+| 12 | **ML40-2.1** unify the simulation loop | H3 | **momentum results may move** | — |
+| 13 | **H4** retire `MomentumBacktester` + `momentum_metrics`/`momentum_tax` | 12's parity diff accepted by user | deletes the standalone engine | — |
+| 14 | **H5** ML under the `StrategyAdapter` contract + **A3-ml** | H3 | new ML ledger rows (additive) | — |
+| 15 | **F1/F2** propose endpoint + scheduler step | B1, and each channel's adapter live | new paper-trading capability | — |
+| 16 | **F3** delete legacy `backtest/engine.py` (5 importers) | H5 (ml_adapter stops wrapping it) | none if importers already moved | — |
+| 17 | **G1/G2** `KNOWN_VIOLATIONS` empty; live_eligible invariant | 1–16 | none | — |
+
+### Why this differs from §4's A→G reading
+
+- **B moved after C.** §4 puts B second because it is low-risk. But B1 wires the
+  live paths to write into the ledger, and C2 changes what those paths select.
+  Wiring first means deliberately recording picks we already know are wrong, and
+  A108's supersede contract would then have to reconcile them. Cheaper to
+  correct the rule, then record it.
+- **E1 pulled early.** It is the one item with a real, already-shipped defect
+  behind it (§1.2: `/scores` skipped sector exclusion) and it has no dependency
+  on anything. It should not wait behind the momentum work.
+- **A3 split three ways.** See above — a single up-front A3 cannot be written
+  for ML or for Technical holdings, because neither path exists yet.
+- **H3 pulled before D2 and 2.1.** D2 and 2.1 are both validated by comparing
+  reported numbers. Doing them while two metrics entry points exist repeats
+  exactly the attribution problem §7 describes for tax.
+
+### Checkpoints requiring the user, not just a green suite
+
+Three items change what the system recommends or publishes. Each stops for
+review with its diff as the deliverable, per §5:
+
+1. **Step 5 (C2)** — before/after of today's live momentum picks.
+2. **Step 11 (D1/D3)** — before/after of today's technical holdings.
+3. **Step 12 (ML40-2.1)** — the momentum parity diff; H4 does not start until
+   this is accepted.
+
+Step 8 (E2/E3) changes fundamental API results but only by applying filters that
+were always intended, so it is reviewable as a diff without a hold.
+
+### Critical path
+
+`A1 → A3-core → C1 → C2 → H3 → 2.1 → H4`. Everything else (A2, B, E, D, H5, F)
+hangs off it and can be parallelized against it. The two longest items are
+**A3-core** (a harness that must feed identical inputs to two differently-shaped
+code paths) and **ML40-2.1**.
+
+
+---
+
+## 10. Phase A delivered — and what the parity harness actually measured (2026-08-18)
+
+A1, A2 and A3-core are implemented, validated by mutation, and green.
+
+### A1 — the gate now sees function-based generators
+
+`SCAN_DIRS` gains `datastore/`, but that alone changed nothing: no module
+under `datastore/` constructs a `Signal()` or declares a `generate_signals`
+class. That is the point of §1.5 confirmed by measurement — **the gate was
+blind not because it looked in too few directories, but because it only
+recognised generators shaped like a class.** Three detectors were added:
+
+| Detector | Catches | Deleted by |
+|---|---|---|
+| build-a-universe **and** score it in one function | `momentum_live.compute_daily_ranking` | C2 |
+| any call to the pure selection predicate `matches_screener_preset` | 2 fundamentals-router functions | E2 |
+| re-deriving `score >= 1.0 - 1e-9` outside `ScreenerEngine` | `daily_alert_checker` | D3 |
+
+Two things the build surfaced that the plan had wrong:
+
+- **§1.2 undercounted the fundamental divergence.** It named three
+  `matches_screener_preset` call sites; the gate found a fourth,
+  `get_fundamentals_pillar_summary` — the home page's "today's
+  recommendation count" card, which re-runs the selection to COUNT it. The
+  number on the landing page is derived from the uncapped, unranked rule.
+- **The momentum detector must require BOTH halves.** A bare
+  "calls a momentum primitive" rule flagged `routers/momentum.py:315`,
+  which uses `trailing_momentum` only to fill a 20-day-return display
+  column. Requiring universe-construction *and* scoring in the same
+  function separates selection from display with no permanent allowlist.
+
+### A2 — hardcoded parameters
+
+Scoped to live paths only (`momentum_live`, the alerts and inference
+packages, `datastore/api`). The 8 `scripts/run_momentum_*.py` sites are
+deliberately **not** policed: a research runner pinning the parameters of
+the one experiment it exists to run deploys no capital, and policing it
+would add entries that can never be removed.
+
+One distinction the detector encodes: `momentum_signal.LOOKBACK_MONTHS =
+[3, 6, 9, 12]` is a MENU of supported lookbacks, not a chosen value. A
+scalar is a decision; a container is an enumeration. Only scalars are
+flagged.
+
+### A3 — the harness, and the finding that corrects §1.2
+
+**§1.2 predicted momentum parity would fail on day one. It does not, and
+the reason is more useful than the prediction.**
+
+Measured on 2026-08-14, rank band 3, identical universe fed to both paths:
+
+```
+=== PARITY DIFF: momentum / band3_top15_6m_m_g2 [all_risk] @ 2026-08-14 ===
+  universe scored : 50     backtest 15   live 15
+  agreed          : 15     Jaccard 1.000
+```
+
+This is correct, not a harness bug. `build_category_presets` defines
+`all_risk` as the "unfiltered baseline (zero kwargs)", and every
+`MomentumAdapter` filter defaults to off/None — so with no filters
+configured, "rank then take the top N" genuinely IS the same rule on both
+sides. **That parity is now asserted as a hard invariant**, protecting the
+one place the two paths already agree.
+
+The real gap is structural, not per-date:
+
+> `features/momentum_live.py` cannot express a filtered category at all.
+> Its `STRATEGIES` entries carry only `band_id`, `label`, `rank_start`,
+> `rank_end`, `strategy_id`. The registry declares four cumulative
+> categories. **Three of the four are unrepresentable live**, so a
+> `balanced` or `max_defensive` strategy would run COMPLETELY UNFILTERED in
+> production while its backtest applied the whole chain.
+
+And a caution that changes how C1 should be verified: **today this is
+invisible.** At the production liquidity floor (0.1cr — the value
+`run_momentum_recommended_strategies.py:111` actually uses, *not*
+`settings.MIN_ADTV_CR`, which is 0.0 under the active profile) nothing is
+excluded; band 8's least liquid name still trades 0.18cr. The filtered and
+unfiltered selections coincide by accident of parameter values. Raising the
+floor to 25cr moves the held set by 6-8 names in bands 7 and 8.
+
+A diff-based test would therefore pass today and keep passing until the day
+someone tightens a filter — which is the day it would matter. The C1 gate is
+asserted structurally instead.
+
+**Sensitivity guard.** Because every parity result above is "no
+difference", the harness carries a test that raises the floor until it must
+bind and asserts the selection moves. Without it, an ignored kwarg or an
+empty panel would produce a perfect and entirely meaningless parity score.
+An early draft of the harness had exactly that defect: it applied
+`settings.MIN_ADTV_CR` (0.0) and reported flawless parity for a filter that
+filtered nothing.
+
+### Revised status
+
+| Step | State |
+|---|---|
+| A1 | ✅ done — 4 tracked violations, mutation-validated |
+| A2 | ✅ done — 3 tracked violations, both directions validated |
+| A3-core | ✅ done — momentum; technical/fundamental slots skip with reasons |
+| A3-technical | blocked on D2 (no live holdings path exists to diff) |
+| A3-fundamental | blocked on E1 (would measure sector-exclusion inconsistency) |
+
+Next per §9: **C1** — wire `momentum_live` to `definition_json`, which the
+xfail in the harness is written to detect the moment it lands.

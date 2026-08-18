@@ -1,0 +1,481 @@
+"""
+tests/integration/test_live_backtest_parity.py
+
+Phase: Signal-generator consolidation (UnifiedGeneratorRefactorPlan.md, A3)
+Owner: Platform / Backtest
+Consumers: CI / `pytest tests/integration/`, and Phases C, D, E as their
+           acceptance test.
+
+WHY THIS HARNESS EXISTS
+-----------------------
+Every other gate in tests/quality/ is STATIC: it proves two code paths are
+not textually duplicated. None of them can prove the two paths AGREE. The
+divergences in UnifiedGeneratorRefactorPlan.md §1.2 are behavioural — the
+live path and the backtest adapter can share every primitive and still
+select different stocks, because the live path skips the filter chain that
+runs between "score the universe" and "decide what to hold".
+
+This harness closes that. It feeds the SAME universe and the SAME date to
+both paths and diffs the selected sets. Its output — not its pass/fail — is
+the deliverable for Phases C, D and E: the plan's §5 rule is that no live
+behaviour change ships without its parity diff reviewed first.
+
+WHAT IT MEASURED ON DAY ONE  (2026-08-18)
+-----------------------------------------
+The plan's §1.2 predicted this would fail immediately for momentum. It does
+not, and the reason matters more than the prediction did.
+
+  * For the `all_risk` category the two paths agree EXACTLY (Jaccard 1.000,
+    15/15 names, rank band 3 on 2026-08-14). That is correct, not a bug in
+    the harness: `build_category_presets` defines all_risk as "unfiltered
+    baseline (zero kwargs)", and every MomentumAdapter filter defaults to
+    off/None. With no filters configured, select_buy_pool's chain is a
+    no-op, so ranking then taking the top N is genuinely the same rule.
+    This is now asserted as a hard invariant -- it is a real property worth
+    protecting, and it was previously only assumed.
+
+  * The divergence is NOT that live ranks differently. It is that
+    `features/momentum_live.py` cannot express a filtered category AT ALL.
+    Its STRATEGIES entries carry only {band_id, label, rank_start,
+    rank_end, strategy_id} -- no category, no top_n, no lookback, no
+    filters -- while the registry declares four cumulative categories
+    (all_risk / balanced / risk_managed / max_defensive). Three of those
+    four are unrepresentable live.
+
+  * The `balanced` case ALSO shows zero difference today, and that is not
+    reassurance. At the production liquidity floor (0.1cr, the value
+    scripts/run_momentum_recommended_strategies.py actually runs) nothing
+    is excluded: the least liquid name in rank band 8 still trades 0.18cr.
+    The filtered and unfiltered rules coincide by accident of parameter
+    values, not by design -- raise the floor to 25cr and the held set moves
+    by 6-8 names (measured, band 7 and 8).
+
+So the risk is sharper than "live picks drift": capital allocated to a
+balanced or max_defensive strategy would run **completely unfiltered**
+live, because the live path has no way to know the category exists. Today
+that is invisible because the floor does not bind. It is asserted
+structurally below rather than as a per-date diff for exactly that reason
+-- a diff-based test would pass today and keep passing until the day
+someone tightens a filter, which is the day it would matter.
+
+REAL DATA ONLY
+--------------
+Both paths read the real normalised DuckDB. Nothing here fabricates prices
+or universes — a parity result computed on invented data would prove
+nothing about production (CLAUDE.md Absolute Rule 6). When the database is
+absent or locked, these tests SKIP rather than fall back to synthetic
+inputs.
+
+PIT Assumptions
+---------------
+`as_of_date` is resolved to the latest real trading day present in
+ohlcv_adjusted, and every read is as-of that date. `rank_band_tickers` is
+called without `include_delisted`, matching the live path exactly — see
+features/momentum_live.py's docstring for why the live path must differ
+from a backtest here.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set
+
+import pytest
+
+pytest.importorskip("pandas")
+pytest.importorskip("duckdb")
+
+import duckdb  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from config.settings import DUCKDB_PATH  # noqa: E402
+
+# The liquidity floor the real momentum backtests run with. Deliberately not
+# config.settings.MIN_ADTV_CR: that is 0.0 under the active universe profile,
+# so using it would apply a filter that filters nothing.
+RECOMMENDED_MIN_ADTV_CR = 0.1  # scripts/run_momentum_recommended_strategies.py:111
+
+
+# ---------------------------------------------------------------------------
+# Parity report
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ParityReport:
+    """The diff between what the backtest would hold and what the live path
+    selects, for one strategy on one date."""
+
+    channel: str
+    strategy_id: str
+    category: str
+    as_of_date: str
+    universe_size: int
+    backtest_selection: Set[str] = field(default_factory=set)
+    live_selection: Set[str] = field(default_factory=set)
+
+    @property
+    def only_backtest(self) -> Set[str]:
+        """Held by the measured rule, missed by the live path."""
+        return self.backtest_selection - self.live_selection
+
+    @property
+    def only_live(self) -> Set[str]:
+        """Bought live, never evaluated by any backtest."""
+        return self.live_selection - self.backtest_selection
+
+    @property
+    def agreed(self) -> Set[str]:
+        return self.backtest_selection & self.live_selection
+
+    @property
+    def jaccard(self) -> float:
+        union = self.backtest_selection | self.live_selection
+        if not union:
+            return 1.0
+        return len(self.agreed) / len(union)
+
+    def describe(self) -> str:
+        return (
+            f"\n=== PARITY DIFF: {self.channel} / {self.strategy_id} "
+            f"[{self.category}] @ {self.as_of_date} ===\n"
+            f"  universe scored      : {self.universe_size}\n"
+            f"  backtest would hold  : {len(self.backtest_selection)}\n"
+            f"  live would hold      : {len(self.live_selection)}\n"
+            f"  agreed               : {len(self.agreed)}\n"
+            f"  overlap (Jaccard)    : {self.jaccard:.3f}\n"
+            f"  ONLY backtest ({len(self.only_backtest)}): {sorted(self.only_backtest)}\n"
+            f"  ONLY live     ({len(self.only_live)}): {sorted(self.only_live)}\n"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Real-data fixtures
+# ---------------------------------------------------------------------------
+
+
+def _connect() -> Optional[Any]:
+    """Read-only connection to the normalised DB, or None.
+
+    Returns None rather than raising when the scheduler holds the write
+    lock: DuckDB refuses even read_only connections while another process
+    has the database open for writing, and a locked database is an
+    environment condition, not a parity failure."""
+    if not DUCKDB_PATH.exists():
+        return None
+    try:
+        return duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    except Exception:
+        return None
+
+
+@pytest.fixture(scope="module")
+def conn() -> Any:
+    c = _connect()
+    if c is None:
+        pytest.skip(
+            f"normalised DuckDB unavailable or locked ({DUCKDB_PATH}); parity "
+            "needs real market data and must never run on fabricated inputs"
+        )
+    yield c
+    c.close()
+
+
+@pytest.fixture(scope="module")
+def as_of_date(conn) -> str:
+    """The most recent real trading day in ohlcv_adjusted."""
+    row = conn.execute("SELECT max(date) FROM ohlcv_adjusted").fetchone()
+    if not row or row[0] is None:
+        pytest.skip("ohlcv_adjusted is empty; no real date to compare on")
+    return str(row[0])
+
+
+# ---------------------------------------------------------------------------
+# Momentum parity
+# ---------------------------------------------------------------------------
+
+
+def build_momentum_parity_report(
+    conn: Any, as_of_date: str, strategy_id: str, category: str = "all_risk",
+) -> ParityReport:
+    """Run both momentum paths over one identical universe and diff them.
+
+    The whole point is that BOTH sides receive the same `universe` list and
+    the same date, so any difference in the result is attributable to the
+    selection RULE and nothing else. `compute_daily_ranking` takes a
+    `universe` override for exactly this reason, and the adapter is given a
+    price panel built from that same list.
+    """
+    from backtest.adapters.momentum_adapter import MomentumAdapter
+    from backtest.core.horizon import HorizonBucket
+    from features import momentum_live
+    from features.momentum_signal import load_price_panel, load_volume_panel
+    from features.momentum_universe import rank_band_tickers
+
+    cfg = momentum_live.get_strategy(strategy_id)
+
+    # ONE universe, shared. Built the way the live path builds it.
+    universe: List[str] = rank_band_tickers(
+        conn, as_of_date, cfg["rank_start"], cfg["rank_end"],
+    )
+    if not universe:
+        pytest.skip(
+            f"no PIT market-cap universe for rank band "
+            f"{cfg['rank_start']}-{cfg['rank_end']} at {as_of_date}"
+        )
+
+    # The live path's own parameters. momentum_live has no per-strategy
+    # top_n -- that IS the §1.3 defect (one module constant applied to every
+    # band). Using it here means the diff measures the SELECTION RULE, not a
+    # parameter mismatch we introduced ourselves.
+    top_n = momentum_live.TOP_N
+    lookback_months = momentum_live.LOOKBACK_MONTHS
+
+    # Panel wide enough for the trailing window, from the same universe.
+    start = (pd.Timestamp(as_of_date) - pd.Timedelta(days=lookback_months * 31 + 120)).date()
+    panel = load_price_panel(conn, universe, str(start), as_of_date)
+    if panel.empty:
+        pytest.skip(f"no real price history for the band universe at {as_of_date}")
+
+    # The registry's four categories are cumulative filter stacks over the
+    # same ranking. all_risk is the unfiltered baseline (zero kwargs) --
+    # build_category_presets' own words -- so it is the one category the
+    # live path can currently reproduce.
+    filter_kwargs: Dict[str, Any] = {}
+    if category != "all_risk":
+        volume_panel = load_volume_panel(conn, universe, str(start), as_of_date)
+        if volume_panel.empty:
+            pytest.skip(f"no real volume history to apply the {category} ADTV floor")
+        # Only the liquidity floor is applied here. The quality gate and
+        # regime filters need panels this harness has no real source for at
+        # this date, and fabricating them would make the diff meaningless.
+        #
+        # The floor is RECOMMENDED_MIN_ADTV_CR, the value the real momentum
+        # runs use (scripts/run_momentum_recommended_strategies.py:111),
+        # NOT config.settings.MIN_ADTV_CR -- which is 0.0 under the current
+        # universe profile and would make this a silent no-op. An earlier
+        # draft of this harness used it and reported a meaningless parity.
+        filter_kwargs = {
+            "volume_panel": volume_panel,
+            "min_adtv_cr": RECOMMENDED_MIN_ADTV_CR,
+        }
+
+    adapter = MomentumAdapter(
+        price_panel=panel, top_n=top_n, lookback_months=lookback_months,
+        **filter_kwargs,
+    )
+    signals = adapter.generate_signals(universe, pd.Timestamp(as_of_date).date(), HorizonBucket.Y1)
+    # SignalAction is a plain str alias ("buy" | "sell" | "forced_close" |
+    # "hold"), not an Enum -- compared as a lowercase string deliberately.
+    backtest_selection = {s.ticker for s in signals if s.action == "buy"}
+
+    ranking = momentum_live.compute_daily_ranking(
+        conn, as_of_date, strategy_id=strategy_id, universe=universe,
+    )
+    live_selection: Set[str] = (
+        set(ranking.loc[ranking["in_top_n"], "ticker"]) if not ranking.empty else set()
+    )
+
+    return ParityReport(
+        channel="momentum",
+        strategy_id=strategy_id,
+        category=category,
+        as_of_date=as_of_date,
+        universe_size=len(universe),
+        backtest_selection=backtest_selection,
+        live_selection=live_selection,
+    )
+
+
+@pytest.fixture(scope="module")
+def momentum_report(conn, as_of_date) -> ParityReport:
+    """The unfiltered baseline: the one category the live path can express."""
+    return build_momentum_parity_report(
+        conn, as_of_date, momentum_live_default_strategy_id(), category="all_risk",
+    )
+
+
+@pytest.fixture(scope="module")
+def momentum_balanced_report(conn, as_of_date) -> ParityReport:
+    """A filtered category, which the live path has no way to represent."""
+    return build_momentum_parity_report(
+        conn, as_of_date, momentum_live_default_strategy_id(), category="balanced",
+    )
+
+
+def momentum_live_default_strategy_id() -> str:
+    from features import momentum_live
+
+    return momentum_live.DEFAULT_STRATEGY_ID
+
+
+def momentum_live_default_top_n() -> int:
+    from features import momentum_live
+
+    return momentum_live.TOP_N
+
+
+def test_harness_feeds_both_paths_the_same_inputs(momentum_report):
+    """Guards the harness itself before anything is concluded from it.
+
+    A parity diff is only evidence if both sides really saw the same
+    universe. If the adapter silently scored a smaller set (a short price
+    panel, say), the diff would be an artefact of the harness and every
+    conclusion drawn from it would be wrong."""
+    assert momentum_report.universe_size > 0
+    assert momentum_report.backtest_selection or momentum_report.live_selection, (
+        "Neither path selected anything; the harness is not exercising the "
+        "selection rules and the diff would be vacuously equal."
+    )
+    assert len(momentum_report.backtest_selection) <= momentum_live_default_top_n()
+    assert len(momentum_report.live_selection) <= momentum_live_default_top_n()
+
+
+def test_parity_diff_is_reported(momentum_report, momentum_balanced_report, capsys):
+    """Always-run reporter. Phases C/D/E require the diff as a reviewable
+    artefact (§5), so it is printed whether or not parity holds -- a diff
+    that only appears on failure is unavailable exactly when someone is
+    deciding whether to ship the fix."""
+    with capsys.disabled():
+        print(momentum_report.describe())
+        print(momentum_balanced_report.describe())
+    assert 0.0 <= momentum_report.jaccard <= 1.0
+
+
+def test_unfiltered_momentum_is_already_at_parity(momentum_report):
+    """MEASURED, not assumed (see this module's docstring).
+
+    For the unfiltered `all_risk` category the live ranking and the
+    backtested adapter select the same names from the same universe. This
+    is the invariant §3 demands, and it currently HOLDS for this one case --
+    so it is asserted hard, to keep C1/C2 from regressing the one place the
+    two paths already agree while fixing the places they do not."""
+    assert momentum_report.backtest_selection == momentum_report.live_selection, (
+        momentum_report.describe()
+    )
+
+
+def test_the_harness_would_detect_a_filter_induced_divergence(conn, as_of_date):
+    """Sensitivity guard -- WITHOUT THIS, EVERY PARITY PASS ABOVE IS WORTHLESS.
+
+    The two parity results above are both "no difference". That is only
+    evidence if this harness is capable of reporting a difference at all. A
+    filter kwarg silently ignored by the adapter, a panel that failed to
+    load, a universe that collapsed to nothing -- each would produce a
+    perfect, entirely meaningless parity score.
+
+    So: raise the liquidity floor until it MUST bind, and assert the
+    selection actually moves. Measured on 2026-08-14, band 3: a 100cr floor
+    changes the held set. If this test ever goes quiet, the parity results
+    above stop meaning anything and must not be trusted."""
+    from backtest.adapters.momentum_adapter import MomentumAdapter
+    from backtest.core.horizon import HorizonBucket
+    from features import momentum_live
+    from features.momentum_signal import load_price_panel, load_volume_panel
+    from features.momentum_universe import rank_band_tickers
+
+    cfg = momentum_live.get_strategy(momentum_live_default_strategy_id())
+    universe = rank_band_tickers(conn, as_of_date, cfg["rank_start"], cfg["rank_end"])
+    if not universe:
+        pytest.skip("no universe for the sensitivity check")
+    start_d = (pd.Timestamp(as_of_date) - pd.Timedelta(days=6 * 31 + 120)).date()
+    panel = load_price_panel(conn, universe, str(start_d), as_of_date)
+    volume = load_volume_panel(conn, universe, str(start_d), as_of_date)
+    if panel.empty or volume.empty:
+        pytest.skip("no real price/volume history for the sensitivity check")
+
+    as_of = pd.Timestamp(as_of_date).date()
+
+    def _held(floor: float) -> Set[str]:
+        adapter = MomentumAdapter(
+            price_panel=panel, top_n=momentum_live.TOP_N, lookback_months=6,
+            volume_panel=volume, min_adtv_cr=floor,
+        )
+        return {
+            sig.ticker
+            for sig in adapter.generate_signals(universe, as_of, HorizonBucket.Y1)
+            if sig.action == "buy"
+        }
+
+    unfiltered = _held(0.0)
+    # A floor above the band's median traded value must exclude names.
+    heavily_filtered = _held(1000.0)
+    assert unfiltered != heavily_filtered, (
+        "Raising the ADTV floor to 1000cr did not change the selection. The "
+        "adapter is ignoring min_adtv_cr, or the volume panel is empty -- "
+        "either way the parity results in this module are vacuous."
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "PHASE-C1: features/momentum_live.py cannot express a filtered "
+        "category at all. Its STRATEGIES entries carry only band_id, label, "
+        "rank_start, rank_end and strategy_id, while strategy_registry "
+        "declares four cumulative categories (all_risk, balanced, "
+        "risk_managed, max_defensive). Three of the four are unrepresentable "
+        "live, so a balanced or max_defensive strategy would run COMPLETELY "
+        "UNFILTERED in production while its backtest applied the whole chain. "
+        "When C1 wires the live path to definition_json, this becomes an "
+        "XPASS and strict=True fails the run: delete the marker and keep the "
+        "assertion."
+    ),
+)
+def test_live_path_can_express_every_registry_category():
+    """The real momentum gap, stated as the invariant rather than as a diff.
+
+    A per-date selection diff cannot capture this: the live path does not
+    merely pick different names for a filtered strategy, it has no way to
+    know the strategy is filtered. Today that is masked -- the production
+    ADTV floor (0.1cr) does not bind on any current rank band, so the
+    filtered and unfiltered selections coincide by accident of parameter
+    values, not by design. Tighten the floor, add the quality gate, or move
+    to a less liquid band and the two silently part company.
+
+    That accident is exactly why this is asserted structurally."""
+    from features import momentum_live
+
+    declared_categories = {"all_risk", "balanced", "risk_managed", "max_defensive"}
+    expressible = {
+        str(strategy.get("category"))
+        for strategy in momentum_live.STRATEGIES
+        if strategy.get("category") is not None
+    }
+    assert expressible == declared_categories, (
+        "features/momentum_live.py can express "
+        f"{sorted(expressible) or 'NO categories'}, but strategy_registry "
+        f"declares {sorted(declared_categories)}. Every strategy in a "
+        "category the live path cannot express runs unfiltered live."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Technical and Fundamental: harness slots, deliberately not yet written
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(
+    reason=(
+        "PHASE-D2: the technical holdings path does not exist yet. "
+        "DailyAlertChecker.evaluate answers 'what matched a template today', "
+        "not 'what should the portfolio hold' -- there is no live holdings "
+        "selection to diff the adapter against until LiveSignalRunner is "
+        "built. Writing a diff against the alert feed would compare two "
+        "different questions and report a meaningless number."
+    )
+)
+def test_technical_live_selection_matches_the_backtested_rule():
+    raise NotImplementedError("PHASE-D2/D4")
+
+
+@pytest.mark.skip(
+    reason=(
+        "PHASE-E2: blocked on E1. The fundamentals router applies sector "
+        "exclusion inconsistently across its call sites, so a diff taken now "
+        "would measure that inconsistency rather than the selection rule. "
+        "Collapse PRESET_EXCLUDED_SECTORS first, then diff."
+    )
+)
+def test_fundamental_live_selection_matches_the_backtested_rule():
+    raise NotImplementedError("PHASE-E2/E3")
