@@ -63,17 +63,17 @@ PLEDGE_SPIRAL_THRESHOLD_PCT = 20.0
 PRICE_FALL_LOOKBACK_DAYS = 63  # ~1 quarter, consistent with quarter_age_pct's 63-day convention
 
 
-def _safe_change(current, prior) -> float:
+def _safe_change(current: Any, prior: Any) -> float:
     if current is None or prior is None or pd.isna(current) or pd.isna(prior):
-        return np.nan
-    return current - prior
+        return float(np.nan)
+    return float(current - prior)
 
 
-def _sum_if_any_present(*values) -> float:
+def _sum_if_any_present(*values: Any) -> float:
     """Sum of the non-NaN values; NaN only if every value is missing (treats a
     missing FII/DII/MF row as 0% of that category, not as unknown-total)."""
     present = [v for v in values if v is not None and pd.notna(v)]
-    return float(sum(present)) if present else np.nan
+    return float(sum(present)) if present else float(np.nan)
 
 
 def compute_governance_features(
@@ -81,7 +81,7 @@ def compute_governance_features(
     ticker: str,
     as_of: datetime,
     lookback_years: int = 2,
-    pre_loaded_rows=None,
+    pre_loaded_rows: Any = None,
     ticker_ohlcv: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
@@ -133,7 +133,7 @@ def compute_governance_features(
     latest = history.iloc[-1]
     qoq_prior = history.iloc[-2] if len(history) >= 2 else None
 
-    def prior(col):
+    def prior(col: str) -> Any:
         return qoq_prior[col] if qoq_prior is not None else None
 
     promoter_pledge_change_qoq = _safe_change(latest.get("promoter_pledge"), prior("promoter_pledge"))
@@ -190,7 +190,7 @@ def compute_governance_features_panel(
     client: DataStoreClient,
     tickers: List[str],
     as_of: datetime,
-    data_cache=None,
+    data_cache: Any = None,
     ohlcv_panel: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
@@ -247,7 +247,7 @@ def compute_governance_features_panel_vectorized(
     client: DataStoreClient,
     tickers: List[str],
     as_of: datetime,
-    data_cache=None,
+    data_cache: Any = None,
     ohlcv_panel: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """

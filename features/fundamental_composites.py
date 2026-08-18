@@ -29,7 +29,7 @@ governance fields (not z-scored) since features/governance.py never
 z-scores them.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -65,7 +65,7 @@ from systems.fundamental_analysis.scoring_utils import weighted_zscore_composite
 __all__ = [
     "quality_score", "growth_score", "management_quality_score", "select_peers",
     "SCREENER_PRESETS", "matches_screener_preset", "STRATEGY_CATALOG", "SCORE_FUNCTIONS",
-    "PRESET_EXCLUDED_SECTORS", "SCREENER_PRESET_CHANGELOG", "BACKTESTED_STRATEGIES",
+    "PRESET_EXCLUDED_SECTORS", "is_sector_excluded", "SCREENER_PRESET_CHANGELOG", "BACKTESTED_STRATEGIES",
     "quality_value_composite", "fcf_low_debt_score", "garp_score", "magic_formula_score",
     "owner_earnings_score", "moat_score", "capital_allocation_score", "sector_leader_score",
     "qglp_score", "longevity_score", "story_numbers_score", "earnings_rerating_score",
@@ -93,12 +93,14 @@ _weighted_zscore_composite = weighted_zscore_composite
 
 def quality_score(ratios: Dict[str, float]) -> Optional[float]:
     """0-100: sector-relative ROE/ROCE/margin (higher=better) vs. leverage (lower=better)."""
-    return _weighted_zscore_composite(ratios, QUALITY_WEIGHTS)
+    score: Optional[float] = _weighted_zscore_composite(ratios, QUALITY_WEIGHTS)
+    return score
 
 
 def growth_score(ratios: Dict[str, float]) -> Optional[float]:
     """0-100: sector-relative revenue/EPS growth and 3yr CAGR."""
-    return _weighted_zscore_composite(ratios, GROWTH_WEIGHTS)
+    score: Optional[float] = _weighted_zscore_composite(ratios, GROWTH_WEIGHTS)
+    return score
 
 
 def management_quality_score(governance: Dict[str, float]) -> Optional[float]:
@@ -145,14 +147,16 @@ def select_peers(
     if sector is None:
         return []
     own_mcap = mcap_map.get(ticker)
-    have_mcap = own_mcap is not None and own_mcap > 0
     candidates = [
         t for t in panel["ticker"]
         if t != ticker and sector_map.get(t) == sector
     ]
     if not candidates:
         return []
-    if have_mcap:
+    # Narrowed inline rather than via a separate `have_mcap` bool: the bool
+    # carried the None-check but not the narrowing, so np.log() below was
+    # being handed an Optional[float] as far as the type checker could tell.
+    if own_mcap is not None and own_mcap > 0:
         mcap_candidates = [t for t in candidates if mcap_map.get(t, 0) > 0]
         if mcap_candidates:
             own_log_mcap = np.log(own_mcap)
@@ -286,7 +290,7 @@ SCREENER_PRESETS = {
 # for future consideration — wiring RPT features into these 26 strategies
 # is a larger design decision (which strategies, what weight, what
 # threshold) out of scope for this pass.
-PRESET_EXCLUDED_SECTORS: Dict[str, set] = {
+PRESET_EXCLUDED_SECTORS: Dict[str, Set[str]] = {
     "magic_formula": {"Financial Services", "Utilities"},
     # [BUG FIX, 2026-07-28 second model-review, item 6] quality_value meets
     # this dict's own stated "roughly half or more" bar (roce(.3)+roe(.3) =
@@ -331,6 +335,27 @@ PRESET_EXCLUDED_SECTORS: Dict[str, set] = {
 }
 
 
+def is_sector_excluded(preset: str, sector: Optional[str]) -> bool:
+    """Whether `preset` excludes `sector` outright, regardless of ratios.
+
+    [E1, 2026-08-18] THE single place this question is answered. It used to
+    be answered in four: matches_screener_preset below, two branches in
+    datastore/api/routers/fundamentals.py, and an inline comprehension in
+    the /scores endpoint. They drifted exactly as duplicated decisions do --
+    /scores skipped the exclusion entirely and shipped
+    methodologically-invalid numbers to four frontend pages (a bank's
+    reported ROE is not comparable to an industrial's, which is the whole
+    reason the exclusion exists) before that was caught in the 2026-07-28
+    model review.
+
+    A missing sector never excludes: unknown is not the same as excluded,
+    and dropping a ticker because its sector lookup failed would be a
+    silent, data-quality-driven change to a strategy's universe."""
+    if sector is None:
+        return False
+    return sector in PRESET_EXCLUDED_SECTORS.get(preset, set())
+
+
 def matches_screener_preset(ratios: Dict[str, float], preset: str, sector: Optional[str] = None) -> bool:
     """True if every z-scored ratio in SCREENER_PRESETS[preset] clears its
     threshold (thresholds already sign-adjusted so 'pass' always means
@@ -345,7 +370,7 @@ def matches_screener_preset(ratios: Dict[str, float], preset: str, sector: Optio
     upgrade, not a new required argument."""
     if preset not in SCREENER_PRESETS:
         raise ValueError(f"Unknown screener preset: {preset}")
-    if sector is not None and sector in PRESET_EXCLUDED_SECTORS.get(preset, set()):
+    if is_sector_excluded(preset, sector):
         return False
     for col, threshold in SCREENER_PRESETS[preset].items():
         v = ratios.get(col)
@@ -367,7 +392,12 @@ def matches_screener_preset(ratios: Dict[str, float], preset: str, sector: Optio
 #   "bespoke"         -> a dedicated module under systems/fundamental_analysis/
 #                        that reads raw PIT financials directly (not the
 #                        z-scored panel) — piotroski_on_value, margin_of_safety, net_net.
-STRATEGY_CATALOG: Dict[str, Dict[str, str]] = {
+# Dict[str, Any] values, not Dict[str, str]: the entries carry a `backtested`
+# BOOL alongside their string labels (set in the loop below). Declaring the
+# values as str made that assignment an error, and annotating around it just
+# moved the error to the consumer that unpacks the entry -- the type was
+# simply wrong about what this table holds.
+STRATEGY_CATALOG: Dict[str, Dict[str, Any]] = {
     "piotroski_on_value": {"label": "Piotroski-on-Value", "category": "Value", "kind": "bespoke",
                             "description": "Cheap stocks filtered by Piotroski F-Score >= 8."},
     "magic_formula": {"label": "Magic Formula", "category": "Value", "kind": "preset",
@@ -431,7 +461,7 @@ STRATEGY_CATALOG: Dict[str, Dict[str, str]] = {
 # empty (no strategy has actually been backtested yet — not a
 # placeholder, the real current state) and should be updated only as
 # each strategy actually clears a real walk-forward backtest.
-BACKTESTED_STRATEGIES: set = set()
+BACKTESTED_STRATEGIES: Set[str] = set()
 for _key, _meta in STRATEGY_CATALOG.items():
     _meta["backtested"] = _key in BACKTESTED_STRATEGIES
 del _key, _meta

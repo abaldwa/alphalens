@@ -154,9 +154,9 @@ def _safe_col(row: Optional["pd.Series"], col: str) -> float:
     was exercised against data with any None field — see BuildLog.md "P2.1".
     """
     if row is None or col not in row.index:
-        return np.nan
+        return float(np.nan)
     val = row[col]
-    return np.nan if val is None or pd.isna(val) else val
+    return float(np.nan) if val is None or pd.isna(val) else float(val)
 
 
 def _priced_inputs_from_row(latest_row: "pd.Series") -> Dict[str, float]:
@@ -204,7 +204,7 @@ def _compute_priced_features(priced_inputs: Dict[str, float], close: Optional[fl
     }
 
 
-def _resolve_latest_quarter_row(rows: "Optional[List]") -> "Optional[pd.Series]":
+def _resolve_latest_quarter_row(rows: "Optional[List[Any]]") -> "Optional[pd.Series]":
     """
     Cheap peek at which quarter is PIT-eligible-latest — a sort + iloc[-1],
     none of the multi-year rolling-window walks compute_fundamental_features
@@ -263,14 +263,14 @@ def compute_staleness(announcement_date: datetime, current_date: datetime) -> Di
 def _safe_growth(current: Optional[float], prior: Optional[float]) -> float:
     """(current - prior) / abs(prior); NaN if prior is missing or zero."""
     if current is None or prior is None or pd.isna(current) or pd.isna(prior) or prior == 0:
-        return np.nan
-    return (current - prior) / abs(prior)
+        return float(np.nan)
+    return float((current - prior) / abs(prior))
 
 
 def _safe_div(numerator: Optional[float], denominator: Optional[float]) -> float:
     if numerator is None or denominator is None or pd.isna(numerator) or pd.isna(denominator) or denominator == 0:
-        return np.nan
-    return numerator / denominator
+        return float(np.nan)
+    return float(numerator / denominator)
 
 
 def _find_quarter(history: pd.DataFrame, fiscal_year: int, quarter: int) -> Optional[pd.Series]:
@@ -278,7 +278,7 @@ def _find_quarter(history: pd.DataFrame, fiscal_year: int, quarter: int) -> Opti
     return match.iloc[0] if len(match) else None
 
 
-def _quarters_back(fiscal_year: int, quarter: int, n: int) -> tuple:
+def _quarters_back(fiscal_year: int, quarter: int, n: int) -> Tuple[int, int]:
     """Walk back n quarters from (fiscal_year, quarter), wrapping across fiscal years."""
     total = (fiscal_year * 4 + (quarter - 1)) - n
     return total // 4, (total % 4) + 1
@@ -303,7 +303,8 @@ def _latest_close_on_or_before(
     rows = client.get_ohlcv(ticker, from_date=as_of - timedelta(days=14), to_date=as_of)
     if not rows:
         return None
-    return sorted(rows, key=lambda r: r["date"])[-1]["close"]
+    close: Optional[float] = sorted(rows, key=lambda r: r["date"])[-1]["close"]
+    return close
 
 
 def compute_fundamental_features(
@@ -311,7 +312,7 @@ def compute_fundamental_features(
     ticker: str,
     as_of: datetime,
     lookback_years: int = 6,
-    pre_loaded_rows: "Optional[List]" = None,
+    pre_loaded_rows: "Optional[List[Any]]" = None,
     ticker_ohlcv: "Optional[pd.DataFrame]" = None,
     listing_date: "Optional[datetime]" = None,
 ) -> Dict[str, Any]:
@@ -660,7 +661,7 @@ def compute_fundamental_features_panel(
     tickers: List[str],
     as_of: datetime,
     sector_map: Dict[str, str],
-    data_cache=None,
+    data_cache: Any = None,
     ohlcv_panel: "Optional[pd.DataFrame]" = None,
     listing_date_map: "Optional[Dict[str, datetime]]" = None,
     raw_cache: "Optional[Dict[Tuple[str, int, int], Dict[str, Any]]]" = None,

@@ -41,7 +41,7 @@ import json
 import logging
 from datetime import date as date_type
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -64,14 +64,15 @@ def _list_path(as_of: date_type) -> Path:
     return TRAINING_UNIVERSE_DIR / f"training_universe_v{as_of.strftime(_LIST_VERSION_FORMAT)}.json"
 
 
-def _latest_saved_list() -> Optional[dict]:
+def _latest_saved_list() -> Optional[Dict[str, Any]]:
     """Most recently saved training-universe snapshot, or None if none exist yet."""
     if not TRAINING_UNIVERSE_DIR.exists():
         return None
     candidates = sorted(TRAINING_UNIVERSE_DIR.glob("training_universe_v*.json"))
     if not candidates:
         return None
-    return json.loads(candidates[-1].read_text())
+    saved: Dict[str, Any] = json.loads(candidates[-1].read_text())
+    return saved
 
 
 def build_training_universe(
@@ -125,7 +126,8 @@ def build_training_universe(
         as_of.isoformat(), int(qualifies.sum()), adtv_floor_cr, hysteresis_floor_cr,
         len(selected), max_size,
     )
-    return selected
+    selected_tickers: List[str] = list(selected)
+    return selected_tickers
 
 
 def save_training_universe(tickers: List[str], as_of: Optional[date_type] = None) -> Path:
@@ -161,11 +163,19 @@ def load_current_training_universe() -> List[str]:
     if saved is None:
         logger.warning("No training-universe snapshot found — building one now (first run).")
         return refresh_training_universe()
-    return saved["tickers"]
+    tickers: List[str] = list(saved["tickers"])
+    return tickers
 
 
-def is_recommendable(adtv_cr: float, floor_cr: float = RECOMMENDATION_ADTV_FLOOR_CR) -> bool:
-    """True if a single ticker's ADTV clears the (much looser) recommendation floor."""
+def is_recommendable(
+    adtv_cr: Optional[float], floor_cr: float = RECOMMENDATION_ADTV_FLOOR_CR
+) -> bool:
+    """True if a single ticker's ADTV clears the (much looser) recommendation floor.
+
+    `adtv_cr` is Optional because the body has always handled None -- a ticker
+    absent from the ADTV map is simply not recommendable. The annotation said
+    `float`, so every caller passing a dict .get() result was an arg-type
+    error against a function that already did the right thing."""
     return adtv_cr is not None and adtv_cr >= floor_cr
 
 

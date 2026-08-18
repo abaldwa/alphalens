@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ class QualityFlag:
     reason: str
 
 
-def check_row(row: Dict) -> List[QualityFlag]:
+def check_row(row: Dict[str, Any]) -> List[QualityFlag]:
     """
     Validate one fundamentals row (dict of column -> value) against
     RATIO_RANGES. Returns a list of QualityFlag for every field that is
@@ -169,7 +169,7 @@ def log_flags(ticker: str, fiscal_year: int, quarter: int, flags: List[QualityFl
         )
 
 
-def validate_and_annotate(row: Dict) -> Dict:
+def validate_and_annotate(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     Convenience wrapper for ingestion scripts: runs check_row() against
     `row`, logs any flags, and returns the SAME row dict with two extra

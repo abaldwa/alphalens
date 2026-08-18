@@ -50,7 +50,7 @@ this adapter special-cases.
 
 import logging
 from datetime import date as date_type, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
@@ -65,7 +65,7 @@ from backtest.core.horizon import HorizonBucket
 from datastore.api.utils.feature_store import read_feature_day
 from features.fundamental import FUNDAMENTAL_FEATURES
 from features.fundamental_composites import (
-    PRESET_EXCLUDED_SECTORS,
+    is_sector_excluded,
     SCORE_FUNCTIONS,
     SCREENER_PRESETS,
     matches_screener_preset,
@@ -200,13 +200,14 @@ class FundamentalAdapter:
         # `adapter._screener_cache_conn = conn`. Validated lazily in
         # generate_signals() instead, right before it's actually needed.
         self._db_conn = db_conn
-        self._currently_held: set = set()
+        self._currently_held: Set[str] = set()
         self._last_ratios: Dict[str, Dict[str, float]] = {}  # ticker -> ratio dict, from the most recent call
 
     def _adtv_cr(self, ticker: str, as_of_date: date_type) -> Optional[float]:
-        return adtv_cr_for_ticker(
+        adtv: Optional[float] = adtv_cr_for_ticker(
             ticker, as_of_date, self.price_panel, self.volume_panel, self.adtv_lookback_days,
         )
+        return adtv
 
     def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
         universe_set = set(universe)
@@ -267,7 +268,6 @@ class FundamentalAdapter:
             # since _composite_strength on a single-entry {"score": v} dict
             # is exactly v.
             score_fn = SCORE_FUNCTIONS[self.preset]
-            excluded_sectors = PRESET_EXCLUDED_SECTORS.get(self.preset, set())
             matched = []
             if panel is not None:
                 in_universe = panel[panel["ticker"].isin(universe_set)]
@@ -279,7 +279,9 @@ class FundamentalAdapter:
                     # debt-to-equity just as heavily as Magic Formula (see that
                     # dict's comment in features/fundamental_composites.py), so the
                     # same Financial-Services exclusion must apply here too.
-                    if excluded_sectors and self._sector_lookup.get(row["ticker"]) in excluded_sectors:
+                    # [E1, 2026-08-18] via the one helper that knows the rule,
+                    # rather than a local copy of the dict lookup.
+                    if is_sector_excluded(self.preset, self._sector_lookup.get(row["ticker"])):
                         continue
                     if self.preset in _PRESETS_NEEDING_LIQUIDITY_FLOOR and self._market_cap_lookup:
                         mcap = self._market_cap_lookup.get(row["ticker"])
@@ -304,7 +306,7 @@ class FundamentalAdapter:
             # existing holdings are still re-evaluated against an empty
             # match set below, so they get sold rather than held forever
             # on stale information.
-            matched: List[str] = []
+            matched = []
         else:
             in_universe = panel[panel["ticker"].isin(universe_set)]
             matched = []

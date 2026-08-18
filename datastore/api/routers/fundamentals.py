@@ -27,10 +27,10 @@ process; see ohlcv.py's module docstring for the full incident this avoids.
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from config.settings import DUCKDB_PATH
 from config.universe import load_universe_raw
@@ -57,7 +57,7 @@ from datastore.api.utils.feature_store import read_feature_day, read_feature_row
 from datastore.api.utils.pdf import build_pdf_response
 from features.fundamental import RATIO_FEATURES, STALENESS_FEATURES
 from features.fundamental_composites import (
-    PRESET_EXCLUDED_SECTORS,
+    is_sector_excluded,
     SCORE_FUNCTIONS,
     SCREENER_PRESET_CHANGELOG,
     SCREENER_PRESETS,
@@ -188,6 +188,18 @@ NET_NET_PRESET = "net_net"
 BESPOKE_PRESETS = (PIOTROSKI_ON_VALUE_PRESET, MARGIN_OF_SAFETY_PRESET, NET_NET_PRESET)
 
 
+
+def _sector_map() -> Dict[str, Optional[str]]:
+    """ticker -> sector, for the sector-exclusion check.
+
+    [E1, 2026-08-18] Was rebuilt inline in two endpoints, each loading the
+    universe itself and only on the branch that needed it. One helper, so a
+    change to how sector is resolved cannot apply to one endpoint and not
+    the other."""
+    universe_raw = load_universe_raw()
+    return dict(zip(universe_raw["ticker"], universe_raw["sector"]))
+
+
 @router.get("/screener", response_model=FAScreenerResponse)
 async def get_fundamental_screener(
     preset: str = Query(
@@ -242,23 +254,20 @@ async def get_fundamental_screener(
                     ticker for ticker in panel["ticker"]
                     if compute_net_net(conn, ticker, as_of_dt)["passes"]
                 ]
-    elif preset in PRESET_EXCLUDED_SECTORS:
-        # Magic Formula (and any future preset with a real sector
-        # exclusion, e.g. Greenblatt's Financials/NBFC/Insurance rule) —
-        # see features/fundamental_composites.py::PRESET_EXCLUDED_SECTORS
-        # for why sector-relative z-scoring alone doesn't substitute for this.
-        universe_raw = load_universe_raw()
-        sector_map = dict(zip(universe_raw["ticker"], universe_raw["sector"]))
+    else:
+        # [E1, 2026-08-18] One branch, not two. This used to test
+        # `preset in PRESET_EXCLUDED_SECTORS` and pass `sector` only then --
+        # a second place deciding whether an exclusion applies, alongside
+        # matches_screener_preset which already decides it. Passing sector
+        # unconditionally is behaviour-identical (the predicate's lookup is
+        # an empty set for a preset with no exclusions) and leaves exactly
+        # one site that knows the rule.
+        sector_map = _sector_map()
         matched = [
             row["ticker"] for _, row in panel.iterrows()
             if matches_screener_preset(
                 {c: row.get(c) for c in RATIO_FEATURES}, preset, sector=sector_map.get(row["ticker"]),
             )
-        ]
-    else:
-        matched = [
-            row["ticker"] for _, row in panel.iterrows()
-            if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
         ]
     # ML24 (2026-07-11): ranked/recommended screener output only — direct
     # ticker lookups (get_fundamental_ratios above) are intentionally
@@ -286,7 +295,7 @@ async def get_fundamental_screener(
 @router.get("/pillar_summary")
 async def get_fundamentals_pillar_summary(
     preset: str = Query(default="quality_compounder", description=f"One of: {', '.join(SCREENER_PRESETS.keys())}"),
-) -> dict:
+) -> Dict[str, Any]:
     """Home page pillar-outcome card: today's recommendation count for one
     screener preset. Fundamentals has no `target_price`/expected-return
     field (its ratios are sector-relative z-scores, not price forecasts)
@@ -306,20 +315,14 @@ async def get_fundamentals_pillar_summary(
 
     from config.training_universe import filter_recommendable
 
-    if preset in PRESET_EXCLUDED_SECTORS:
-        universe_raw = load_universe_raw()
-        sector_map = dict(zip(universe_raw["ticker"], universe_raw["sector"]))
-        matched = [
-            row["ticker"] for _, row in panel.iterrows()
-            if matches_screener_preset(
-                {c: row.get(c) for c in RATIO_FEATURES}, preset, sector=sector_map.get(row["ticker"]),
-            )
-        ]
-    else:
-        matched = [
-            row["ticker"] for _, row in panel.iterrows()
-            if matches_screener_preset({c: row.get(c) for c in RATIO_FEATURES}, preset)
-        ]
+    # [E1] Same collapse as the screener endpoint above -- see its comment.
+    sector_map = _sector_map()
+    matched = [
+        row["ticker"] for _, row in panel.iterrows()
+        if matches_screener_preset(
+            {c: row.get(c) for c in RATIO_FEATURES}, preset, sector=sector_map.get(row["ticker"]),
+        )
+    ]
     matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
 
     return {
@@ -453,7 +456,7 @@ async def get_fundamental_scores(ticker: str) -> FAScoresResponse:
     strategy_scores = {
         key: (
             None
-            if ticker_sector is not None and ticker_sector in PRESET_EXCLUDED_SECTORS.get(key, set())
+            if is_sector_excluded(key, ticker_sector)
             else fn(combined)
         )
         for key, fn in SCORE_FUNCTIONS.items()
@@ -482,7 +485,7 @@ async def get_fundamental_strategy_catalog() -> FAStrategyCatalogResponse:
 
 
 @router.get("/screener/changelog")
-async def get_screener_preset_changelog() -> dict:
+async def get_screener_preset_changelog() -> Dict[str, Any]:
     """Auditable record of in-place SCREENER_PRESETS threshold changes
     (features.fundamental_composites.SCREENER_PRESET_CHANGELOG) — so an
     old backtest report referencing preset='X' can be cross-checked
@@ -504,7 +507,7 @@ _THESIS_LOWER_IS_BETTER = {"debt_to_equity", "pe_ratio"}
 
 
 @router.get("/{ticker}/thesis/pdf")
-async def get_fundamental_thesis_pdf(ticker: str):
+async def get_fundamental_thesis_pdf(ticker: str) -> Response:
     """
     F4 — server-side PDF export of the Thesis Builder screen: same real
     Strengths/Risks sentences as thesis.js (real sector-relative z-scores
@@ -522,7 +525,12 @@ async def get_fundamental_thesis_pdf(ticker: str):
     if row is None:
         raise HTTPException(status_code=404, detail=f"No ratio data for {ticker} yet")
 
-    ratios = {c: (None if c not in row or pd.isna(row[c]) else float(row[c])) for c in RATIO_FEATURES}
+    # quality_score/growth_score treat a missing ratio as a failed input
+    # (see features/fundamental.py), so None values are expected here and the
+    # annotation says so rather than claiming every ratio is present.
+    ratios: Dict[str, Any] = {
+        c: (None if c not in row or pd.isna(row[c]) else float(row[c])) for c in RATIO_FEATURES
+    }
     quality = quality_score(ratios)
     growth = growth_score(ratios)
 
@@ -709,7 +717,7 @@ def _validate_and_check_pit(record: FundamentalsWrite) -> None:
         )
 
 
-def _build_fundamentals_row(record: FundamentalsWrite, source: str) -> list:
+def _build_fundamentals_row(record: FundamentalsWrite, source: str) -> List[Any]:
     """
     Shared row-builder for both /write and /write_batch — SPEC-PIPE-003
     check + A12/A36's range-validation gate + provenance stamping, in one
