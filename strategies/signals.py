@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -235,6 +236,168 @@ def delete_run_signals(
         ).fetchone()[0]
         c.execute("DELETE FROM strategy_signals WHERE run_id = ?", [run_id])
     return int(before)
+
+
+@dataclass
+class SupersedeReport:
+    """What a supersede pass found and did.
+
+    `identical` is the answer to the question the contract exists to ask: did
+    regenerating this strategy over this window reproduce the same decisions?
+    None means there was no prior set to compare against.
+    """
+
+    prior_runs: List[str]
+    deleted_rows: int
+    kept_rows: int
+    identical: Optional[bool]
+    added: int = 0
+    removed: int = 0
+    detail_changed: int = 0
+    examples: List[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        if not self.prior_runs:
+            return f"no prior backtest signals in window; kept {self.kept_rows} rows"
+        if self.identical:
+            return (
+                f"regenerated identically to {len(self.prior_runs)} prior run(s); "
+                f"superseded {self.deleted_rows} duplicate rows, kept {self.kept_rows}"
+            )
+        return (
+            f"DIFFERS from prior run(s) {self.prior_runs}: +{self.added} new, "
+            f"-{self.removed} gone, {self.detail_changed} changed in rank/size/conviction; "
+            f"superseded {self.deleted_rows} rows, kept {self.kept_rows}"
+        )
+
+
+def supersede_backtest_signals(
+    *,
+    strategy_key: str,
+    run_id: str,
+    start_date: Any,
+    end_date: Any,
+    db_path: Optional[Path] = None,
+    conn: Any = None,
+) -> SupersedeReport:
+    """Keep exactly ONE set of backtest signals per strategy per date window.
+
+    Regenerating a backtest over a period it has already covered previously
+    left both sets in the table: run_id is part of the primary key, so a
+    second run of the same strategy over the same dates collided with
+    nothing and simply doubled the rows. Every consumer that reads the
+    ledger by (strategy, date) then had to pick a run, and "the signals for
+    this strategy on this date" stopped having one answer.
+
+    This makes the newest run authoritative for the window it covered: prior
+    runs' rows in [start_date, end_date] are compared against the new set,
+    reported on, and then deleted.
+
+    SCOPE, DELIBERATELY NARROW -- backtest source only.
+    -------------------------------------------------
+    Live and paper rows are never touched. They record what was actually
+    acted on, on a day that has already happened; superseding them would be
+    rewriting history rather than deduplicating a recomputation. That
+    asymmetry is the whole reason this is not simply a narrower primary key.
+
+    ACROSS VERSIONS ON PURPOSE
+    --------------------------
+    The window is keyed on strategy_key, not (strategy_key, version). If the
+    definition was revised between runs, the older version's backtest rows
+    for these dates are stale output of a definition that is no longer in
+    force -- keeping them is the duplication this closes. The comparison
+    still reports what changed, so a version bump that silently altered the
+    selection is visible rather than absorbed.
+    """
+    if not run_id or run_id == NO_RUN:
+        raise SignalError("supersede_backtest_signals requires a real run_id")
+    start, end = _as_date(start_date), _as_date(end_date)
+    if start > end:
+        raise SignalError(f"start_date {start} is after end_date {end}")
+
+    with _conn(db_path, conn) as c:
+        window = (
+            "FROM strategy_signals WHERE strategy_key = ? AND source = 'backtest' "
+            "AND signal_date >= ? AND signal_date <= ?"
+        )
+        base = [strategy_key, start, end]
+
+        prior_runs = [
+            r[0]
+            for r in c.execute(
+                f"SELECT DISTINCT run_id {window} AND run_id <> ? ORDER BY 1", base + [run_id]
+            ).fetchall()
+        ]
+        current = c.execute(
+            f"SELECT signal_date, ticker, action, rank, size_multiplier, conviction "
+            f"{window} AND run_id = ?",
+            base + [run_id],
+        ).fetchall()
+        kept = len(current)
+
+        if not prior_runs:
+            return SupersedeReport(
+                prior_runs=[], deleted_rows=0, kept_rows=kept, identical=None
+            )
+
+        prior = c.execute(
+            f"SELECT signal_date, ticker, action, rank, size_multiplier, conviction "
+            f"{window} AND run_id <> ?",
+            base + [run_id],
+        ).fetchall()
+
+        report = _compare_signal_sets(prior, current)
+        report.prior_runs = prior_runs
+        report.kept_rows = kept
+
+        c.execute(f"DELETE {window} AND run_id <> ?", base + [run_id])
+        report.deleted_rows = len(prior)
+
+    if report.identical:
+        logger.info("supersede %s: %s", strategy_key, report.summary())
+    else:
+        # Not a warning about a failure -- a regeneration that changes the
+        # decisions is legitimate (revised definition, corrected data). It is
+        # logged loudly because it is the one outcome nobody should discover
+        # later from a changed chart.
+        logger.warning("supersede %s: %s", strategy_key, report.summary())
+    return report
+
+
+def _compare_signal_sets(prior: Sequence[Any], current: Sequence[Any]) -> SupersedeReport:
+    """Decision-level diff of two signal sets.
+
+    Identity is (date, ticker, action) -- what the strategy decided. rank,
+    size_multiplier and conviction are compared separately as `detail_changed`
+    rather than folded into identity, because a run that picks the same
+    stocks on the same days but sizes them differently is a different
+    finding from one that picks different stocks, and collapsing the two
+    would report both as "changed" with no way to tell which happened.
+    """
+
+    def decisions(rows: Sequence[Any]) -> Dict[Any, Any]:
+        return {(r[0], r[1], r[2]): (r[3], r[4], r[5]) for r in rows}
+
+    old, new = decisions(prior), decisions(current)
+    added = sorted(set(new) - set(old))
+    removed = sorted(set(old) - set(new))
+    changed = [k for k in set(old) & set(new) if old[k] != new[k]]
+
+    examples: List[str] = []
+    for label, keys in (("+", added), ("-", removed), ("~", changed)):
+        for k in keys[:3]:
+            examples.append(f"{label}{k[0]} {k[1]} {k[2]}")
+
+    return SupersedeReport(
+        prior_runs=[],
+        deleted_rows=0,
+        kept_rows=len(current),
+        identical=not (added or removed or changed),
+        added=len(added),
+        removed=len(removed),
+        detail_changed=len(changed),
+        examples=examples[:9],
+    )
 
 
 def signal_counts(

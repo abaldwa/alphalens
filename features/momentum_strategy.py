@@ -39,7 +39,10 @@ from typing import Dict, List, Optional, Set
 
 import pandas as pd
 
-from backtest.momentum_tax import LTCG_HOLDING_DAYS, LTCG_RATE, STCG_RATE
+# Tax regime from core/tax.py -- the one declaration every channel taxes
+# through. This is a live path (features/momentum_live.py), so it must not
+# read the rates from the module being retired with MomentumBacktester.
+from backtest.core.tax import LTCG_HOLDING_DAYS, LTCG_RATE, STCG_RATE
 from features.momentum_signal import (
     downtrend_tickers,
     orthogonalize_momentum_vs_factors,

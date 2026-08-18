@@ -34,9 +34,15 @@ Simplifications, stated explicitly rather than silently assumed:
 
 from typing import Dict, List
 
-STCG_RATE = 0.20
-LTCG_RATE = 0.125
-LTCG_HOLDING_DAYS = 365
+# [2026-08-18] The rates and the LTCG threshold are the TAX REGIME, and a
+# regime can only be declared once. They lived here AND in core/tax.py as two
+# identical literals, so a rate change applied to one would silently leave the
+# other taxing at the old regime -- and features/momentum_strategy.py, which
+# runs on the LIVE momentum path, imported them from here rather than from the
+# engine that every other channel taxes through. core/tax.py is now the single
+# declaration; these re-exports keep this module's existing importers working
+# while it is retired with MomentumBacktester (ML40-2.2/2.3).
+from backtest.core.tax import LTCG_HOLDING_DAYS, LTCG_RATE, STCG_RATE  # noqa: F401
 
 
 def compute_transaction_tax(txn: Dict) -> float:

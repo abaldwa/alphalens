@@ -87,6 +87,19 @@ class BacktestMetrics:
     # book, so the two channels' "post-tax" numbers were not the same measure.
     cagr_other_basis: Optional[float] = None
     cash_position_series: List[Dict] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
+    # A90: the mark-to-market portfolio value per recorded date, [{"date":...,
+    # "equity":...}, ...]. StrategyPortfolio has always computed this
+    # (portfolio.record_equity -> total_equity = cash + positions at market),
+    # but until now only the CASH half was carried into the result, so every
+    # consumer that wanted an equity curve either had nothing to draw or drew
+    # the cash series and mislabelled it. Cash alone is not the curve: a fully
+    # invested portfolio shows near-zero cash while its equity compounds, so
+    # plotting cash reads as a strategy that lost everything on day one.
+    #
+    # Persisted alongside cash_position_series rather than replacing it —
+    # they answer different questions (how much is deployed vs. what is it
+    # all worth), and the annual-reset ledger already reads the cash half.
+    equity_curve_series: List[Dict] = field(default_factory=list)
     avg_days_held: Optional[float] = None  # mean (exit_date - entry_date).days across closed trades; None if n_trades == 0
     # 2026-08-01 (Technical-strategy Momentum-parity reporting) — n_trades
     # above is closed-only (len(trade_pnls)); total_trades additionally
@@ -144,7 +157,43 @@ _TRADING_DAYS_PER_YEAR = 252
 _NEAR_ZERO_STD = 1e-9
 
 
-def sharpe_ratio(returns: pd.Series) -> Optional[float]:
+def infer_periods_per_year(index: Any) -> float:
+    """Observations per year implied by a curve's OWN date spacing.
+
+    Sharpe and Sortino annualize by sqrt(periods per year), so the factor has
+    to match the curve being measured. A daily equity curve is 252; a WEEKLY
+    momentum rebalance curve is ~52, and annualizing it at 252 overstates the
+    ratio by sqrt(252/52) ~ 2.2x. That mismatch is the entire reason
+    momentum_metrics.py grew a second Sharpe implementation instead of calling
+    this module's -- core's hardcoded 252 was correct for the daily curves the
+    orchestrator produces and wrong for every other cadence.
+
+    Inferring from real spacing rather than taking a declared cadence means a
+    curve with gaps (holidays, a suspended strategy) annualizes on what
+    actually happened, and no caller has to keep a cadence constant in sync
+    with the data it describes.
+
+    Falls back to the daily constant when there is too little to measure --
+    two observations cannot establish a cadence.
+
+    NOTE it returns ~261 for a business-daily curve, not 252: it measures
+    calendar spacing, and a year holds ~261 weekdays before NSE holidays are
+    removed. That is why sharpe_ratio still DEFAULTS to the 252 constant --
+    switching daily curves to inference would move every published Sharpe by
+    ~2% for no gain. Use this where the cadence is genuinely not daily.
+    """
+    stamps = pd.to_datetime(pd.Index(index))
+    if len(stamps) < 3:
+        return float(TRADING_DAYS_PER_YEAR)
+    span_days = (stamps[-1] - stamps[0]).days
+    if span_days <= 0:
+        return float(TRADING_DAYS_PER_YEAR)
+    return float((len(stamps) - 1) / (span_days / 365.25))
+
+
+def sharpe_ratio(
+    returns: pd.Series, periods_per_year: Optional[float] = None
+) -> Optional[float]:
     """Annualized daily-return Sharpe (rf=0). None with < 2 return
     observations or zero volatility (division-by-zero guard) — matches
     sortino_ratio's None-on-insufficient-data convention. 2026-07-26
@@ -155,17 +204,23 @@ def sharpe_ratio(returns: pd.Series) -> Optional[float]:
     equity) run's std comes out as float noise like 1e-16, not exact
     zero — an exact-equality guard let a meaningless mean-noise/std-noise
     ratio (e.g. -0.32 on a 0-trade run) through as if it were a real
-    Sharpe (found 2026-07-26 auditing the B4 technical template)."""
+    Sharpe (found 2026-07-26 auditing the B4 technical template)).
+
+    periods_per_year defaults to the 252-day daily basis this function has
+    always used, so every existing caller is unchanged. Pass
+    infer_periods_per_year(curve.index) for a curve that is not daily --
+    per-rebalance momentum curves in particular."""
     if len(returns) < 2:
         return None
     std = returns.std()
     if pd.isna(std) or std < _NEAR_ZERO_STD:
         return None
-    return float(returns.mean() / std * (_TRADING_DAYS_PER_YEAR**0.5))
+    ppy = _TRADING_DAYS_PER_YEAR if periods_per_year is None else periods_per_year
+    return float(returns.mean() / std * (ppy**0.5))
 
 
 def sortino_ratio(
-    returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR,
+    returns: pd.Series, periods_per_year: float = TRADING_DAYS_PER_YEAR,
 ) -> Tuple[Optional[float], Optional[str]]:
     """Like Sharpe but only penalizes downside deviation — recommended addition
     (BacktestUmbrellaPlan.md Truthful Review #8) since small/mid-cap Indian
@@ -457,6 +512,26 @@ def avg_winner_loser(
 
 
 
+def _equity_curve_to_series(equity_curve: Optional[pd.Series]) -> List[Dict]:
+    """pd.Series(index=date, value=equity) -> [{"date": "YYYY-MM-DD", "equity": float}].
+
+    NaNs are dropped rather than zero-filled: a date the portfolio could not
+    be marked on is missing data, and zero-filling it draws a cliff to zero
+    and back, which reads as a total loss that never happened.
+    """
+    if equity_curve is None or len(equity_curve) == 0:
+        return []
+    out: List[Dict] = []
+    for idx, value in equity_curve.items():
+        if value is None or not np.isfinite(float(value)):
+            continue
+        out.append({
+            "date": idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx),
+            "equity": round(float(value), 2),
+        })
+    return out
+
+
 def compute_metrics(
     equity_curve: pd.Series,
     cash_flows: List[Tuple[str, float]],  # [(date_str, amount), ...] incl. initial capital, SIP, tax outflows
@@ -579,6 +654,10 @@ def compute_metrics(
         total_tax_paid=_total_tax,
         cagr_other_basis=_other_cagr,
         cash_position_series=cash_position_series or [],
+        # Built from the same `equity_curve` this function already receives
+        # and measures everything else off, so the persisted series can never
+        # disagree with the CAGR/drawdown/Sharpe computed beside it.
+        equity_curve_series=_equity_curve_to_series(equity_curve),
         avg_days_held=(float(np.mean(holding_days)) if holding_days else None),
         total_trades=len(trade_pnls) + n_open_positions,
         avg_trade_duration_days=(
@@ -593,5 +672,5 @@ def compute_metrics(
 __all__ = [
     "BacktestMetrics", "calendar_cagr", "trading_day_cagr", "max_drawdown", "sharpe_ratio", "sortino_ratio",
     "calmar_ratio", "win_rate_and_profit_factor", "turnover_ratio", "benchmark_metrics",
-    "compute_metrics", "churn_factor", "xirr",
+    "compute_metrics", "churn_factor", "xirr", "infer_periods_per_year",
 ]

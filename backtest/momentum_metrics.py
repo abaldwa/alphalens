@@ -10,7 +10,7 @@ Churn Factor (reported as both a per-rebalance series and an annualized
 average — 2026-07-14 user decision).
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -341,7 +341,7 @@ def income_mode_summary(capital_resets: List[Dict], target_capital: float) -> Di
 
 
 def return_population_zscores(
-    returns_pct: List[Optional[float]], outlier_threshold: float = 3.0,
+    returns_pct: Sequence[Optional[float]], outlier_threshold: float = 3.0,
 ) -> Dict:
     """Channel-agnostic core of the outlier-detection math: given a list of
     per-trade % returns (None entries pass through as None, e.g. a trade

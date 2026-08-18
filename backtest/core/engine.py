@@ -1269,7 +1269,9 @@ class BacktestOrchestrator:
         # feature-log flush so all of this job's DB work sits in one tail
         # rather than being spread across the run's rebalance dates.
         if signal_recorder is not None:
-            signal_recorder.flush()
+            # finalize() = flush + supersede: one set of backtest signals per
+            # strategy per window, so a regenerated period does not leave two.
+            signal_recorder.finalize()
 
         with timer.phase("finalize"):
             result = self._finalize(

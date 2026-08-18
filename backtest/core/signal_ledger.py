@@ -51,7 +51,12 @@ from datetime import date as date_type
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from strategies.signals import NO_RUN, write_signals
+from strategies.signals import (
+    NO_RUN,
+    SupersedeReport,
+    supersede_backtest_signals,
+    write_signals,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +133,12 @@ class SignalLedgerRecorder:
         self.rows_written = 0
         self._buffer: List[Dict[str, Any]] = []
         self._schema_ensured = False
+        # The window this run actually emitted over, tracked here because
+        # finalize() supersedes prior runs within it and the recorder is the
+        # only object that sees every date. Buffer flushes must not lose it,
+        # so it is accumulated in record(), not derived from the buffer.
+        self._min_date: Optional[date_type] = None
+        self._max_date: Optional[date_type] = None
 
     def record(self, as_of_date: date_type, signals: Sequence[Any]) -> int:
         """Buffer one rebalance date's signals. Returns rows buffered.
@@ -143,13 +154,21 @@ class SignalLedgerRecorder:
         if not emitted:
             return 0
 
+        if self._min_date is None or as_of_date < self._min_date:
+            self._min_date = as_of_date
+        if self._max_date is None or as_of_date > self._max_date:
+            self._max_date = as_of_date
+
         # rank is the order the engine ACTUALLY acts in — buys are executed
         # sorted by descending conviction, so 1 is the position that gets
         # first claim on capital. It is derived from real ordering, not from
         # any ranking field the Signal does not have.
         by_action: Dict[str, int] = {}
         for signal in sorted(emitted, key=lambda s: -(getattr(s, "conviction", 0.0) or 0.0)):
-            action = getattr(signal, "action", None)
+            # `or ""` rather than None: this dict only counts per-action rank
+            # order, so the key just has to be consistent -- and a None key in a
+            # Dict[str, int] is a type error waiting to become a KeyError.
+            action = str(getattr(signal, "action", "") or "")
             by_action[action] = by_action.get(action, 0) + 1
             self._buffer.append(
                 signal_to_row(signal, as_of_date, channel=self.channel, rank=by_action[action])
@@ -186,6 +205,43 @@ class SignalLedgerRecorder:
             return 0
         self.rows_written += n
         return n
+
+    def finalize(self) -> Optional["SupersedeReport"]:
+        """Flush, then enforce ONE set of signals per strategy per window.
+
+        Called instead of flush() at the end of a run. The two steps are
+        deliberately one method: superseding before the final flush would
+        delete the prior run's rows and then, if the write failed, leave the
+        window with no signals at all. Flushing first means the new set is
+        durable before anything old is removed.
+
+        Returns None for live/paper (never superseded -- they are the record
+        of what was acted on) and for a run that emitted nothing.
+        """
+        self.flush()
+
+        if self.source != "backtest" or not self.run_id or self.run_id == NO_RUN:
+            return None
+        if self._min_date is None or self._max_date is None:
+            return None
+
+        try:
+            return supersede_backtest_signals(
+                strategy_key=self.strategy_key,
+                run_id=self.run_id,
+                start_date=self._min_date,
+                end_date=self._max_date,
+                db_path=self.db_path,
+            )
+        except Exception:
+            # Same rule as flush(): a completed run must not be destroyed by
+            # bookkeeping. A failed supersede leaves duplicates, which is
+            # recoverable; raising here would lose the run.
+            logger.exception(
+                "supersede failed for %s (run_id=%r); prior duplicates remain in the ledger",
+                self.strategy_key, self.run_id,
+            )
+            return None
 
     def _ensure_schema(self) -> None:
         """CREATE TABLE IF NOT EXISTS, once per recorder — the same pattern

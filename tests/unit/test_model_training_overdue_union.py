@@ -61,9 +61,20 @@ def test_mapped_but_never_registered_model_is_flagged_overdue(_isolated_model_tr
 
     _execute_model_training_job()
 
-    assert missing_model in triggered, (
+    # Assert the SCRIPT was queued, not the model NAME. _execute_model_training_job
+    # dedupes by script (`seen_scripts`) because one script can train several
+    # models -- train_deep_models covers both tft and bilstm -- so only one name
+    # of such a pair is ever passed to _trigger_model_retrain. Which one depends
+    # on the iteration order of `known_models`, a SET, so asserting on the name
+    # made this test fail or pass at random across processes (~1 run in 3).
+    # The A33 guarantee is that the missing model's training actually gets
+    # queued, and that is what the script-level assertion states.
+    missing_script = _MODEL_TRAINING_SCRIPT_MAP[missing_model]
+    triggered_scripts = {_MODEL_TRAINING_SCRIPT_MAP.get(name) for name in triggered}
+    assert missing_script in triggered_scripts, (
         f"'{missing_model}' is mapped in _MODEL_TRAINING_SCRIPT_MAP but absent from registry.json — "
-        "it must still be queued as overdue ('never trained'), not silently skipped"
+        f"its training script '{missing_script}' must still be queued as overdue "
+        f"('never trained'), not silently skipped. Queued: {sorted(triggered)}"
     )
 
 
