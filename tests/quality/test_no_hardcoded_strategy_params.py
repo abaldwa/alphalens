@@ -78,23 +78,13 @@ LIVE_PATH_ROOTS: List[str] = [
 
 # Known offenders -- asserted EXACTLY, so fixing one without deleting its
 # entry fails too. Same contract as test_one_generator_per_channel.py.
-KNOWN_VIOLATIONS: frozenset[Tuple[str, str, str]] = frozenset({
-    (
-        "features/momentum_live.py",
-        "LOOKBACK_MONTHS",
-        "PHASE-C1: read lookback_months from strategy_registry.definition_json",
-    ),
-    (
-        "features/momentum_live.py",
-        "TOP_N",
-        "PHASE-C1: read top_n from strategy_registry.definition_json",
-    ),
-    (
-        "features/momentum_live.py",
-        "GRACE_CYCLES",
-        "PHASE-C1: read grace_cycles from strategy_registry.definition_json",
-    ),
-})
+#
+# EMPTY as of C1 (2026-08-18): features/momentum_live.py now reads top_n,
+# lookback_months and grace_cycles from strategy_registry.definition_json.
+# The rule below is therefore absolute -- there is no longer any tolerated
+# hardcoded strategy parameter in a live path, and the first one to appear
+# fails this gate outright.
+KNOWN_VIOLATIONS: frozenset[Tuple[str, str, str]] = frozenset()
 
 
 def _ticket_for(module: str, param: str) -> str:

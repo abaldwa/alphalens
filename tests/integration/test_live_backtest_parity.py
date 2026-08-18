@@ -224,12 +224,13 @@ def build_momentum_parity_report(
             f"{cfg['rank_start']}-{cfg['rank_end']} at {as_of_date}"
         )
 
-    # The live path's own parameters. momentum_live has no per-strategy
-    # top_n -- that IS the §1.3 defect (one module constant applied to every
-    # band). Using it here means the diff measures the SELECTION RULE, not a
-    # parameter mismatch we introduced ourselves.
-    top_n = momentum_live.TOP_N
-    lookback_months = momentum_live.LOOKBACK_MONTHS
+    # The live path's own parameters, read the way the live path now reads
+    # them (C1: from strategy_registry.definition_json). Taking them from the
+    # same source the live path uses means this diff measures the SELECTION
+    # RULE and never a parameter mismatch the harness introduced itself.
+    declared = momentum_live.strategy_params(strategy_id)
+    top_n = int(declared["top_n"])
+    lookback_months = int(declared["lookback_months"])
 
     # Panel wide enough for the trailing window, from the same universe.
     start = (pd.Timestamp(as_of_date) - pd.Timedelta(days=lookback_months * 31 + 120)).date()
@@ -312,7 +313,7 @@ def momentum_live_default_strategy_id() -> str:
 def momentum_live_default_top_n() -> int:
     from features import momentum_live
 
-    return momentum_live.TOP_N
+    return int(momentum_live.strategy_params(momentum_live_default_strategy_id())["top_n"])
 
 
 def test_harness_feeds_both_paths_the_same_inputs(momentum_report):
@@ -388,7 +389,7 @@ def test_the_harness_would_detect_a_filter_induced_divergence(conn, as_of_date):
 
     def _held(floor: float) -> Set[str]:
         adapter = MomentumAdapter(
-            price_panel=panel, top_n=momentum_live.TOP_N, lookback_months=6,
+            price_panel=panel, top_n=momentum_live_default_top_n(), lookback_months=6,
             volume_panel=volume, min_adtv_cr=floor,
         )
         return {
@@ -410,16 +411,17 @@ def test_the_harness_would_detect_a_filter_induced_divergence(conn, as_of_date):
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "PHASE-C1: features/momentum_live.py cannot express a filtered "
-        "category at all. Its STRATEGIES entries carry only band_id, label, "
-        "rank_start, rank_end and strategy_id, while strategy_registry "
+        "PHASE-C2: features/momentum_live.py cannot APPLY a filtered "
+        "category. C1 gave it the registry's declared parameters and an "
+        "explicit category=all_risk, but it still has no filter chain to "
+        "run, while strategy_registry "
         "declares four cumulative categories (all_risk, balanced, "
         "risk_managed, max_defensive). Three of the four are unrepresentable "
         "live, so a balanced or max_defensive strategy would run COMPLETELY "
         "UNFILTERED in production while its backtest applied the whole chain. "
-        "When C1 wires the live path to definition_json, this becomes an "
-        "XPASS and strict=True fails the run: delete the marker and keep the "
-        "assertion."
+        "When C2 routes the live path through select_buy_pool, this becomes "
+        "an XPASS and strict=True fails the run: delete the marker and keep "
+        "the assertion."
     ),
 )
 def test_live_path_can_express_every_registry_category():

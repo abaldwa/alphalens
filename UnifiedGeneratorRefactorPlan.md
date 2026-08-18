@@ -661,3 +661,73 @@ filtered nothing.
 
 Next per §9: **C1** — wire `momentum_live` to `definition_json`, which the
 xfail in the harness is written to detect the moment it lands.
+
+
+---
+
+## 11. C1 delivered — momentum live reads the registry (2026-08-18)
+
+`features/momentum_live.py` no longer declares `TOP_N`, `LOOKBACK_MONTHS` or
+`GRACE_CYCLES`. Each of the 7 live strategies now carries a `registry_key`,
+and `strategy_params()` reads `top_n` / `lookback_months` / `grace_cycles`
+from that row's `definition_json`.
+
+### Why this was far safer than §5's risk table assumed
+
+Two facts checked before writing any code:
+
+1. **All 7 live strategies map onto existing registry rows whose declared
+   values are IDENTICAL to the constants removed** (`top_n=15`,
+   `lookback_months=6`, `grace_cycles=2`). C1 is therefore a pure rewiring:
+   it changes where the answer comes from, not what the answer is. No live
+   pick moves today.
+2. **`momentum_trades` and `momentum_contributions` are both EMPTY.** The
+   live `strategy_id` values are persisted in those tables, so remapping
+   them costs nothing right now and would have been a data migration once
+   real trades accumulated. This was the right moment to do it.
+
+§5 rated C as "live Momentum picks change / medium risk". For C1 alone that
+is not true, and the reason is worth keeping: the risk in C is concentrated
+entirely in **C2**, where the filter chain starts running.
+
+### The one deliberate behaviour change: it now fails loudly
+
+`strategy_params()` raises `StrategyParamsUnavailable` when the registry has
+no active row, or when a row declares only some of the three parameters.
+There is **no fallback default**, and that is the whole point — a fallback is
+what made the constants dangerous. A run with a silent default proceeds,
+looks healthy, and trades parameters nobody approved. Stopping is loud and
+recoverable; trading the wrong parameters is neither.
+
+The partial-row case is rejected for the same reason: a row declaring
+`top_n` but not `grace_cycles` would supply two real values and one invented
+one, which is worse than supplying none.
+
+### Gate movements
+
+- `tests/quality/test_no_hardcoded_strategy_params.py` — `KNOWN_VIOLATIONS`
+  is now **empty**. The rule is absolute: the next hardcoded live parameter
+  fails outright.
+- The parity harness reads parameters through `strategy_params()` too, so
+  its diff can never be an artefact of the harness and the live path
+  disagreeing about `top_n`.
+- The C-phase xfail moves from C1 to **C2** and its assertion is unchanged:
+  `momentum_live` now DECLARES `category="all_risk"` honestly, but still
+  cannot APPLY the other three categories' filter chains.
+
+### Tests
+
+`tests/unit/test_momentum_live_registry_params.py` (7 tests) covers the
+contract, including the two failure modes above. The 5 existing
+`test_momentum_live.py` tests that monkeypatched the constants now patch
+`strategy_params` instead — their need was always legitimate (a 29-day
+fixture cannot exercise a 6-month lookback), so only the injection point
+moved, onto the same function production reads through.
+
+### Remaining in Phase C
+
+**C2** — replace `compute_daily_ranking`'s inline sort with
+`rank_universe` + `select_buy_pool`, which is where the live picks actually
+change and where §5's medium risk really lives. Note from §10: the ADTV
+floor does not bind at current parameters, so C2 must be reviewed on the
+filter chain it enables, not on a same-day diff that will likely show zero.

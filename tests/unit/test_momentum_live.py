@@ -46,6 +46,25 @@ def _patch_momentum(monkeypatch, fn):
 
 
 
+def _patch_params(monkeypatch, **overrides):
+    """Override the registry-declared parameters for one test.
+
+    [C1, 2026-08-18] These tests used to `monkeypatch.setattr(ml, "TOP_N", 1)`.
+    Those module constants are gone: features/momentum_live.py now reads
+    top_n / lookback_months / grace_cycles from
+    strategy_registry.definition_json, so a live strategy can no longer
+    silently run parameters other than the ones its backtest was approved on.
+
+    The tests' need is unchanged and legitimate -- a 29-day fixture cannot
+    exercise a 6-month lookback, and a 3-ticker universe cannot exercise a
+    top-15 cut -- so the injection point moves to the same function the
+    production path reads through, rather than the constants it no longer has.
+    """
+    declared = {"top_n": 15, "lookback_months": 6, "grace_cycles": 2}
+    declared.update(overrides)
+    monkeypatch.setattr(ml, "strategy_params", lambda _strategy_id: dict(declared))
+
+
 def _seed_ohlcv(db_path, ticker, date_str, close):
     with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
         conn.execute(
@@ -73,7 +92,7 @@ def normalised_db(tmp_path):
 
 class TestComputeDailyRanking:
     def test_matches_manual_trailing_return(self, normalised_db, monkeypatch):
-        monkeypatch.setattr(ml, "LOOKBACK_MONTHS", 1)  # 21 trading days -> fits a 29-day fixture
+        _patch_params(monkeypatch, lookback_months=1)  # 21 trading days -> fits a 29-day fixture
         dates = pd.bdate_range("2026-01-01", periods=30)
         _seed_daily_series(normalised_db, "AAA", dates, [100] * 29 + [150])  # +50%
         _seed_daily_series(normalised_db, "BBB", dates, [100] * 29 + [110])  # +10%
@@ -86,8 +105,7 @@ class TestComputeDailyRanking:
         assert df.set_index("ticker").loc["AAA", "momentum_return"] == pytest.approx(0.5)
 
     def test_top_n_flag(self, normalised_db, monkeypatch):
-        monkeypatch.setattr(ml, "TOP_N", 1)
-        monkeypatch.setattr(ml, "LOOKBACK_MONTHS", 1)
+        _patch_params(monkeypatch, top_n=1, lookback_months=1)
         dates = pd.bdate_range("2026-01-01", periods=30)
         _seed_daily_series(normalised_db, "AAA", dates, [100] * 29 + [150])
         _seed_daily_series(normalised_db, "BBB", dates, [100] * 29 + [110])
@@ -243,8 +261,7 @@ class TestDecideGraceTransitionsRegressionAgainstBacktester:
 
 class TestComputeRebalanceSuggestions:
     def test_mixed_add_exit_grace_hold(self, normalised_db, monkeypatch):
-        monkeypatch.setattr(ml, "TOP_N", 2)
-        monkeypatch.setattr(ml, "LOOKBACK_MONTHS", 1)
+        _patch_params(monkeypatch, top_n=2, lookback_months=1)
         dates = pd.bdate_range("2026-01-01", periods=30)
         # AAA, BBB will rank top-2 (highest returns); CCC ranks lowest.
         _seed_daily_series(normalised_db, "AAA", dates, [100] * 29 + [150])
@@ -269,8 +286,7 @@ class TestComputeRebalanceSuggestions:
         assert by_ticker["CCC"]["grace_remaining"] == 2
 
     def test_grace_exhausted_produces_exit(self, normalised_db, monkeypatch):
-        monkeypatch.setattr(ml, "TOP_N", 1)
-        monkeypatch.setattr(ml, "LOOKBACK_MONTHS", 1)
+        _patch_params(monkeypatch, top_n=1, lookback_months=1)
         dates = pd.bdate_range("2026-01-01", periods=30)
         _seed_daily_series(normalised_db, "AAA", dates, [100] * 29 + [150])
         _seed_daily_series(normalised_db, "BBB", dates, [100] * 29 + [101])
@@ -288,8 +304,7 @@ class TestComputeRebalanceSuggestions:
         assert by_ticker["BBB"]["grace_remaining"] == 0
 
     def test_empty_portfolio_suggests_all_adds(self, normalised_db, monkeypatch):
-        monkeypatch.setattr(ml, "TOP_N", 2)
-        monkeypatch.setattr(ml, "LOOKBACK_MONTHS", 1)
+        _patch_params(monkeypatch, top_n=2, lookback_months=1)
         dates = pd.bdate_range("2026-01-01", periods=30)
         _seed_daily_series(normalised_db, "AAA", dates, [100] * 29 + [150])
         _seed_daily_series(normalised_db, "BBB", dates, [100] * 29 + [140])

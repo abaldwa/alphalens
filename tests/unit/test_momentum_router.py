@@ -63,7 +63,15 @@ class TestMomentumSchema:
 class TestUniverse:
     def test_falls_back_to_live_compute_when_no_snapshot_row(self, client, db_path, monkeypatch):
         monkeypatch.setattr(momentum_router.momentum_live, "rank_band_tickers", lambda *a, **kw: ["AAA", "BBB"])
-        monkeypatch.setattr(momentum_router.momentum_live, "LOOKBACK_MONTHS", 1)
+        # [C1, 2026-08-18] momentum_live.LOOKBACK_MONTHS is gone -- the live
+        # path now reads lookback_months from strategy_registry. The fixture
+        # is 30 business days, which cannot exercise the declared 6-month
+        # lookback, so the override moves to the function production reads
+        # through rather than to a constant that no longer exists.
+        monkeypatch.setattr(
+            momentum_router.momentum_live, "strategy_params",
+            lambda _strategy_id: {"top_n": 15, "lookback_months": 1, "grace_cycles": 2},
+        )
         import pandas as pd
         dates = pd.bdate_range("2026-01-01", periods=30)
         for d in dates:
