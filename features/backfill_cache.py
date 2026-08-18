@@ -28,9 +28,12 @@ Usage (feature_backfill.py)
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import pandas as pd
+
+if TYPE_CHECKING:  # import-time cycle: datastore.client is a runtime-only dep here
+    from datastore.client import DataStoreClient
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +64,7 @@ class BackfillDataCache:
         Latest date in the backfill — pre-load fetches history up to here.
     """
 
-    def __init__(self, client, tickers: List[str], to_date: datetime, n_workers: int = 1) -> None:
+    def __init__(self, client: "DataStoreClient", tickers: List[str], to_date: datetime, n_workers: int = 1) -> None:
         """
         n_workers is accepted for backward compatibility with existing call
         sites but no longer used: the pre-load used to thread ~3 requests

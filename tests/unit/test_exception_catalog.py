@@ -34,7 +34,17 @@ def test_location_points_at_except_line(entry):
         f"({len(lines)} lines)"
     )
     target_line = lines[line_no - 1]
-    assert "except" in target_line, (
+    # [2026-08-18] Was `"except" in target_line`, a substring test that any
+    # line CONTAINING the word satisfied. The
+    # daily_pipeline.py:2781 entry had already drifted onto the comment
+    # "# the stale job, caught by the bare except below)." and passed for
+    # months on the strength of that comment's own wording -- a drift
+    # detector defeated by prose describing the thing it was meant to find.
+    #
+    # An `except` STATEMENT starts the line (modulo indentation) and ends in
+    # a colon, so anchoring to that is what actually pins the entry.
+    stripped = target_line.strip()
+    assert stripped.startswith("except") and stripped.endswith(":"), (
         f"{entry.location}: expected an 'except' statement, found "
         f"{target_line!r} — catalog entry has drifted, update its "
         "location or the underlying code reference"

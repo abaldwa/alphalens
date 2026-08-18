@@ -36,12 +36,18 @@ below reads `macro_indicators` directly for that reason.
 
 import logging
 from datetime import date as date_type
-from typing import Optional, Union
+from pathlib import Path
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# np.nan is typed as Any by this numpy's stubs; bind it once so the many
+# "no data / degenerate window" early returns stay honestly typed as float.
+_NAN: float = float(np.nan)
+
 
 MACRO_FEATURES = [
     "india_vix",
@@ -77,7 +83,7 @@ _INGESTED_INDICATORS = {
 def load_macro_indicators(
     as_of: Union[str, date_type],
     lookback_days: int = 30,
-    db_path=None,
+    db_path: Optional[Path] = None,
 ) -> pd.DataFrame:
     """
     Read `macro_indicators` directly from DuckDB for [as_of - lookback_days, as_of].
@@ -132,11 +138,13 @@ def _indicator_series(macro_indicators: pd.DataFrame, name: str) -> pd.Series:
     return sub.set_index("date")["value"]
 
 
-def _level_and_change(series: pd.Series, as_of: pd.Timestamp, lookback: int) -> tuple:
+def _level_and_change(
+    series: pd.Series, as_of: pd.Timestamp, lookback: int
+) -> Tuple[float, float]:
     """Latest value as-of `as_of`, and its change vs `lookback` observations earlier."""
     s = series[series.index <= as_of]
     if s.empty:
-        return np.nan, np.nan
+        return _NAN, _NAN
     latest = float(s.iloc[-1])
     if len(s) <= lookback:
         return latest, np.nan
@@ -146,20 +154,22 @@ def _level_and_change(series: pd.Series, as_of: pd.Timestamp, lookback: int) -> 
 def _trailing_sum(series: pd.Series, as_of: pd.Timestamp, window: int) -> float:
     s = series[series.index <= as_of]
     if s.empty:
-        return np.nan
+        return _NAN
     return float(s.iloc[-window:].sum())
 
 
 def _pct_return(close: pd.Series, window: int) -> float:
     if len(close) <= window:
-        return np.nan
+        return _NAN
     base = close.iloc[-1 - window]
     if base == 0 or pd.isna(base):
-        return np.nan
+        return _NAN
     return float(close.iloc[-1] / base - 1)
 
 
-def _breadth_metrics(universe_ohlcv: pd.DataFrame, as_of: pd.Timestamp) -> tuple:
+def _breadth_metrics(
+    universe_ohlcv: pd.DataFrame, as_of: pd.Timestamp
+) -> Tuple[float, float]:
     """
     Cross-sectional advance/decline ratio and % of universe above its 21d SMA.
 
@@ -169,7 +179,7 @@ def _breadth_metrics(universe_ohlcv: pd.DataFrame, as_of: pd.Timestamp) -> tuple
     panel = universe_ohlcv[universe_ohlcv["date"] <= as_of].sort_values(["ticker", "date"])
     today_mask = panel["date"] == as_of
     if not today_mask.any():
-        return np.nan, np.nan
+        return _NAN, _NAN
 
     prev_close = panel.groupby("ticker", sort=False)["close"].shift(1)
     chg = panel.loc[today_mask, "close"] - prev_close.loc[today_mask]

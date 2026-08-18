@@ -39,7 +39,7 @@ position state must compute it downstream.
 """
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -240,7 +240,7 @@ def _category_2_sma_ratios(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ===== Category 3: EMA Ratios =====
-def _category_3_ema_ratios(df: pd.DataFrame, ema_cache: dict) -> pd.DataFrame:
+def _category_3_ema_ratios(df: pd.DataFrame, ema_cache: Dict[int, pd.Series]) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
     for period in (8, 21, 55, 89):
         out[f"ema_{period}_ratio"] = _safe_div(df["close"], ema_cache[period])
@@ -281,7 +281,9 @@ def _category_4_oscillators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ===== Category 5: Trend Strength =====
-def _supertrend(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> tuple:
+def _supertrend(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Standard ATR Supertrend(10, 3). Sequential recurrence per TA convention
     (each bar's final bands depend on the prior bar's), computed once per
@@ -373,7 +375,7 @@ def _category_5_trend_strength(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ===== Category 6: Volatility =====
-def _category_6_volatility(df: pd.DataFrame, ema_cache: dict) -> pd.DataFrame:
+def _category_6_volatility(df: pd.DataFrame, ema_cache: Dict[int, pd.Series]) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
     atr14 = _grouped_talib_single(df, ["high", "low", "close"], talib.ATR, timeperiod=14)
     out["atr_14_pct"] = _safe_div(atr14, df["close"]) * 100
@@ -472,7 +474,7 @@ def _category_7_relative_strength(df: pd.DataFrame, benchmark: Optional[pd.DataF
 
 
 # ===== Category 8: Momentum Scores =====
-def _category_8_momentum_scores(df: pd.DataFrame, ema_cache: dict) -> pd.DataFrame:
+def _category_8_momentum_scores(df: pd.DataFrame, ema_cache: Dict[int, pd.Series]) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
     out["composite_momentum_5d"] = df.groupby("ticker", sort=False)["close"].pct_change(5)
     out["composite_momentum_21d"] = df.groupby("ticker", sort=False)["close"].pct_change(21)

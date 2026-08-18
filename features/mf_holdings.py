@@ -39,7 +39,7 @@ quarter_end_date discipline as P2.1's fundamentals/governance).
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -249,7 +249,7 @@ def _compute_mf_holdings_features_from_group(
     # scheme's full history back to its first-ever disclosure, beyond
     # what a bounded lookback window can see).
     all_months_sorted = sorted(ticker_history["month"].unique())
-    scheme_months: Dict[str, set] = {}
+    scheme_months: Dict[str, Set[str]] = {}
     for m in all_months_sorted:
         for s in ticker_history[ticker_history["month"] == m]["scheme_name"]:
             scheme_months.setdefault(s, set()).add(m)

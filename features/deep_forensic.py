@@ -149,7 +149,7 @@ Cluster E.2 follow-up (2026-07-07)
 import logging
 import math
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -158,7 +158,15 @@ from datastore.client import DataStoreClient
 from features.fundamental import _latest_close_on_or_before
 from systems.damodaran_valuation.lifecycle.classifier import _FINANCIAL_SERVICES_SECTORS
 
+if TYPE_CHECKING:  # backfill_cache imports feature modules at runtime
+    from features.backfill_cache import BackfillDataCache
+
 logger = logging.getLogger(__name__)
+
+# np.nan is typed as Any by this numpy's stubs; bind it once so the many
+# "no data / degenerate window" early returns stay honestly typed as float.
+_NAN: float = float(np.nan)
+
 
 # ── Feature catalog ──────────────────────────────────────────────────────────
 
@@ -220,7 +228,7 @@ def _benford_mad(values: np.ndarray) -> float:
     valid = values[~np.isnan(values)]
     valid = np.abs(valid[valid != 0])
     if len(valid) < 10:
-        return np.nan
+        return _NAN
     try:
         leading_digits = []
         for v in valid:
@@ -230,7 +238,7 @@ def _benford_mad(values: np.ndarray) -> float:
                     leading_digits.append(int(ch))
                     break
         if not leading_digits:
-            return np.nan
+            return _NAN
         observed = np.zeros(9)
         for d in leading_digits:
             if 1 <= d <= 9:
@@ -239,7 +247,7 @@ def _benford_mad(values: np.ndarray) -> float:
         expected = _benford_expected()
         return float(np.mean(np.abs(observed - expected)))
     except Exception:
-        return np.nan
+        return _NAN
 
 
 # ── Altman Z-Score ────────────────────────────────────────────────────────────
@@ -269,9 +277,9 @@ def _altman_z(
     """
     if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in
            [working_capital, retained_earnings, ebit, total_assets, total_liabilities, revenue, market_cap]):
-        return np.nan
+        return _NAN
     if abs(total_assets) < 1e-6:
-        return np.nan
+        return _NAN
     # total_liabilities <= 0 is either a data error or (when derived as
     # total_assets - total_equity, see caller) a negative-equity company —
     # X4 = market_cap / total_liabilities is undefined/meaningless in
@@ -279,7 +287,7 @@ def _altman_z(
     # the sign, producing a plausible-looking but wrong Z-score instead of
     # flagging the input as unusable (2026-07-19 full-codebase-review).
     if total_liabilities <= 0:
-        return np.nan
+        return _NAN
     try:
         x1 = working_capital / total_assets
         x2 = retained_earnings / total_assets
@@ -289,7 +297,7 @@ def _altman_z(
         z = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
         return float(z)
     except Exception:
-        return np.nan
+        return _NAN
 
 
 # ── Peer outlier score ────────────────────────────────────────────────────────
@@ -299,7 +307,7 @@ def _peer_outlier_z(value: float, peer_values: np.ndarray) -> float:
     """Z-score of a value within its peer group. Returns NaN if < 3 peers."""
     valid = peer_values[~np.isnan(peer_values)]
     if len(valid) < 3:
-        return np.nan
+        return _NAN
     mean = valid.mean()
     std = valid.std(ddof=0) + 1e-10
     return float((value - mean) / std)
@@ -318,8 +326,8 @@ def compute_deep_forensic_features(
     as_of: datetime,
     lookback_years: int = 3,
     sector_fundamentals: Optional[pd.DataFrame] = None,
-    pre_loaded_fundamentals=None,
-    pre_loaded_shareholding=None,
+    pre_loaded_fundamentals: Optional[List[Dict[str, Any]]] = None,
+    pre_loaded_shareholding: Optional[List[Dict[str, Any]]] = None,
     ticker_ohlcv: "Optional[pd.DataFrame]" = None,
     sector: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -381,7 +389,7 @@ def compute_deep_forensic_features(
     if latest is None:
         return result
 
-    def _get(row, *keys, default=np.nan):
+    def _get(row: Any, *keys: str, default: float = _NAN) -> float:
         for k in keys:
             v = row.get(k) if isinstance(row, dict) else getattr(row, k, None)
             if v is not None and not (isinstance(v, float) and math.isnan(v)):
@@ -663,7 +671,7 @@ def compute_deep_forensic_features_panel(
     tickers: List[str],
     as_of: datetime,
     lookback_years: int = 3,
-    data_cache=None,
+    data_cache: Optional["BackfillDataCache"] = None,
     ohlcv_panel: "Optional[pd.DataFrame]" = None,
     sector_map: "Optional[Dict[str, str]]" = None,
 ) -> pd.DataFrame:

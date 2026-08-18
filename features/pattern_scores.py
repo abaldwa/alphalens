@@ -22,7 +22,7 @@ All inputs are OHLCV prices (PITRule.NONE — always same-day knowable).
 """
 
 import logging
-from typing import List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -44,7 +44,7 @@ PATTERN_FEATURES: List[str] = [
 # ── Geometric helpers ─────────────────────────────────────────────────────────
 
 
-def _peak_valley_idx(prices: np.ndarray, order: int = 3) -> tuple:
+def _peak_valley_idx(prices: np.ndarray, order: int = 3) -> Tuple[np.ndarray, np.ndarray]:
     """Return indices of local peaks and valleys within order-bars window."""
     peaks = argrelextrema(prices, np.greater_equal, order=order)[0]
     valleys = argrelextrema(prices, np.less_equal, order=order)[0]
@@ -274,7 +274,7 @@ def _base_breakout_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray
 
 def _compute_row_pattern_scores(
     op: np.ndarray, hi: np.ndarray, lo: np.ndarray, cl: np.ndarray, vol: np.ndarray, end: int,
-) -> dict:
+) -> Dict[str, float]:
     """
     Compute the 6 pattern scores "as of" bar index `end - 1`, using only
     `[: end]` of each array — PITRule.NONE-safe for any `end`, not just

@@ -37,12 +37,18 @@ datastore/normalised/mf_holdings/*.parquet directly).
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
 
-from config.settings import DELIVERY_PCT_RANGE, FEATURES_DAILY_DIR, NULL_RATE_ALERT_THRESHOLD, RATIO_FEATURE_RANGE
+from config.settings import (
+    DELIVERY_PCT_RANGE,
+    FEATURES_DAILY_DIR,
+    MF_HOLDINGS_DIR,
+    NULL_RATE_ALERT_THRESHOLD,
+    RATIO_FEATURE_RANGE,
+)
 from config.universe import load_universe
 from datastore.client import DataStoreClient
 from features.calendar import CALENDAR_FEATURES, compute_calendar_features
@@ -62,7 +68,6 @@ from features.governance import (
 from features.intraday import INTRADAY_FEATURES, compute_intraday_features
 from features.macro_features import MACRO_FEATURES, compute_macro_features, load_macro_indicators
 from features.mf_holdings import (
-    MF_HOLDINGS_DIR,
     MF_HOLDINGS_FEATURES,
     compute_mf_holdings_features,
     compute_mf_holdings_features_panel,
@@ -77,6 +82,9 @@ from features.pattern_scores import PATTERN_FEATURES, compute_pattern_scores
 from features.real_economy_macro import REAL_ECONOMY_MACRO_FEATURES, compute_real_economy_macro_panel
 from features.deep_forensic import DEEP_FORENSIC_FEATURES, compute_deep_forensic_features_panel
 from systems.ml_signal_engine.models.hmm.regime_detector import HMM_REGIME_FEATURES, compute_hmm_regime_features
+
+if TYPE_CHECKING:  # backfill_cache imports feature modules at runtime
+    from features.backfill_cache import BackfillDataCache
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +126,10 @@ _EMPTY_OHLCV_COLUMNS = ["date", "ticker", "open", "high", "low", "close", "volum
 # multi-day backfill loop, and equally correct for the live daily
 # pipeline's one-call-per-cron-run pattern since the DuckDB file persists
 # across process restarts too.
-_fundamental_raw_cache: Optional[dict] = None
+_fundamental_raw_cache: Optional[Dict[Any, Any]] = None
 
 
-def _get_fundamental_raw_cache() -> dict:
+def _get_fundamental_raw_cache() -> Dict[Any, Any]:
     global _fundamental_raw_cache
     if _fundamental_raw_cache is None:
         _fundamental_raw_cache = load_fundamental_raw_cache()
@@ -143,10 +151,10 @@ def _get_fundamental_raw_cache() -> dict:
 # ticker for the rest of the process's life after a single transient error.
 # Only a successful (non-None) result is cached; a None result is retried
 # on the next call.
-_ever_fno_eligible_tickers: Optional[set] = None
+_ever_fno_eligible_tickers: Optional[Set[str]] = None
 
 
-def _get_ever_fno_eligible_tickers() -> Optional[set]:
+def _get_ever_fno_eligible_tickers() -> Optional[Set[str]]:
     global _ever_fno_eligible_tickers
     if _ever_fno_eligible_tickers is None:
         _ever_fno_eligible_tickers = load_ever_fno_eligible_tickers()
@@ -161,14 +169,14 @@ def _get_ever_fno_eligible_tickers() -> Optional[set]:
 # NOT cached as "confirmed no listing dates" so a transient error is
 # retried on the next date rather than permanently disabling the
 # not-yet-listed-ticker filter for the rest of the process.
-_listing_dates_cache: Optional[dict] = None
+_listing_dates_cache: Optional[Dict[str, datetime]] = None
 
 
-def _get_listing_dates(client: "DataStoreClient") -> dict:
+def _get_listing_dates(client: "DataStoreClient") -> Dict[str, datetime]:
     global _listing_dates_cache
     if not _listing_dates_cache:
         try:
-            fetched = client.get_listing_dates()
+            fetched: Dict[str, datetime] = client.get_listing_dates()
         except Exception as exc:
             logger.error(
                 "FEATURE_BUILD_DEGRADED: could not fetch listing_dates for active-ticker filtering "
@@ -273,7 +281,7 @@ _BENCHMARK_INDEX_NAMES = {
 
 
 def _fetch_benchmark_index_closes(
-    client, from_date, to_date,
+    client: DataStoreClient, from_date: datetime, to_date: datetime,
 ) -> Dict[str, pd.Series]:
     """Real per-index close series from index_ohlcv, keyed by the same
     short names BENCHMARK_TICKERS uses. An index with no rows (or a failed
@@ -309,7 +317,10 @@ def _build_benchmark_wide(
         # Every proxy missing but real index data present — build the frame
         # off the index dates alone rather than returning None (which would
         # blank Category 7 entirely).
-        all_dates = sorted({d for s in index_closes.values() for d in s.index})
+        # index_closes is necessarily non-empty here (the both-empty case
+        # returned above); the local rebind is purely for the type checker.
+        closes = index_closes or {}
+        all_dates = sorted({d for s in closes.values() for d in s.index})
         wide = pd.DataFrame({"date": pd.to_datetime(all_dates)})
     else:
         wide = benchmark_panel.pivot_table(index="date", columns="ticker", values="close").reset_index()
@@ -383,16 +394,18 @@ def _validate_feature_matrix(matrix: pd.DataFrame) -> None:
     # doesn't false-positive on differently-shaped "_ratio"-suffixed
     # features elsewhere (e.g. macro's advance_decline_ratio, which can
     # legitimately be > 10 or < 0.1 in a lopsided breadth day).
-    lo, hi = RATIO_FEATURE_RANGE
+    ratio_lo, ratio_hi = RATIO_FEATURE_RANGE  # distinct names: `lo`/`hi` above are the int delivery-pct bounds
     _FRACTION_RATIO_COLS = {"body_to_range_ratio"}  # bounded [0,1]; not a price ratio
     for col in [c for c in CORE_TECHNICAL_FEATURES if c.endswith("_ratio") and c not in _FRACTION_RATIO_COLS]:
         vals = matrix[col].dropna()
-        bad = vals[(vals < lo) | (vals > hi)]
+        bad = vals[(vals < ratio_lo) | (vals > ratio_hi)]
         if not bad.empty:
-            logger.warning(f"{len(bad)}/{len(vals)} '{col}' values outside [{lo}, {hi}]")
+            logger.warning(f"{len(bad)}/{len(vals)} '{col}' values outside [{ratio_lo}, {ratio_hi}]")
 
 
-def _run_pool_over_chunks(worker_fn, worker_args_list: list, panel_workers: int) -> list:
+def _run_pool_over_chunks(
+    worker_fn: Callable[[Any], Any], worker_args_list: List[Any], panel_workers: int
+) -> List[Any]:
     """
     Generic BLAS-safe spawn-pool runner, factored out of
     `_compute_chunked_ticker_independent_panels` [2026-07-29] so the
@@ -460,7 +473,7 @@ def _chunk_tickers(tickers: List[str]) -> List[List[str]]:
     return chunks
 
 
-def _governance_chunk_worker(args: "tuple") -> pd.DataFrame:
+def _governance_chunk_worker(args: Tuple[Any, ...]) -> pd.DataFrame:
     """Picklable, module-level worker: one ticker chunk's governance panel."""
     client, chunk_tickers, as_of, data_cache, chunk_ohlcv = args
     return compute_governance_features_panel(
@@ -472,7 +485,7 @@ def compute_governance_features_panel_chunked(
     client: DataStoreClient,
     tickers: List[str],
     as_of: datetime,
-    data_cache=None,
+    data_cache: Optional["BackfillDataCache"] = None,
     ohlcv_panel: Optional[pd.DataFrame] = None,
     panel_workers: int = 1,
 ) -> pd.DataFrame:
@@ -512,7 +525,7 @@ def compute_governance_features_panel_chunked(
     return pd.concat(non_empty, ignore_index=True)
 
 
-def _corp_action_chunk_worker(args: "tuple") -> pd.DataFrame:
+def _corp_action_chunk_worker(args: Tuple[Any, ...]) -> pd.DataFrame:
     """Picklable, module-level worker: one ticker chunk's corp-action panel."""
     client, chunk_tickers, as_of, listing_dates, data_cache, chunk_ohlcv = args
     return compute_corporate_action_features_panel(
@@ -525,8 +538,8 @@ def compute_corporate_action_features_panel_chunked(
     client: DataStoreClient,
     tickers: List[str],
     as_of: datetime,
-    listing_dates: Optional[dict] = None,
-    data_cache=None,
+    listing_dates: Optional[Dict[str, datetime]] = None,
+    data_cache: Optional["BackfillDataCache"] = None,
     ohlcv_panel: Optional[pd.DataFrame] = None,
     panel_workers: int = 1,
 ) -> pd.DataFrame:
@@ -566,7 +579,7 @@ def compute_corporate_action_features_panel_chunked(
     return pd.concat(non_empty, ignore_index=True)
 
 
-def _mf_holdings_chunk_worker(args: "tuple") -> pd.DataFrame:
+def _mf_holdings_chunk_worker(args: Tuple[Any, ...]) -> pd.DataFrame:
     """
     Picklable, module-level worker: one ticker chunk's mf_holdings
     per-ticker feature records — deliberately WITHOUT the
@@ -591,7 +604,7 @@ def _mf_holdings_chunk_worker(args: "tuple") -> pd.DataFrame:
 def compute_mf_holdings_features_panel_chunked(
     tickers: List[str],
     as_of: datetime,
-    tier_map: Optional[dict] = None,
+    tier_map: Optional[Dict[str, Any]] = None,
     superstar_holdings: Optional[pd.DataFrame] = None,
     holdings_dir: Path = MF_HOLDINGS_DIR,
     panel_workers: int = 1,
@@ -644,8 +657,8 @@ def compute_mf_holdings_features_panel_chunked(
 
 
 def _compute_one_chunk_panels(
-    args: "tuple",
-) -> "tuple":
+    args: Tuple[Any, ...],
+) -> Tuple[pd.DataFrame, ...]:
     """
     Picklable, module-level worker: computes the 6 per-chunk panels for one
     ticker chunk (technical/intraday/hmm/pnd/adv_tech/patterns), each
@@ -726,7 +739,7 @@ def _compute_chunked_ticker_independent_panels(
     skip_batch_categories: bool = False,
     advanced_technical_used_only: bool = False,
     advanced_technical_skip_fracdiff: bool = False,
-) -> "tuple":
+) -> Tuple[pd.DataFrame, ...]:
     """
     A47 (2026-07-10): computes technical/intraday/hmm/pnd/adv_tech/patterns
     in ticker chunks instead of one full-universe pass, bounding peak
@@ -877,7 +890,7 @@ def compute_full_range_chunk_panels(
     chunk_panel: pd.DataFrame, benchmark_wide: Optional[pd.DataFrame],
     advanced_technical_used_only: bool = False,
     advanced_technical_skip_fracdiff: bool = False,
-) -> "tuple":
+) -> Tuple[pd.DataFrame, ...]:
     """
     [2026-07-29, batch feature-backfill staging] The batch counterpart of
     `_compute_one_chunk_panels` — computes technical/intraday/pnd/
@@ -945,7 +958,7 @@ def compute_full_range_chunk_panels(
     return technical, intraday, pnd, adv_tech, pat_scores
 
 
-def _compute_full_range_chunk_panels_worker(args: "tuple") -> "tuple":
+def _compute_full_range_chunk_panels_worker(args: Tuple[Any, ...]) -> Tuple[pd.DataFrame, ...]:
     """
     [2026-08-01] Picklable, module-level, single-tuple-arg wrapper around
     `compute_full_range_chunk_panels` — the spawn-context multiprocessing
@@ -1001,7 +1014,7 @@ def build_feature_matrix(
     client: Optional[DataStoreClient] = None,
     save: bool = True,
     compute_hmm: bool = True,
-    data_cache=None,
+    data_cache: Optional["BackfillDataCache"] = None,
     hmm_workers: int = 1,
     panel_workers: int = 1,
     staged_panel: Optional[pd.DataFrame] = None,
@@ -1255,7 +1268,7 @@ def build_feature_matrix(
         deep_forensic = pd.DataFrame(columns=["ticker"] + DEEP_FORENSIC_FEATURES)
     else:
         raw_cache = _get_fundamental_raw_cache()
-        cache_misses: dict = {}
+        cache_misses: Dict[Any, Any] = {}
         fundamental = compute_fundamental_features_panel(
             client, active_tickers, target_date, sector_map,
             data_cache=data_cache, ohlcv_panel=universe_panel if not universe_panel.empty else None,

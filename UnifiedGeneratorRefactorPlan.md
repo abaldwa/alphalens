@@ -833,3 +833,89 @@ is not evidence.
 Nothing. C1, C2 and C3 are done. The remaining momentum gap is a **data**
 gap, not a code one: wiring live quality-score, HMM-regime and market-cap/beta
 sources would make the other three categories runnable.
+
+
+---
+
+## 13. E1 and B1 delivered (2026-08-18)
+
+### E1 — sector exclusion has one owner
+
+`features.fundamental_composites.is_sector_excluded(preset, sector)` is now
+the only place the question is answered. The two branches in the fundamentals
+router are gone: they tested `preset in PRESET_EXCLUDED_SECTORS` and passed
+`sector` only then, which was a **second decision about whether an exclusion
+applies**, alongside the predicate that already decides it. Passing `sector`
+unconditionally is behaviour-identical (the lookup is an empty set for a
+preset with no exclusions) and leaves one site that knows the rule. `/scores`
+and `FundamentalAdapter` now call the helper too.
+
+A finding worth recording, because it looks like a bug in the table and is
+not: **`PRESET_EXCLUDED_SECTORS` has 14 keys, `SCREENER_PRESETS` has 9.** The
+extra five are composite-SCORE strategies (`moat`, `sector_leader`, `qglp`,
+`longevity`, ...) which `matches_screener_preset` rejects outright with
+"Unknown screener preset". This is exactly why the shared owner is a helper
+that answers the sector question alone rather than the predicate: `/scores`
+deals in score strategies, so routing it through the predicate was never
+possible. Recorded as a test.
+
+`tests/quality/test_sector_exclusion_has_one_owner.py` keeps it collapsed —
+AST-based, so a mention in a docstring is not mistaken for a read.
+Mutation-validated. mypy debt fell 1,320 → 1,319.
+
+### B1 — live momentum signals reach the ledger
+
+`momentum_live.record_live_signals()` dual-writes the day's selection into
+`strategy_signals` with `source="live"`, wired into the scheduler's
+`step_compute_momentum`. `momentum_rankings` is unchanged — the same additive
+pattern `ml_dual_write.py` established.
+
+Why it matters: `strategy_signals` is the only table that ties a signal to
+the registry REVISION that produced it (`strategy_key` + `strategy_version`).
+`momentum_rankings` records a bare local `strategy_id` with no version, so a
+live pick could never be traced back to its declaration — the audit gap A94
+exists to close. The ledger was 100% `source='backtest'` before this.
+
+Two deliberate choices:
+
+- **Only selected names are written**, as `action="buy"`. The full ranking is
+  already in `momentum_rankings`; a row per scored ticker per band per day is
+  what turns this table from millions of rows into hundreds of millions,
+  which is why `write_signals` refuses holds unless explicitly asked.
+- **The ledger write is non-fatal.** A failure logs loudly but does not take
+  down the momentum step: the rankings the dashboard serves are already
+  committed, and the ledger is an audit record, not the product.
+
+Tests write to an isolated temp DuckDB; the production ledger was verified
+untouched afterwards.
+
+### Still open
+
+**B2** (backfill `strategy_key`/`strategy_version` onto existing live rows)
+is a no-op today: there are no pre-existing live rows to backfill, because
+nothing wrote any until now. B1 for **technical** (`daily_alert_checker`) and
+**ML** (`daily_inference`) remains; ML's is properly part of H5.
+
+
+### H3 — one measurement layer, pinned
+
+`tests/quality/test_one_measurement_layer.py` asserts every metric primitive
+(sharpe/sortino/calmar/cagr/max_drawdown/xirr/win_rate/turnover/churn) is
+DEFINED in exactly one module. Callers may import from anywhere; a second
+`def` may not appear.
+
+`backtest/momentum_metrics.py` is a tracked exception with 4 duplicate
+definitions (`cagr`, `sharpe_sortino_calmar`, `win_rate`,
+`rolling_window_summary`), scheduled for deletion by H4. Re-exports are
+explicitly not duplicates — `momentum_metrics` re-exports `xirr` and
+`churn_factor` from core after H1, and a gate that punished re-exports would
+punish the very pattern that fixed the duplication.
+
+A third test pins the cadence argument itself, because that is the defect
+that CAUSED the duplication: a Sharpe hardcoding 252 periods/year is wrong
+for every non-daily curve, and "wrong" meant a weekly-rebalance strategy
+reporting 2.46 where the truth is 1.12. One implementation can only serve
+every channel while the cadence is an input, so `periods_per_year` must
+exist and must default to None.
+
+Mutation-validated.

@@ -28,7 +28,7 @@ No fundamental or quarterly data consumed here.
 """
 
 import logging
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -37,6 +37,11 @@ import scipy.signal
 import scipy.stats
 
 logger = logging.getLogger(__name__)
+
+# np.nan is typed as Any by this numpy's stubs; bind it once so the many
+# "no data / degenerate window" early returns stay honestly typed as float.
+_NAN: float = float(np.nan)
+
 
 # ── Feature catalog ──────────────────────────────────────────────────────────
 
@@ -89,7 +94,7 @@ def _wavelet_features_series(prices: np.ndarray) -> Tuple[float, float, float, f
     Uses level-3 decomposition: approximation = trend, details = noise components.
     """
     if len(prices) < 16:
-        return np.nan, np.nan, np.nan, np.nan
+        return _NAN, _NAN, _NAN, _NAN
     try:
         # db4 chosen for its smooth, compactly-supported shape; level 3 gives
         # a trend component with ~8-bar scale
@@ -123,7 +128,7 @@ def _wavelet_features_series(prices: np.ndarray) -> Tuple[float, float, float, f
         return trend_val / ref, noise_val / ref, float(energy_ratio), regime_signal
     except Exception as exc:
         logger.debug(f"wavelet decomposition failed: {exc}")
-        return np.nan, np.nan, np.nan, np.nan
+        return _NAN, _NAN, _NAN, _NAN
 
 
 # ── Hurst exponent ────────────────────────────────────────────────────────────
@@ -138,7 +143,7 @@ def _hurst_rs(x: np.ndarray) -> float:
     """
     n = len(x)
     if n < 8:
-        return np.nan
+        return _NAN
     log_ret = np.diff(np.log(np.maximum(x, 1e-10)))
     try:
         # Compute RS for several sub-window sizes for OLS estimate
@@ -165,14 +170,14 @@ def _hurst_rs(x: np.ndarray) -> float:
                 rs_vals.append(np.mean(block_rs))
 
         if len(sizes) < 3:
-            return np.nan
+            return _NAN
 
         log_sizes = np.log(sizes)
         log_rs = np.log(np.maximum(rs_vals, 1e-10))
         slope, _, _, _, _ = scipy.stats.linregress(log_sizes, log_rs)
         return float(np.clip(slope, 0.0, 1.5))
     except Exception:
-        return np.nan
+        return _NAN
 
 
 # ── Entropy helpers ───────────────────────────────────────────────────────────
@@ -182,7 +187,7 @@ def _approx_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> fl
     """Approximate entropy (ApEn) for regularity/predictability."""
     n = len(series)
     if n < m + 2:
-        return np.nan
+        return _NAN
     r = r_factor * (np.std(series, ddof=0) + 1e-10)
 
     def _phi(m_val: int) -> float:
@@ -191,19 +196,20 @@ def _approx_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> fl
             np.sum(np.max(np.abs(templates - templates[i]), axis=1) <= r)
             for i in range(len(templates))
         ])
-        return np.log(count / len(templates)).mean()
+        phi: float = float(np.log(count / len(templates)).mean())
+        return phi
 
     try:
         return float(_phi(m) - _phi(m + 1))
     except Exception:
-        return np.nan
+        return _NAN
 
 
 def _sample_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> float:
     """Sample entropy — less biased than ApEn for short series."""
     n = len(series)
     if n < m + 2:
-        return np.nan
+        return _NAN
     r = r_factor * (np.std(series, ddof=0) + 1e-10)
 
     def _count_matches(m_val: int) -> int:
@@ -218,17 +224,17 @@ def _sample_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> fl
         A = _count_matches(m + 1)
         B = _count_matches(m)
         if B == 0:
-            return np.nan
+            return _NAN
         return float(-np.log(A / B + 1e-10))
     except Exception:
-        return np.nan
+        return _NAN
 
 
 def _permutation_entropy(series: np.ndarray, order: int = 3, delay: int = 1) -> float:
     """Permutation entropy — captures ordinal patterns in the series."""
     n = len(series)
     if n < (order - 1) * delay + 1:
-        return np.nan
+        return _NAN
     try:
         from math import factorial
         from collections import Counter
@@ -247,14 +253,14 @@ def _permutation_entropy(series: np.ndarray, order: int = 3, delay: int = 1) -> 
         max_entropy = np.log2(factorial(order))
         return float(entropy / max_entropy) if max_entropy > 0 else np.nan
     except Exception:
-        return np.nan
+        return _NAN
 
 
 def _spectral_entropy(series: np.ndarray) -> float:
     """Spectral entropy from power spectral density."""
     n = len(series)
     if n < 8:
-        return np.nan
+        return _NAN
     try:
         freqs, psd = scipy.signal.periodogram(series)
         psd = psd[1:]  # drop DC component
@@ -263,7 +269,7 @@ def _spectral_entropy(series: np.ndarray) -> float:
         max_ent = np.log2(len(psd_norm))
         return float(entropy / max_ent) if max_ent > 0 else np.nan
     except Exception:
-        return np.nan
+        return _NAN
 
 
 def _fractal_dimension(series: np.ndarray) -> float:
@@ -274,7 +280,7 @@ def _fractal_dimension(series: np.ndarray) -> float:
     """
     n = len(series)
     if n < 16:
-        return np.nan
+        return _NAN
     try:
         k_max = min(8, n // 4)
         lk = []
@@ -293,12 +299,12 @@ def _fractal_dimension(series: np.ndarray) -> float:
                 ks.append(np.log(k))
 
         if len(ks) < 3:
-            return np.nan
+            return _NAN
 
         slope, _, _, _, _ = scipy.stats.linregress(ks, lk)
         return float(np.clip(-slope, 1.0, 2.0))
     except Exception:
-        return np.nan
+        return _NAN
 
 
 # ── Fractional differentiation ────────────────────────────────────────────────
@@ -421,7 +427,7 @@ def _lyapunov_proxy(series: np.ndarray, lag: int = 1) -> float:
     """
     n = len(series)
     if n < 20:
-        return np.nan
+        return _NAN
     try:
         divergences = []
         for i in range(n - lag):
@@ -436,7 +442,7 @@ def _lyapunov_proxy(series: np.ndarray, lag: int = 1) -> float:
 
         return float(np.mean(divergences)) if divergences else np.nan
     except Exception:
-        return np.nan
+        return _NAN
 
 
 def _rqa_recurrence_rate(series: np.ndarray, threshold_pct: float = 0.20) -> float:
@@ -448,7 +454,7 @@ def _rqa_recurrence_rate(series: np.ndarray, threshold_pct: float = 0.20) -> flo
     """
     n = len(series)
     if n < 10:
-        return np.nan
+        return _NAN
     try:
         threshold = threshold_pct * (np.std(series, ddof=0) + 1e-10)
         norm_series = (series - series.mean()) / (series.std(ddof=0) + 1e-10)
@@ -457,7 +463,7 @@ def _rqa_recurrence_rate(series: np.ndarray, threshold_pct: float = 0.20) -> flo
         np.fill_diagonal(recurrence, 0)
         return float(recurrence.sum() / (n * (n - 1)))
     except Exception:
-        return np.nan
+        return _NAN
 
 
 def _time_series_complexity(series: np.ndarray) -> float:
@@ -468,7 +474,7 @@ def _time_series_complexity(series: np.ndarray) -> float:
     """
     n = len(series)
     if n < 3:
-        return np.nan
+        return _NAN
     diffs = np.diff(series)
     sign_changes = np.sum(np.diff(np.sign(diffs)) != 0)
     max_possible = n - 2
@@ -483,7 +489,7 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
     """
     n = len(prices)
     if n < 10:
-        return np.nan
+        return _NAN
     try:
         x = np.arange(n)
         # Linear fit variance explained
@@ -502,7 +508,7 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
             residuals_pw.extend(seg_y - (s * seg_x + i))
 
         if not residuals_pw:
-            return np.nan
+            return _NAN
 
         ss_res_pw = np.sum(np.array(residuals_pw) ** 2)
         ss_tot = np.sum((prices - prices.mean()) ** 2) + 1e-10
@@ -511,7 +517,7 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
         # Strength = improvement of piecewise over linear (0 → same, 1 → perfect improvement)
         return float(np.clip(r2_pw - r2_lin, 0.0, 1.0))
     except Exception:
-        return np.nan
+        return _NAN
 
 
 # ── Per-ticker computation ────────────────────────────────────────────────────
@@ -520,7 +526,7 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
 def _compute_row_features(
     prices: np.ndarray, volumes: np.ndarray, log_prices: np.ndarray, end: int, used_only: bool = False,
     skip_fracdiff: bool = False,
-) -> dict:
+) -> Dict[str, Any]:
     """
     Compute advanced technical features "as of" bar index `end - 1` (i.e.
     using only `prices[:end]`/`volumes[:end]`, never a future bar —
@@ -560,7 +566,7 @@ def _compute_row_features(
         unchanged behavior.
     """
     n = end
-    out: dict = {}
+    out: Dict[str, Any] = {}
 
     if n >= 21:
         out["hurst_exp_21d"] = _hurst_rs(prices[end - 21:end])

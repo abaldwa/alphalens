@@ -70,7 +70,7 @@ knowledge and must never influence a feature computed as of that date.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -82,6 +82,9 @@ from config.settings import (
     POST_EARNINGS_DRIFT_WINDOW_DAYS,
 )
 from datastore.client import DataStoreClient
+
+if TYPE_CHECKING:  # backfill_cache imports feature modules at runtime
+    from features.backfill_cache import BackfillDataCache
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +144,8 @@ def _close_on_or_before(rows: List[Dict[str, Any]], target: datetime) -> Optiona
     eligible = [r for r in rows if pd.to_datetime(r["date"]) <= target]
     if not eligible:
         return None
-    return sorted(eligible, key=lambda r: r["date"])[-1]["close"]
+    close: float = float(sorted(eligible, key=lambda r: r["date"])[-1]["close"])
+    return close
 
 
 def compute_corporate_action_features(
@@ -149,8 +153,8 @@ def compute_corporate_action_features(
     ticker: str,
     as_of: datetime,
     listing_date: Optional[datetime] = None,
-    pre_loaded_actions=None,
-    pre_loaded_fundamentals=None,
+    pre_loaded_actions: Optional[List[Dict[str, Any]]] = None,
+    pre_loaded_fundamentals: Optional[List[Dict[str, Any]]] = None,
     ticker_ohlcv: "Optional[pd.DataFrame]" = None,
 ) -> Dict[str, Any]:
     """
@@ -304,7 +308,7 @@ def compute_corporate_action_features_panel(
     tickers: List[str],
     as_of: datetime,
     listing_dates: Optional[Dict[str, datetime]] = None,
-    data_cache=None,
+    data_cache: Optional["BackfillDataCache"] = None,
     ohlcv_panel: "Optional[pd.DataFrame]" = None,
 ) -> pd.DataFrame:
     """
@@ -399,7 +403,7 @@ def compute_corporate_action_features_panel_vectorized(
     tickers: List[str],
     as_of: datetime,
     listing_dates: Optional[Dict[str, datetime]] = None,
-    data_cache=None,
+    data_cache: Optional["BackfillDataCache"] = None,
     ohlcv_panel: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
@@ -565,7 +569,7 @@ def _window_return_with_fallback(
     ohlcv_panel: Optional[pd.DataFrame],
     bounds: pd.DataFrame,
     _lookback_days_unused: int,
-) -> "tuple":
+) -> Tuple[pd.Series, List[str]]:
     """
     Computes `_vectorized_window_return` against the pre-sliced
     `ohlcv_panel`, then falls back to a live `client.get_ohlcv` call

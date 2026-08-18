@@ -251,6 +251,73 @@ def _buy_pool_kwargs(
     return kwargs
 
 
+def record_live_signals(
+    ranking: pd.DataFrame,
+    as_of_date: str,
+    strategy_id: str,
+    *,
+    db_path: Optional[Any] = None,
+    conn: Any = None,
+) -> int:
+    """Dual-write today's live momentum selection into `strategy_signals`
+    with `source="live"`. Returns the number of rows written.
+
+    [B1, 2026-08-18] Additive. `momentum_rankings` keeps its writes exactly
+    as before -- this is the same pattern ml_dual_write.py established, and
+    nothing reads the ledger for momentum yet.
+
+    Why it matters: `strategy_signals` is the only table that ties a signal
+    to the REGISTRY REVISION that produced it (strategy_key +
+    strategy_version). `momentum_rankings` records a local `strategy_id`
+    with no version at all, so a live pick could never be traced back to the
+    declaration it came from -- the exact audit gap A94 was written to
+    close. Until this existed, `source` in that table was 100% 'backtest'.
+
+    Only the SELECTED names are written, as action="buy". The full ranking is
+    already in momentum_rankings; recording a hold row for every scored
+    ticker in every band every day is what turns this table from millions of
+    rows into hundreds of millions, which is why write_signals refuses holds
+    unless asked.
+    """
+    from strategies.registry import get_strategy as _registry_get_strategy
+    from strategies.signals import write_signals
+
+    if ranking.empty:
+        return 0
+    selected = ranking.loc[ranking["in_top_n"]]
+    if selected.empty:
+        return 0
+
+    registry_key = get_strategy(strategy_id)["registry_key"]
+    row = _registry_get_strategy(registry_key)
+    if row is None:
+        raise StrategyParamsUnavailable(
+            f"cannot record live signals for {registry_key!r}: no active registry "
+            "row. A signal that cannot name the revision that produced it is "
+            "exactly what this ledger exists to prevent."
+        )
+
+    signals = [
+        {
+            "signal_date": as_of_date,
+            "ticker": str(r.ticker),
+            "action": "buy",
+            "rank": int(r.momentum_rank),
+            "conviction": float(r.momentum_return),
+        }
+        for r in selected.itertuples(index=False)
+    ]
+    written: int = write_signals(
+        signals,
+        strategy_key=registry_key,
+        strategy_version=int(row["version"]),
+        source="live",
+        db_path=db_path,
+        conn=conn,
+    )
+    return written
+
+
 # How far past as_of_date to look for the next month's first trading day
 # — comfortably wider than any real calendar-month gap (including
 # December -> January and multi-day holiday clusters).

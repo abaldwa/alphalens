@@ -61,7 +61,7 @@ features/matrix_builder.py calls this for `as_of` = today only.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -71,7 +71,15 @@ from scipy.stats import norm
 from config.settings import DUCKDB_PATH, FNO_ELIGIBILITY_LOOKBACK_DAYS, INDIA_RISK_FREE_RATE, IV_SOLVER_MAX_VOL, IV_SOLVER_MIN_VOL
 from datastore.client import DataStoreClient
 
+if TYPE_CHECKING:  # backfill_cache imports feature modules at runtime
+    from features.backfill_cache import BackfillDataCache
+
 logger = logging.getLogger(__name__)
+
+# np.nan is typed as Any by this numpy's stubs; bind it once so the many
+# "no data / degenerate window" early returns stay honestly typed as float.
+_NAN: float = float(np.nan)
+
 
 
 def load_ever_fno_eligible_tickers() -> Optional[Set[str]]:
@@ -140,8 +148,10 @@ def _black_scholes_price(spot: float, strike: float, t_years: float, r: float, s
     d1 = (np.log(spot / strike) + (r + 0.5 * sigma**2) * t_years) / (sigma * np.sqrt(t_years))
     d2 = d1 - sigma * np.sqrt(t_years)
     if is_call:
-        return spot * norm.cdf(d1) - strike * np.exp(-r * t_years) * norm.cdf(d2)
-    return strike * np.exp(-r * t_years) * norm.cdf(-d2) - spot * norm.cdf(-d1)
+        call: float = float(spot * norm.cdf(d1) - strike * np.exp(-r * t_years) * norm.cdf(d2))
+        return call
+    put: float = float(strike * np.exp(-r * t_years) * norm.cdf(-d2) - spot * norm.cdf(-d1))
+    return put
 
 
 def _implied_volatility(
@@ -159,7 +169,7 @@ def _implied_volatility(
         clamped or fabricated.
     """
     if pd.isna(market_premium) or market_premium <= 0 or t_years <= 0 or pd.isna(spot) or pd.isna(strike):
-        return np.nan
+        return _NAN
 
     def objective(sigma: float) -> float:
         return _black_scholes_price(spot, strike, t_years, r, sigma, is_call) - market_premium
@@ -167,10 +177,10 @@ def _implied_volatility(
     try:
         lo, hi = objective(IV_SOLVER_MIN_VOL), objective(IV_SOLVER_MAX_VOL)
         if lo * hi > 0:
-            return np.nan
+            return _NAN
         return float(brentq(objective, IV_SOLVER_MIN_VOL, IV_SOLVER_MAX_VOL, xtol=1e-6))
     except (ValueError, RuntimeError):
-        return np.nan
+        return _NAN
 
 
 def _max_pain(strikes: np.ndarray, call_oi: np.ndarray, put_oi: np.ndarray) -> float:
@@ -198,7 +208,7 @@ def compute_fno_features(
     client: DataStoreClient,
     ticker: str,
     as_of: datetime,
-    pre_loaded_rows=None,
+    pre_loaded_rows: Optional[List[Dict[str, Any]]] = None,
     pre_loaded_df: "Optional[pd.DataFrame]" = None,
 ) -> Dict[str, Any]:
     """
@@ -348,7 +358,7 @@ def compute_fno_features_panel(
     client: DataStoreClient,
     tickers: List[str],
     as_of: datetime,
-    data_cache=None,
+    data_cache: Optional["BackfillDataCache"] = None,
     fno_eligible_tickers: Optional[Set[str]] = None,
 ) -> pd.DataFrame:
     """

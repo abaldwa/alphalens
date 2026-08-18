@@ -21,7 +21,7 @@ import logging
 from datetime import date as date_type
 from datetime import timedelta
 from functools import lru_cache
-from typing import Iterable, Union
+from typing import Any, Dict, Iterable, Union
 
 import numpy as np
 import pandas as pd
@@ -89,7 +89,7 @@ def _nearest_quarter_end_proximity(d: date_type) -> int:
     return min(((c - d).days for c in candidates), key=abs)
 
 
-def _one_date_row(d: date_type) -> dict:
+def _one_date_row(d: date_type) -> Dict[str, Any]:
     month_angle = 2 * np.pi * d.month / 12
     dow_angle = 2 * np.pi * (d.weekday() % 5) / 5  # trading week has 5 days (Mon-Fri)
     expiry = _next_monthly_expiry(d)
@@ -104,7 +104,7 @@ def _one_date_row(d: date_type) -> dict:
     }
 
 
-def compute_calendar_features(dates: Union[Iterable, str, date_type]) -> pd.DataFrame:
+def compute_calendar_features(dates: Union[Iterable[Any], str, date_type]) -> pd.DataFrame:
     """
     Compute the 7 calendar features for one or more dates.
 

@@ -8,10 +8,14 @@ code-reuse guidance) — no behavior change from the original per-module
 copies.
 """
 
-from typing import List
+from typing import Any, Callable, List, Optional, TypeVar
 
 import numpy as np
 import pandas as pd
+
+# apply_per_ticker preserves whatever pandas object fn returns (Series or
+# DataFrame); a TypeVar keeps that link instead of widening to Any.
+_FrameT = TypeVar("_FrameT", pd.Series, pd.DataFrame)
 
 
 def safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
@@ -21,7 +25,7 @@ def safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     return pd.Series(result, index=numerator.index).replace([np.inf, -np.inf], np.nan)
 
 
-def grouped_rolling(df: pd.DataFrame, col: str, window: int, how: str, min_periods: int = None) -> pd.Series:
+def grouped_rolling(df: pd.DataFrame, col: str, window: int, how: str, min_periods: Optional[int] = None) -> pd.Series:
     """Per-ticker rolling aggregate, full window required by default (SPEC-FEAT-001 NaN-until-ready)."""
     grouped = df.groupby("ticker", sort=False)[col].rolling(window, min_periods=min_periods or window)
     return getattr(grouped, how)().reset_index(level=0, drop=True)
@@ -31,7 +35,7 @@ def grouped_shift(df: pd.DataFrame, col: str, periods: int) -> pd.Series:
     return df.groupby("ticker", sort=False)[col].shift(periods)
 
 
-def apply_per_ticker(df: pd.DataFrame, fn):
+def apply_per_ticker(df: pd.DataFrame, fn: Callable[[pd.DataFrame], _FrameT]) -> _FrameT:
     """
     Apply fn(ticker_group) -> Series/DataFrame per ticker, concatenating results.
 
@@ -45,10 +49,13 @@ def apply_per_ticker(df: pd.DataFrame, fn):
     feature-math loop" pattern used throughout this module (SPEC-PIPE-004).
     """
     parts = [fn(g) for _, g in df.groupby("ticker", sort=False)]
-    return pd.concat(parts)
+    out: _FrameT = pd.concat(parts)
+    return out
 
 
-def grouped_talib_single(df: pd.DataFrame, cols: List[str], fn, **kwargs) -> pd.Series:
+def grouped_talib_single(
+    df: pd.DataFrame, cols: List[str], fn: Callable[..., Any], **kwargs: Any
+) -> pd.Series:
     """Apply a single-output TA-Lib function per ticker (vectorized C call per group)."""
 
     def _one(g: pd.DataFrame) -> pd.Series:
@@ -58,7 +65,13 @@ def grouped_talib_single(df: pd.DataFrame, cols: List[str], fn, **kwargs) -> pd.
     return apply_per_ticker(df, _one)
 
 
-def grouped_talib_multi(df: pd.DataFrame, cols: List[str], fn, out_names: List[str], **kwargs) -> pd.DataFrame:
+def grouped_talib_multi(
+    df: pd.DataFrame,
+    cols: List[str],
+    fn: Callable[..., Any],
+    out_names: List[str],
+    **kwargs: Any,
+) -> pd.DataFrame:
     """Apply a multi-output TA-Lib function (e.g. MACD, STOCH, BBANDS) per ticker."""
 
     def _one(g: pd.DataFrame) -> pd.DataFrame:

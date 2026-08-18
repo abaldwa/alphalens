@@ -71,7 +71,7 @@ import time
 from datetime import date as date_type
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
@@ -212,7 +212,7 @@ def step_download_bhavcopy(run_date: date_type, db_path: Optional[Path] = None) 
     logger.info(f"download_bhavcopy: {len(rows)} tickers written for {date_str}")
 
 
-def pd_isna(value) -> bool:
+def pd_isna(value: Any) -> bool:
     """Thin wrapper so step_download_bhavcopy doesn't need a top-level pandas import for one check."""
     import pandas as pd
 
@@ -370,7 +370,7 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
 
     window_df = pd.concat(window_chunks, ignore_index=True)
 
-    def _valid_ohlc(df: pd.DataFrame):
+    def _valid_ohlc(df: pd.DataFrame) -> pd.DataFrame:
         mask = (
             df["open"].notna() & df["high"].notna() & df["low"].notna() & df["close"].notna()
             & (df["high"] >= df["low"]) & (df["low"] >= 0)
@@ -1211,9 +1211,9 @@ def step_compute_features(
     run_date: date_type,
     db_path: Optional[Path] = None,
     compute_hmm: bool = True,
-    data_cache=None,
+    data_cache: Any = None,
     panel_workers: Optional[int] = None,
-    staged_panel=None,
+    staged_panel: Any = None,
     skip_slow_categories: bool = False,
     advanced_technical_used_only: bool = False,
     advanced_technical_skip_fracdiff: bool = True,
@@ -2146,6 +2146,30 @@ def step_compute_momentum(run_date: date_type, db_path: Optional[Path] = None) -
                 ],
             )
 
+            # [B1, 2026-08-18] Additive dual-write into strategy_signals
+            # (source="live"). momentum_rankings above is unchanged; this is
+            # the only table that ties a live pick to the registry REVISION
+            # that produced it, which momentum_rankings' bare strategy_id
+            # cannot do.
+            #
+            # Deliberately non-fatal: a ledger write failing must not take
+            # down the momentum step, because the rankings the dashboard
+            # serves are already committed above and the ledger is an audit
+            # record, not the product. The failure is logged loudly enough to
+            # be noticed rather than swallowed.
+            try:
+                written = momentum_live.record_live_signals(ranking, date_str, strategy_id)
+                logger.info(
+                    f"compute_momentum: recorded {written} live signals for "
+                    f"{strategy_id} on {date_str}"
+                )
+            except Exception:
+                logger.exception(
+                    f"compute_momentum: FAILED to record live signals for "
+                    f"{strategy_id} on {date_str} — rankings are committed, but this "
+                    "date has no auditable signal ledger entry for this strategy"
+                )
+
             next_date = momentum_live.next_rebalance_date(conn, date_str)
             conn.execute(
                 """
@@ -2283,7 +2307,7 @@ def step_publish_and_snapshot(run_date: date_type, db_path: Optional[Path] = Non
         logger.error(f"publish_and_snapshot: snapshot failed (non-fatal): {exc}")
 
 
-def _write_ta_results_direct(resolved: str, template_results: dict) -> None:
+def _write_ta_results_direct(resolved: str, template_results: Dict[str, Any]) -> None:
     """In-process ta_signals write — succeeds instantly (no new OS lock)
     when this process already holds SIGNALS_DUCKDB_PATH's cached
     connection (i.e. running inside the API process, e.g. Ops Monitor
@@ -2303,7 +2327,9 @@ def _write_ta_results_direct(resolved: str, template_results: dict) -> None:
         checker._write_all_results(conn, resolved, template_results, template_category)
 
 
-def _write_ta_results_via_api(date_str: str, resolved: str, template_results: dict, total_matches: int) -> list:
+def _write_ta_results_via_api(
+    date_str: str, resolved: str, template_results: Dict[str, Any], total_matches: int,
+) -> List[Any]:
     """Cross-process fallback: write ta_signals + check triggers through the API over HTTP."""
     import httpx
 
@@ -2338,7 +2364,8 @@ def _write_ta_results_via_api(date_str: str, resolved: str, template_results: di
 
         check_resp = client.post(f"{DATASTORE_API_BASE_URL}/api/v1/ta/user-alerts/check-triggers", json={"date": resolved})
         check_resp.raise_for_status()
-        return check_resp.json().get("newly_triggered", [])
+        newly_triggered: List[Any] = check_resp.json().get("newly_triggered", [])
+        return newly_triggered
 
 
 def step_data_integrity_check(run_date: date_type, db_path: Optional[Path] = None) -> None:
@@ -2395,7 +2422,7 @@ def step_data_integrity_check(run_date: date_type, db_path: Optional[Path] = Non
         )
 
 
-_STEP_DISPATCH = {
+_STEP_DISPATCH: Dict[str, Callable[[date_type], None]] = {
     "download_bhavcopy": step_download_bhavcopy,
     "download_fyers_daily": step_download_fyers_daily,
     "fyers_health_check": step_fyers_health_check,
@@ -2495,10 +2522,11 @@ def run_daily_pipeline_once(today: Optional[date_type] = None) -> bool:
     from ingestion.scheduler.checkpoint import CheckpointManager
     from ingestion.scheduler.pipeline_scheduler import run_startup_sequence
 
-    return run_startup_sequence(step_runner, CheckpointManager(), today=today)
+    started: bool = run_startup_sequence(step_runner, CheckpointManager(), today=today)
+    return started
 
 
-def dry_run_with_timing(today: Optional[date_type] = None) -> dict:
+def dry_run_with_timing(today: Optional[date_type] = None) -> Dict[str, Any]:
     """
     🔒 PHASE 1 GATE CHECK item 3 ("Verify daily pipeline timing... must
     complete simulation in < 90 minutes", SPEC-SYS-002): a structural

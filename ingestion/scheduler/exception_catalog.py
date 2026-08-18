@@ -87,8 +87,25 @@ CATALOG: list[ExceptionCatalogEntry] = [
         severity="info",
     ),
     ExceptionCatalogEntry(
+        step_name="compute_momentum",
+        location="ingestion/scheduler/daily_pipeline.py:2166",
+        caught="strategy_signals dual-write failure (B1) for one momentum "
+        "strategy. momentum_rankings for the same date is already committed "
+        "at this point.",
+        impact="The dashboard and every momentum read path are UNAFFECTED — "
+        "they serve momentum_rankings. What is lost is the audit trail: this "
+        "date has no strategy_signals row naming the registry revision that "
+        "produced the pick, so a live trade from this date cannot be traced "
+        "back to its declaration.",
+        remediation="Usually a DuckDB write-lock contention on "
+        "BACKTEST_DUCKDB_PATH — check whether a backtest queue was running. "
+        "Re-running the step for the date is safe and idempotent "
+        "(write_signals replaces rows on the same key).",
+        severity="warning",
+    ),
+    ExceptionCatalogEntry(
         step_name="publish_and_snapshot",
-        location="ingestion/scheduler/daily_pipeline.py:2282",
+        location="ingestion/scheduler/daily_pipeline.py:2306",
         caught="N=7 rollback snapshot (fno_data, ohlcv_adjusted) write or "
         "prune failure. Runs last, after every other writer for the date.",
         impact="No new rollback snapshot exists for this date — "
@@ -104,7 +121,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="main (scheduler startup)",
-        location="ingestion/scheduler/daily_pipeline.py:2781",
+        location="ingestion/scheduler/daily_pipeline.py:2813",
         caught="scheduler.remove_job('backfill_catchup') raising "
         "JobLookupError when the stale persisted job doesn't exist (the "
         "common case after the first cleanup run).",

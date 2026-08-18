@@ -79,8 +79,10 @@ reasonable follow-up, not implemented in this session.
 
 import json
 import logging
-from typing import Any, Dict, Tuple
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
+import duckdb
 import numpy as np
 
 from config.settings import FUNDAMENTAL_RAW_CACHE_DB_PATH
@@ -112,7 +114,7 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-def _ensure_table(conn) -> None:
+def _ensure_table(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {_TABLE_NAME} (
@@ -126,7 +128,7 @@ def _ensure_table(conn) -> None:
     )
 
 
-def load_fundamental_raw_cache(db_path=None) -> Dict[CacheKey, Dict[str, Any]]:
+def load_fundamental_raw_cache(db_path: Optional[Path] = None) -> Dict[CacheKey, Dict[str, Any]]:
     """
     Bulk-read the entire cache table once (called once per backfill process
     start, not per ticker/date) — a full scan of a few hundred thousand
@@ -158,7 +160,7 @@ def load_fundamental_raw_cache(db_path=None) -> Dict[CacheKey, Dict[str, Any]]:
     return cache
 
 
-def save_fundamental_raw_cache_entries(entries: Dict[CacheKey, Dict[str, Any]], db_path=None) -> None:
+def save_fundamental_raw_cache_entries(entries: Dict[CacheKey, Dict[str, Any]], db_path: Optional[Path] = None) -> None:
     """
     Bulk upsert newly-computed (cache-miss) entries — called once per
     backfill date with only that date's new entries (typically a small
