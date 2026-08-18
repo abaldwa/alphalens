@@ -34,10 +34,11 @@ rank to decide whether it belonged in a band years earlier.
 
 import logging
 from datetime import date as date_type
-from typing import Any, Callable, Dict, List, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 import pandas as pd
 
+from backtest.trade_filters import ADTV_LOOKBACK_SESSIONS
 from config.universe import load_universe_raw
 
 logger = logging.getLogger(__name__)
@@ -466,3 +467,120 @@ def yearly_nifty500_proxy_universes(
     return yearly_band_universes(
         normalised_conn, start_date, end_date, 1, NIFTY500_PROXY_RANK, include_delisted=include_delisted,
     )
+
+
+# ---------------------------------------------------------------------------
+# The momentum universe — ONE definition, for backtest, paper and live
+# ---------------------------------------------------------------------------
+# [2026-08-18, user decision] Momentum's universe is built in two steps, in
+# this order:
+#
+#   1. Take the top ADTV_UNIVERSE_TOP_N stocks by trailing ADTV as of the
+#      refresh date. THIS is momentum's risk control — it is what makes every
+#      name in the book something a real order could fill, and it is why the
+#      strategy carries no sector cap.
+#   2. Rank THAT set by market cap and slice the band (1-50, 51-100, ...).
+#
+# The order matters and is not interchangeable. Ranking by market cap first
+# and filtering by liquidity second would leave a band short of its 50 names
+# whenever an illiquid large-cap occupied a slot; filtering first means every
+# band is always 50 real, tradeable names.
+#
+# WHY A 21-TRADING-DAY GRID
+# -------------------------
+# Both rankings refresh every UNIVERSE_REFRESH_TRADING_DAYS, just before the
+# monthly strategies rebalance. A strategy uses the most recent snapshot at or
+# before its own rebalance date, so the cadences compose without any strategy
+# needing to know about the grid:
+#
+#   weekly (5d) / biweekly (10d) -> whatever snapshot is current
+#   monthly (21d)                -> the snapshot taken that same day
+#   bimonthly (42d)              -> every 2nd snapshot
+#   quarterly (63d)              -> every 3rd snapshot
+#
+# The alternative -- re-ranking daily -- would let a name drop out of the
+# universe on a day no strategy is trading, which is a sell nobody decided.
+
+#: The tradeable universe's size. Momentum's only risk control.
+ADTV_UNIVERSE_TOP_N = 800
+
+#: How often both rankings are rebuilt, in trading days. Deliberately equal to
+#: the monthly rebalance cadence: the universe is refreshed just before the
+#: monthly strategies act on it.
+UNIVERSE_REFRESH_TRADING_DAYS = 21
+
+
+def universe_refresh_dates(trading_days: pd.DatetimeIndex) -> List[pd.Timestamp]:
+    """The 21-trading-day grid points across `trading_days`, starting at its
+    first date — the dates on which the universe is rebuilt."""
+    return list(trading_days[::UNIVERSE_REFRESH_TRADING_DAYS])
+
+
+def universe_snapshot_date(
+    trading_days: pd.DatetimeIndex, as_of: Union[str, date_type, pd.Timestamp],
+) -> Optional[pd.Timestamp]:
+    """The grid point in force on `as_of` — the most recent refresh at or
+    before it. None before the first one, which means "no universe yet", not
+    "every ticker".
+    """
+    as_of_ts = pd.Timestamp(as_of)
+    eligible = [d for d in universe_refresh_dates(trading_days) if d <= as_of_ts]
+    return eligible[-1] if eligible else None
+
+
+def liquid_universe(
+    normalised_conn: Any, as_of_date: str, top_n: int = ADTV_UNIVERSE_TOP_N,
+    lookback_sessions: int = ADTV_LOOKBACK_SESSIONS, include_delisted: bool = False,
+) -> List[str]:
+    """The top `top_n` tickers by trailing ADTV as of `as_of_date`.
+
+    Step 1 of the universe definition. Reads real turnover from
+    ohlcv_adjusted; a ticker with no volume history in the window is absent,
+    never assumed liquid — the standing missing-data convention.
+    """
+    candidates = _all_candidate_tickers(include_delisted=include_delisted, normalised_conn=normalised_conn)
+    if not candidates:
+        return []
+    placeholders = ",".join("?" for _ in candidates)
+    rows = normalised_conn.execute(
+        f"""
+        WITH recent AS (
+            SELECT ticker, date, close * volume AS turnover,
+                   ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) AS rn
+            FROM ohlcv_adjusted
+            WHERE date <= ? AND ticker IN ({placeholders}) AND volume > 0
+        )
+        SELECT ticker, avg(turnover) AS adtv
+        FROM recent WHERE rn <= ?
+        GROUP BY ticker
+        ORDER BY adtv DESC
+        LIMIT ?
+        """,
+        [as_of_date, *candidates, lookback_sessions, top_n],
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def momentum_band_universe(
+    normalised_conn: Any, as_of_date: str, rank_start: int, rank_end: int,
+    *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N, include_delisted: bool = False,
+) -> List[str]:
+    """The band's constituents on `as_of_date`: liquid universe first, then
+    market-cap rank within it.
+
+    THE one definition. Backtest, paper trading and live all resolve their
+    universe through this function, so a band cannot mean one thing in a
+    backtest and another thing today.
+    """
+    liquid = liquid_universe(
+        normalised_conn, as_of_date, top_n=top_n_by_adtv, include_delisted=include_delisted,
+    )
+    if not liquid:
+        return []
+    snapshot = market_cap_snapshot(normalised_conn, liquid, as_of_date)
+    if snapshot.empty:
+        return []
+    ranked = snapshot.sort_values("market_cap_cr", ascending=False).reset_index(drop=True)
+    ranked["rank"] = ranked.index + 1
+    band = ranked[(ranked["rank"] >= rank_start) & (ranked["rank"] <= rank_end)]
+    return [str(t) for t in band["ticker"]]

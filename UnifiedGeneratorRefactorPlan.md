@@ -1108,3 +1108,61 @@ Two earlier attributions in §17's diff were wrong and are retracted: the caps
 were never binding (raising them 3%→5% and 20%→25% changed the buy count not at
 all), and the first 10-year run was misconfigured — it omitted
 `exit_policy_cadence="rebalance"`, which every real momentum run sets.
+
+## §19 — Momentum's universe redefined (2026-08-18, user decision)
+
+**Pure-play momentum is not a Technical strategy.** Momentum strategies under
+the Technical umbrella stay Technical — they use technical indicators. The
+band-based strategies below are the pure-play ones, and this section governs
+only those.
+
+### The universe: ADTV first, market cap second
+
+    1. top 800 by trailing ADTV as of the refresh date   <- the risk control
+    2. rank THAT set by market cap, slice the band (1-50, 51-100, ...)
+
+The order is the decision, not an implementation detail. Ranking by market cap
+first and filtering by liquidity second leaves a band short whenever an
+illiquid large-cap holds a slot; filtering first means every band is always 50
+real, tradeable names. This is also why momentum carries no sector cap — the
+universe IS the risk control.
+
+**What was actually happening before:** when `rank_band_id` is set (every
+momentum band run), `config.universe_provider` is REPLACED by the market-cap
+band provider, which discards the PIT ADTV top-800 filter entirely. Momentum
+bands have been pure market-cap ranks over every tracked ticker, with no
+liquidity gate at all.
+
+### The 21-trading-day grid
+
+Both rankings refresh every 21 trading days, just before the monthly
+strategies rebalance. A strategy uses the most recent snapshot at or before
+its own rebalance date, so every cadence composes without knowing about the
+grid: weekly/biweekly take whatever is current, monthly takes that day's,
+bimonthly every 2nd, quarterly every 3rd. Re-ranking daily would let a name
+leave the universe on a day no strategy trades — a sell nobody decided.
+
+`features/momentum_universe.py` gains `ADTV_UNIVERSE_TOP_N`,
+`UNIVERSE_REFRESH_TRADING_DAYS`, `universe_refresh_dates`,
+`universe_snapshot_date`, `liquid_universe` and `momentum_band_universe` —
+THE one definition, which backtest, paper trading and live all resolve
+through. 11 tests, order-of-operations mutation-validated.
+
+### Deprecated for momentum only (logic, UI and APIs)
+
+grace cycles, asymmetric exit band (`exit_rank`), ADTV-capped sizing
+(`max_pct_of_adtv`), `trailing_stop_pct`, per-ticker HMM regime,
+`min_momentum` floor, volume-weighted sizing. The strategy is the plain
+List-1-vs-List-2 swap: sell what left the top N, buy what entered.
+
+**Retained:** sticky promotion (on MARKET CAP rank only, never ADTV — a name
+that falls out of the liquid universe is sold, because liquidity is a
+tradability constraint), buy-side filters, rebalance every N trading days from
+run start, FY tax withholding, annual capital reset.
+
+### No reconciliation with MomentumBacktester
+
+Explicit user decision: fresh start, no parity target against the standalone
+engine. **The requirement that replaces it is that there be ONE generator
+logic across backtest, paper trading and live.** ML40-2.1's parity diff is
+therefore no longer a gate on H4.
