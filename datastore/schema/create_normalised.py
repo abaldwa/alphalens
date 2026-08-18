@@ -1261,6 +1261,68 @@ def _migrate_market_regimes_pk(conn: DuckDBPyConnection) -> None:
     logger.info("market_regimes PRIMARY KEY widened; all rows preserved")
 
 
+def _migrate_momentum_configs_drop_deprecated(conn: DuckDBPyConnection) -> None:
+    """Drop grace_period, exit_rank and trailing_stop_pct from
+    momentum_strategy_configs on any pre-existing database.
+
+    [2026-08-18] These three were deprecated with the other momentum knobs:
+    momentum is a plain list swap, so a holding is kept while it is in the
+    top N on raw momentum and sold the moment it is not -- there is no grace
+    period, no asymmetric exit band and no trailing stop.
+
+    This cannot go through _DROP_ORPHAN_COLUMNS: two of the three sit inside
+    the table's UNIQUE constraint, and DuckDB will not DROP COLUMN out from
+    under one. So the table is recreated under the new DDL and every row is
+    copied across on the surviving columns. config_id is carried over
+    explicitly so existing portfolio_id references still resolve, and the
+    sequence is fast-forwarded past the highest id so the next INSERT cannot
+    collide with a copied row.
+
+    Idempotent: returns immediately once the columns are gone."""
+    exists = conn.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_name = 'momentum_strategy_configs'"
+    ).fetchone()
+    if not exists:
+        return  # freshly created above, already on the new DDL
+
+    cols = {
+        row[0]
+        for row in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'momentum_strategy_configs'"
+        ).fetchall()
+    }
+    if not (cols & {"grace_period", "exit_rank", "trailing_stop_pct"}):
+        return  # already migrated
+
+    logger.info(
+        "Dropping deprecated momentum knobs (grace_period, exit_rank, "
+        "trailing_stop_pct) from momentum_strategy_configs"
+    )
+    carried = (
+        "config_id, band_id, category, lookback_months, top_n, "
+        "rebalance_frequency, downtrend_filter_pct, hmm_regime_filter, "
+        "initial_capital, sip_amount, start_date, rebalance_day_of_month, "
+        "portfolio_id, is_active, created_at, updated_at"
+    )
+    conn.execute(
+        "ALTER TABLE momentum_strategy_configs RENAME TO momentum_strategy_configs_old"
+    )
+    conn.execute(_CREATE_MOMENTUM_STRATEGY_CONFIGS)
+    conn.execute(
+        f"INSERT INTO momentum_strategy_configs ({carried}) "
+        f"SELECT {carried} FROM momentum_strategy_configs_old"
+    )
+    conn.execute("DROP TABLE momentum_strategy_configs_old")
+    # The id sequence is deliberately NOT reset. It survives the rename, and
+    # _CREATE_MOMENTUM_STRATEGY_CONFIGS creates it only IF NOT EXISTS, so it
+    # keeps its current position -- already past every copied config_id.
+    # Dropping and recreating it would need CASCADE, which takes the table
+    # with it: the new table's config_id DEFAULT depends on the sequence.
+    logger.info("momentum_strategy_configs migrated; all rows preserved")
+
+
 def _migrate_dropped_columns(conn: DuckDBPyConnection) -> None:
     """Drop any columns that were removed from the schema in a later phase."""
     for table_name, cols in _DROP_ORPHAN_COLUMNS.items():
@@ -1347,6 +1409,7 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
         _sync_fundamentals_history_columns(conn)
         _migrate_dropped_columns(conn)
         _migrate_market_regimes_pk(conn)
+        _migrate_momentum_configs_drop_deprecated(conn)
 
     logger.info(f"Normalised schema ready at {db_path if db_path else ':memory:'}")
 
