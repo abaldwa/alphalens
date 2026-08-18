@@ -107,9 +107,10 @@ CATEGORY_LABELS = {
     "max_defensive": "Max Defensive",
 }
 
-# Momentum ranks its own universe by market cap into bands; it does not use
-# the ADTV-ranked universe the other channels screen. Recorded so a report can
-# say what universe a number came from rather than leaving it implied.
+# Momentum's universe is the top-800 by ADTV, ranked by market cap into bands
+# (features.momentum_universe.momentum_band_universe). The ADTV cut IS the
+# risk control, so it is not optional. Recorded so a report can say what
+# universe a number came from rather than leaving it implied.
 UNIVERSE_SPEC = "momentum_rank_band"
 
 
@@ -125,7 +126,6 @@ def build_rows(
     """
     from features.momentum_universe import RANK_BANDS
     from scripts.run_momentum_dynamic_report import (
-        GRACE_CYCLES,
         REBALANCE_PERIODS,
         TOP_N_OPTIONS,
     )
@@ -145,7 +145,6 @@ def build_rows(
                     lookback_months=None,
                     rebalance=None,
                     top_n=None,
-                    grace_cycles=GRACE_CYCLES,
                 )
             )
         return rows
@@ -165,7 +164,6 @@ def build_rows(
                                 lookback_months=lookback_months,
                                 rebalance=rebalance,
                                 top_n=top_n,
-                                grace_cycles=GRACE_CYCLES,
                             )
                         )
     return rows
@@ -198,12 +196,32 @@ def _row(
     lookback_months: Optional[int],
     rebalance: Optional[str],
     top_n: Optional[int],
-    grace_cycles: int,
 ) -> Dict[str, Any]:
     if band_id is None:
         name = f"preset_{category}"
         label = f"{CATEGORY_LABELS[category]} (preset)"
     else:
+        # _row serves two distinct shapes through one nullable signature: a
+        # category preset (every grid field None) and a grid point (every grid
+        # field set). band_id is the discriminator, but narrowing it tells the
+        # type checker nothing about the other five -- and nothing but this
+        # convention stops a caller passing a half-filled row, which would
+        # silently produce a name like "balanced_b1_None-None_lbNonemo_...".
+        # Assert the invariant so a bad caller fails here rather than writing
+        # a malformed strategy_key into the registry.
+        if (
+            rank_start is None
+            or rank_end is None
+            or lookback_months is None
+            or rebalance is None
+            or top_n is None
+        ):
+            raise ValueError(
+                f"grid row for band {band_id} is missing grid fields: "
+                f"rank_start={rank_start} rank_end={rank_end} "
+                f"lookback_months={lookback_months} rebalance={rebalance} "
+                f"top_n={top_n}"
+            )
         name = variant_name(
             category, band_id, rank_start, rank_end, lookback_months, rebalance, top_n
         )
@@ -235,7 +253,6 @@ def _row(
             "lookback_months": lookback_months,
             "rebalance_frequency": rebalance,
             "top_n": top_n,
-            "grace_cycles": grace_cycles,
         },
         # Momentum has no entry predicates: it ranks the band's universe by
         # momentum score and buys the top N. The selection rule is the
@@ -244,10 +261,15 @@ def _row(
         # than a gap.
         "entry_criterion": [],
         "exit_criterion": {
-            # Momentum exits by rank: a holding leaves when it falls out of
-            # the top N and its grace cycles are exhausted.
-            "variant": "rank_grace",
-            "grace_cycles": grace_cycles,
+            # [2026-08-18] Momentum is a plain list swap: a holding leaves the
+            # moment it falls out of the top N on RAW momentum. There is no
+            # grace period, and no asymmetric exit band -- exit_rank is top_n
+            # by construction, not a separate knob.
+            #
+            # The cut is taken on raw momentum, BEFORE the category filters,
+            # so a buy-side filter can stop a name being re-bought but can
+            # never by itself force a sell of something already held.
+            "variant": "rank_exit",
             "exit_rank": top_n,
             "conditions": [],
         },

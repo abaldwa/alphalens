@@ -27,7 +27,7 @@ No pandas/heavy imports — pure data structures, loads instantly, matching
 systems/technical_analysis/screener/templates.py's convention.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 # Ops supported when interpreting conditions — mirrors templates.py.
@@ -59,9 +59,16 @@ class RebalanceRules:
     lookback_days: Optional[int] = None
     rebalance_every_n_trading_days: Optional[int] = None
     top_n: Optional[int] = None
-    grace_cycles: int = 2
-    min_momentum: Optional[float] = None
+    # [2026-08-18] grace_cycles and min_momentum are gone. Momentum is a plain
+    # list swap -- held while in the top N on raw momentum, sold the moment it
+    # is not -- so there is no grace period, and a momentum floor is not a
+    # knob the copilot may offer.
 
+
+# Specs persisted before 2026-08-18 still carry the deprecated grace_cycles /
+# min_momentum keys. from_dict filters against this set so an old spec loads
+# (without those knobs) instead of raising TypeError.
+_REBALANCE_RULE_FIELDS = frozenset(f.name for f in fields(RebalanceRules))
 
 ConditionDict = Dict[str, Any]
 
@@ -101,8 +108,6 @@ class StrategySpec:
                 "lookback_days": self.rules.lookback_days,
                 "rebalance_every_n_trading_days": self.rules.rebalance_every_n_trading_days,
                 "top_n": self.rules.top_n,
-                "grace_cycles": self.rules.grace_cycles,
-                "min_momentum": self.rules.min_momentum,
             },
             "unresolved": self.unresolved,
             "created_at": self.created_at,
@@ -121,7 +126,13 @@ class StrategySpec:
             technical=list(d.get("technical") or []),
             fundamental=list(d.get("fundamental") or []),
             valuation=list(d.get("valuation") or []),
-            rules=RebalanceRules(**rules_d),
+            rules=RebalanceRules(
+                **{
+                    k: v
+                    for k, v in rules_d.items()
+                    if k in _REBALANCE_RULE_FIELDS
+                }
+            ),
             unresolved=list(d.get("unresolved") or []),
             created_at=d.get("created_at", ""),
             created_by=d.get("created_by", "copilot"),

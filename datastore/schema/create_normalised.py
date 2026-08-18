@@ -19,7 +19,9 @@ disclosure date can never be safely filtered by datastore/api/pit.py.
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
+
+from duckdb import DuckDBPyConnection
 
 from datastore.api.db import get_duckdb_connection
 
@@ -857,12 +859,14 @@ _CREATE_MY_HOLDINGS = """
 # ML38 (2026-07-14): Momentum strategy live dashboard section. Mirrors
 # my_holdings' shape/conventions above (surrogate `id` sequence, NULL for
 # not-yet-sold, idempotent DDL). `strategy_id` is carried on every table
-# even though only one variant (Rank 100-150 / top15 / 6mo / monthly /
-# grace=2, validated in FeatureBacklog.md ML38 as the config that survives
-# the rebalance-offset and grace-period robustness checks — other,
-# higher-CAGR variants found via parameter sweeps were rejected as
-# overfit to lucky calendar alignment) is live today, so a second variant
-# could be added later without a migration.
+# even though only one variant (band 3 / top15 / 6mo / monthly) is live
+# today, so a second variant could be added later without a migration.
+#
+# [2026-08-18] The `_g2` suffix is a FOSSIL. Grace cycles were deprecated
+# along with the other six momentum knobs, and the band-3 boundary moved
+# from 100-150 to 101-150. The string is kept verbatim only because it is
+# the stored strategy_id key; it describes no live behaviour. Do not read
+# parameters out of it.
 _MOMENTUM_STRATEGY_ID_DEFAULT = "band3_top15_6m_m_g2"
 
 _CREATE_MOMENTUM_TRADES = f"""
@@ -879,7 +883,6 @@ _CREATE_MOMENTUM_TRADES = f"""
         entry_rank INTEGER,
         exit_rank INTEGER,
         suggestion_id BIGINT,
-        grace_remaining INTEGER,
         purchase_rationale VARCHAR,
         sell_rationale VARCHAR,
         journal_entry VARCHAR,
@@ -922,7 +925,6 @@ _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS = f"""
         ticker VARCHAR NOT NULL,
         action VARCHAR NOT NULL,
         momentum_rank INTEGER,
-        grace_remaining INTEGER,
         status VARCHAR NOT NULL DEFAULT 'pending',
         created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
     )
@@ -950,12 +952,12 @@ _CREATE_MOMENTUM_STRATEGY_CONFIGS = """
         category VARCHAR NOT NULL,
         lookback_months INTEGER NOT NULL,
         top_n INTEGER NOT NULL,
-        grace_period INTEGER NOT NULL,
         rebalance_frequency VARCHAR NOT NULL,
-        -- Tier 1 params (asymmetric entry/exit, trailing stop)
-        exit_rank INTEGER,
-        trailing_stop_pct DOUBLE,
-        -- Tier 2 params (downtrend filter, HMM regime filter)
+        -- [2026-08-18] grace_period, exit_rank and trailing_stop_pct dropped.
+        -- Momentum is a plain list swap: held while in the top N on raw
+        -- momentum, sold the moment it is not. No grace, no asymmetric exit
+        -- band, no trailing stop. downtrend_filter_pct stays -- it is a
+        -- BUY-side filter, and buy-side filters are retained.
         downtrend_filter_pct DOUBLE,
         hmm_regime_filter VARCHAR,
         -- Capital deployment
@@ -967,8 +969,8 @@ _CREATE_MOMENTUM_STRATEGY_CONFIGS = """
         is_active BOOLEAN NOT NULL DEFAULT TRUE,
         created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
         updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-        UNIQUE (band_id, category, lookback_months, top_n, grace_period, rebalance_frequency,
-                exit_rank, trailing_stop_pct, downtrend_filter_pct, hmm_regime_filter)
+        UNIQUE (band_id, category, lookback_months, top_n, rebalance_frequency,
+                downtrend_filter_pct, hmm_regime_filter)
     )
 """
 
@@ -1162,7 +1164,7 @@ _MIGRATE_ADDED_COLUMNS = {
 }
 
 
-def _migrate_added_columns(conn) -> None:
+def _migrate_added_columns(conn: DuckDBPyConnection) -> None:
     """Idempotently ALTER any table whose schema has grown since it may have first been created."""
     for table_name, statements in _MIGRATE_ADDED_COLUMNS.items():
         for ddl in statements:
@@ -1175,14 +1177,22 @@ def _migrate_added_columns(conn) -> None:
 # the P3.5 intermediate migration will have these orphan columns.
 # DuckDB does not support `DROP COLUMN IF EXISTS`, so we check information_schema
 # first and skip silently if the columns are already gone.
-_DROP_ORPHAN_COLUMNS = {
+_DROP_ORPHAN_COLUMNS: Dict[str, List[str]] = {
     "ohlcv_adjusted": [
         "raw_open", "raw_high", "raw_low", "raw_close", "raw_volume", "raw_delivery_qty",
     ],
+    # [2026-08-18] The momentum deprecation. grace_remaining tracked a countdown
+    # that no longer exists; momentum is a plain list swap, so a name is held
+    # while it is in the top N on raw momentum and sold the moment it is not.
+    "momentum_trades": ["grace_remaining"],
+    "momentum_rebalance_suggestions": ["grace_remaining"],
+    # momentum_strategy_configs' three knobs are NOT dropped here: two of them
+    # sit inside the table's UNIQUE constraint, which DuckDB cannot rewrite via
+    # DROP COLUMN. That table needs a rebuild -- see the pending migration.
 }
 
 
-def _sync_fundamentals_history_columns(conn) -> None:
+def _sync_fundamentals_history_columns(conn: DuckDBPyConnection) -> None:
     """
     REV11 (2026-07-21 review): fundamentals_history was created once via
     `SELECT * FROM fundamentals WHERE 1=0` and never re-synced afterward —
@@ -1217,7 +1227,7 @@ def _sync_fundamentals_history_columns(conn) -> None:
         logger.info(f"Synced missing column onto fundamentals_history: {col_name} {data_type}")
 
 
-def _migrate_market_regimes_pk(conn) -> None:
+def _migrate_market_regimes_pk(conn: DuckDBPyConnection) -> None:
     """Widen market_regimes' PRIMARY KEY from (index_name, start_date) to
     (index_name, method, start_date) on any pre-existing database still
     created under the old DDL. DuckDB has no ALTER TABLE ... DROP/ADD
@@ -1251,7 +1261,7 @@ def _migrate_market_regimes_pk(conn) -> None:
     logger.info("market_regimes PRIMARY KEY widened; all rows preserved")
 
 
-def _migrate_dropped_columns(conn) -> None:
+def _migrate_dropped_columns(conn: DuckDBPyConnection) -> None:
     """Drop any columns that were removed from the schema in a later phase."""
     for table_name, cols in _DROP_ORPHAN_COLUMNS.items():
         existing = {
@@ -1341,7 +1351,7 @@ def create_schema(db_path: Optional[Path] = None, in_memory: bool = False) -> No
     logger.info(f"Normalised schema ready at {db_path if db_path else ':memory:'}")
 
 
-def list_tables() -> list:
+def list_tables() -> List[str]:
     """Return the names of all tables created by this module."""
     return list(_ALL_TABLES.keys())
 

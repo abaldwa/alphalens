@@ -40,10 +40,7 @@ class TestMomentumStrategyConfigs:
             "category": "balanced",
             "lookback_months": 6,
             "top_n": 15,
-            "grace_period": 2,
             "rebalance_frequency": "monthly",
-            "exit_rank": 20,
-            "trailing_stop_pct": 15.0,
             "downtrend_filter_pct": 10.0,
             "hmm_regime_filter": "bearish",
             "initial_capital": 1000000,
@@ -60,10 +57,7 @@ class TestMomentumStrategyConfigs:
         assert data["category"] == "balanced"
         assert data["lookback_months"] == 6
         assert data["top_n"] == 15
-        assert data["grace_period"] == 2
         assert data["rebalance_frequency"] == "monthly"
-        assert data["exit_rank"] == 20
-        assert data["trailing_stop_pct"] == 15.0
         assert data["downtrend_filter_pct"] == 10.0
         assert data["hmm_regime_filter"] == "bearish"
         assert data["initial_capital"] == 1000000
@@ -83,7 +77,6 @@ class TestMomentumStrategyConfigs:
             "category": "all_risk",
             "lookback_months": 9,
             "top_n": 10,
-            "grace_period": 1,
             "rebalance_frequency": "biweekly",
             "initial_capital": 500000,
             "sip_amount": 0,
@@ -185,7 +178,6 @@ class TestMomentumStrategyConfigs:
             "category": "balanced",
             "lookback_months": 6,
             "top_n": 15,
-            "grace_period": 2,
             "rebalance_frequency": "monthly",
             "initial_capital": 100000,
             "sip_amount": 0,

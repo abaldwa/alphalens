@@ -170,8 +170,8 @@ export function MomentumExperimentationPage() {
     >
       <div className="mb-4 rounded-[var(--radius-token)] border border-border bg-accent-soft px-3 py-2 text-xs text-muted-foreground">
         <strong className="text-foreground">Not the same as Technical Analysis's "Momentum" style.</strong>{' '}
-        This is the ML38 rank/momentum <em>factor strategy</em> (market-cap universe bands, top-N ranking,
-        grace-period rebalancing). Technical Analysis's screener templates separately use "Momentum" as a
+        This is the rank/momentum <em>factor strategy</em>: the top 800 by ADTV, split into market-cap
+        bands, holding the top N by momentum within a band and swapping the list at each rebalance. Technical Analysis's screener templates separately use "Momentum" as a
         style label for ~16 MACD/breakout/technical-pattern templates (A2, C1&ndash;C4, D4, E5/E6, F2/F8,
         S008, …) — those run through the Technical channel's own orchestrator, unrelated to this page.
       </div>

@@ -1166,3 +1166,87 @@ Explicit user decision: fresh start, no parity target against the standalone
 engine. **The requirement that replaces it is that there be ONE generator
 logic across backtest, paper trading and live.** ML40-2.1's parity diff is
 therefore no longer a gate on H4.
+
+---
+
+## §20 — The deprecation reaches the registry, the API, the schema and the UI (2026-08-18)
+
+§19 removed the seven knobs from the *engine*. They were still declared in
+four other places, each of which is a surface a user or another service can
+read. A knob that no code honours but every schema still advertises is worse
+than one that works: it reads as configuration and behaves as decoration.
+
+### The registry (`strategies/migrations/momentum.py`)
+
+`definition_json` no longer carries `grace_cycles`. `exit_criterion_json`
+changes from
+
+```json
+{"variant": "rank_grace", "grace_cycles": 2, "exit_rank": <top_n>}
+```
+
+to
+
+```json
+{"variant": "rank_exit", "exit_rank": <top_n>}
+```
+
+`exit_rank` stays only because it is now *derived*: with the asymmetric band
+gone, the exit rank IS `top_n`, so the field states a consequence rather than
+offering a choice.
+
+Two tests hold the line: one asserts the new shape, one scans every generated
+row's definition/entry/exit for any of the six deprecated param names. The
+second was mutation-validated (adding `grace_cycles` back to the definition
+fails it; reverting passes).
+
+### The 1,440 stale registry rows, explained
+
+`build_rows()` generates 1,680 keys. The DB holds 3,120 **active** momentum
+rows. The 1,440-row difference is not drift — it is a superseded band
+definition: the stale keys use *overlapping* boundaries (`b3_100-150`,
+`b4_150-200`) where `RANK_BANDS` now uses contiguous ones (`101-150`,
+`151-200`). Every current key is already active, so the migration only revises;
+the 1,440 need retiring, not rewriting.
+
+### The API and schema
+
+`momentum_strategy_configs` loses `grace_period`, `exit_rank` and
+`trailing_stop_pct` — including from its UNIQUE key, which is why this needs a
+table rebuild rather than three `ALTER`s. `momentum_trades` and
+`momentum_rebalance_suggestions` lose `grace_remaining`.
+
+`downtrend_filter_pct` and `hmm_regime_filter` **stay**. Both are BUY-side
+filters, and buy-side filters are retained; the deprecated "per-ticker HMM
+regime" was a per-holding exit condition, which is a different thing. The
+form's "Tier 1: Asymmetric Entry/Exit & Trailing Stop" section is gone
+entirely — both its fields were deprecated — and "Tier 2" is relabelled
+"Buy-Side Filters", there being no tiers left to number.
+
+`momentum_trades.exit_rank` is **kept**: it records the rank a holding
+actually had when it was sold. That is an observation, not a knob.
+
+### A live bug this surfaced
+
+`daily_pipeline.step_momentum_rebalance` still read `s["grace_remaining"]`
+off every suggestion and wrote it back onto the open trade. §19 had already
+removed that key from `compute_rebalance_suggestions`' output, so the
+scheduler's momentum rebalance step would have raised `KeyError` on the next
+rebalance day. Found by following the schema change into its callers, not by
+a test — no test covered that step's write path.
+
+The step now carries no state between cycles at all, which is the honest
+expression of a plain list swap.
+
+### Copilot
+
+`RebalanceRules` loses `grace_cycles` and `min_momentum`, so the LLM prompt no
+longer offers them and `backtest_bridge` no longer passes them. `from_dict`
+now filters against the dataclass's field set, so specs persisted before today
+load (minus the dead knobs) instead of raising `TypeError`.
+
+### Still blocked
+
+The DB-side migration — revising the 1,680 current rows and retiring the 1,440
+stale ones, plus rebuilding the three momentum tables — has not run. The code
+is ready; the write needs an approved window.

@@ -73,17 +73,11 @@ async function fetchAvgHoldingDays(variantId: string): Promise<number | null> {
   return count > 0 ? sum / count : null
 }
 
-// Parses the trailing "_g<N>" grace-cycles suffix that the YoY variant_id
-// carries (e.g. "b1_1-50_lb3mo_monthly_top20_g2") -- the YoY row type doesn't
-// expose grace_cycles as its own field, so this is the only place it's recoverable.
-export function graceCyclesFromVariantId(variantId: string): number | null {
-  const m = /_g(\d+)$/.exec(variantId)
-  return m ? Number(m[1]) : null
-}
-
+// [2026-08-18] graceCyclesFromVariantId is gone with the grace period. Current
+// variant_ids carry no "_g<N>" suffix (see strategies/migrations/momentum.py's
+// variant_name), so there is nothing left to parse.
 export function rowLabel(r: MomentumDynamicReportYoyRow): string {
-  const grace = graceCyclesFromVariantId(r.variant_id)
-  return `Top${r.top_n} · ${r.lookback_months}mo · ${r.rebalance_period}${grace != null ? ` · g${grace}` : ''}`
+  return `Top${r.top_n} · ${r.lookback_months}mo · ${r.rebalance_period}`
 }
 
 export type RagBand = 'red' | 'amber' | 'green'

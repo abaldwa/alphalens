@@ -78,10 +78,11 @@ interface ConfigFormData {
   categories: MomentumStrategyCategory[]  // multi-select via checkboxes
   lookback_months: number
   top_n: number
-  grace_period: number
   rebalance_frequency: 'monthly' | 'biweekly'
-  exit_rank: number | null
-  trailing_stop_pct: number | null
+  // [2026-08-18] grace_period, exit_rank and trailing_stop_pct removed.
+  // Momentum is a plain list swap: held while in the top N on raw momentum,
+  // sold the moment it is not. downtrend_filter_pct stays -- it is a BUY-side
+  // filter, and buy-side filters are retained.
   downtrend_filter_pct: number | null
   hmm_regime_filter: 'none' | 'bearish' | 'bearish_sideways'
   initial_capital: number
@@ -96,10 +97,7 @@ const initialFormState: ConfigFormData = {
   categories: ['balanced'],
   lookback_months: 6,
   top_n: 15,
-  grace_period: 2,
   rebalance_frequency: 'monthly',
-  exit_rank: null,
-  trailing_stop_pct: null,
   downtrend_filter_pct: null,
   hmm_regime_filter: 'none',
   initial_capital: 0,
@@ -222,10 +220,7 @@ export function StrategyDeployPage() {
       band_id: formData.band_id,
       lookback_months: formData.lookback_months,
       top_n: formData.top_n,
-      grace_period: formData.grace_period,
       rebalance_frequency: formData.rebalance_frequency,
-      exit_rank: formData.exit_rank,
-      trailing_stop_pct: formData.trailing_stop_pct,
       downtrend_filter_pct: formData.downtrend_filter_pct,
       hmm_regime_filter: formData.hmm_regime_filter,
       initial_capital: formData.initial_capital,
@@ -255,14 +250,11 @@ export function StrategyDeployPage() {
       categories: [config.category],
       lookback_months: config.lookback_months,
       top_n: config.top_n,
-      grace_period: config.grace_period,
       rebalance_frequency: config.rebalance_frequency,
-      // The API response type marks these optional; ConfigFormData requires
-      // them (nullable). Coerce here rather than loosening the form type --
-      // a controlled input needs a defined value, and `undefined` would flip
-      // it to uncontrolled mid-edit.
-      exit_rank: config.exit_rank ?? null,
-      trailing_stop_pct: config.trailing_stop_pct ?? null,
+      // The API response type marks this optional; ConfigFormData requires it
+      // (nullable). Coerce here rather than loosening the form type -- a
+      // controlled input needs a defined value, and `undefined` would flip it
+      // to uncontrolled mid-edit.
       downtrend_filter_pct: config.downtrend_filter_pct ?? null,
       hmm_regime_filter: config.hmm_regime_filter ?? 'none',
       initial_capital: config.initial_capital,
@@ -318,28 +310,8 @@ export function StrategyDeployPage() {
       meta: { align: 'center' as const },
     },
     {
-      accessorKey: 'grace_period',
-      header: 'Grace',
-      meta: { align: 'center' as const },
-    },
-    {
       accessorKey: 'rebalance_frequency',
       header: 'Rebalance',
-      meta: { align: 'center' as const },
-    },
-    {
-      accessorKey: 'exit_rank',
-      header: 'Exit Rank',
-      cell: ({ getValue }) => getValue() ?? '—',
-      meta: { align: 'center' as const },
-    },
-    {
-      accessorKey: 'trailing_stop_pct',
-      header: 'Trailing Stop',
-      cell: ({ getValue }) => {
-        const v = getValue<number | null>()
-        return v ? fmtPct(v / 100) : '—'
-      },
       meta: { align: 'center' as const },
     },
     {
@@ -626,20 +598,6 @@ export function StrategyDeployPage() {
                 />
               </div>
 
-              {/* Grace Period */}
-              <div>
-                <Label htmlFor="grace_period">Grace Period (cycles)</Label>
-                <Input
-                  id="grace_period"
-                  type="number"
-                  value={formData.grace_period}
-                  onChange={(e) => setFormData({ ...formData, grace_period: Number(e.target.value) })}
-                  min={0}
-                  max={5}
-                  step={1}
-                />
-              </div>
-
               {/* Rebalance Frequency */}
               <div>
                 <Label htmlFor="rebalance_frequency">Rebalance Frequency</Label>
@@ -658,42 +616,9 @@ export function StrategyDeployPage() {
               </div>
             </div>
 
-            {/* Tier 1 Parameters */}
+            {/* Buy-side filters (the former "Tier 2" -- Tier 1 was deprecated 2026-08-18) */}
             <div className="border-t pt-6">
-              <h3 className="text-lg font-semibold mb-4">Tier 1: Asymmetric Entry/Exit & Trailing Stop</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div>
-                  <Label htmlFor="exit_rank">Exit Rank</Label>
-                  <Input
-                    id="exit_rank"
-                    type="number"
-                    value={formData.exit_rank ?? ''}
-                    onChange={(e) => setFormData({ ...formData, exit_rank: e.target.value ? Number(e.target.value) : null })}
-                    min={1}
-                    max={100}
-                    step={1}
-                    placeholder="e.g., 15, 20"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="trailing_stop_pct">Trailing Stop %</Label>
-                  <Input
-                    id="trailing_stop_pct"
-                    type="number"
-                    value={formData.trailing_stop_pct ?? ''}
-                    onChange={(e) => setFormData({ ...formData, trailing_stop_pct: e.target.value ? Number(e.target.value) : null })}
-                    min={0}
-                    max={50}
-                    step={0.5}
-                    placeholder="e.g., 10, 15"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Tier 2 Parameters */}
-            <div className="border-t pt-6">
-              <h3 className="text-lg font-semibold mb-4">Tier 2: Downtrend Filter & HMM Regime Filter</h3>
+              <h3 className="text-lg font-semibold mb-4">Buy-Side Filters: Downtrend &amp; HMM Regime</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <Label htmlFor="downtrend_filter_pct">Downtrend Filter %</Label>

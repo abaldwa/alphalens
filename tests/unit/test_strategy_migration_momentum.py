@@ -10,6 +10,8 @@ to the report's variant_id. If either drifts, registry rows and report rows
 stop matching and every frontend deep link breaks silently.
 """
 
+import json
+
 import pytest
 
 from datastore.schema.create_strategy_registry import create_strategy_registry_schema
@@ -111,10 +113,37 @@ class TestRowShape:
         truthful here rather than a gap."""
         assert all(r["entry_criterion"] == [] for r in build_rows(include_grid=False))
 
-    def test_exit_is_rank_plus_grace(self):
+    def test_exit_is_a_plain_rank_exit_with_no_grace(self):
+        """Momentum is a plain list swap: a name leaves the moment it drops out
+        of the top N. exit_rank is top_n by construction -- an asymmetric exit
+        band would be a second knob, and it was deprecated."""
         row = build_rows()[0]
-        assert row["exit_criterion"]["variant"] == "rank_grace"
+        assert row["exit_criterion"]["variant"] == "rank_exit"
         assert row["exit_criterion"]["exit_rank"] == row["definition"]["top_n"]
+        assert "grace_cycles" not in row["exit_criterion"]
+
+    def test_no_row_declares_a_deprecated_knob(self):
+        """The seven knobs deprecated on 2026-08-18 must not reappear in the
+        registry through the migration -- the registry declares WHICH strategy
+        and its params, so a stale param here is a live wrong declaration."""
+        deprecated = {
+            "grace_cycles",
+            "min_momentum",
+            "trailing_stop_pct",
+            "volume_weighted",
+            "hmm_regime",
+            "adtv_cap_pct",
+        }
+        for row in build_rows():
+            blob = json.dumps(
+                {
+                    "definition": row["definition"],
+                    "entry": row["entry_criterion"],
+                    "exit": row["exit_criterion"],
+                }
+            )
+            for knob in deprecated:
+                assert knob not in blob, f"{row['name']} still declares {knob}"
 
     def test_filters_are_part_of_the_definition_unlike_technical(self):
         """Momentum's category IS its filter set, so these rows carry

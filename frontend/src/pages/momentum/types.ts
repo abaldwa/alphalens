@@ -21,7 +21,6 @@ export interface MomentumTrade {
   entry_rank: number | null
   exit_rank: number | null
   suggestion_id: number | null
-  grace_remaining: number | null
   purchase_rationale: string | null
   sell_rationale: string | null
   journal_entry: string | null
@@ -58,9 +57,10 @@ export interface MomentumSuggestion {
   id: number
   rebalance_date: string
   ticker: string
-  action: 'add' | 'exit' | 'grace_hold'
+  // [2026-08-18] 'grace_hold' is gone with the grace period. A name is held
+  // while it is in the top N on raw momentum and exits the moment it is not.
+  action: 'add' | 'exit'
   momentum_rank: number | null
-  grace_remaining: number | null
   status: string
 }
 
@@ -212,10 +212,9 @@ export interface MomentumStrategyConfigCreate {
   category: MomentumStrategyCategory
   lookback_months: number
   top_n: number
-  grace_period: number
   rebalance_frequency: 'monthly' | 'biweekly'
-  exit_rank?: number | null
-  trailing_stop_pct?: number | null
+  // [2026-08-18] grace_period, exit_rank and trailing_stop_pct deprecated.
+  // downtrend_filter_pct stays: buy-side filters are retained.
   downtrend_filter_pct?: number | null
   hmm_regime_filter?: 'none' | 'bearish' | 'bearish_sideways'
   initial_capital: number

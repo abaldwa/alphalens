@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 _COLUMNS = [
     "id", "strategy_id", "ticker", "purchase_date", "qty", "purchase_price",
     "sale_date", "sell_price", "entry_rank", "exit_rank", "suggestion_id",
-    "grace_remaining", "purchase_rationale", "sell_rationale", "journal_entry",
+    "purchase_rationale", "sell_rationale", "journal_entry",
 ]
 
 

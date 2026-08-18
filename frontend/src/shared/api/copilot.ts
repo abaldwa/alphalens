@@ -21,8 +21,9 @@ export interface RebalanceRules {
   lookback_days: number | null
   rebalance_every_n_trading_days: number | null
   top_n: number | null
-  grace_cycles: number
-  min_momentum: number | null
+  // [2026-08-18] grace_cycles/min_momentum deprecated with the other five
+  // momentum knobs: momentum is a plain list swap, so there is no grace
+  // period and no momentum floor.
 }
 
 export interface StrategySpec {

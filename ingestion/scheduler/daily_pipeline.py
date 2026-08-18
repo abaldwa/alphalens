@@ -2265,12 +2265,16 @@ def step_compute_momentum(run_date: date_type, db_path: Optional[Path] = None) -
 
             n_suggestions = 0
             if momentum_live.is_rebalance_day(conn, date_str, strategy_id=strategy_id):
+                # [2026-08-18] Momentum is a plain list swap, so a rebalance
+                # carries NO state between cycles: the open tickers are the
+                # whole input, and every suggestion is a terminal add/exit.
+                # There is no grace countdown to read in or persist back.
                 open_trades = conn.execute(
-                    "SELECT ticker, grace_remaining FROM momentum_trades "
+                    "SELECT ticker FROM momentum_trades "
                     "WHERE strategy_id = ? AND sale_date IS NULL",
                     [strategy_id],
                 ).fetchall()
-                current_open_trades = [{"ticker": t, "grace_remaining": g} for t, g in open_trades]
+                current_open_trades = [{"ticker": t} for (t,) in open_trades]
 
                 suggestions = momentum_live.compute_rebalance_suggestions(
                     conn, date_str, current_open_trades, strategy_id=strategy_id,
@@ -2279,26 +2283,12 @@ def step_compute_momentum(run_date: date_type, db_path: Optional[Path] = None) -
                     conn.execute(
                         """
                         INSERT INTO momentum_rebalance_suggestions
-                            (strategy_id, rebalance_date, ticker, action, momentum_rank, grace_remaining)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                            (strategy_id, rebalance_date, ticker, action, momentum_rank)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
                         [strategy_id, date_str, s["ticker"], s["action"],
-                         s["momentum_rank"], s["grace_remaining"]],
+                         s["momentum_rank"]],
                     )
-                    # Persist the updated grace countdown onto the open trade
-                    # itself (momentum_trades.grace_remaining) so the NEXT
-                    # rebalance's compute_rebalance_suggestions call reads the
-                    # correct current state. "add" suggestions never have an
-                    # existing open trade row (compute_rebalance_suggestions
-                    # only emits "add" for tickers not already held) — nothing
-                    # to update there; that row is created with
-                    # grace_remaining=NULL once the user records the buy.
-                    if s["action"] in ("grace_hold", "exit"):
-                        conn.execute(
-                            "UPDATE momentum_trades SET grace_remaining = ? "
-                            "WHERE strategy_id = ? AND ticker = ? AND sale_date IS NULL",
-                            [s["grace_remaining"], strategy_id, s["ticker"]],
-                        )
                 n_suggestions = len(suggestions)
                 conn.execute(
                     "UPDATE momentum_rebalance_state SET last_rebalance_date = ? WHERE strategy_id = ?",

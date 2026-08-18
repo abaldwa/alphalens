@@ -138,8 +138,6 @@ def run_backtest(spec: StrategySpec) -> Dict[str, Any]:
         lookback_days=spec.rules.lookback_days,
         rebalance_every_n_trading_days=spec.rules.rebalance_every_n_trading_days,
         top_n=spec.rules.top_n or 20,
-        grace_cycles=spec.rules.grace_cycles,
-        min_momentum=spec.rules.min_momentum,
         costs=IndianTransactionCosts(),
     )
     result = engine.run()

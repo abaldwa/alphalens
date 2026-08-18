@@ -57,14 +57,18 @@ EXCLUDE_DIR_PARTS = {".venv", "__pycache__", ".git", "node_modules", "catboost_i
 
 # Parameters the registry declares per strategy. Pinning one of these in a
 # live module overrides the registry for every strategy that module runs.
+# [2026-08-18] GRACE_CYCLES and MIN_MOMENTUM removed: they are no longer
+# registry-declared because they are no longer parameters at all. Momentum is
+# a plain list swap, so there is no grace period and no momentum floor. A
+# module pinning them now pins nothing -- the deprecation gate that matters
+# for them is tests/unit/test_strategy_migration_momentum.py's
+# test_no_row_declares_a_deprecated_knob.
 REGISTRY_DECLARED_PARAMS = frozenset({
     "TOP_N",
     "LOOKBACK_MONTHS",
-    "GRACE_CYCLES",
     "REBALANCE_FREQUENCY",
     "RANK_START",
     "RANK_END",
-    "MIN_MOMENTUM",
 })
 
 # Paths that make or serve real daily decisions: the scheduler's live steps
@@ -179,7 +183,7 @@ def test_the_registry_actually_declares_these_parameters():
     migration = REPO_ROOT / "strategies/migrations/momentum.py"
     assert migration.exists(), f"{migration} moved; update this gate's premise check."
     source = migration.read_text(encoding="utf-8")
-    for key in ("top_n", "lookback_months", "grace_cycles", "rank_start", "rank_end"):
+    for key in ("top_n", "lookback_months", "rank_start", "rank_end"):
         assert f'"{key}"' in source, (
             f"strategies/migrations/momentum.py no longer declares '{key}' in "
             "definition_json. Either the registry stopped being the source of "

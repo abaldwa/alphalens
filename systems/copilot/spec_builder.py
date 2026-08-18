@@ -33,7 +33,7 @@ description, output ONLY a JSON object (no prose) with this shape:
   "fundamental": [ same condition shape ],
   "valuation": [ same condition shape ],
   "rules": {"lookback_days": int|null, "rebalance_every_n_trading_days": int|null,
-            "top_n": int|null, "min_momentum": number|null}
+            "top_n": int|null}
 }
 
 Only use feature names you are confident correspond to real, standard \
@@ -96,7 +96,6 @@ def build_spec(nl_query: str) -> StrategySpec:
             lookback_days=rules_raw.get("lookback_days"),
             rebalance_every_n_trading_days=rules_raw.get("rebalance_every_n_trading_days"),
             top_n=rules_raw.get("top_n"),
-            min_momentum=rules_raw.get("min_momentum"),
         ),
         unresolved=unresolved,
         created_at=datetime.now(timezone.utc).isoformat(),

@@ -50,20 +50,6 @@ const tradeColumns: ColumnDef<MomentumTrade, unknown>[] = [
     cell: (i) => fmtPct(tradeCagr(i.row.original)),
   },
   {
-    accessorKey: 'grace_remaining',
-    header: () => (
-      <span className="inline-flex items-center gap-1">
-        Grace Remaining
-        <InfoTooltip>
-          Rebalance cycles left before this position is force-sold, now that it has dropped out of the strategy's
-          top-N momentum ranks. Empty means it's still in the top-N and hasn't started its grace countdown.
-        </InfoTooltip>
-      </span>
-    ),
-    meta: { align: 'right' },
-    cell: (i) => i.getValue<number | null>() ?? '—',
-  },
-  {
     id: 'status',
     header: 'Status',
     cell: (i) => (i.row.original.sale_date == null ? 'Open' : 'Closed'),

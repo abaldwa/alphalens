@@ -59,8 +59,8 @@ class RulesModel(BaseModel):
     lookback_days: Optional[int] = None
     rebalance_every_n_trading_days: Optional[int] = None
     top_n: Optional[int] = None
-    grace_cycles: int = 2
-    min_momentum: Optional[float] = None
+    # [2026-08-18] grace_cycles/min_momentum deprecated -- see
+    # systems.copilot.strategy_spec.RebalanceRules.
 
 
 class SpecModel(BaseModel):

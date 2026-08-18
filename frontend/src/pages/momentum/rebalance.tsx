@@ -88,8 +88,8 @@ export function MomentumRebalancePage() {
         <span className="inline-flex items-center gap-1">
           Action
           <InfoTooltip>
-            "add" = new entry into the top-N ranks. "exit" = the position's grace period has fully elapsed, forced
-            sell. "grace_hold" = out of the top-N but still within its grace countdown, no action needed yet.
+            "add" = new entry into the top-N ranks. "exit" = the position dropped out of the top-N on raw
+            momentum, so it is sold at this rebalance. There is no grace period: the swap is immediate.
           </InfoTooltip>
         </span>
       ),
@@ -107,20 +107,6 @@ export function MomentumRebalancePage() {
       meta: { align: 'right' },
       cell: (i) => i.getValue<number | null>() ?? '—',
     },
-    {
-      accessorKey: 'grace_remaining',
-      header: () => (
-        <span className="inline-flex items-center gap-1">
-          Grace Remaining
-          <InfoTooltip>
-            Rebalance cycles left before this position is force-sold, now that it has dropped out of the top-N
-            ranks. Empty means it hasn't dropped out since entry.
-          </InfoTooltip>
-        </span>
-      ),
-      meta: { align: 'right' },
-      cell: (i) => i.getValue<number | null>() ?? '—',
-    },
     { accessorKey: 'status', header: 'Status' },
     {
       id: 'do',
@@ -128,7 +114,6 @@ export function MomentumRebalancePage() {
       cell: ({ row }) => {
         const s = row.original
         if (s.status !== 'pending') return null
-        if (s.action === 'grace_hold') return <span className="text-xs text-muted-foreground">still within grace — no action needed</span>
         return (
           <div className="flex gap-2">
             <Button size="sm" onClick={() => openModal(s)}>
@@ -146,7 +131,7 @@ export function MomentumRebalancePage() {
   const inputClass = 'h-9 rounded-[var(--radius-token)] border border-border bg-transparent px-3 text-sm'
 
   return (
-    <AppShell title="Momentum — Rebalance" description="ML38 rebalance suggestions: add/exit/grace-hold actions for the selected rank-band strategy.">
+    <AppShell title="Momentum — Rebalance" description="Rebalance suggestions: add/exit actions for the selected rank-band strategy.">
       <div className="mb-4">
         <StrategyPicker strategies={strategies.data ?? []} value={activeStrategyId} onChange={setStrategyId} />
       </div>

@@ -132,7 +132,7 @@ _EXPERIMENTATION_REPORTS_DIR = Path(__file__).resolve().parents[3] / "backtest" 
 _TRADE_COLUMNS = [
     "id", "strategy_id", "ticker", "purchase_date", "qty", "purchase_price",
     "sale_date", "sell_price", "entry_rank", "exit_rank", "suggestion_id",
-    "grace_remaining", "purchase_rationale", "sell_rationale", "journal_entry",
+    "purchase_rationale", "sell_rationale", "journal_entry",
 ]
 
 
@@ -348,7 +348,6 @@ class SuggestionRow(BaseModel):
     ticker: str
     action: str
     momentum_rank: Optional[int] = None
-    grace_remaining: Optional[int] = None
     status: str
 
 
@@ -370,12 +369,12 @@ async def get_rebalance_suggestions(
                 return []
             rebalance_date = latest[0]
         rows = conn.execute(
-            "SELECT id, rebalance_date, ticker, action, momentum_rank, grace_remaining, status "
+            "SELECT id, rebalance_date, ticker, action, momentum_rank, status "
             "FROM momentum_rebalance_suggestions WHERE strategy_id = ? AND rebalance_date = ? "
             "ORDER BY action, ticker",
             [strategy_id, rebalance_date.isoformat() if isinstance(rebalance_date, date_type) else rebalance_date],
         ).fetchall()
-    columns = ["id", "rebalance_date", "ticker", "action", "momentum_rank", "grace_remaining", "status"]
+    columns = ["id", "rebalance_date", "ticker", "action", "momentum_rank", "status"]
     return [SuggestionRow(**_row_to_dict(r, columns)) for r in rows]
 
 
@@ -435,7 +434,6 @@ class TradeRow(BaseModel):
     entry_rank: Optional[int] = None
     exit_rank: Optional[int] = None
     suggestion_id: Optional[int] = None
-    grace_remaining: Optional[int] = None
     purchase_rationale: Optional[str] = None
     sell_rationale: Optional[str] = None
     journal_entry: Optional[str] = None
@@ -980,12 +978,13 @@ class MomentumStrategyConfigCreate(BaseModel):
     category: Literal['all_risk', 'balanced', 'risk_managed', 'max_defensive']
     lookback_months: int = Field(ge=1, le=24)
     top_n: int = Field(ge=1, le=50)
-    grace_period: int = Field(ge=0, le=5)
     rebalance_frequency: Literal['monthly', 'biweekly']
-    # Tier 1 params
-    exit_rank: Optional[int] = None
-    trailing_stop_pct: Optional[float] = None
-    # Tier 2 params
+    # [2026-08-18] grace_period, exit_rank and trailing_stop_pct are gone.
+    # Momentum is a plain list swap: a name is held while it is in the top N
+    # on raw momentum and sold the moment it is not. There is no grace
+    # period, no asymmetric exit band, and no trailing stop.
+    #
+    # downtrend_filter_pct stays: it is a BUY-side filter, which is retained.
     downtrend_filter_pct: Optional[float] = None
     hmm_regime_filter: Optional[Literal['none', 'bearish', 'bearish_sideways']] = 'none'
     # Capital deployment
@@ -1045,8 +1044,8 @@ async def list_strategy_configs(
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = conn.execute(
             f"""
-            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
-                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+            SELECT config_id, band_id, category, lookback_months, top_n,
+                   rebalance_frequency, downtrend_filter_pct,
                    hmm_regime_filter, initial_capital, sip_amount, start_date,
                    rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
             FROM momentum_strategy_configs {where}
@@ -1055,8 +1054,8 @@ async def list_strategy_configs(
             params,
         ).fetchall()
     columns = [
-        "config_id", "band_id", "category", "lookback_months", "top_n", "grace_period",
-        "rebalance_frequency", "exit_rank", "trailing_stop_pct", "downtrend_filter_pct",
+        "config_id", "band_id", "category", "lookback_months", "top_n",
+        "rebalance_frequency", "downtrend_filter_pct",
         "hmm_regime_filter", "initial_capital", "sip_amount", "start_date",
         "rebalance_day_of_month", "portfolio_id", "is_active", "created_at", "updated_at"
     ]
@@ -1064,8 +1063,8 @@ async def list_strategy_configs(
 
 
 _STRATEGY_CONFIG_COLUMNS = [
-    "config_id", "band_id", "category", "lookback_months", "top_n", "grace_period",
-    "rebalance_frequency", "exit_rank", "trailing_stop_pct", "downtrend_filter_pct",
+    "config_id", "band_id", "category", "lookback_months", "top_n",
+    "rebalance_frequency", "downtrend_filter_pct",
     "hmm_regime_filter", "initial_capital", "sip_amount", "start_date",
     "rebalance_day_of_month", "portfolio_id", "is_active", "created_at", "updated_at"
 ]
@@ -1084,16 +1083,14 @@ async def create_strategy_config(config: MomentumStrategyConfigCreate) -> Moment
             """
             SELECT config_id FROM momentum_strategy_configs
             WHERE band_id = ? AND category = ? AND lookback_months = ? AND top_n = ?
-              AND grace_period = ? AND rebalance_frequency = ?
-              AND exit_rank IS NOT DISTINCT FROM ?
-              AND trailing_stop_pct IS NOT DISTINCT FROM ?
+              AND rebalance_frequency = ?
               AND downtrend_filter_pct IS NOT DISTINCT FROM ?
               AND hmm_regime_filter IS NOT DISTINCT FROM ?
             """,
             [
                 config.band_id, config.category, config.lookback_months, config.top_n,
-                config.grace_period, config.rebalance_frequency, config.exit_rank,
-                config.trailing_stop_pct, config.downtrend_filter_pct, config.hmm_regime_filter,
+                config.rebalance_frequency,
+                config.downtrend_filter_pct, config.hmm_regime_filter,
             ],
         ).fetchone()
         if dup is not None:
@@ -1104,23 +1101,23 @@ async def create_strategy_config(config: MomentumStrategyConfigCreate) -> Moment
         new_id = conn.execute(
             """
             INSERT INTO momentum_strategy_configs
-                (band_id, category, lookback_months, top_n, grace_period, rebalance_frequency,
-                 exit_rank, trailing_stop_pct, downtrend_filter_pct, hmm_regime_filter,
+                (band_id, category, lookback_months, top_n, rebalance_frequency,
+                 downtrend_filter_pct, hmm_regime_filter,
                  initial_capital, sip_amount, start_date, rebalance_day_of_month, portfolio_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING config_id
             """,
             [
-                config.band_id, config.category, config.lookback_months, config.top_n, config.grace_period,
-                config.rebalance_frequency, config.exit_rank, config.trailing_stop_pct,
+                config.band_id, config.category, config.lookback_months, config.top_n,
+                config.rebalance_frequency,
                 config.downtrend_filter_pct, config.hmm_regime_filter, config.initial_capital,
                 config.sip_amount, config.start_date, config.rebalance_day_of_month, config.portfolio_id,
             ],
         ).fetchone()[0]
         row = conn.execute(
             """
-            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
-                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+            SELECT config_id, band_id, category, lookback_months, top_n,
+                   rebalance_frequency, downtrend_filter_pct,
                    hmm_regime_filter, initial_capital, sip_amount, start_date,
                    rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
             FROM momentum_strategy_configs WHERE config_id = ?
@@ -1137,8 +1134,8 @@ async def get_strategy_config(config_id: int) -> MomentumStrategyConfigResponse:
         _ensure_tables(conn)
         row = conn.execute(
             """
-            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
-                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+            SELECT config_id, band_id, category, lookback_months, top_n,
+                   rebalance_frequency, downtrend_filter_pct,
                    hmm_regime_filter, initial_capital, sip_amount, start_date,
                    rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
             FROM momentum_strategy_configs WHERE config_id = ?
@@ -1170,8 +1167,8 @@ async def update_strategy_config(config_id: int, update: MomentumStrategyConfigU
         )
         row = conn.execute(
             """
-            SELECT config_id, band_id, category, lookback_months, top_n, grace_period,
-                   rebalance_frequency, exit_rank, trailing_stop_pct, downtrend_filter_pct,
+            SELECT config_id, band_id, category, lookback_months, top_n,
+                   rebalance_frequency, downtrend_filter_pct,
                    hmm_regime_filter, initial_capital, sip_amount, start_date,
                    rebalance_day_of_month, portfolio_id, is_active, created_at, updated_at
             FROM momentum_strategy_configs WHERE config_id = ?
@@ -1205,8 +1202,8 @@ async def get_config_historical_returns(config_id: int) -> List[YoyReturnRow]:
         _ensure_tables(conn)
         config_row = conn.execute(
             """
-            SELECT band_id, category, lookback_months, top_n, grace_period, rebalance_frequency,
-                   exit_rank, trailing_stop_pct, downtrend_filter_pct, hmm_regime_filter
+            SELECT band_id, category, lookback_months, top_n, rebalance_frequency,
+                   downtrend_filter_pct, hmm_regime_filter
             FROM momentum_strategy_configs WHERE config_id = ?
             """,
             [config_id],
@@ -1215,8 +1212,8 @@ async def get_config_historical_returns(config_id: int) -> List[YoyReturnRow]:
             raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
 
     config = _row_to_dict(config_row, [
-        "band_id", "category", "lookback_months", "top_n", "grace_period", "rebalance_frequency",
-        "exit_rank", "trailing_stop_pct", "downtrend_filter_pct", "hmm_regime_filter"
+        "band_id", "category", "lookback_months", "top_n", "rebalance_frequency",
+        "downtrend_filter_pct", "hmm_regime_filter"
     ])
 
     # Find latest dynamic report
@@ -1240,8 +1237,7 @@ async def get_config_historical_returns(config_id: int) -> List[YoyReturnRow]:
             v.get("strategy") == config["category"] and
             v.get("lookback_months") == config["lookback_months"] and
             v.get("rebalance_period") == config["rebalance_frequency"] and
-            v.get("top_n") == config["top_n"] and
-            v.get("grace_period") == config.get("grace_period", 0)
+            v.get("top_n") == config["top_n"]
         )
 
     matching_variant = next((v for v in variants if variant_matches(v)), None)

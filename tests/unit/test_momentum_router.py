@@ -46,7 +46,7 @@ class TestMomentumSchema:
     def test_tables_created_with_expected_columns(self, db_path):
         with get_duckdb_connection(db_path, persist=False, read_only=True) as conn:
             for table, expected in [
-                ("momentum_trades", {"id", "ticker", "purchase_date", "qty", "sale_date", "grace_remaining"}),
+                ("momentum_trades", {"id", "ticker", "purchase_date", "qty", "sale_date"}),
                 ("momentum_contributions", {"id", "contribution_date", "amount"}),
                 ("momentum_rankings", {"date", "ticker", "momentum_rank", "in_top_n"}),
                 ("momentum_rebalance_suggestions", {"id", "rebalance_date", "ticker", "action", "status"}),
@@ -156,9 +156,9 @@ class TestRebalanceSuggestions:
         with get_duckdb_connection(db_path, persist=False, read_only=False) as conn:
             new_id = conn.execute(
                 "INSERT INTO momentum_rebalance_suggestions "
-                "(strategy_id, rebalance_date, ticker, action, momentum_rank, grace_remaining) "
-                "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
-                [momentum_router.DEFAULT_STRATEGY_ID, "2026-03-02", "AAA", "add", 1, None],
+                "(strategy_id, rebalance_date, ticker, action, momentum_rank) "
+                "VALUES (?, ?, ?, ?, ?) RETURNING id",
+                [momentum_router.DEFAULT_STRATEGY_ID, "2026-03-02", "AAA", "add", 1],
             ).fetchone()[0]
 
         listed = client.get("/api/v1/momentum/rebalance/suggestions").json()
