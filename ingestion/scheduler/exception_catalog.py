@@ -88,7 +88,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="compute_momentum",
-        location="ingestion/scheduler/daily_pipeline.py:2166",
+        location="ingestion/scheduler/daily_pipeline.py:2247",
         caught="strategy_signals dual-write failure (B1) for one momentum "
         "strategy. momentum_rankings for the same date is already committed "
         "at this point.",
@@ -104,8 +104,39 @@ CATALOG: list[ExceptionCatalogEntry] = [
         severity="warning",
     ),
     ExceptionCatalogEntry(
+        step_name="propose_paper_trades",
+        location="ingestion/scheduler/daily_pipeline.py:2131",
+        caught="One deployed strategy declares a filter the live path has no "
+        "data source for (quality scores, HMM regime labels, market-cap/beta "
+        "panels are backtest-time inputs). A deliberate refusal, not a fault.",
+        impact="That ONE strategy gets no proposal today; every other active "
+        "deployment is unaffected. Nothing wrong is proposed — the refusal "
+        "exists because running a strategy without its declared filters is "
+        "running a different strategy from the one that was backtested.",
+        remediation="Either give the live path a real source for the declared "
+        "filter, or stop deploying a strategy that depends on it. Never "
+        "'fix' this by dropping the filter from the registry row.",
+        severity="warning",
+    ),
+    ExceptionCatalogEntry(
+        step_name="propose_paper_trades",
+        location="ingestion/scheduler/daily_pipeline.py:2134",
+        caught="Any other per-deployment failure while building the adapter "
+        "or generating today's proposals (missing registry row, missing "
+        "feature snapshot, a channel with no declared holdings count).",
+        impact="That ONE deployment has no proposal queued for the date; the "
+        "loop continues to the next. Nothing executes either way — every "
+        "proposal requires a human accept() — so the cost is a missed day of "
+        "review for that strategy, not a wrong trade.",
+        remediation="Read the logged traceback: a missing registry row means "
+        "the deployment references a strategy that was never declared; a "
+        "missing feature snapshot means compute_features did not finish for "
+        "the date. Re-run the step after fixing the cause.",
+        severity="warning",
+    ),
+    ExceptionCatalogEntry(
         step_name="publish_and_snapshot",
-        location="ingestion/scheduler/daily_pipeline.py:2306",
+        location="ingestion/scheduler/daily_pipeline.py:2387",
         caught="N=7 rollback snapshot (fno_data, ohlcv_adjusted) write or "
         "prune failure. Runs last, after every other writer for the date.",
         impact="No new rollback snapshot exists for this date — "
@@ -121,7 +152,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="main (scheduler startup)",
-        location="ingestion/scheduler/daily_pipeline.py:2813",
+        location="ingestion/scheduler/daily_pipeline.py:2895",
         caught="scheduler.remove_job('backfill_catchup') raising "
         "JobLookupError when the stale persisted job doesn't exist (the "
         "common case after the first cleanup run).",

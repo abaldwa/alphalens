@@ -1025,3 +1025,45 @@ One typing fix at source: `_sector_map()` yields `Optional[str]` values (a
 ticker whose sector was never sourced), so the adapter's `sector_lookup` is
 typed honestly rather than cast, and `Signal.sector` goes through a `_sector()`
 helper — `.get(ticker, "Unknown")` covered a missing key but not a stored null.
+
+## §17 — F1/F2 delivered (2026-08-18)
+
+**`backtest/core/live_adapter_factory.py`** — `build_live_adapter(channel,
+strategy_id, as_of_date, conn=, top_n=)` returns `(adapter, universe)`: the same
+adapter a backtest of that strategy would build, configured from its registry
+row, plus the universe it should see today. An adapter's constructor kwargs ARE
+the strategy, so assembling them per call site is how a live path comes to run
+something the backtest never measured.
+
+It refuses rather than guesses:
+* an unsupported declared filter raises `StrategyNotRunnableLive` (same rule and
+  message shape as `momentum_live`'s), because running a strategy without its
+  declared filters is running a different strategy;
+* `top_n` is required for technical and fundamental — their registry rows
+  declare the entry rule but genuinely not a holdings count, and momentum's
+  declared `top_n` always wins over a caller-supplied one (asserted);
+* ML raises up front naming PHASE-H5, rather than failing at the registry
+  lookup with what looks like a missing migration.
+
+**F1 — `POST /api/v1/paper_trading2/{channel}/{strategy_id}/propose`**: builds
+the adapter through the factory, hands it to `PaperTradingRunner.propose_today`,
+returns the queued actions. Nothing executes; every action still needs a human
+accept(). `StrategyNotRunnableLive` → 409 (valid request, cannot honour a
+declared filter today), `DefinitionNotFound` → 404, other `ValueError`/`KeyError`
+→ 400. The DuckDB connection stays open across `generate_signals`, since the
+three bespoke fundamental presets read raw PIT financials while running.
+
+**F2 — `step_propose_paper_trades`**: iterates ACTIVE `strategy_deployments`
+rows and proposes for each. NOT backfillable, for exactly `paper_trade`'s
+reason — a proposal for a day already past was never genuinely live, and
+backfilling one would inflate Gate 7's forward-day count. One strategy's refusal
+or failure is logged and skipped; the loop continues. Both handlers are
+documented in `exception_catalog.py` (whose three existing pins had drifted with
+the insertion and are re-pinned).
+
+There are zero rows in `strategy_deployments` today, so the step is a no-op
+until something is deployed — which is the correct behaviour, not a gap.
+
+Mutation-validated: turning the per-deployment `continue` into a `break`, having
+the endpoint skip the queue, and letting a caller's `top_n` override momentum's
+declared one each fail their test.

@@ -57,7 +57,7 @@
  "datastore/api/routers/holdings.py": 4,
  "datastore/api/routers/indices.py": 4,
  "datastore/api/routers/models.py": 1,
- "datastore/api/routers/ops.py": 8,
+ "datastore/api/routers/ops.py": 7,
  "datastore/api/routers/paper_trading.py": 16,
  "datastore/api/routers/paper_trading_unified.py": 2,
  "datastore/api/routers/portfolios.py": 9,
@@ -111,10 +111,8 @@
  "ingestion/quality/drift_monitor.py": 16,
  "ingestion/quality/validator.py": 1,
  "ingestion/reconcile/fyers_diff.py": 1,
- "ingestion/scheduler/checkpoint.py": 3,
- "ingestion/scheduler/force_run.py": 6,
  "ingestion/scheduler/model_usage_audit.py": 1,
- "ingestion/scheduler/pipeline_steps.py": 7,
+ "ingestion/scheduler/pipeline_steps.py": 2,
  "ingestion/scheduler/resource_guard.py": 2,
  "ingestion/scheduler/run_recording.py": 2,
  "ingestion/scheduler/scheduler_jobs.py": 4,
@@ -198,7 +196,6 @@
  "systems/regime/market_regime.py": 2,
  "systems/regime/regime_store.py": 7,
  "systems/technical_analysis/alerts/alert_store.py": 1,
- "systems/technical_analysis/alerts/daily_alert_checker.py": 2,
  "systems/technical_analysis/screener/outcomes.py": 3,
  "systems/technical_analysis/screener/templates.py": 4
 }

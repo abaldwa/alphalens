@@ -143,3 +143,103 @@ class TestStateSummary:
         response = client.get("/api/v1/paper_trading2/technical/ta_5d/state")
         assert response.status_code == 200
         assert response.json()["n_open_positions"] == 1
+
+
+class TestProposeEndpoint:
+    """F1: POST /{channel}/{strategy_id}/propose.
+
+    The endpoint owns no selection logic — it builds the strategy's adapter
+    from the registry (live_adapter_factory) and hands it to
+    PaperTradingRunner. These tests pin exactly that, plus the refusals.
+    """
+
+    _URL = "/api/v1/paper_trading2/technical/A1/propose"
+
+    def _patch_factory(self, monkeypatch, adapter, universe=("RELIANCE", "TCS")):
+        # The A103 readiness gate is ON in this endpoint by design; these tests
+        # are about the endpoint's wiring, so it is stubbed READY explicitly
+        # rather than left to whatever the local feature store happens to hold
+        # (which would make them pass or fail for unrelated reasons).
+        monkeypatch.setattr(
+            "backtest.paper_trading.live_runner.check_readiness", lambda *a, **k: None
+        )
+        calls = []
+
+        def _build(channel, strategy_id, as_of, *, conn=None, top_n=None):
+            calls.append((channel, strategy_id, as_of, top_n))
+            return adapter, list(universe)
+
+        monkeypatch.setattr("backtest.core.live_adapter_factory.build_live_adapter", _build)
+        return calls
+
+    def test_queues_the_adapters_signals_for_review(self, client, monkeypatch):
+        adapter = _FixedAdapter("technical", [
+            Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9),
+        ])
+        calls = self._patch_factory(monkeypatch, adapter)
+        resp = client.post(self._URL, json={"as_of_date": "2026-08-14", "horizon_bucket": "21_day", "top_n": 10})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert [a["ticker"] for a in body["actions"]] == ["RELIANCE"]
+        assert all(a["status"] == "pending" for a in body["actions"])
+        assert body["universe_size"] == 2
+        # The strategy's identity and top_n reached the factory unchanged.
+        assert calls == [("technical", "A1", __import__("datetime").date(2026, 8, 14), 10)]
+
+    def test_nothing_to_propose_is_a_normal_empty_response(self, client, monkeypatch):
+        self._patch_factory(monkeypatch, _FixedAdapter("technical", []))
+        resp = client.post(self._URL, json={"as_of_date": "2026-08-14", "horizon_bucket": "21_day", "top_n": 10})
+        assert resp.status_code == 200
+        assert resp.json()["actions"] == []
+
+    def test_proposals_are_visible_to_the_pending_endpoint(self, client, monkeypatch):
+        """The proposal must land in the same queue a human reviews, not in a
+        response body that nothing persisted."""
+        self._patch_factory(monkeypatch, _FixedAdapter("technical", [
+            Signal(ticker="RELIANCE", action="buy", sector="Energy", conviction=0.9),
+        ]))
+        client.post(self._URL, json={"as_of_date": "2026-08-14", "horizon_bucket": "21_day", "top_n": 10})
+        pending = client.get("/api/v1/paper_trading2/technical/A1/pending?as_of_date=2026-08-14")
+        assert [a["ticker"] for a in pending.json()["actions"]] == ["RELIANCE"]
+
+    def test_an_undeclarable_filter_is_a_409_not_a_500(self, client, monkeypatch):
+        from features.momentum_live import StrategyNotRunnableLive
+
+        def _refuse(*a, **k):
+            raise StrategyNotRunnableLive("declares filter(s) ['quality_gate'] ...")
+
+        monkeypatch.setattr("backtest.core.live_adapter_factory.build_live_adapter", _refuse)
+        resp = client.post(self._URL, json={"as_of_date": "2026-08-14", "horizon_bucket": "21_day", "top_n": 10})
+        assert resp.status_code == 409
+        assert "quality_gate" in resp.json()["detail"]
+
+    def test_a_bad_date_or_horizon_is_a_400(self, client):
+        assert client.post(self._URL, json={"as_of_date": "not-a-date", "horizon_bucket": "21_day"}).status_code == 400
+        assert client.post(
+            self._URL, json={"as_of_date": "2026-08-14", "horizon_bucket": "not-a-bucket"}
+        ).status_code == 400
+
+    def test_a_factory_refusal_is_a_400_not_a_crash(self, client, monkeypatch):
+        """The factory refuses to invent a portfolio size (see
+        tests/unit/test_live_adapter_factory.py); the endpoint must surface
+        that as a client error."""
+        def _refuse(*a, **k):
+            raise ValueError("channel='technical' requires an explicit top_n")
+
+        monkeypatch.setattr("backtest.core.live_adapter_factory.build_live_adapter", _refuse)
+        resp = client.post(self._URL, json={"as_of_date": "2026-08-14", "horizon_bucket": "21_day"})
+        assert resp.status_code == 400
+        assert "top_n" in resp.json()["detail"]
+
+    def test_an_unknown_strategy_is_a_404(self, client, monkeypatch):
+        from strategies.definitions import DefinitionNotFound
+
+        def _missing(*a, **k):
+            raise DefinitionNotFound("no strategy_registry row for 'technical:NOPE'")
+
+        monkeypatch.setattr("backtest.core.live_adapter_factory.build_live_adapter", _missing)
+        resp = client.post(
+            "/api/v1/paper_trading2/technical/NOPE/propose",
+            json={"as_of_date": "2026-08-14", "horizon_bucket": "21_day", "top_n": 10},
+        )
+        assert resp.status_code == 404

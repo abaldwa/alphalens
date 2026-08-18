@@ -2059,6 +2059,87 @@ def step_check_ta_alerts(run_date: date_type, db_path: Optional[Path] = None) ->
     logger.info(f"check_ta_alerts: {len(newly_triggered)} user-defined alert(s) newly triggered for {date_str}")
 
 
+def step_propose_paper_trades(run_date: date_type, db_path: Optional[Path] = None) -> None:
+    """
+    F1/F2 (UnifiedGeneratorRefactorPlan.md): generate today's paper-trading
+    proposals for every ACTIVE strategy_deployments row, through the same
+    adapter its backtest ran (backtest/core/live_adapter_factory.py) and into
+    the same human-review queue the unified paper-trading API reads.
+
+    Nothing here executes. Every proposal waits for an explicit human accept()
+    — the Gate-7 rule that no capital, real or simulated, moves on an
+    unreviewed action.
+
+    NOT backfillable, for the same reason step_paper_trade is not: a proposal
+    for a day that has already passed was never genuinely live, and letting
+    backfill create one would inflate Gate 7's forward-day count with days
+    nobody actually traded.
+
+    A deployment that cannot be built is logged and skipped, and the step
+    continues to the next one — one unrunnable strategy must not cost every
+    other deployment its day. The two ways that happens are both deliberate
+    refusals, not bugs:
+      * the strategy declares a filter the live path has no data source for
+        (running it without that filter would be running a different
+        strategy), and
+      * technical/fundamental deployments, whose registry rows declare the
+        entry rule but not how many names to hold. Inventing a portfolio size
+        here would present a made-up number as the strategy's own.
+
+    Parameters
+    ----------
+    run_date : date
+    db_path : Path, optional
+        Normalised DuckDB; defaults to config.settings.DUCKDB_PATH.
+
+    Returns
+    -------
+    None
+
+    Spec References
+    ----------------
+    SPEC-BT-002 (paper trading), A94 (signal ledger), A103 (readiness)
+    """
+    from backtest.core.horizon import HorizonBucket
+    from backtest.core.live_adapter_factory import build_live_adapter
+    from backtest.paper_trading.live_runner import PaperTradingRunner
+    from config.settings import DUCKDB_PATH
+    from features.momentum_live import StrategyNotRunnableLive
+
+    path = db_path or DUCKDB_PATH
+    with get_duckdb_connection(path, read_only=True, persist=False) as conn:
+        tables = {r[0] for r in conn.execute("SHOW TABLES").fetchall()}
+        if "strategy_deployments" not in tables:
+            logger.info("propose_paper_trades: no strategy_deployments table yet — nothing deployed")
+            return
+        deployments = conn.execute(
+            "SELECT strategy_key, channel FROM strategy_deployments WHERE is_active ORDER BY strategy_key"
+        ).fetchall()
+        if not deployments:
+            logger.info("propose_paper_trades: no active deployments — nothing to propose")
+            return
+
+        proposed = 0
+        for strategy_key, channel in deployments:
+            strategy_id = str(strategy_key).split(":", 1)[-1]
+            try:
+                adapter, universe = build_live_adapter(channel, strategy_id, run_date, conn=conn)
+                runner = PaperTradingRunner(
+                    channel, strategy_id, horizon_bucket=HorizonBucket.D21,
+                )
+                actions = runner.propose_today(adapter, universe, run_date)
+            except StrategyNotRunnableLive as exc:
+                logger.warning("propose_paper_trades: %s refused — %s", strategy_key, exc)
+                continue
+            except Exception:
+                logger.exception("propose_paper_trades: %s failed; continuing", strategy_key)
+                continue
+            proposed += len(actions)
+            logger.info("propose_paper_trades: %s proposed %d action(s)", strategy_key, len(actions))
+
+    logger.info("propose_paper_trades: %d action(s) queued for review on %s", proposed, run_date)
+
+
 def step_compute_momentum(run_date: date_type, db_path: Optional[Path] = None) -> None:
     """
     ML38 (2026-07-14, extended 2026-07-15): live momentum-strategy
@@ -2441,6 +2522,7 @@ _STEP_DISPATCH: Dict[str, Callable[[date_type], None]] = {
     "paper_trade": step_paper_trade,
     "check_ta_alerts": step_check_ta_alerts,
     "compute_momentum": step_compute_momentum,
+    "propose_paper_trades": step_propose_paper_trades,
     "publish_and_snapshot": step_publish_and_snapshot,
     "data_integrity_check": step_data_integrity_check,
 }

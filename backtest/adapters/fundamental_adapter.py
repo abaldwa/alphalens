@@ -50,7 +50,7 @@ this adapter special-cases.
 
 import logging
 from datetime import date as date_type, datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 import pandas as pd
 
@@ -124,7 +124,7 @@ class FundamentalAdapter:
     channel = "fundamental"
 
     def __init__(
-        self, preset: str, top_n: int = 10, sector_lookup: Optional[Dict[str, Optional[str]]] = None,
+        self, preset: str, top_n: int = 10, sector_lookup: Optional[Mapping[str, Optional[str]]] = None,
         db_conn: Optional[Any] = None, market_cap_lookup: Optional[Dict[str, float]] = None,
         price_panel: Optional[pd.DataFrame] = None, volume_panel: Optional[pd.DataFrame] = None,
         adtv_lookback_days: int = 20,
@@ -160,12 +160,13 @@ class FundamentalAdapter:
             raise ValueError("top_n must be positive")
         self.preset = preset
         self.top_n = top_n
-        # Values are Optional[str]: config/universe.py carries a null sector
+        # Mapping, not Dict, and Optional values: config/universe.py carries a
+        # null sector
         # for a ticker whose sector was never sourced, and the live router
         # passes that map straight through (E2). "unknown sector" must stay
         # distinguishable from "excluded sector" -- is_sector_excluded returns
         # False for None -- so it is typed honestly rather than cast.
-        self._sector_lookup: Dict[str, Optional[str]] = sector_lookup or {}
+        self._sector_lookup: Mapping[str, Optional[str]] = sector_lookup or {}
         # [BUG FIX, 2026-07-28 second model-review, item 9] real ticker ->
         # market_cap_cr, same optional/deferred-wiring convention as
         # sector_lookup — feeds the LIQUIDITY_FLOOR_MARKET_CAP_CR gate below

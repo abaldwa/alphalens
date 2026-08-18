@@ -40,7 +40,7 @@ import logging
 import sqlite3
 from datetime import date as date_type
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Set
 
 from config.timezone import now_ist
 from datastore.api.db import get_sqlite_connection
@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 # step (e.g. download_large_deals) never blocks compute_features, because
 # compute_features only depends on adjust_prices (which only depends on
 # download_bhavcopy). The 4 parallel downloader steps are fully independent.
-STEPS = [
+STEPS: List[Dict[str, Any]] = [
     # Foundation: OHLCV is the hard prerequisite for everything downstream.
     {"name": "download_bhavcopy", "is_backfillable": True, "depends_on": []},
     # FYERS-primary daily pull (SPEC-PIPE-001 extension, scripts/
@@ -196,6 +196,14 @@ STEPS = [
     # sanity_check (AF-2): a day whose own signals failed the sanity gate
     # must never be traded on.
     {"name": "paper_trade", "is_backfillable": False, "depends_on": ["sanity_check"]},
+    # F2 (UnifiedGeneratorRefactorPlan.md): today's proposals for every ACTIVE
+    # strategy_deployments row, queued for human review — never executed.
+    # NOT backfillable, for exactly paper_trade's reason: a proposal for a day
+    # already past was never genuinely live, and backfilling one would inflate
+    # Gate 7's forward-day count with days nobody traded. Depends on
+    # compute_features because every channel's adapter reads that day's
+    # feature snapshot.
+    {"name": "propose_paper_trades", "is_backfillable": False, "depends_on": ["compute_features"]},
     # A25 (Write-Audit-Publish Architecture): daily incremental rollback
     # snapshot of the pilot tables (fno_data, ohlcv_adjusted) — see
     # daily_pipeline.py::step_publish_and_snapshot's docstring. Runs last,
@@ -205,8 +213,8 @@ STEPS = [
     # eventually runs.
     {"name": "publish_and_snapshot", "is_backfillable": True, "depends_on": ["download_fno", "adjust_prices"]},
 ]
-STEP_NAMES = [step["name"] for step in STEPS]
-_BACKFILLABLE = {step["name"]: step["is_backfillable"] for step in STEPS}
+STEP_NAMES: List[str] = [str(step["name"]) for step in STEPS]
+_BACKFILLABLE: Dict[str, bool] = {str(step["name"]): bool(step["is_backfillable"]) for step in STEPS}
 
 _VALID_STATUSES = {"running", "success", "failed", "skipped"}
 
@@ -415,7 +423,7 @@ class CheckpointManager:
 
         logger.info(f"Checkpoint saved: {run_date} / {step_name} -> {status}")
 
-    def get_succeeded_steps(self, run_date: date_type) -> set:
+    def get_succeeded_steps(self, run_date: date_type) -> Set[str]:
         """
         Return the set of step names that have status='success' for run_date.
 
