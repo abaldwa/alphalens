@@ -24,7 +24,6 @@
  "backtest/momentum_backtest.py": 20,
  "backtest/optimize_exit_params.py": 7,
  "backtest/paper_trading/approval_queue.py": 8,
- "backtest/paper_trading/live_runner.py": 1,
  "backtest/parity.py": 1,
  "backtest/portfolio.py": 8,
  "backtest/portfolio_state.py": 2,

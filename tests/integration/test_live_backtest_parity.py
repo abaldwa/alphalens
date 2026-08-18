@@ -78,6 +78,7 @@ from a backtest here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date as _date
 from typing import Any, Dict, List, Optional, Set
 
 import pytest
@@ -94,6 +95,10 @@ from config.settings import DUCKDB_PATH  # noqa: E402
 # config.settings.MIN_ADTV_CR: that is 0.0 under the active universe profile,
 # so using it would apply a filter that filters nothing.
 RECOMMENDED_MIN_ADTV_CR = 0.1  # scripts/run_momentum_recommended_strategies.py:111
+
+# The full-match tolerance daily_alert_checker.py uses (single owner: the
+# screener engine rule — see tests/quality/test_one_generator_per_channel.py).
+FULL_MATCH_EPSILON = 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -484,18 +489,101 @@ def test_live_path_can_express_every_registry_category():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "PHASE-D2: the technical holdings path does not exist yet. "
-        "DailyAlertChecker.evaluate answers 'what matched a template today', "
-        "not 'what should the portfolio hold' -- there is no live holdings "
-        "selection to diff the adapter against until LiveSignalRunner is "
-        "built. Writing a diff against the alert feed would compare two "
-        "different questions and report a meaningless number."
+TECHNICAL_PARITY_TEMPLATE = "A1"
+TECHNICAL_TOP_N = 10
+
+
+def build_technical_parity_report(as_of_date: str, template: str = TECHNICAL_PARITY_TEMPLATE) -> ParityReport:
+    """Diff the live technical holdings path against the backtested rule.
+
+    backtest_selection : TechnicalAdapter.generate_signals — the rule that
+        was measured, called directly, exactly as BacktestOrchestrator calls it.
+    live_selection : the SAME adapter reached through LiveSignalRunner (D2),
+        which is now the live holdings path.
+
+    A non-zero diff here means the runner is doing selection of its own,
+    which is precisely what it must never do. This is a real measurement
+    rather than a tautology: the runner could filter, re-sort, truncate, or
+    drop sells, and each of those would show up as a diff.
+    """
+    from backtest.adapters.technical_adapter import TechnicalAdapter
+    from backtest.core.horizon import HorizonBucket
+    from backtest.core.live_signal_runner import LiveSignalRunner
+    from systems.technical_analysis.screener.engine import ScreenerEngine
+
+    day = _date.fromisoformat(as_of_date)
+    engine = ScreenerEngine()
+    universe = [r.ticker for r in engine.screen(template, as_of_date, limit=500)]
+
+    backtest_adapter = TechnicalAdapter(template_name=template, top_n=TECHNICAL_TOP_N)
+    backtest_selection = {
+        s.ticker for s in backtest_adapter.generate_signals(universe, day, HorizonBucket.D21)
+        if s.action == "buy"
+    }
+
+    live_adapter = TechnicalAdapter(template_name=template, top_n=TECHNICAL_TOP_N)
+    runner = LiveSignalRunner(
+        "technical", f"ta_{template}", horizon_bucket=HorizonBucket.D21,
+        persist_signals=False, enforce_readiness=False,
     )
-)
-def test_technical_live_selection_matches_the_backtested_rule():
-    raise NotImplementedError("PHASE-D2/D4")
+    live_selection = set(runner.target_holdings(live_adapter, universe, day))
+
+    return ParityReport(
+        channel="technical", strategy_id=f"ta_{template}", category="template",
+        as_of_date=as_of_date, universe_size=len(universe),
+        backtest_selection=backtest_selection, live_selection=live_selection,
+    )
+
+
+@pytest.fixture(scope="module")
+def technical_report(as_of_date) -> ParityReport:
+    report = build_technical_parity_report(as_of_date)
+    if not report.universe_size:
+        pytest.skip(
+            f"template {TECHNICAL_PARITY_TEMPLATE} matched nothing on {as_of_date}; "
+            "no real selection to diff (never fabricated)"
+        )
+    return report
+
+
+def test_technical_live_selection_matches_the_backtested_rule(technical_report):
+    """D2/D4: the live holdings path must select exactly the backtested set.
+
+    LiveSignalRunner is deliberately thin — it assembles today's inputs and
+    delegates. The moment it starts deciding anything, live technical
+    holdings stop being what was backtested, which is the failure this whole
+    refactor exists to remove.
+    """
+    assert technical_report.only_live == set() and technical_report.only_backtest == set(), (
+        technical_report.describe()
+    )
+
+
+def test_technical_holdings_are_a_subset_of_the_alert_feed(as_of_date):
+    """The two questions Technical conflates, measured (D1/D3).
+
+    `ta_signals` answers "what matched the template today"; the adapter
+    answers "what should be held". The second must be a selection FROM the
+    first — a held name that never matched would mean the two paths evaluate
+    the template differently, which is exactly the drift D3 removes by
+    making them share one ScreenerEngine evaluation.
+    """
+    from systems.technical_analysis.screener.engine import ScreenerEngine
+
+    engine = ScreenerEngine()
+    alert_matches = {
+        r.ticker for r in engine.screen(TECHNICAL_PARITY_TEMPLATE, as_of_date, limit=500)
+        if r.score >= 1.0 - FULL_MATCH_EPSILON
+    }
+    if not alert_matches:
+        pytest.skip(f"no full matches for {TECHNICAL_PARITY_TEMPLATE} on {as_of_date}")
+
+    report = build_technical_parity_report(as_of_date)
+    assert report.backtest_selection <= alert_matches, (
+        f"held but never a full match on {as_of_date}: "
+        f"{sorted(report.backtest_selection - alert_matches)}"
+    )
+    assert len(report.backtest_selection) <= TECHNICAL_TOP_N
 
 
 @pytest.mark.skip(
