@@ -7,9 +7,22 @@ Owner: Technical Analysis / Alerts
 Consumers: ingestion/scheduler/daily_pipeline.py (called after compute_features
            completes), datastore/api/routers/technical.py (alerts/* endpoints)
 
-Evaluates all 42 screener templates against the current universe daily and
-persists matches to the `ta_signals` table in the signals DuckDB
+Evaluates all declared screener templates against the current universe daily
+and persists matches to the `ta_signals` table in the signals DuckDB
 (config.settings.SIGNALS_DUCKDB_PATH).
+
+WHAT ta_signals IS, AND IS NOT  (D1, UnifiedGeneratorRefactorPlan.md)
+--------------------------------------------------------------------
+`ta_signals` is an ALERT feed: "which stocks met this template's conditions
+on this date". It is deliberately NOT a holdings authority — it is uncapped
+and unranked, so it cannot answer "what should the portfolio hold", which is
+a top-N selection made after the adapter's entry filters.
+
+That second question belongs to backtest/adapters/technical_adapter.py,
+reached live through backtest/core/live_signal_runner.py (LiveSignalRunner)
+and recorded in the strategy_signals ledger. Conflating the two is how a
+"signal" came to mean two different things per channel; nothing downstream
+should read holdings out of this table.
 
 Called by the daily pipeline after features are written to the Parquet store.
 Writes only full matches (score = 1.0) to the signals table — partial matches
@@ -22,20 +35,28 @@ allowing the scheduler's subsequent steps to open the file without conflict.
 
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from config.settings import SIGNALS_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
-from datastore.api.utils.feature_store import resolve_date
-from systems.technical_analysis.screener.engine import ScreenerEngine, ScreenerResult
+from systems.technical_analysis.screener.engine import (
+    ALL_MATCHES_LIMIT,
+    ScreenerEngine,
+    ScreenerResult,
+    is_full_match,
+)
 from systems.technical_analysis.screener.registry_templates import list_templates
 
 logger = logging.getLogger(__name__)
 
 # DDL for the ta_signals table (SPEC-TA-006 / SPEC-TA-008)
 _CREATE_TA_SIGNALS_SQL = """
+-- ALERTS ONLY (D1). One row = "ticker T fully matched template X on date D".
+-- Uncapped and unranked by design: this is not a holdings decision. Target
+-- holdings live in strategy_signals, written by LiveSignalRunner from the
+-- same TechnicalAdapter the backtests run.
 CREATE TABLE IF NOT EXISTS ta_signals (
     date DATE NOT NULL,
     ticker VARCHAR NOT NULL,
@@ -75,7 +96,10 @@ ON CONFLICT (date, ticker, template_name) DO UPDATE SET
 
 
 class DailyAlertChecker:
-    """Runs all 42 templates daily and writes full matches to ta_signals.
+    """Runs every declared template daily and writes full matches to ta_signals.
+
+    Alerts only — see the module docstring (D1). This class answers "what
+    matched today", never "what should be held".
 
     The checker is intentionally stateless — it computes everything from
     the date's feature Parquet and always writes/replaces, so re-running
@@ -95,7 +119,7 @@ class DailyAlertChecker:
     def __init__(self) -> None:
         self._engine = ScreenerEngine()
 
-    def _ensure_db_and_table(self, conn) -> None:
+    def _ensure_db_and_table(self, conn: Any) -> None:
         """Create the ta_signals table if it does not already exist.
 
         Parameters
@@ -111,7 +135,7 @@ class DailyAlertChecker:
 
     def _write_all_results(
         self,
-        conn,
+        conn: Any,
         date_str: str,
         template_results: Dict[str, List[ScreenerResult]],
         template_category: Dict[str, str],
@@ -148,8 +172,11 @@ class DailyAlertChecker:
             )
             for results in template_results.values()
             for r in results
-            # Only persist full matches as alerts (score == 1.0)
-            if r.score >= 1.0 - 1e-9
+            # Belt-and-braces: screen_all already returns only full matches
+            # (the engine's own filter). Kept as an explicit guard on the
+            # WRITE, because ta_signals is contractually a full-match-only
+            # table (SPEC-TA-008) and this is its only writer.
+            if is_full_match(r.score)
         ]
         if not rows:
             return 0
@@ -198,7 +225,19 @@ class DailyAlertChecker:
         ----------------
         SPEC-TA-006: daily alert evaluation
         """
-        resolved = resolve_date(run_date)
+        # D3: ONE evaluation, owned by ScreenerEngine. This used to be a
+        # local loop over list_templates() reaching through to the engine's
+        # private _load_df/_screen_df, which meant a change to how the
+        # screener evaluates a template did not necessarily reach the alert
+        # feed. The engine loads the date's Parquet once and applies the same
+        # full-match rule the screener applies.
+        template_list = list_templates()
+        # expose for callers that need the same list (run() uses this)
+        self._last_template_list = template_list
+
+        resolved, template_results = self._engine.screen_all(
+            run_date, limit=ALL_MATCHES_LIMIT, templates=template_list,
+        )
         if resolved is None:
             logger.warning(
                 "DailyAlertChecker.evaluate: no feature Parquet available for date '%s'",
@@ -206,42 +245,9 @@ class DailyAlertChecker:
             )
             return None, {}
 
-        logger.info("DailyAlertChecker: evaluating templates for date %s", resolved)
-
-        # Load the date's feature Parquet ONCE and reuse it across all
-        # templates, rather than calling ScreenerEngine.screen() per
-        # template (each of which re-reads the same file from disk).
-        df = self._engine._load_df(resolved)  # noqa: SLF001 — same module family, no public API needed for this
-
-        # Fetch the declared templates from the registry at call time so a
-        # long-lived process (API/scheduler) picks up edits without restart.
-        template_list = list_templates()
-        # expose for callers that need the same list (run() uses this)
-        self._last_template_list = template_list
-
-        template_results: Dict[str, List[ScreenerResult]] = {}
-        total_matches = 0
-
-        for template in template_list:
-            try:
-                if df is None:
-                    full_matches = []
-                else:
-                    # screen() already limits to 10k results; for alert storage we
-                    # want ALL full matches — use a very large limit (universe ≤ 5 000)
-                    matches = self._engine._screen_df(df, template, resolved, limit=10_000)  # noqa: SLF001
-                    full_matches = [r for r in matches if r.score >= 1.0 - 1e-9]
-                template_results[template.name] = full_matches
-                total_matches += len(full_matches)
-            except Exception as exc:
-                logger.error(
-                    "DailyAlertChecker: template %s failed: %s", template.name, exc
-                )
-                template_results[template.name] = []
-
         logger.info(
             "DailyAlertChecker: %d total full matches across templates for %s",
-            total_matches,
+            sum(len(r) for r in template_results.values()),
             resolved,
         )
         return resolved, template_results

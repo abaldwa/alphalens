@@ -949,3 +949,43 @@ readiness gate cleared `backtest/paper_trading/live_runner.py`'s last entry.
 D3 changes what the live technical holdings actually are (`daily_alert_checker`
 and the adapter start sharing one `ScreenerEngine` evaluation), and §9 lists it
 as a user-review checkpoint. D2 is wired but nothing has been cut over to it.
+
+## §15 — D1/D3/D4 delivered (2026-08-18)
+
+**D3 — one evaluation.** `ScreenerEngine.screen_all(date, limit, templates)` is
+new and owns the batch run: load the date's feature Parquet once, evaluate every
+declared template through the same `_screen_df` a single-template `screen()`
+call uses, and log-and-continue past a template that raises. `DailyAlertChecker.
+evaluate()` is now a thin wrapper over it — it previously ran its own loop
+reaching through to the engine's private `_load_df`/`_screen_df`, so a change to
+how the screener evaluates a template did not necessarily reach the alert feed.
+
+Verified byte-identical before/after on 2026-08-14: 63 templates, 11,549 full
+matches, same tickers in the same per-template order.
+
+**The full-match rule has one owner.** `score >= 1.0 - 1e-9` existed in three
+places (the engine, twice in the alert checker). It is now
+`engine.FULL_MATCH_EPSILON` + `engine.is_full_match()`, with the remaining call
+site in `_write_all_results` kept as an explicit guard on the WRITE, since
+`ta_signals` is contractually full-match-only (SPEC-TA-008) and that is its only
+writer. `KNOWN_VIOLATIONS`' `duplicate_full_match_rule` entry is deleted, and the
+quality gate now also asserts the owner still exports the rule — otherwise the
+test would have passed if the rule vanished everywhere.
+
+**D1 — `ta_signals` is alerts-only**, stated in the table's DDL comment, the
+module docstring and the class docstring: uncapped and unranked by design, never
+a holdings authority. Holdings come from `TechnicalAdapter` via
+`LiveSignalRunner` into `strategy_signals`.
+
+**D4 — Technical parity is zero.** Two integration assertions:
+`test_technical_live_selection_matches_the_backtested_rule` (live == backtested
+selection) and `test_the_alert_feed_and_the_screener_share_one_evaluation`
+(the alert feed's matched set is exactly `screen()`'s, same order).
+
+Mutation-validated, all four: truncating `screen_all`'s results, widening
+`FULL_MATCH_EPSILON` to 1e-3, and re-inlining the threshold in the alert checker
+each fail the gate that covers them.
+
+Two existing tests were updated, not weakened: they monkeypatched `resolve_date`
+on the alert-checker module, and date resolution now lives with the evaluation
+in `ScreenerEngine`.

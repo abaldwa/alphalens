@@ -96,10 +96,6 @@ from config.settings import DUCKDB_PATH  # noqa: E402
 # so using it would apply a filter that filters nothing.
 RECOMMENDED_MIN_ADTV_CR = 0.1  # scripts/run_momentum_recommended_strategies.py:111
 
-# The full-match tolerance daily_alert_checker.py uses (single owner: the
-# screener engine rule — see tests/quality/test_one_generator_per_channel.py).
-FULL_MATCH_EPSILON = 1e-9
-
 
 # ---------------------------------------------------------------------------
 # Parity report
@@ -568,12 +564,12 @@ def test_technical_holdings_are_a_subset_of_the_alert_feed(as_of_date):
     the template differently, which is exactly the drift D3 removes by
     making them share one ScreenerEngine evaluation.
     """
-    from systems.technical_analysis.screener.engine import ScreenerEngine
+    from systems.technical_analysis.screener.engine import ScreenerEngine, is_full_match
 
     engine = ScreenerEngine()
     alert_matches = {
         r.ticker for r in engine.screen(TECHNICAL_PARITY_TEMPLATE, as_of_date, limit=500)
-        if r.score >= 1.0 - FULL_MATCH_EPSILON
+        if is_full_match(r.score)
     }
     if not alert_matches:
         pytest.skip(f"no full matches for {TECHNICAL_PARITY_TEMPLATE} on {as_of_date}")
@@ -584,6 +580,36 @@ def test_technical_holdings_are_a_subset_of_the_alert_feed(as_of_date):
         f"{sorted(report.backtest_selection - alert_matches)}"
     )
     assert len(report.backtest_selection) <= TECHNICAL_TOP_N
+
+
+def test_the_alert_feed_and_the_screener_share_one_evaluation(as_of_date):
+    """D3/D4: `ta_signals` and the screener must answer from the same code.
+
+    The alert checker used to run its own loop over the engine's PRIVATE
+    _load_df/_screen_df, so a change to how the screener evaluates a template
+    did not necessarily reach the alert feed. It now calls the engine's
+    public screen_all(). This asserts the result: for the same template and
+    date, the alert feed's matched set is exactly what screen() returns.
+    """
+    from systems.technical_analysis.alerts.daily_alert_checker import DailyAlertChecker
+    from systems.technical_analysis.screener.engine import ALL_MATCHES_LIMIT, ScreenerEngine
+
+    checker = DailyAlertChecker()
+    resolved, results = checker.evaluate(as_of_date)
+    if resolved is None:
+        pytest.skip(f"no feature Parquet for {as_of_date}")
+
+    alerted = [r.ticker for r in results.get(TECHNICAL_PARITY_TEMPLATE, [])]
+    screened = [
+        r.ticker for r in ScreenerEngine().screen(
+            TECHNICAL_PARITY_TEMPLATE, resolved, limit=ALL_MATCHES_LIMIT,
+        )
+    ]
+    assert alerted == screened, (
+        f"the alert feed and the screener disagree about {TECHNICAL_PARITY_TEMPLATE} "
+        f"on {resolved}: only-alerted={sorted(set(alerted) - set(screened))}, "
+        f"only-screened={sorted(set(screened) - set(alerted))}"
+    )
 
 
 @pytest.mark.skip(

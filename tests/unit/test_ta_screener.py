@@ -14,6 +14,7 @@ paths.  No real feature Parquets are required for these tests to pass.
 """
 
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -579,7 +580,10 @@ class TestDailyAlertCheckerEvaluateAndRun:
     def test_evaluate_no_parquet_returns_none_and_empty(self, tmp_path, monkeypatch):
         import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
 
-        monkeypatch.setattr(checker_mod, "resolve_date", lambda run_date: None)
+        # D3: date resolution now lives with the evaluation, in ScreenerEngine.
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "resolve_date", lambda run_date: None)
         checker = checker_mod.DailyAlertChecker()
         resolved, results = checker.evaluate("2099-01-01")
         assert resolved is None
@@ -656,7 +660,10 @@ class TestDailyAlertCheckerEvaluateAndRun:
     def test_run_no_parquet_returns_empty_dict(self, tmp_path, monkeypatch):
         import systems.technical_analysis.alerts.daily_alert_checker as checker_mod
 
-        monkeypatch.setattr(checker_mod, "resolve_date", lambda run_date: None)
+        # D3: date resolution now lives with the evaluation, in ScreenerEngine.
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "resolve_date", lambda run_date: None)
         checker = checker_mod.DailyAlertChecker()
         assert checker.run("2099-01-01") == {}
 
@@ -923,3 +930,59 @@ def test_dropped_duplicates_are_gone_and_survivors_kept_both_display_features():
     # rs_vs_nifty500_21d was C3-only; adx_14 was F7-only.
     assert "rs_vs_nifty500_21d" in TEMPLATE_MAP["C1"].key_display_features
     assert "adx_14" in TEMPLATE_MAP["F3"].key_display_features
+
+
+class TestScreenAll:
+    """ScreenerEngine.screen_all — the batch evaluation D3 moved here out of
+    DailyAlertChecker, so the alert feed and the screener cannot diverge."""
+
+    def test_missing_parquet_returns_none_and_empty(self, monkeypatch):
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "resolve_date", lambda d: None)
+        resolved, results = engine_mod.ScreenerEngine().screen_all("2026-08-14")
+        assert resolved is None
+        assert results == {}
+
+    def test_a_failing_template_costs_only_itself(self, monkeypatch):
+        """One broken template must not wipe out every other template's alerts."""
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        good = SimpleNamespace(name="GOOD")
+        bad = SimpleNamespace(name="BAD")
+        engine = engine_mod.ScreenerEngine()
+        monkeypatch.setattr(engine_mod, "resolve_date", lambda d: "2026-08-14")
+        monkeypatch.setattr(engine, "_load_df", lambda d: object())
+
+        def _screen(df, template, resolved, limit):
+            if template is bad:
+                raise RuntimeError("template exploded")
+            return ["a-result"]
+
+        monkeypatch.setattr(engine, "_screen_df", _screen)
+        resolved, results = engine.screen_all("2026-08-14", templates=[good, bad])
+        assert resolved == "2026-08-14"
+        assert results == {"GOOD": ["a-result"], "BAD": []}
+
+    def test_the_parquet_is_loaded_once_for_the_whole_batch(self, monkeypatch):
+        import systems.technical_analysis.screener.engine as engine_mod
+
+        engine = engine_mod.ScreenerEngine()
+        monkeypatch.setattr(engine_mod, "resolve_date", lambda d: "2026-08-14")
+        loads = []
+        monkeypatch.setattr(engine, "_load_df", lambda d: loads.append(d) or object())
+        monkeypatch.setattr(engine, "_screen_df", lambda df, t, r, limit: [])
+        templates = [SimpleNamespace(name=f"T{i}") for i in range(5)]
+        engine.screen_all("2026-08-14", templates=templates)
+        assert loads == ["2026-08-14"]
+
+
+class TestFullMatchRule:
+    def test_is_full_match_is_the_one_definition(self):
+        from systems.technical_analysis.screener.engine import FULL_MATCH_EPSILON, is_full_match
+
+        assert FULL_MATCH_EPSILON == 1e-9
+        assert is_full_match(1.0)
+        assert is_full_match(1.0 - 1e-12)  # float noise is still a full match
+        assert not is_full_match(1.0 - 1e-6)
+        assert not is_full_match(0.5)

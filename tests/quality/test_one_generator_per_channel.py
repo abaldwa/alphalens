@@ -237,11 +237,6 @@ KNOWN_VIOLATIONS: frozenset[Tuple[str, str, str]] = frozenset({
         "datastore/api/routers/fundamentals.py::get_fundamentals_pillar_summary",
         "PHASE-E2: make the router a thin reader over FundamentalAdapter",
     ),
-    (
-        "duplicate_full_match_rule",
-        "systems/technical_analysis/alerts/daily_alert_checker.py",
-        "PHASE-D3: consume ScreenerEngine's evaluation, do not re-threshold",
-    ),
     # Legacy-engine importers. Each one pins backtest/engine.py in place.
     (
         "legacy_engine_import",
@@ -766,3 +761,13 @@ def test_full_match_threshold_is_defined_in_exactly_one_place():
         f"  expected: {sorted(_expected('duplicate_full_match_rule'))}\n"
         f"The rule belongs to {FULL_MATCH_RULE_OWNER}; consume its result instead."
     )
+
+    # The owner is skipped above, so without this the test would also pass if
+    # the rule stopped existing anywhere at all. D3 moved it behind a named
+    # constant + predicate, so assert those are what the owner exports.
+    from systems.technical_analysis.screener import engine as screener_engine
+
+    assert screener_engine.FULL_MATCH_EPSILON == float(FULL_MATCH_THRESHOLD_EPSILON)
+    assert screener_engine.is_full_match(1.0) is True
+    assert screener_engine.is_full_match(1.0 - 1e-12) is True
+    assert screener_engine.is_full_match(0.99) is False

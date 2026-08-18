@@ -52,6 +52,27 @@ from systems.technical_analysis.screener.templates import ScreenerTemplate
 
 logger = logging.getLogger(__name__)
 
+# The ONE definition of "this stock met every condition" (D3).
+#
+# The rule is a float comparison, so it needs a tolerance; the tolerance is
+# what makes it a rule rather than an equality. It lived in three places
+# (here, and twice in alerts/daily_alert_checker.py), which meant the alert
+# feed and the screener could have disagreed about what a full match is
+# without anything failing. Everything that needs the rule imports it from
+# here — see tests/quality/test_one_generator_per_channel.py, which fails
+# if a second copy appears.
+FULL_MATCH_EPSILON = 1e-9
+
+# Alert storage wants EVERY full match, not a page of them. The universe is
+# ~5,000 tickers, so this is an "effectively unlimited" sentinel, not a
+# tuning knob.
+ALL_MATCHES_LIMIT = 10_000
+
+
+def is_full_match(score: float) -> bool:
+    """True when a ScreenerResult met every condition in its template."""
+    return bool(score >= 1.0 - FULL_MATCH_EPSILON)
+
 # ---------------------------------------------------------------------------
 # Result / info types
 # ---------------------------------------------------------------------------
@@ -378,7 +399,7 @@ class ScreenerEngine:
         # The screener is a strict filter: a stock must satisfy every condition
         # to be surfaced. Partial matches are not shown to avoid false positives
         # and keep the output actionable (SPEC-TA-005).
-        result_mask = scores >= 1.0 - 1e-9
+        result_mask = scores >= 1.0 - FULL_MATCH_EPSILON
         result_df = df[result_mask].copy()
         result_df["_score"] = scores[result_mask]
         result_df["_matched"] = match_counts[result_mask]
@@ -524,6 +545,54 @@ class ScreenerEngine:
             return []
 
         return self._screen_df(df, template, resolved, limit)
+
+    def screen_all(
+        self,
+        date: Optional[str] = None,
+        limit: int = ALL_MATCHES_LIMIT,
+        templates: Optional[List[ScreenerTemplate]] = None,
+    ) -> Tuple[Optional[str], Dict[str, List[ScreenerResult]]]:
+        """Run every declared template against one date's feature Parquet.
+
+        D3: the batch evaluation the daily alert feed runs, owned HERE rather
+        than in alerts/daily_alert_checker.py. The checker previously reached
+        through to the private _load_df/_screen_df to build its own loop, so
+        a change to how one template is evaluated for the screener did not
+        necessarily reach the alert feed. Now both questions -- "what does
+        this template match" and "what matched today" -- are answered by the
+        same code.
+
+        The date's Parquet is loaded ONCE and reused across templates, rather
+        than calling screen() per template and re-reading the same file 60+
+        times.
+
+        A template that raises is logged and recorded as zero matches: one
+        broken template must not cost the day every other template's alerts.
+
+        Returns (resolved_date, {template_name: [ScreenerResult, ...]}), or
+        (None, {}) when no feature Parquet exists for `date`.
+        """
+        from systems.technical_analysis.screener.registry_templates import list_templates
+
+        resolved = resolve_date(date)
+        if resolved is None:
+            logger.warning("No feature Parquet available for date '%s'", date)
+            return None, {}
+
+        df = self._load_df(resolved)
+        template_list = list(templates) if templates is not None else list(list_templates())
+
+        results: Dict[str, List[ScreenerResult]] = {}
+        for template in template_list:
+            if df is None:
+                results[template.name] = []
+                continue
+            try:
+                results[template.name] = self._screen_df(df, template, resolved, limit)
+            except Exception as exc:
+                logger.error("screen_all: template %s failed: %s", template.name, exc)
+                results[template.name] = []
+        return resolved, results
 
     def screen_custom(
         self,
