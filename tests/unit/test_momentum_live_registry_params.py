@@ -68,7 +68,10 @@ def test_every_live_strategy_resolves_to_a_registry_row():
         params = momentum_live.strategy_params(strategy["strategy_id"])
         assert params["top_n"] is not None
         assert params["lookback_months"] is not None
-        assert params["grace_cycles"] is not None
+        # [2026-08-18] grace_cycles must NOT resolve: it was deprecated with
+        # the other six momentum knobs, so a registry row still declaring it
+        # would mean the migration missed a row.
+        assert "grace_cycles" not in params
 
 
 @requires_registry

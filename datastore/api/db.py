@@ -46,7 +46,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Dict, Iterator, Optional
 
 from config.settings import DUCKDB_LOCK_RETRY_ATTEMPTS, DUCKDB_LOCK_RETRY_BASE_DELAY_S
 
@@ -65,9 +65,13 @@ logger = logging.getLogger(__name__)
 
 
 # Global connection pools (simple implementation; upgrade to proper pooling if needed)
-_duckdb_connections: dict = {}
-_sqlite_connections: dict = {}
-_sqlite_locks: dict = {}
+_duckdb_connections: Dict[str, Any] = {}
+# path_key -> whether the cached connection was opened read_only. Needed because
+# the cache is keyed by path alone (see get_duckdb_connection): a cached
+# read-only connection must be reopened before it can serve a write.
+_duckdb_connection_modes: Dict[str, bool] = {}
+_sqlite_connections: Dict[str, Any] = {}
+_sqlite_locks: Dict[str, Any] = {}
 
 
 def fno_db_path_for(main_db_path: str) -> Path:
@@ -82,7 +86,7 @@ def fno_db_path_for(main_db_path: str) -> Path:
     return p.parent / f"{p.stem}_fno_data.duckdb"
 
 
-def _attach_fno_db(conn, path_key: str, read_only: bool) -> None:
+def _attach_fno_db(conn: Any, path_key: str, read_only: bool) -> None:
     """
     fno_data lives in its own file (see fno_db_path_for) so it can be
     published via an atomic file-swap instead of an in-place 121M-row
@@ -117,7 +121,7 @@ def _connect_with_retry(
     path_key: str, read_only: bool,
     retry_attempts: Optional[int] = None, retry_base_delay_s: Optional[float] = None,
     retry_max_delay_s: Optional[float] = None,
-):
+) -> Any:
     """SPEC-SCHED-013: retry-with-backoff on a transient DuckDB lock conflict.
 
     retry_attempts/retry_base_delay_s: per-call override of the module
@@ -159,6 +163,7 @@ def _connect_with_retry(
                 f"{attempts}) — retrying in {delay:.1f}s: {exc}"
             )
             time.sleep(delay)
+    assert last_exc is not None  # pragma: no cover
     raise last_exc  # pragma: no cover — unreachable, loop always returns or raises
 
 
@@ -170,7 +175,7 @@ def get_duckdb_connection(
     retry_attempts: Optional[int] = None,
     retry_base_delay_s: Optional[float] = None,
     retry_max_delay_s: Optional[float] = None,
-) -> Iterator:
+) -> Iterator[Any]:
     """
     Context manager for DuckDB connections.
 
@@ -230,6 +235,35 @@ def get_duckdb_connection(
     is_in_memory = path_key == ":memory:"
 
     if not persist and not is_in_memory:
+        # [2026-08-18] If this path already has a CACHED connection, serve that
+        # one instead of opening a second. DuckDB allows only one configuration
+        # per file per process, so opening a fresh read-only connection while a
+        # persisted read-write one is still open raises outright -- which is
+        # what happened whenever a writer used the default persist=True (e.g.
+        # create_signal_tables_schema) and a reader then asked for
+        # persist=False, read_only=True (e.g. the signals router).
+        #
+        # This does not weaken persist=False's purpose. Its point is to release
+        # the file lock promptly; when a cached connection already holds that
+        # lock for the life of the process, opening and closing a second one
+        # would not have released anything anyway. So the cached connection is
+        # yielded and, being owned by the cache, deliberately NOT closed here.
+        pooled = _duckdb_connections.get(path_key)
+        if pooled is not None:
+            pooled_is_read_only = _duckdb_connection_modes.get(path_key) is True
+            if read_only or not pooled_is_read_only:
+                # A read request is satisfied by either mode, and a write
+                # request by an already-read-write connection.
+                yield pooled
+                return
+            # Write wanted, pooled connection is read-only: it cannot serve
+            # this, and it blocks opening a read-write one. Retire it.
+            try:
+                pooled.close()
+            except Exception:  # noqa: BLE001 - a close failure must not mask the reopen
+                logger.warning(f"Could not close read-only connection to {path_key}")
+            _duckdb_connections.pop(path_key, None)
+            _duckdb_connection_modes.pop(path_key, None)
         conn = _connect_with_retry(path_key, read_only, retry_attempts, retry_base_delay_s, retry_max_delay_s)
         try:
             yield conn
@@ -237,11 +271,46 @@ def get_duckdb_connection(
             conn.close()
         return
 
-    cache_key = f"{path_key}|read_only={read_only}"
-    if cache_key not in _duckdb_connections:
+    # [2026-08-18] The cache is keyed by PATH ALONE, deliberately.
+    #
+    # It used to be keyed by f"{path_key}|read_only={read_only}", which made a
+    # read-only and a read-write request to the same file two distinct cache
+    # entries -- so the second one opened a SECOND connection to that file with
+    # a different configuration, which DuckDB refuses outright:
+    #
+    #   Can't open a connection to same database file with a different
+    #   configuration than existing connections
+    #
+    # The key was more specific than the resource it guards. Any process that
+    # created a DB read-write and then read it back read-only through this
+    # helper hit it -- including create_signal_tables_schema() followed by the
+    # signals router, which is why tests/integration/test_daily_pipeline.py's
+    # test_signals_written_are_readable_via_api returned 500.
+    #
+    # One connection per path, then. A read-write connection serves a read-only
+    # request perfectly well, so that case reuses it. The reverse is NOT safe:
+    # serving a write through a cached read-only connection would fail at the
+    # first write, far from the cause -- so that case closes the read-only
+    # connection and reopens read-write.
+    cache_key = path_key
+    cached = _duckdb_connections.get(cache_key)
+    if cached is not None and not read_only and _duckdb_connection_modes.get(cache_key) is True:
+        logger.debug(
+            f"Upgrading cached read-only connection to {path_key} to read-write"
+        )
+        try:
+            cached.close()
+        except Exception:  # noqa: BLE001 - a close failure must not mask the reopen
+            logger.warning(f"Could not close read-only connection to {path_key}")
+        cached = None
+        _duckdb_connections.pop(cache_key, None)
+        _duckdb_connection_modes.pop(cache_key, None)
+
+    if cached is None:
         _duckdb_connections[cache_key] = _connect_with_retry(
             path_key, read_only, retry_attempts, retry_base_delay_s, retry_max_delay_s,
         )
+        _duckdb_connection_modes[cache_key] = read_only
 
     conn = _duckdb_connections[cache_key]
     try:
@@ -313,6 +382,7 @@ def close_all_connections() -> None:
             logger.warning(f"Error closing SQLite connection: {e}")
 
     _duckdb_connections.clear()
+    _duckdb_connection_modes.clear()
     _sqlite_connections.clear()
 
     logger.info("Closed all database connections")

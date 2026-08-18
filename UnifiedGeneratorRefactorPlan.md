@@ -1245,8 +1245,37 @@ longer offers them and `backtest_bridge` no longer passes them. `from_dict`
 now filters against the dataclass's field set, so specs persisted before today
 load (minus the dead knobs) instead of raising `TypeError`.
 
-### Still blocked
+### The DB migration — run and verified (2026-08-18)
 
-The DB-side migration — revising the 1,680 current rows and retiring the 1,440
-stale ones, plus rebuilding the three momentum tables — has not run. The code
-is ready; the write needs an approved window.
+**Registry.** 1,680 rows revised to v2. `strategy_registry` is bitemporal:
+`revise_strategy` closes the outgoing version's `valid_to` and inserts the
+next, so both rows read `status='active'` and `_fetch_current` resolves the
+open one. Counting without a `valid_to IS NULL` filter therefore double-counts
+— the first verification pass did exactly that and looked like a failure.
+
+**The stale rows, corrected.** Filtered to current versions, the stale-and-
+active set is **720**, not 1,440 (the other 720 were already retired). Their
+band boundaries are `200-300`, `300-500`, `500-800` — bands 6, 7 and 8 under
+the old off-by-one, which is the same set that could never trade under the
+`max_rank` default of 200. All 720 retired. `strategy_registry`'s active
+momentum rows are now *exactly* `build_rows()`'s 1,680 keys, with zero
+deprecated knobs in any of them.
+
+Retiring them row-by-row opened a connection per call and timed out at 684/720;
+finishing the remainder was safe only because `retire_strategy` is a revise,
+not an idempotent set — the second pass recomputed the still-active set rather
+than replaying the list.
+
+**Tables.** `momentum_trades` and `momentum_rebalance_suggestions` lost
+`grace_remaining` via `_DROP_ORPHAN_COLUMNS`. `momentum_strategy_configs` was
+rebuilt: two of its three dropped columns sit inside the UNIQUE constraint, and
+DuckDB will not `DROP COLUMN` out from under one.
+
+The rebuild's first draft reset the id sequence with
+`DROP SEQUENCE ... CASCADE`, which **deleted the table** — the new `config_id`
+DEFAULT depends on the sequence. Caught by testing the migration against an
+in-memory copy of the real 7 rows before letting it near the live database. The
+sequence needs no reset at all: it survives the rename and is recreated only
+`IF NOT EXISTS`, so it keeps its position.
+
+All 7 configs preserved. Backups: `~/alphalens_backups/*_20260818_*.parquet`.
