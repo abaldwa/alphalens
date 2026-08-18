@@ -324,17 +324,11 @@ class TestMomentumRankBandWiring:
         monkeypatch.setattr("config.universe.load_universe_raw", lambda: universe_df)
         return db_path
 
-    @staticmethod
-    def _trading_days():
-        return pd.DatetimeIndex(pd.bdate_range("2026-01-01", "2026-12-31"))
-
     def test_builds_provider_flags_and_rank_lookup_for_the_requested_band(self, seeded_db):
         # RANK_BANDS band 2 is rank 51-100, far past this 4-ticker fixture,
         # so exercise the plumbing with band 1 (rank 1-50) and assert the
         # rank_start it reports back matches RANK_BANDS.
-        wiring = _momentum_rank_band_wiring(
-            1, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
-        )
+        wiring = _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
 
         assert wiring["rank_start"] == 1
         # All four are liquid, so the band is the market-cap order within them.
@@ -349,9 +343,7 @@ class TestMomentumRankBandWiring:
     def test_universe_is_empty_before_the_first_refresh(self, seeded_db):
         """No back-dating the first snapshot onto earlier dates — that would be
         look-ahead."""
-        wiring = _momentum_rank_band_wiring(
-            1, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
-        )
+        wiring = _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
         assert wiring["universe_provider"](date(2025, 12, 31)) == []
 
     def test_uses_include_delisted_so_survivorship_bias_is_not_reintroduced(self, seeded_db):
@@ -367,9 +359,7 @@ class TestMomentumRankBandWiring:
             return real(conn, start, end, **kwargs)
 
         with patch.object(ro, "all_yearly_full_rankings", _spy):
-            _momentum_rank_band_wiring(
-                1, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
-            )
+            _momentum_rank_band_wiring(1, date(2026, 1, 1), date(2026, 12, 31))
 
         assert seen["include_delisted"] is True
         # One round trip total — the band slice, the approximation flags and
@@ -378,9 +368,7 @@ class TestMomentumRankBandWiring:
 
     def test_unknown_band_id_is_rejected(self, seeded_db):
         with pytest.raises(ValueError, match="unknown rank_band_id"):
-            _momentum_rank_band_wiring(
-                99, date(2026, 1, 1), date(2026, 12, 31), self._trading_days(),
-            )
+            _momentum_rank_band_wiring(99, date(2026, 1, 1), date(2026, 12, 31))
 
 
 class TestFeatureLogSpillIsNotOnTmpfs:

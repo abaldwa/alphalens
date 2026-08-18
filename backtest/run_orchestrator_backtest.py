@@ -93,6 +93,7 @@ from features.momentum_universe import (
     RANK_BANDS,
     all_yearly_full_rankings,
     build_momentum_universe_provider,
+    trading_day_calendar,
     yearly_band_approximation_flags_from_rankings,
     yearly_rank_lookup_from_rankings,
 )
@@ -317,7 +318,6 @@ UNIVERSE_STALENESS_TOLERANCE_DAYS = 10
 
 def _momentum_rank_band_wiring(
     rank_band_id: int, start_date: date_type, end_date: date_type,
-    trading_days: pd.DatetimeIndex,
 ) -> Dict[str, Any]:
     """
     (2026-08-05, Momentum engine consolidation Phase 2) Everything the
@@ -371,8 +371,13 @@ def _momentum_rank_band_wiring(
             #
             # Live and paper call momentum_band_universe directly; the provider
             # only adds per-grid-point caching, so there is still one rule.
+            # The EPOCH-anchored calendar, not this run's own trading_days:
+            # the 21-day grid must be a property of the market calendar, or two
+            # runs with different start dates would refresh on different days
+            # and live would refresh on a third set.
             "universe_provider": build_momentum_universe_provider(
-                conn, trading_days, rank_start, rank_end,
+                conn, trading_day_calendar(conn, through=end_date.isoformat()),
+                rank_start, rank_end,
             ),
             "approximation_flags": yearly_band_approximation_flags_from_rankings(
                 yearly_rankings, rank_start, rank_end,
@@ -925,7 +930,7 @@ def _run_immediate(
         # every existing momentum job on _build_config's generic universe,
         # unchanged.
         momentum_band = (
-            _momentum_rank_band_wiring(rank_band_id, start_date, end_date, config.trading_days)
+            _momentum_rank_band_wiring(rank_band_id, start_date, end_date)
             if channel == "momentum" and rank_band_id is not None
             else None
         )
@@ -1262,7 +1267,7 @@ def _run_deferred(
         quality_gate["max_m_score"] = quality_gate_max_m_score
     # See the matching note in _run_immediate.
     momentum_band = (
-        _momentum_rank_band_wiring(rank_band_id, start_date, end_date, config.trading_days)
+        _momentum_rank_band_wiring(rank_band_id, start_date, end_date)
         if channel == "momentum" and rank_band_id is not None
         else None
     )

@@ -40,7 +40,7 @@ from features.momentum_signal import (
     lookback_trading_days,
 )
 from features.momentum_strategy import rank_universe, select_buy_pool
-from features.momentum_universe import RANK_BANDS, rank_band_tickers
+from features.momentum_universe import RANK_BANDS, current_momentum_band_universe
 
 logger = logging.getLogger(__name__)
 
@@ -334,19 +334,23 @@ def compute_daily_ranking(
     ticker in that band with enough trailing history, ranked by trailing
     6-month return, flagged for whether it's in the live top_n.
 
-    universe : override the real rank-band lookup — used by tests, which
-        can't cheaply seed 150+ ranked tickers just to exercise the
-        momentum/ranking logic. Production callers omit this and get the
-        real rank_band_tickers() universe for strategy_id's band.
+    universe : override the real band lookup — used by tests, which can't
+        cheaply seed 150+ ranked tickers just to exercise the momentum/ranking
+        logic. Production callers omit this and get the real band.
 
-    Deliberately calls rank_band_tickers() WITHOUT include_delisted=True
-    (2026-07-20): that flag closes survivorship bias for BACKTESTS, where
-    a stock alive at a past as_of_date must be included even though it
-    later delisted. Here as_of_date is effectively "today" — a stock that
-    has already delisted is not tradeable today, and its frozen last-known
-    close (which market_cap_snapshot would still report as "the most
-    recent close <= as_of_date") would wrongly earn it a live rank-band
-    slot. This is the one caller that should keep the default False.
+    [2026-08-18] Resolves through current_momentum_band_universe — THE one
+    definition, shared with the backtest's universe provider and with paper
+    trading, so a band cannot mean one thing today and another in a backtest
+    of today.
+
+    This call site used to pass include_delisted=False deliberately: a stock
+    that has already delisted is not tradeable now, and its frozen last-known
+    close would still earn it a market-cap slot. That concern is now handled
+    by the shared definition itself — a delisted name has no bar inside
+    UNIVERSE_STALENESS_TOLERANCE_DAYS, so the liquidity step drops it before
+    market cap is ever consulted. Tradeability is decided by whether the stock
+    actually traded, which is the right test in both contexts, and is why one
+    function can serve backtest and live without a flag distinguishing them.
 
     Returns a DataFrame with columns: ticker, momentum_return,
     momentum_rank (1 = highest momentum), in_top_n. Empty if the band's
@@ -355,7 +359,9 @@ def compute_daily_ranking(
     """
     if universe is None:
         cfg = get_strategy(strategy_id)
-        universe = rank_band_tickers(normalised_conn, as_of_date, cfg["rank_start"], cfg["rank_end"])
+        universe = current_momentum_band_universe(
+            normalised_conn, as_of_date, cfg["rank_start"], cfg["rank_end"],
+        )
     if not universe:
         return pd.DataFrame(columns=["ticker", "momentum_return", "momentum_rank", "in_top_n"])
 

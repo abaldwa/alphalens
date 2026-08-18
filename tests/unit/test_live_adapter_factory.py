@@ -96,8 +96,9 @@ class TestBuildsFromTheRegistry:
 
         monkey = pytest.MonkeyPatch()
         monkey.setattr("backtest.adapters.momentum_adapter.MomentumAdapter", _FakeAdapter)
-        monkey.setattr(laf, "rank_band_tickers", lambda *a, **k: ["AAA"], raising=False)
-        monkey.setattr("features.momentum_universe.rank_band_tickers", lambda *a, **k: ["AAA"])
+        monkey.setattr(
+            "features.momentum_universe.current_momentum_band_universe", lambda *a, **k: ["AAA"]
+        )
         monkey.setattr(laf, "_panels", lambda conn, u, d: (None, None))
         try:
             conn = duckdb.connect(":memory:")

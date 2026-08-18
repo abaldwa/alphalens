@@ -172,11 +172,18 @@ def build_live_adapter(
 
     if channel == "momentum":
         from backtest.adapters.momentum_adapter import MomentumAdapter
-        from features.momentum_universe import rank_band_tickers
+        from features.momentum_universe import current_momentum_band_universe
 
         if conn is None:
             raise ValueError("channel='momentum' needs a normalised DuckDB connection for its rank band and panels")
-        universe = rank_band_tickers(conn, str(as_of_date), int(declared["rank_start"]), int(declared["rank_end"]))
+        # THE one definition (top 800 by ADTV, then market-cap rank within it,
+        # on the 21-trading-day grid) -- the same function the backtest's
+        # universe provider resolves, so today's live band is the set a
+        # backtest would have used on this date. rank_band_tickers, which this
+        # replaced, ranked by market cap alone with no liquidity gate.
+        universe = current_momentum_band_universe(
+            conn, str(as_of_date), int(declared["rank_start"]), int(declared["rank_end"]),
+        )
         price_panel, volume_panel = _panels(conn, universe, as_of_date)
         adapter: StrategyAdapter = MomentumAdapter(
             price_panel=price_panel, volume_panel=volume_panel,

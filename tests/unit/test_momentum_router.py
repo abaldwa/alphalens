@@ -62,7 +62,9 @@ class TestMomentumSchema:
 
 class TestUniverse:
     def test_falls_back_to_live_compute_when_no_snapshot_row(self, client, db_path, monkeypatch):
-        monkeypatch.setattr(momentum_router.momentum_live, "rank_band_tickers", lambda *a, **kw: ["AAA", "BBB"])
+        monkeypatch.setattr(
+            momentum_router.momentum_live, "current_momentum_band_universe", lambda *a, **kw: ["AAA", "BBB"]
+        )
         # [C1, 2026-08-18] momentum_live.LOOKBACK_MONTHS is gone -- the live
         # path now reads lookback_months from strategy_registry. The fixture
         # is 30 business days, which cannot exercise the declared 6-month

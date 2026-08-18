@@ -510,9 +510,40 @@ ADTV_UNIVERSE_TOP_N = 800
 UNIVERSE_REFRESH_TRADING_DAYS = 21
 
 
+#: The grid's anchor. Fixed, and deliberately NOT the run's own start date:
+#: anchoring at trading_days[0] would give two backtests with different start
+#: dates two different grids, and live a third -- so the same strategy would
+#: refresh its universe on different days depending on who asked. A fixed
+#: epoch makes the grid a property of the calendar, not of the caller.
+#: 2009-04-01 is backtest/run_orchestrator_backtest.EARLIEST_RELIABLE_START,
+#: the first date this project trusts its own price history.
+UNIVERSE_GRID_EPOCH = date_type(2009, 4, 1)
+
+
+def trading_day_calendar(normalised_conn: Any, through: Optional[str] = None) -> pd.DatetimeIndex:
+    """Every real trading day from UNIVERSE_GRID_EPOCH through `through`.
+
+    The grid is counted off THIS calendar, so every caller -- a backtest of
+    any window, paper trading, live -- lands on the same refresh dates.
+    """
+    params: List[Any] = [UNIVERSE_GRID_EPOCH]
+    clause = "date >= ?"
+    if through is not None:
+        clause += " AND date <= ?"
+        params.append(through)
+    rows = normalised_conn.execute(
+        f"SELECT DISTINCT date FROM ohlcv_adjusted WHERE {clause} ORDER BY date", params,
+    ).fetchall()
+    return pd.DatetimeIndex([pd.Timestamp(r[0]) for r in rows])
+
+
 def universe_refresh_dates(trading_days: pd.DatetimeIndex) -> List[pd.Timestamp]:
-    """The 21-trading-day grid points across `trading_days`, starting at its
-    first date — the dates on which the universe is rebuilt."""
+    """The 21-trading-day grid points across `trading_days`.
+
+    `trading_days` must be a calendar anchored at UNIVERSE_GRID_EPOCH (see
+    trading_day_calendar) — the grid is counted from its first element, so
+    passing a window that starts elsewhere silently shifts every refresh.
+    """
     return list(trading_days[::UNIVERSE_REFRESH_TRADING_DAYS])
 
 
@@ -648,3 +679,25 @@ def build_momentum_universe_provider(
         return list(snapshots.get(snapshot_date, []))
 
     return universe_provider
+
+
+def current_momentum_band_universe(
+    normalised_conn: Any, as_of_date: str, rank_start: int, rank_end: int,
+    *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N,
+) -> List[str]:
+    """The band in force on `as_of_date` — the live and paper entry point.
+
+    Resolves the grid snapshot from the real trading calendar and then calls
+    momentum_band_universe on that date, so today's live universe is the SAME
+    set a backtest would have used on the same day. Calling
+    momentum_band_universe directly with today's date instead would re-rank
+    off-grid and could drop a held name on a day no strategy is trading.
+    """
+    calendar = trading_day_calendar(normalised_conn, through=as_of_date)
+    snapshot_date = universe_snapshot_date(calendar, as_of_date)
+    if snapshot_date is None:
+        return []
+    return momentum_band_universe(
+        normalised_conn, str(snapshot_date.date()), rank_start, rank_end,
+        top_n_by_adtv=top_n_by_adtv,
+    )
