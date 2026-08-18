@@ -26,6 +26,7 @@ process; see ohlcv.py's module docstring for the full incident this avoids.
 """
 
 import logging
+import datetime as _dt
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -64,7 +65,6 @@ from features.fundamental_composites import (
     STRATEGY_CATALOG,
     growth_score,
     management_quality_score,
-    matches_screener_preset,
     quality_score,
     select_peers,
 )
@@ -182,10 +182,10 @@ async def get_fundamentals_history_by_quarters(
 # same route-ordering reason /{ticker}/history is registered above
 # /{ticker} (this file's own earlier comment; FastAPI matches by
 # registration order, not specificity). =====
-PIOTROSKI_ON_VALUE_PRESET = "piotroski_on_value"
-MARGIN_OF_SAFETY_PRESET = "margin_of_safety"
-NET_NET_PRESET = "net_net"
-BESPOKE_PRESETS = (PIOTROSKI_ON_VALUE_PRESET, MARGIN_OF_SAFETY_PRESET, NET_NET_PRESET)
+# [E2, 2026-08-18] Imported, not redeclared. This module used to spell the
+# three bespoke preset names out again; the adapter that actually dispatches
+# on them is the one place they can be defined without the two lists drifting.
+from backtest.adapters.fundamental_adapter import BESPOKE_PRESETS  # noqa: E402
 
 
 
@@ -198,6 +198,39 @@ def _sector_map() -> Dict[str, Optional[str]]:
     the other."""
     universe_raw = load_universe_raw()
     return dict(zip(universe_raw["ticker"], universe_raw["sector"]))
+
+
+def _matched_tickers(preset: str, panel: Any, resolved_date: str) -> List[str]:
+    """Everyone `preset` matches today, answered by the SAME adapter the
+    backtests run (E2, UnifiedGeneratorRefactorPlan.md).
+
+    This endpoint used to re-implement the adapter's dispatch inline — the
+    bespoke branch, the sector exclusion, the ratio extraction. Two
+    implementations of "does this stock match the strategy" is how the
+    fundamentals surfaces came to disagree with their own backtests, and the
+    disagreement is invisible because both sides return a plausible ticker
+    list.
+
+    `select_candidates` stops before entry filters and the top_n cut, which is
+    exactly right here: those are portfolio-construction decisions, and the
+    screener endpoint answers "what matches", not "what would I hold".
+
+    The DB connection is opened only for the three bespoke presets that read
+    raw PIT financials; the others never touch DuckDB, and opening a
+    connection they don't need would put this endpoint behind the single-writer
+    lock for nothing.
+    """
+    from backtest.adapters.fundamental_adapter import FundamentalAdapter
+
+    as_of = _dt.date.fromisoformat(resolved_date)
+    universe = [str(t) for t in panel["ticker"]]
+    adapter = FundamentalAdapter(preset=preset, sector_lookup=_sector_map())
+
+    if preset in BESPOKE_PRESETS:
+        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+            adapter._db_conn = conn
+            return adapter.select_candidates(universe, as_of)
+    return adapter.select_candidates(universe, as_of)
 
 
 @router.get("/screener", response_model=FAScreenerResponse)
@@ -228,47 +261,8 @@ async def get_fundamental_screener(
     if panel is None:
         return FAScreenerResponse(preset=preset, date=resolved_date)
 
-    if preset in BESPOKE_PRESETS:
-        from datetime import datetime as _datetime
+    matched = _matched_tickers(preset, panel, resolved_date)
 
-        as_of_dt = _datetime.strptime(resolved_date, "%Y-%m-%d")
-        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
-            if preset == PIOTROSKI_ON_VALUE_PRESET:
-                from systems.fundamental_analysis.quality.piotroski_on_value import compute_piotroski_on_value
-
-                matched = [
-                    ticker for ticker in panel["ticker"]
-                    if compute_piotroski_on_value(conn, ticker, as_of_dt, feature_date_str=resolved_date)["passes"]
-                ]
-            elif preset == MARGIN_OF_SAFETY_PRESET:
-                from systems.fundamental_analysis.quality.margin_of_safety import compute_margin_of_safety
-
-                matched = [
-                    ticker for ticker in panel["ticker"]
-                    if compute_margin_of_safety(conn, ticker, as_of_dt)["passes"]
-                ]
-            else:
-                from systems.fundamental_analysis.quality.net_net import compute_net_net
-
-                matched = [
-                    ticker for ticker in panel["ticker"]
-                    if compute_net_net(conn, ticker, as_of_dt)["passes"]
-                ]
-    else:
-        # [E1, 2026-08-18] One branch, not two. This used to test
-        # `preset in PRESET_EXCLUDED_SECTORS` and pass `sector` only then --
-        # a second place deciding whether an exclusion applies, alongside
-        # matches_screener_preset which already decides it. Passing sector
-        # unconditionally is behaviour-identical (the predicate's lookup is
-        # an empty set for a preset with no exclusions) and leaves exactly
-        # one site that knows the rule.
-        sector_map = _sector_map()
-        matched = [
-            row["ticker"] for _, row in panel.iterrows()
-            if matches_screener_preset(
-                {c: row.get(c) for c in RATIO_FEATURES}, preset, sector=sector_map.get(row["ticker"]),
-            )
-        ]
     # ML24 (2026-07-11): ranked/recommended screener output only — direct
     # ticker lookups (get_fundamental_ratios above) are intentionally
     # unaffected, per product decision (fundamentals aren't liquidity-
@@ -315,14 +309,11 @@ async def get_fundamentals_pillar_summary(
 
     from config.training_universe import filter_recommendable
 
-    # [E1] Same collapse as the screener endpoint above -- see its comment.
-    sector_map = _sector_map()
-    matched = [
-        row["ticker"] for _, row in panel.iterrows()
-        if matches_screener_preset(
-            {c: row.get(c) for c in RATIO_FEATURES}, preset, sector=sector_map.get(row["ticker"]),
-        )
-    ]
+    # [E2] Same adapter as the screener endpoint above, so the home page's
+    # recommendation count cannot count a different set than the screener
+    # lists -- which it could, and silently, while both re-implemented the
+    # rule separately.
+    matched = _matched_tickers(preset, panel, resolved_date)
     matched_df = filter_recommendable(pd.DataFrame({"ticker": matched}))
 
     return {

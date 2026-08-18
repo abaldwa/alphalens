@@ -989,3 +989,39 @@ each fail the gate that covers them.
 Two existing tests were updated, not weakened: they monkeypatched `resolve_date`
 on the alert-checker module, and date resolution now lives with the evaluation
 in `ScreenerEngine`.
+
+## §16 — E2/E3 delivered (2026-08-18)
+
+`FundamentalAdapter.select_candidates(universe, as_of_date)` is extracted from
+`generate_signals` — everyone the preset matches, before entry filters and the
+top_n cut. That split is the right seam for the live screener: entry filters and
+top_n are portfolio-construction decisions ("how much can I buy", "how many
+slots"), and `/screener` answers only "what matches".
+
+`GET /fundamental/screener` and `/pillar_summary` now call it through one
+`_matched_tickers()` helper instead of re-implementing the adapter's four
+dispatch branches inline. The router's copy had already drifted once —
+composite-score strategies were evaluated live with no sector exclusion at all —
+and that class of divergence is invisible, because both sides return a plausible
+list of tickers. The DB connection is opened only for the three bespoke presets
+that read raw PIT financials.
+
+The three bespoke preset names are imported from the adapter rather than spelled
+out a second time in the router.
+
+**Verified on the latest real feature day**: all 9 screener presets return
+IDENTICAL ticker sets before and after. The bespoke presets were checked
+separately (the PIT path is slow).
+
+**E3**: `test_fundamental_live_selection_matches_the_backtested_rule` is live and
+passing — the parity harness now has no skipped channel slots left except ML.
+Mutation-validated: truncating `_matched_tickers` fails both it and the
+home-page-count test.
+
+`KNOWN_VIOLATIONS` loses both remaining `live_selection_function` entries. What
+is left is 3 `legacy_engine_import` (F3) and 1 `missing_generator` (H5).
+
+One typing fix at source: `_sector_map()` yields `Optional[str]` values (a
+ticker whose sector was never sourced), so the adapter's `sector_lookup` is
+typed honestly rather than cast, and `Signal.sector` goes through a `_sector()`
+helper — `.get(ticker, "Unknown")` covered a missing key but not a stored null.

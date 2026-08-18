@@ -124,7 +124,7 @@ class FundamentalAdapter:
     channel = "fundamental"
 
     def __init__(
-        self, preset: str, top_n: int = 10, sector_lookup: Optional[Dict[str, str]] = None,
+        self, preset: str, top_n: int = 10, sector_lookup: Optional[Dict[str, Optional[str]]] = None,
         db_conn: Optional[Any] = None, market_cap_lookup: Optional[Dict[str, float]] = None,
         price_panel: Optional[pd.DataFrame] = None, volume_panel: Optional[pd.DataFrame] = None,
         adtv_lookback_days: int = 20,
@@ -160,7 +160,12 @@ class FundamentalAdapter:
             raise ValueError("top_n must be positive")
         self.preset = preset
         self.top_n = top_n
-        self._sector_lookup = sector_lookup or {}
+        # Values are Optional[str]: config/universe.py carries a null sector
+        # for a ticker whose sector was never sourced, and the live router
+        # passes that map straight through (E2). "unknown sector" must stay
+        # distinguishable from "excluded sector" -- is_sector_excluded returns
+        # False for None -- so it is typed honestly rather than cast.
+        self._sector_lookup: Dict[str, Optional[str]] = sector_lookup or {}
         # [BUG FIX, 2026-07-28 second model-review, item 9] real ticker ->
         # market_cap_cr, same optional/deferred-wiring convention as
         # sector_lookup — feeds the LIQUIDITY_FLOOR_MARKET_CAP_CR gate below
@@ -203,13 +208,35 @@ class FundamentalAdapter:
         self._currently_held: Set[str] = set()
         self._last_ratios: Dict[str, Dict[str, float]] = {}  # ticker -> ratio dict, from the most recent call
 
+    def _sector(self, ticker: str) -> str:
+        """Signal.sector is a required string. A ticker absent from the
+        lookup and one whose stored sector is null are the same thing here --
+        both are "we do not know" -- and `.get(ticker, "Unknown")` only
+        covered the first."""
+        return self._sector_lookup.get(ticker) or "Unknown"
+
     def _adtv_cr(self, ticker: str, as_of_date: date_type) -> Optional[float]:
         adtv: Optional[float] = adtv_cr_for_ticker(
             ticker, as_of_date, self.price_panel, self.volume_panel, self.adtv_lookback_days,
         )
         return adtv
 
-    def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
+    def select_candidates(self, universe: List[str], as_of_date: date_type) -> List[str]:
+        """Everyone this preset matches on this date, BEFORE entry filters and
+        the top_n cut. Also refreshes `_last_ratios` for the matched names.
+
+        [E2, 2026-08-18] Extracted so the live fundamentals API can be a thin
+        reader over the adapter instead of re-implementing the four dispatch
+        branches (bespoke / composite-score / no-panel / plain preset). The
+        router's copy had already drifted once -- it evaluated composite-score
+        strategies with no sector exclusion at all -- and a divergence here is
+        invisible: both sides return a plausible list of tickers.
+
+        Deliberately stops short of entry filters and top_n. Those are
+        portfolio-construction decisions (how much can I actually buy, how many
+        slots do I have), not "does this stock match the strategy", and the
+        live screener endpoint answers only the second question.
+        """
         universe_set = set(universe)
         panel = read_feature_day(str(as_of_date))
         self._last_ratios = {}
@@ -321,6 +348,11 @@ class FundamentalAdapter:
                     matched.append(row["ticker"])
                     self._last_ratios[row["ticker"]] = ratios
 
+        return list(matched)
+
+    def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
+        matched = self.select_candidates(universe, as_of_date)
+
         # Entry filters BEFORE the top_n cut, never after. Applying them to
         # an already-selected top_n would leave the slots of rejected names
         # empty, so a preset told to hold 10 would hold however many of its
@@ -344,12 +376,12 @@ class FundamentalAdapter:
         signals: List[Signal] = []
         for ticker in sorted(self._currently_held - target):
             signals.append(Signal(
-                ticker=ticker, action="sell", sector=self._sector_lookup.get(ticker, "Unknown"), conviction=0.0,
+                ticker=ticker, action="sell", sector=self._sector(ticker), conviction=0.0,
                 adtv_cr=self._adtv_cr(ticker, as_of_date),
             ))
         for ticker in sorted(target - self._currently_held):
             signals.append(Signal(
-                ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
+                ticker=ticker, action="buy", sector=self._sector(ticker),
                 conviction=_composite_strength(self._last_ratios[ticker]), template=self.preset,
                 adtv_cr=self._adtv_cr(ticker, as_of_date),
             ))

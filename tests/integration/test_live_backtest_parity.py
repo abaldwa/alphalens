@@ -612,13 +612,60 @@ def test_the_alert_feed_and_the_screener_share_one_evaluation(as_of_date):
     )
 
 
-@pytest.mark.skip(
-    reason=(
-        "PHASE-E2: blocked on E1. The fundamentals router applies sector "
-        "exclusion inconsistently across its call sites, so a diff taken now "
-        "would measure that inconsistency rather than the selection rule. "
-        "Collapse PRESET_EXCLUDED_SECTORS first, then diff."
+FUNDAMENTAL_PARITY_PRESET = "quality_compounder"
+
+
+def build_fundamental_parity_report(as_of_date: str, preset: str = FUNDAMENTAL_PARITY_PRESET) -> ParityReport:
+    """Diff the live fundamentals screener against the backtested rule.
+
+    backtest_selection : FundamentalAdapter.select_candidates — everyone the
+        preset matches, the same call BacktestOrchestrator's adapter makes
+        before entry filters and the top_n cut.
+    live_selection : GET /fundamental/screener's own answer, via the router's
+        _matched_tickers.
+
+    E2 made the router a reader over that method, so this should be zero. It
+    is not a tautology: the router still owns which universe it passes, which
+    date it resolves, and (for the bespoke presets) whether it supplies the DB
+    connection the PIT path needs — each of which can silently change the set.
+    """
+    from datastore.api.routers import fundamentals as router
+    from datastore.api.utils.feature_store import read_feature_day
+    from backtest.adapters.fundamental_adapter import FundamentalAdapter
+
+    panel = read_feature_day(as_of_date)
+    if panel is None:
+        return ParityReport(
+            channel="fundamental", strategy_id=preset, category="preset",
+            as_of_date=as_of_date, universe_size=0,
+        )
+
+    universe = [str(t) for t in panel["ticker"]]
+    adapter = FundamentalAdapter(preset=preset, sector_lookup=router._sector_map())
+    backtest_selection = set(adapter.select_candidates(universe, _date.fromisoformat(as_of_date)))
+    live_selection = set(router._matched_tickers(preset, panel, as_of_date))
+
+    return ParityReport(
+        channel="fundamental", strategy_id=preset, category="preset",
+        as_of_date=as_of_date, universe_size=len(universe),
+        backtest_selection=backtest_selection, live_selection=live_selection,
     )
-)
-def test_fundamental_live_selection_matches_the_backtested_rule():
-    raise NotImplementedError("PHASE-E2/E3")
+
+
+def test_fundamental_live_selection_matches_the_backtested_rule(as_of_date):
+    """E2/E3: the screener endpoint and the backtest must match the same set.
+
+    Before E2 the router re-implemented the adapter's dispatch, and it had
+    already drifted once: composite-score strategies were evaluated live with
+    no sector exclusion at all, which the adapter applies.
+    """
+    from datastore.api.utils.feature_store import resolve_date
+
+    feature_date = resolve_date(as_of_date) or resolve_date(None)
+    if feature_date is None:
+        pytest.skip("no fundamental feature Parquet available")
+
+    report = build_fundamental_parity_report(feature_date)
+    if not report.universe_size:
+        pytest.skip(f"no feature panel on {feature_date}")
+    assert report.only_live == set() and report.only_backtest == set(), report.describe()

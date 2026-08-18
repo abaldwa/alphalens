@@ -152,3 +152,60 @@ class TestScoresEndpoint:
         assert body["strategy_scores"]["quality_value"] is None
         # A strategy with no sector exclusion still computes a real score.
         assert body["strategy_scores"]["growth"] is not None
+
+
+class TestScreenerReadsTheAdapter:
+    """E2: /screener and /pillar_summary answer from FundamentalAdapter, not
+    from their own copy of the matching rule."""
+
+    def test_screener_returns_exactly_what_the_adapter_selected(
+        self, feature_day, client, monkeypatch
+    ):
+        import datastore.api.routers.fundamentals as fr
+
+        calls = []
+
+        def _fake_select(self, universe, as_of_date):
+            calls.append((self.preset, tuple(universe), as_of_date))
+            return ["PEERCO"]
+
+        monkeypatch.setattr(fr, "load_universe_raw", _fake_universe)
+        monkeypatch.setattr("config.training_universe.load_universe_raw", _fake_universe)
+        monkeypatch.setattr(
+            "backtest.adapters.fundamental_adapter.FundamentalAdapter.select_candidates",
+            _fake_select,
+        )
+        resp = client.get("/api/v1/fundamentals/screener?preset=quality_compounder")
+        assert resp.status_code == 200
+        assert resp.json()["tickers"] == ["PEERCO"]
+        # The adapter was asked, and asked about the whole feature-day panel.
+        assert len(calls) == 1
+        assert calls[0][0] == "quality_compounder"
+        assert set(calls[0][1]) == {"GOODCO", "PEERCO"}
+        assert str(calls[0][2]) == feature_day
+
+    def test_pillar_summary_counts_the_same_set_the_screener_lists(
+        self, feature_day, client, monkeypatch
+    ):
+        """The home-page count and the screener list must not be able to
+        disagree — they used to be two separate implementations."""
+        import datastore.api.routers.fundamentals as fr
+
+        monkeypatch.setattr(fr, "load_universe_raw", _fake_universe)
+        monkeypatch.setattr("config.training_universe.load_universe_raw", _fake_universe)
+        monkeypatch.setattr(
+            "backtest.adapters.fundamental_adapter.FundamentalAdapter.select_candidates",
+            lambda self, universe, as_of_date: ["GOODCO", "PEERCO"],
+        )
+        listed = client.get("/api/v1/fundamentals/screener?preset=quality_compounder").json()["tickers"]
+        counted = client.get(
+            "/api/v1/fundamentals/pillar_summary?preset=quality_compounder"
+        ).json()["recommendation_count"]
+        assert counted == len(listed) == 2
+
+    def test_the_bespoke_preset_names_have_one_owner(self):
+        """The router used to spell the three bespoke names out again."""
+        import datastore.api.routers.fundamentals as fr
+        from backtest.adapters import fundamental_adapter as fa
+
+        assert fr.BESPOKE_PRESETS is fa.BESPOKE_PRESETS

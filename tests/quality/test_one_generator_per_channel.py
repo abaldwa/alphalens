@@ -220,11 +220,6 @@ KNOWN_VIOLATIONS: frozenset[Tuple[str, str, str]] = frozenset({
     # The fundamentals router re-implements selection instead of reading
     # FundamentalAdapter output: unranked and uncapped where the adapter
     # ranks by _composite_strength and truncates to top_n.
-    (
-        "live_selection_function",
-        "datastore/api/routers/fundamentals.py::get_fundamental_screener",
-        "PHASE-E2: make the router a thin reader over FundamentalAdapter",
-    ),
     # The alert checker's own copy of the full-match admission rule.
     # Found by this gate on the day it was written -- §1.2 of the plan
     # enumerated three matches_screener_preset call sites and missed this
@@ -232,11 +227,6 @@ KNOWN_VIOLATIONS: frozenset[Tuple[str, str, str]] = frozenset({
     # selection to COUNT it, so the number on the landing page is derived
     # from the uncapped, unranked rule rather than from what the strategy
     # would actually hold.
-    (
-        "live_selection_function",
-        "datastore/api/routers/fundamentals.py::get_fundamentals_pillar_summary",
-        "PHASE-E2: make the router a thin reader over FundamentalAdapter",
-    ),
     # Legacy-engine importers. Each one pins backtest/engine.py in place.
     (
         "legacy_engine_import",
