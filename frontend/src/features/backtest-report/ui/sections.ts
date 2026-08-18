@@ -1,7 +1,7 @@
 /**
  * features/backtest-report/sections.ts
  *
- * The six sections, and the layout wiring every page repeats. Kept out of the
+ * The seven sections, and the layout wiring every page repeats. Kept out of the
  * component files so those export components only (fast refresh) and so the
  * section list has one definition feeding both the sub-nav and the hub.
  */
@@ -13,6 +13,7 @@ export const REPORT_SECTIONS: Array<{ path: string; label: string }> = [
   { path: '/backtest-report', label: 'Overview' },
   { path: '/backtest-report/recommendations', label: 'Recommendations' },
   { path: '/backtest-report/returns', label: 'Returns' },
+  { path: '/backtest-report/pivot', label: 'Pivot' },
   { path: '/backtest-report/consistency', label: 'Consistency' },
   { path: '/backtest-report/risk', label: 'Risk' },
   { path: '/backtest-report/trade-quality', label: 'Trade quality' },

@@ -37,6 +37,16 @@ import { classifyRag, periodCagr, ragCounts } from './core/matrix.ts'
 import { crossesUnreliableHistory, resolveWindow } from './core/window.ts'
 import { isDeployable, toConfigForm, toDeploymentRequest } from './core/toConfigForm.ts'
 import { parsePrefillParam, prefillParam } from './core/prefill.ts'
+import {
+  UNSET,
+  aggregate,
+  buildPivot,
+  findDimension,
+  findMetric,
+  heatLevel,
+  median,
+  windowBand,
+} from './core/pivot.ts'
 import { adaptMomentumReport, adaptMomentumVariant } from './core/adapters/momentum.ts'
 import {
   adaptTechnicalReport,
@@ -779,6 +789,93 @@ eq(prefillParam(['momentum:a', 'momentum:b']), 'momentum:a,momentum:b', 'prefill
 eq(parsePrefillParam('momentum:a,momentum:b').length, 2, 'and parses back')
 eq(parsePrefillParam(null).length, 0, 'an absent prefill param is an empty queue')
 eq(parsePrefillParam(' , ,').length, 0, 'blank entries are dropped rather than becoming empty keys')
+
+// ---------------------------------------------------------------------------
+// pivot
+//
+// The checks that matter here are about POPULATION, not arithmetic. A pivot
+// silently dropping a strategy with no universe, or reading a null CAGR as a
+// zero, produces a table that disagrees with the flat Returns table it was
+// built from — and looks perfectly plausible while doing it.
+// ---------------------------------------------------------------------------
+
+function withSetup(
+  r: StrategyReport,
+  patch: { universe?: string | null; channel?: StrategyReport['channel'] },
+): StrategyReport {
+  return {
+    ...r,
+    channel: patch.channel ?? r.channel,
+    setup: { ...r.setup, universe: patch.universe ?? r.setup.universe },
+  }
+}
+
+const pA = withSetup(steady, { universe: 'NIFTY500' })
+const pB = withSetup(wild, { universe: 'NIFTY500' })
+const pC = withSetup(middling, { universe: 'SMALLCAP' })
+// No universe at all, and no post-tax CAGR: the two ways a row can be
+// incomplete, in one strategy.
+const pD: StrategyReport = {
+  ...withSetup(middling, { universe: null }),
+  key: 'momentum:unknown',
+  label: 'momentum:unknown',
+  returns: { ...middling.returns, cagrPostTax: null },
+}
+
+const pivotSpec = {
+  row: findDimension('channel')!,
+  col: findDimension('universe')!,
+  metric: findMetric('cagr')!,
+  agg: 'median' as const,
+  basis: 'post_tax' as const,
+}
+const pv = buildPivot([pA, pB, pC, pD], pivotSpec)
+
+eq(pv.colKeys, ['NIFTY500', 'SMALLCAP', UNSET], 'the unset bucket sorts last, not first')
+eq(pv.total, 4, 'every strategy reaches the pivot')
+eq(pv.cells['momentum']?.['NIFTY500']?.value, 0.25, 'an even-sized bucket medians the middle pair')
+eq(pv.cells['momentum']?.['NIFTY500']?.n, 2, 'and reports how many supplied it')
+eq(
+  pv.cells['momentum']?.[UNSET]?.size,
+  1,
+  'a strategy with no universe is bucketed, never dropped',
+)
+eq(
+  pv.cells['momentum']?.[UNSET]?.value,
+  null,
+  'a bucket whose only member has no CAGR is empty, not zero',
+)
+eq(pv.cells['momentum']?.[UNSET]?.n, 0, 'and says nothing supplied the metric')
+eq(pv.grandTotal.n, 3, 'the grand total counts the 3 strategies that have a CAGR')
+eq(pv.grandTotal.size, 4, 'while still knowing the population is 4')
+eq(
+  pv.grandTotal.value,
+  0.22,
+  'the grand total aggregates raw members, not the cell medians',
+)
+
+const counted = buildPivot([pA, pB, pC, pD], { ...pivotSpec, agg: 'count' })
+eq(
+  counted.cells['momentum']?.[UNSET]?.value,
+  1,
+  'count counts strategies even when the metric is entirely missing',
+)
+eq(counted.grandTotal.value, 4, 'and the grand count is the whole population')
+
+eq(aggregate('median', [], 3), null, 'median of nothing is null, not zero')
+eq(aggregate('count', [], 3), 3, 'count of nothing measurable is still the bucket size')
+eq(median([1, 2, 3, 4]), 2.5, 'an even-length median averages the middle pair')
+
+eq(windowBand(2.9), '< 3y', 'window bands are bands, not floats')
+eq(windowBand(10), '10y+', 'a decade lands in the top band')
+eq(windowBand(null), null, 'an unknown window has no band')
+
+// Heat is relative to what is on screen, and inverted for metrics where lower
+// is better — shading churn like CAGR would paint the worst cell green.
+eq(heatLevel(0.3, [0.1, 0.2, 0.3], true), 2, 'the best value of a good-high metric is hottest')
+eq(heatLevel(0.3, [0.1, 0.2, 0.3], false), -2, 'the same value is coldest when lower is better')
+eq(heatLevel(null, [0.1, 0.3], true), 0, 'a null value is unshaded rather than worst')
+eq(heatLevel(0.2, [0.2, 0.2], true), 0, 'a flat grid is unshaded rather than all-green')
 
 // ---------------------------------------------------------------------------
 console.log(`\n${checks - failures}/${checks} checks passed`)

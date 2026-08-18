@@ -34,7 +34,7 @@ import type {
   TARollingWindow,
 } from '@/pages/technical/types'
 
-import { displayLabel, formatKey } from '../strategyKey'
+import { displayLabel, formatKey } from '../strategyKey.ts'
 import {
   PENDING_REASONS,
   type Consistency,
@@ -44,7 +44,7 @@ import {
   type RollingWindow,
   type StrategyReport,
   type TechnicalSetup,
-} from '../types'
+} from '../types.ts'
 
 /** Technical reports percentages; the rest of the app uses fractions. */
 function frac(pct: number | null | undefined): number | null {

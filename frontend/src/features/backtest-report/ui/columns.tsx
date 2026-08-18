@@ -27,6 +27,7 @@ import { Badge } from '@/lib/ui'
 
 import { StrategyLink } from './StrategyLink'
 import { TradesLink } from './TradesLink'
+import { cagrOn } from '../core/cagrOn'
 import { EM_DASH, days, inr, int, num, pct, rate, rateDelta } from '../core/format'
 import type { StrategyReport, TaxBasis } from '../core/types'
 
@@ -58,12 +59,9 @@ function metricCell(
   )
 }
 
-/** The CAGR on the currently selected basis. Post-tax is the headline; the
- * pre-tax figure stays available as its own column rather than being swapped
- * in silently, so the two are never confused for each other. */
-export function cagrOn(r: StrategyReport, basis: TaxBasis): number | null {
-  return basis === 'post_tax' ? r.returns.cagrPostTax : r.returns.cagrPreTax
-}
+// Defined in core/cagrOn.ts so core modules can use it without importing a
+// .tsx file; re-exported here because this is where every call site expects it.
+export { cagrOn } from '../core/cagrOn'
 
 const CHANNEL_VARIANT: Record<
   StrategyReport['channel'],
@@ -76,7 +74,7 @@ const CHANNEL_VARIANT: Record<
 }
 
 /** Strategy name + channel. Present on every table so the same row reads the
- * same way in all six sections. */
+ * same way in every section. */
 export function identityColumns(section?: string): Col[] {
   return [
     {
@@ -118,7 +116,19 @@ export function setupColumns(): Col[] {
       header: 'Universe',
       size: 150,
       meta: { priority: 'low', group: 'setup' },
-      cell: (i) => i.row.original.setup.universe ?? EM_DASH,
+      cell: (i) => {
+        const s = i.row.original.setup
+        // Prefer an explicit universe string when available.
+        if (s.universe) return s.universe
+        // Fall back to channel-specific hints so the column is not empty
+        // after the refactor: template name for Technical, preset for
+        // Fundamental, and a TopN/rank-band hint for Momentum.
+        if (s && (s as any).templateName) return (s as any).templateName
+        if (s && (s as any).preset) return (s as any).preset
+        if (s && (s as any).topN) return `Top${(s as any).topN}`
+        if (s && (s as any).rankBand) return `Band ${(s as any).rankBand}`
+        return EM_DASH
+      },
     },
     {
       id: 'window',

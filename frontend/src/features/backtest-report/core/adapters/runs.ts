@@ -25,7 +25,7 @@ import type {
   BacktestRunMetrics,
 } from '@/shared/api/backtest'
 
-import { displayLabel, formatKey } from '../strategyKey'
+import { displayLabel, formatKey } from '../strategyKey.ts'
 import {
   PENDING_REASONS,
   type Channel,
@@ -33,7 +33,7 @@ import {
   type PendingField,
   type StrategyReport,
   type StrategySetup,
-} from '../types'
+} from '../types.ts'
 
 /** Metrics this endpoint structurally cannot supply. */
 const RUN_PENDING: Record<string, PendingField> = {

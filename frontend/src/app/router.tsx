@@ -97,6 +97,7 @@ export const router = createBrowserRouter([
   { path: '/backtest-report', lazy: async () => ({ Component: (await import('@/pages/backtest-report/hub')).BacktestReportHubPage }) },
   { path: '/backtest-report/recommendations', lazy: async () => ({ Component: (await import('@/pages/backtest-report/recommendations')).BacktestRecommendationsPage }) },
   { path: '/backtest-report/returns', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestReturnsPage }) },
+  { path: '/backtest-report/pivot', lazy: async () => ({ Component: (await import('@/pages/backtest-report/pivot')).BacktestPivotPage }) },
   { path: '/backtest-report/consistency', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestConsistencyPage }) },
   { path: '/backtest-report/risk', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestRiskPage }) },
   { path: '/backtest-report/trade-quality', lazy: async () => ({ Component: (await import('@/pages/backtest-report/sections')).BacktestTradeQualityPage }) },

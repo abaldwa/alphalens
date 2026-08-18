@@ -88,13 +88,43 @@ export function useReportData(options: ReportDataOptions = {}) {
     const fromMomentum = momentum.data ? adaptMomentumReport(momentum.data) : []
     const fromTechnical = technical.data ? adaptTechnicalReport(technical.data) : []
     const fromRuns = adaptRuns(runs.data?.runs ?? null)
-
-    // The specialised reports win over /runs for the same strategy: they carry
-    // rolling windows, YoY and churn that a run summary structurally cannot.
-    // Merging the other way round would replace real data with nulls.
+    // The specialised reports win over /runs for channel-specific richness
+    // (rolling windows, YoY, churn). However some metrics (XIRR, post-tax
+    // CAGR, or a declared `universe`) may only be present on the generic
+    // run summary. Merge so that specialised reports override runs, but
+    // missing scalar fields are backfilled from `fromRuns` when available.
     const merged = new Map<string, StrategyReport>()
     for (const r of fromRuns) merged.set(r.key, r)
     for (const r of [...fromTechnical, ...fromMomentum]) merged.set(r.key, r)
+
+    // Backfill missing simple fields on specialised rows from the runs
+    // adapter where the run-level metrics exist (xirr, cagrPostTax, universe,
+    // finalCapital, totalContributed). This preserves the richer report but
+    // supplies missing scalars the table needs to render.
+    for (const runRow of fromRuns) {
+      const existing = merged.get(runRow.key)
+      if (!existing) continue
+      // Returns-level fields to backfill when null in the specialised row.
+      const ret = existing.returns
+      const runRet = runRow.returns
+      if ((ret.cagrPostTax == null || ret.cagrPostTax === undefined) && runRet.cagrPostTax != null) {
+        ret.cagrPostTax = runRet.cagrPostTax
+        delete existing.pending['returns.cagrPostTax']
+      }
+      if ((ret.xirr == null || ret.xirr === undefined) && runRet.xirr != null) {
+        ret.xirr = runRet.xirr
+        delete existing.pending['returns.xirr']
+      }
+      if ((ret.finalCapital == null || ret.finalCapital === undefined) && runRet.finalCapital != null) {
+        ret.finalCapital = runRet.finalCapital
+        delete existing.pending['returns.finalCapital']
+      }
+      // Setup-level backfill: universe.
+      if ((existing.setup.universe == null || existing.setup.universe === undefined) && runRow.setup.universe) {
+        existing.setup.universe = runRow.setup.universe
+      }
+      merged.set(existing.key, existing)
+    }
 
     const all = [...merged.values()]
     return channel === 'all' ? all : all.filter((r) => r.channel === channel)

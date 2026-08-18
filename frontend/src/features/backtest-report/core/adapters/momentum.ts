@@ -17,7 +17,7 @@ import type {
   MomentumDynamicReportYoyRow,
 } from '@/pages/momentum/types'
 
-import { formatKey, displayLabel } from '../strategyKey'
+import { formatKey, displayLabel } from '../strategyKey.ts'
 import {
   PENDING_REASONS,
   type Consistency,
@@ -27,7 +27,7 @@ import {
   type RollingWindow,
   type StrategyReport,
   type YoyReturn,
-} from '../types'
+} from '../types.ts'
 
 /** The sweep holds grace cycles constant; it is not encoded in variant_id. */
 const GRACE_CYCLES = 2

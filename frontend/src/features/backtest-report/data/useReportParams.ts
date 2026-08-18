@@ -19,6 +19,7 @@
 import { useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import { AGGS, findDimension, findMetric, type AggName } from '../core/pivot'
 import { CHANNELS } from '../core/strategyKey'
 import { WINDOW_PRESETS, type WindowPreset } from '../core/window'
 import type { Channel, ReturnMode, StrategyKey, TaxBasis } from '../core/types'
@@ -33,6 +34,13 @@ export interface ReportParams {
   mode: ReturnMode
   channel: Channel | 'all'
   strategy: StrategyKey | null
+  /** Pivot section only: the two axes, the summarised metric and how a bucket
+   * collapses. In the URL like everything else, so "median post-tax CAGR by
+   * channel x universe" is a link someone else can open. */
+  pivotRow: string
+  pivotCol: string
+  pivotMetric: string
+  pivotAgg: AggName
 }
 
 function asWindow(v: string | null): WindowPreset {
@@ -66,6 +74,15 @@ export function useReportParams(): [
         ? (channel as Channel)
         : 'all',
       strategy: searchParams.get('strategy'),
+      // An unknown id falls back to the default rather than rendering an empty
+      // grid: a stale link from before a dimension was renamed should still
+      // open onto something readable.
+      pivotRow: findDimension(searchParams.get('pivotRow'))?.id ?? 'channel',
+      pivotCol: findDimension(searchParams.get('pivotCol'))?.id ?? 'universe',
+      pivotMetric: findMetric(searchParams.get('pivotMetric'))?.id ?? 'cagr',
+      pivotAgg: (AGGS as string[]).includes(searchParams.get('pivotAgg') ?? '')
+        ? (searchParams.get('pivotAgg') as AggName)
+        : 'median',
     }
   }, [searchParams])
 
