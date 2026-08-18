@@ -15,6 +15,14 @@ repos:
         args: [--config-file=pyproject.toml]
         language: python
         language_version: python3.11
-        additional_dependencies: ["types-requests", "types-python-dateutil"]
+        # fastapi is needed here, not just in the project venv: pre-commit runs
+        # mypy in an ISOLATED environment, so pyproject's
+        # follow_imports = "normal" override for fastapi could not resolve the
+        # package and every route decorator fell back to Any -- reporting
+        # `untyped-decorator` on 28 correctly-annotated handlers in one router
+        # alone, and only inside the hook, never in a local mypy run. The two
+        # environments have to agree about what is importable or the hook
+        # reports errors nobody can reproduce.
+        additional_dependencies: ["types-requests", "types-python-dateutil", "fastapi"]
         stages: [pre-commit]
         verbose: true

@@ -39,6 +39,14 @@ disallow_any_explicit = false
 disallow_any_generics = true
 disallow_subclassing_any = false
 
+# fastapi must be followed properly: under the global follow_imports="skip"
+# every APIRouter decorator resolves to Any, so EVERY route handler in every
+# router reports untyped-decorator no matter how well it is annotated. That
+# forced 28 `# type: ignore` comments into one router alone.
+[[tool.mypy.overrides]]
+module = ["fastapi", "fastapi.*"]
+follow_imports = "normal"
+
 [[tool.mypy.overrides]]
 module = [
     "tests.*",

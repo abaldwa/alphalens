@@ -58,7 +58,7 @@ NOT sourced at build time — left as explicit placeholders, NOT fabricated:
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
@@ -131,7 +131,7 @@ def build_universe_csv(output_path: Optional[Path] = None) -> pd.DataFrame:
     nifty500 = _fetch_index_csv(NSE_NIFTY500_URL)
     nifty500["Symbol"] = nifty500["Symbol"].str.strip()
 
-    tier_by_ticker = {}
+    tier_by_ticker: Dict[str, int] = {}
     for tier, url in NSE_INDEX_LIST_URLS.items():
         df = _fetch_index_csv(url)
         for ticker in df["Symbol"].str.strip():
@@ -497,7 +497,7 @@ def build_full_nse_universe_from_db(
     # per-ticker). Any ticker with real STO/STF rows in the trailing
     # window IS F&O eligible — a strictly better, always-available source
     # than a static lot-size list.
-    fno_eligible_tickers: set = set()
+    fno_eligible_tickers: Set[str] = set()
     try:
         from datastore.api.db import fno_db_path_for
 
@@ -524,7 +524,7 @@ def build_full_nse_universe_from_db(
         nifty500 = _fetch_index_csv(NSE_NIFTY500_URL)
         nifty500["Symbol"] = nifty500["Symbol"].str.strip()
 
-        tier_by_ticker: dict = {}
+        tier_by_ticker: Dict[str, int] = {}
         for tier, url in NSE_INDEX_LIST_URLS.items():
             idx_df = _fetch_index_csv(url)
             for sym in idx_df["Symbol"].str.strip():
@@ -637,15 +637,15 @@ def build_historical_universe_from_delisted(
 
     active_tickers = set(load_universe_raw()["ticker"])
 
-    def _query(c) -> Optional[pd.DataFrame]:
+    def _query(c: Any) -> Optional[pd.DataFrame]:
         query = "SELECT ticker, delisting_date FROM delisted_companies"
-        params: list = []
+        params: List[date] = []
         if include_since_year is not None:
             query += " WHERE delisting_date >= ?"
             params.append(date(include_since_year, 1, 1))
         return c.execute(query, params).df()
 
-    delisted_tickers: set = set()
+    delisted_tickers: Set[str] = set()
     if conn is not None:
         try:
             rows = _query(conn)

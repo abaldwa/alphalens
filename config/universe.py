@@ -24,8 +24,8 @@ To populate with Nifty 500 only (phase_1), run:
 """
 
 import logging
-from datetime import datetime
-from typing import Any, Dict, List
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -190,7 +190,8 @@ def get_tickers() -> list[str]:
     ValueError
         If required columns are missing from the CSV.
     """
-    return load_universe()["ticker"].tolist()
+    tickers: list[str] = load_universe()["ticker"].tolist()
+    return tickers
 
 
 def get_tickers_for_feature_engineering() -> list[str]:
@@ -240,10 +241,11 @@ def get_top_adtv_tickers(n: int) -> list[str]:
     SPEC-SYS-001, SPEC-SYS-011
     """
     df = load_universe().sort_values("adtv_cr", ascending=False)
-    return df["ticker"].tolist()[:n]
+    tickers: list[str] = df["ticker"].tolist()
+    return tickers[:n]
 
 
-def get_market_cap_rank_map() -> dict:
+def get_market_cap_rank_map() -> Dict[str, int]:
     """
     {ticker: rank} across the filtered universe, ranked by market_cap_cr
     descending (rank 1 = largest market cap) — lets callers bucket trades
@@ -273,7 +275,9 @@ def get_market_cap_rank_map() -> dict:
     }
 
 
-def get_market_cap_rank_map_as_of(conn: Any, tickers: List[str], as_of_date) -> Dict[str, int]:
+def get_market_cap_rank_map_as_of(
+    conn: Any, tickers: List[str], as_of_date: "date | datetime"
+) -> Dict[str, int]:
     """
     {ticker: rank} ranked by a genuinely point-in-time market cap as of
     `as_of_date` (rank 1 = largest) — the PIT-correct replacement for
@@ -369,7 +373,9 @@ def get_market_cap_rank_map_as_of(conn: Any, tickers: List[str], as_of_date) -> 
     return {ticker: idx + 1 for idx, (ticker, _mcap) in enumerate(ranked)}
 
 
-def get_listing_windows(conn: Any, tickers: List[str]) -> Dict[str, tuple]:
+def get_listing_windows(
+    conn: Any, tickers: List[str]
+) -> Dict[str, Tuple[Optional[date], Optional[date]]]:
     """
     {ticker: (listing_date, delisting_date)} for clipping a requested date
     range to a ticker's actual traded life (e.g. before requesting FYERS
@@ -415,8 +421,11 @@ def get_listing_windows(conn: Any, tickers: List[str]) -> Dict[str, tuple]:
 
 
 def clip_to_listing_window(
-    listing_date, delisting_date, range_start, range_end
-) -> Any:
+    listing_date: Optional[date],
+    delisting_date: Optional[date],
+    range_start: date,
+    range_end: date,
+) -> Optional[Tuple[date, date]]:
     """
     Clip [range_start, range_end] to a ticker's [listing_date, delisting_date]
     traded-life window (either bound may be None, meaning unbounded on that
@@ -445,7 +454,7 @@ def clip_to_listing_window(
     return (clipped_start, clipped_end)
 
 
-def get_isin_to_ticker_map() -> dict:
+def get_isin_to_ticker_map() -> Dict[str, str]:
     """
     ISIN -> ticker lookup, built from the full (unfiltered) universe CSV.
 

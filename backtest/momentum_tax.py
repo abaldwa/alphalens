@@ -32,7 +32,7 @@ Simplifications, stated explicitly rather than silently assumed:
     actually liquidated.
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 # [2026-08-18] The rates and the LTCG threshold are the TAX REGIME, and a
 # regime can only be declared once. They lived here AND in core/tax.py as two
@@ -45,7 +45,7 @@ from typing import Dict, List
 from backtest.core.tax import LTCG_HOLDING_DAYS, LTCG_RATE, STCG_RATE  # noqa: F401
 
 
-def compute_transaction_tax(txn: Dict) -> float:
+def compute_transaction_tax(txn: Dict[str, Any]) -> float:
     """Tax owed (INR) on one transaction's gain, 0 if the trade lost money
     or has no sell_price (shouldn't happen — MomentumBacktester always
     marks open positions to the final date's price when one exists)."""
@@ -55,14 +55,15 @@ def compute_transaction_tax(txn: Dict) -> float:
     if gain <= 0:
         return 0.0
     rate = LTCG_RATE if txn["holding_days"] >= LTCG_HOLDING_DAYS else STCG_RATE
-    return gain * rate
+    tax: float = gain * rate
+    return tax
 
 
-def compute_total_tax(transactions: List[Dict]) -> float:
+def compute_total_tax(transactions: List[Dict[str, Any]]) -> float:
     return sum(compute_transaction_tax(t) for t in transactions)
 
 
-def post_tax_ending_value(ending_value: float, transactions: List[Dict]) -> float:
+def post_tax_ending_value(ending_value: float, transactions: List[Dict[str, Any]]) -> float:
     """Ending portfolio value net of capital-gains tax on every
     transaction's gain (see module docstring for the simplifications)."""
     return ending_value - compute_total_tax(transactions)

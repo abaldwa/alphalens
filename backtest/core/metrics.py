@@ -22,7 +22,7 @@ momentum-specific assumptions).
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,11 @@ import pandas as pd
 from backtest.momentum_metrics import churn_factor, return_population_zscores, xirr
 
 TRADING_DAYS_PER_YEAR = 252
+
+# Anything pd.Timestamp() accepts as a single date, which is what every
+# date-ish parameter below is immediately fed to (callers pass ISO strings,
+# datetime.date/datetime and pandas Timestamps interchangeably today).
+DateLike = Union[str, date, pd.Timestamp]
 
 
 @dataclass
@@ -86,7 +91,7 @@ class BacktestMetrics:
     # needed two full runs and Technical computed tax post-hoc on the trade
     # book, so the two channels' "post-tax" numbers were not the same measure.
     cagr_other_basis: Optional[float] = None
-    cash_position_series: List[Dict] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
+    cash_position_series: List[Dict[str, Any]] = field(default_factory=list)  # [{"date":..., "cash":...}, ...]
     # A90: the mark-to-market portfolio value per recorded date, [{"date":...,
     # "equity":...}, ...]. StrategyPortfolio has always computed this
     # (portfolio.record_equity -> total_equity = cash + positions at market),
@@ -99,7 +104,7 @@ class BacktestMetrics:
     # Persisted alongside cash_position_series rather than replacing it —
     # they answer different questions (how much is deployed vs. what is it
     # all worth), and the annual-reset ledger already reads the cash half.
-    equity_curve_series: List[Dict] = field(default_factory=list)
+    equity_curve_series: List[Dict[str, Any]] = field(default_factory=list)
     avg_days_held: Optional[float] = None  # mean (exit_date - entry_date).days across closed trades; None if n_trades == 0
     # 2026-08-01 (Technical-strategy Momentum-parity reporting) — n_trades
     # above is closed-only (len(trade_pnls)); total_trades additionally
@@ -111,15 +116,29 @@ class BacktestMetrics:
     max_abs_return_zscore: Optional[float] = None
 
 
-def calendar_cagr(starting_capital: float, ending_value: float, start_date, end_date) -> Optional[float]:
+def calendar_cagr(
+    starting_capital: float, ending_value: float, start_date: DateLike, end_date: DateLike,
+) -> Optional[float]:
     """Primary CAGR basis (calendar/365.25) — correct under both lump-sum and SIP
     when compared against XIRR, since it doesn't assume trading-day density."""
     if starting_capital <= 0:
         return None
-    years = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days / 365.25
+    # [BUG FIX 2026-08-18] A non-positive ending value makes the base of the
+    # fractional power negative, and Python returns a COMPLEX number from a
+    # function declared Optional[float] -- which then flows into the report and
+    # fails serialisation rather than reporting "no meaningful CAGR". The
+    # sibling trading_day_cagr has always guarded exactly this case
+    # (`if total_return <= 0: return None`); this brings the two into line.
+    # Dormant in practice: a long-only book with no leverage cannot end
+    # net-negative. Guarded anyway, because the failure mode is a wrong TYPE
+    # escaping into a report, not a wrong number.
+    if ending_value <= 0:
+        return None
+    years: float = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days / 365.25
     if years <= 0:
         return None
-    return (ending_value / starting_capital) ** (1.0 / years) - 1.0
+    cagr_value: float = (ending_value / starting_capital) ** (1.0 / years) - 1.0
+    return cagr_value
 
 
 def trading_day_cagr(equity_curve: pd.Series) -> Optional[float]:
@@ -131,11 +150,12 @@ def trading_day_cagr(equity_curve: pd.Series) -> Optional[float]:
     n_days = len(equity_curve) - 1
     if n_days <= 0:
         return None
-    total_return = equity_curve.iloc[-1] / equity_curve.iloc[0]
+    total_return: float = equity_curve.iloc[-1] / equity_curve.iloc[0]
     if total_return <= 0:
         return None
     years = n_days / TRADING_DAYS_PER_YEAR
-    return total_return ** (1.0 / years) - 1.0
+    cagr_value: float = total_return ** (1.0 / years) - 1.0
+    return cagr_value
 
 
 def max_drawdown(equity_curve: pd.Series) -> float:
@@ -275,7 +295,7 @@ def turnover_ratio(trade_values: List[float], avg_portfolio_value: float) -> Opt
 
 def benchmark_metrics(
     strategy_cagr: Optional[float], benchmark_equity_curve: Optional[pd.Series],
-    start_date, end_date, index_ohlcv_min_date: Optional[date] = None,
+    start_date: DateLike, end_date: DateLike, index_ohlcv_min_date: Optional[date] = None,
 ) -> Tuple[Optional[float], Optional[float], str]:
     """
     Returns (benchmark_cagr, excess_return, status).
@@ -408,7 +428,7 @@ def rolling_window_summary(
     }
 
 
-def financial_year_label(ts) -> str:
+def financial_year_label(ts: DateLike) -> str:
     """Indian financial year: 1 April - 31 March. FY2021 starts 2020-04-01."""
     ts = pd.Timestamp(ts)
     return f"FY{ts.year + 1}" if ts.month >= 4 else f"FY{ts.year}"
@@ -451,7 +471,7 @@ def fy_returns(equity_curve: pd.Series) -> List[Dict[str, Any]]:
 
 
 def reconstruct_pre_tax_curve(
-    equity_curve: pd.Series, tax_ledger: Optional[List[Dict]],
+    equity_curve: pd.Series, tax_ledger: Optional[List[Dict[str, Any]]],
 ) -> Optional[pd.Series]:
     """The equity curve this run would have had if tax were never charged.
 
@@ -483,7 +503,9 @@ def reconstruct_pre_tax_curve(
     return curve + add_back
 
 
-def churn_per_year(n_trades: Optional[int], start_date, end_date) -> Optional[float]:
+def churn_per_year(
+    n_trades: Optional[int], start_date: DateLike, end_date: DateLike,
+) -> Optional[float]:
     """Round-trips per year -- what the strategy costs to run, and the figure
     that decides whether a pre-tax edge survives contact with STCG."""
     if not n_trades:
@@ -512,7 +534,7 @@ def avg_winner_loser(
 
 
 
-def _equity_curve_to_series(equity_curve: Optional[pd.Series]) -> List[Dict]:
+def _equity_curve_to_series(equity_curve: Optional[pd.Series]) -> List[Dict[str, Any]]:
     """pd.Series(index=date, value=equity) -> [{"date": "YYYY-MM-DD", "equity": float}].
 
     NaNs are dropped rather than zero-filled: a date the portfolio could not
@@ -521,7 +543,7 @@ def _equity_curve_to_series(equity_curve: Optional[pd.Series]) -> List[Dict]:
     """
     if equity_curve is None or len(equity_curve) == 0:
         return []
-    out: List[Dict] = []
+    out: List[Dict[str, Any]] = []
     for idx, value in equity_curve.items():
         if value is None or not np.isfinite(float(value)):
             continue
@@ -538,17 +560,17 @@ def compute_metrics(
     trade_pnls: List[float],
     trade_values: List[float],
     distinct_tickers: List[str],
-    start_date, end_date,
+    start_date: DateLike, end_date: DateLike,
     total_contributed: float,
     benchmark_equity_curve: Optional[pd.Series] = None,
-    cash_position_series: Optional[List[Dict]] = None,
+    cash_position_series: Optional[List[Dict[str, Any]]] = None,
     holding_days: Optional[List[float]] = None,
     trade_returns_pct: Optional[List[float]] = None,
     n_open_positions: int = 0,
     holding_days_all: Optional[List[float]] = None,
     benchmark_index_name: Optional[str] = None,
     # A86: the run's tax ledger, so both bases come from one execution.
-    tax_ledger: Optional[List[Dict]] = None,
+    tax_ledger: Optional[List[Dict[str, Any]]] = None,
     deduct_tax_annually: bool = False,
 ) -> BacktestMetrics:
     """

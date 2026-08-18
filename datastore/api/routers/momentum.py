@@ -86,15 +86,25 @@ import uuid
 from datetime import date as date_type
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Tuple
 
+from duckdb import DuckDBPyConnection
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backtest.momentum_metrics import cagr as compute_cagr
 from backtest.momentum_metrics import xirr
-from backtest.momentum_tax import compute_total_tax, post_tax_ending_value
+# [Phase H2, 2026-08-18] Tax comes from core/tax.py -- the FY-netted engine
+# every other channel already uses. It previously came from momentum_tax's
+# per-transaction model, which taxes winning trades in isolation: no
+# loss set-off, no LTCG exemption. On a financial year holding one short-term
+# loss and one long-term gain that OVERSTATED the tax by 100% (Rs 750 vs 375).
+# This dashboard reports on REAL recorded trades, so it was the one place the
+# wrong number was shown about actual money rather than a simulation.
+from backtest.core.tax import Transaction as TaxTransaction
+from backtest.core.tax import post_tax_ending_value
+from backtest.core.tax import total_tax as compute_total_tax
 from config.settings import DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from datastore.schema.create_normalised import (
@@ -126,7 +136,7 @@ _TRADE_COLUMNS = [
 ]
 
 
-def _ensure_tables(conn) -> None:
+def _ensure_tables(conn: DuckDBPyConnection) -> None:
     for ddl in (
         _CREATE_MOMENTUM_TRADES, _CREATE_MOMENTUM_CONTRIBUTIONS, _CREATE_MOMENTUM_RANKINGS,
         _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS, _CREATE_MOMENTUM_REBALANCE_STATE,
@@ -143,7 +153,7 @@ def _validate_strategy_id(strategy_id: str) -> str:
     return strategy_id
 
 
-def _row_to_dict(row: tuple, columns: List[str]) -> dict:
+def _row_to_dict(row: Tuple[Any, ...], columns: List[str]) -> Dict[str, Any]:
     return dict(zip(columns, row))
 
 
@@ -189,7 +199,9 @@ _SPARKLINE_TRADING_DAYS = 30
 _SHORT_TERM_RETURN_TRADING_DAYS = 20
 
 
-def _enrich_with_price_data(conn, tickers: List[str], as_of_date: str) -> dict:
+def _enrich_with_price_data(
+    conn: DuckDBPyConnection, tickers: List[str], as_of_date: str
+) -> Dict[str, Dict[str, Any]]:
     """{ticker: {"company_name", "price", "sparkline"}} for the Universe
     screen — company name (stock_master), latest close on/before
     as_of_date (price), and the trailing _SPARKLINE_TRADING_DAYS closes
@@ -217,7 +229,7 @@ def _enrich_with_price_data(conn, tickers: List[str], as_of_date: str) -> dict:
         tickers + [as_of_date, _SPARKLINE_TRADING_DAYS],
     ).fetchall()
 
-    by_ticker: dict = {}
+    by_ticker: Dict[str, List[float]] = {}
     for ticker, _date, close in price_rows:
         by_ticker.setdefault(ticker, []).append(close)
 
@@ -232,7 +244,7 @@ def _enrich_with_price_data(conn, tickers: List[str], as_of_date: str) -> dict:
 
 
 @router.get("/pillar_summary")
-async def get_momentum_pillar_summary(strategy_id: str = DEFAULT_STRATEGY_ID) -> dict:
+async def get_momentum_pillar_summary(strategy_id: str = DEFAULT_STRATEGY_ID) -> Dict[str, Any]:
     """Home page pillar-outcome card, for one of the 5 rank-band
     strategies (defaults to DEFAULT_STRATEGY_ID). Uses the pipeline-
     written momentum_rankings snapshot only (no on-the-spot compute, unlike
@@ -317,7 +329,7 @@ async def get_universe(
 # ------------------------------------------------------------- rebalance
 
 @router.get("/rebalance/next")
-async def get_next_rebalance(strategy_id: str = DEFAULT_STRATEGY_ID) -> dict:
+async def get_next_rebalance(strategy_id: str = DEFAULT_STRATEGY_ID) -> Dict[str, Any]:
     _validate_strategy_id(strategy_id)
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
@@ -368,7 +380,7 @@ async def get_rebalance_suggestions(
 
 
 @router.post("/rebalance/suggestions/{suggestion_id}/dismiss")
-async def dismiss_suggestion(suggestion_id: int) -> dict:
+async def dismiss_suggestion(suggestion_id: int) -> Dict[str, Any]:
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
         existing = conn.execute(
@@ -438,7 +450,7 @@ async def list_trades(strategy_id: Optional[str] = None, open_only: bool = False
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
         conditions = []
-        params: List = []
+        params: List[Any] = []
         if strategy_id is not None:
             conditions.append("strategy_id = ?")
             params.append(strategy_id)
@@ -506,7 +518,7 @@ async def update_trade(trade_id: int, update: TradeUpdate) -> TradeRow:
 
 
 @router.delete("/trades/{trade_id}")
-async def delete_trade(trade_id: int) -> dict:
+async def delete_trade(trade_id: int) -> Dict[str, Any]:
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
         existing = conn.execute("SELECT id FROM momentum_trades WHERE id = ?", [trade_id]).fetchone()
@@ -566,14 +578,15 @@ async def create_contribution(contribution: ContributionCreate) -> ContributionR
 # ------------------------------------------------------------------ summary
 
 @router.get("/summary")
-async def get_summary(strategy_id: str = DEFAULT_STRATEGY_ID) -> dict:
+async def get_summary(strategy_id: str = DEFAULT_STRATEGY_ID) -> Dict[str, Any]:
     """Holding Dashboard numbers for strategy_id: capital invested,
     current holdings value, CAGR, XIRR (money-weighted, since
     contributions arrive at arbitrary dates), tax due, and post-tax
     value — computed from the real recorded momentum_trades +
     momentum_contributions ledger, fed through the same
-    backtest.momentum_metrics.xirr/cagr / backtest.momentum_tax helpers
-    the validated backtest itself uses (no separate live math)."""
+    backtest.momentum_metrics.xirr/cagr helpers and backtest.core.tax's
+    FY-netted engine -- the same tax treatment every other channel gets
+    (no separate live math, and no second tax model)."""
     _validate_strategy_id(strategy_id)
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
@@ -617,20 +630,29 @@ async def get_summary(strategy_id: str = DEFAULT_STRATEGY_ID) -> dict:
         if sale_date is not None and sell_price is not None:
             cash_flows.append((str(sale_date), qty * sell_price))
             total_recovered += qty * sell_price
-            holding_days = (sale_date - purchase_date).days
-            transactions.append({
-                "buy_price": purchase_price, "sell_price": sell_price, "qty": qty, "holding_days": holding_days,
-            })
+            transactions.append(
+                TaxTransaction(
+                    ticker=ticker, buy_date=purchase_date, sell_date=sale_date,
+                    buy_price=purchase_price, sell_price=sell_price, quantity=qty,
+                )
+            )
         else:
             if purchase_price is not None:
                 capital_invested += qty * purchase_price
             mark_price = latest_close.get(ticker)
             if mark_price is not None:
                 current_holdings_value += qty * mark_price
-                holding_days = (today - purchase_date).days
-                transactions.append({
-                    "buy_price": purchase_price, "sell_price": mark_price, "qty": qty, "holding_days": holding_days,
-                })
+                # Open positions are marked to today's close and taxed as if
+                # sold today. That is a REPORTING convenience carried over
+                # unchanged from the previous model -- unrealized gains are not
+                # actually taxable -- and it is what makes "post-tax value" a
+                # single comparable number rather than a partial one.
+                transactions.append(
+                    TaxTransaction(
+                        ticker=ticker, buy_date=purchase_date, sell_date=today,
+                        buy_price=purchase_price, sell_price=mark_price, quantity=qty,
+                    )
+                )
 
     total_contributed = sum(amt for _, amt in contributions)
     # Contributed money never deployed into a buy (or already recovered from a
@@ -1009,8 +1031,8 @@ async def list_strategy_configs(
     """List all momentum strategy configs with optional filters."""
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
-        conditions = []
-        params = []
+        conditions: List[str] = []
+        params: List[Any] = []
         if band_id is not None:
             conditions.append("band_id = ?")
             params.append(band_id)
@@ -1160,7 +1182,7 @@ async def update_strategy_config(config_id: int, update: MomentumStrategyConfigU
 
 
 @router.delete("/configs/{config_id}")
-async def delete_strategy_config(config_id: int) -> dict:
+async def delete_strategy_config(config_id: int) -> Dict[str, Any]:
     """Soft delete a momentum strategy configuration (set is_active = false)."""
     with get_duckdb_connection(DUCKDB_PATH, persist=False, read_only=False) as conn:
         _ensure_tables(conn)
@@ -1212,8 +1234,8 @@ async def get_config_historical_returns(config_id: int) -> List[YoyReturnRow]:
 
     # Build lookup: config params -> variant_id
     # Dynamic report variants don't have all tier params, so match on core params
-    def variant_matches(v):
-        return (
+    def variant_matches(v: Dict[str, Any]) -> bool:
+        return bool(
             v.get("band_id") == config["band_id"] and
             v.get("strategy") == config["category"] and
             v.get("lookback_months") == config["lookback_months"] and

@@ -35,7 +35,8 @@ MomentumBacktester didn't have — kept opt-in/default-off, same convention
 as every other optional filter in this module.
 """
 
-from typing import Dict, List, Optional, Set
+from datetime import date as _date
+from typing import Any, Dict, List, Optional, Set, Union
 
 import pandas as pd
 
@@ -61,18 +62,18 @@ from features.momentum_signal import (
 # data objects threaded in by the caller (build_category_presets), not
 # static config, so they can't be module-level constants.
 def build_category_presets(
-    volume_panel=None,
-    market_cap_panel=None,
-    beta_map=None,
-    regime_series=None,
-    quality_scores=None,
+    volume_panel: Optional[pd.DataFrame] = None,
+    market_cap_panel: Optional[pd.DataFrame] = None,
+    beta_map: Optional[Dict[str, float]] = None,
+    regime_series: Optional[pd.Series] = None,
+    quality_scores: Optional[Dict[str, Dict[str, Any]]] = None,
     *,
     min_adtv_cr: float,
     max_pct_of_adtv: float,
     circuit_band_pct: float,
-    quality_gate: Dict,
+    quality_gate: Dict[str, Any],
     disable_in_high_vol_regime: str,
-) -> Dict[str, Dict]:
+) -> Dict[str, Dict[str, Any]]:
     """All Risk / Balanced / Risk-Managed / Max-Defensive filter-preset
     dicts, each layering more filters on top of the last:
       - all_risk: unfiltered baseline (zero kwargs).
@@ -82,7 +83,7 @@ def build_category_presets(
         periods.
       - max_defensive: + size/beta orthogonalization.
     """
-    all_risk: Dict = {}
+    all_risk: Dict[str, Any] = {}
     balanced = {
         "volume_panel": volume_panel,
         "min_adtv_cr": min_adtv_cr,
@@ -121,7 +122,7 @@ def build_category_presets(
 def rank_universe(
     price_panel: pd.DataFrame,
     universe: List[str],
-    date,
+    date: Union[str, _date, pd.Timestamp],
     lookback_days: int,
     momentum_panel: Optional[pd.DataFrame] = None,
 ) -> pd.Series:
@@ -266,10 +267,13 @@ def is_circuit_locked(
     if pd.isna(prev_price) or pd.isna(cur_price) or prev_price <= 0:
         return False
     ret = (cur_price - prev_price) / prev_price
-    return abs(ret) >= circuit_band_pct
+    locked: bool = abs(ret) >= circuit_band_pct
+    return locked
 
 
-def passes_quality_gate(ticker: str, quality_scores: Dict, quality_gate: Dict) -> bool:
+def passes_quality_gate(
+    ticker: str, quality_scores: Dict[str, Dict[str, Any]], quality_gate: Dict[str, Any]
+) -> bool:
     """False only if `ticker` has quality_scores AND fails an
     explicitly-set threshold. True (passes) for a ticker missing from
     quality_scores entirely, or when quality_gate is empty — never
@@ -327,8 +331,8 @@ def select_buy_pool(
     price_panel: pd.DataFrame,
     price_panel_ffilled: pd.DataFrame,
     volume_panel: Optional[pd.DataFrame] = None,
-    quality_scores: Optional[Dict] = None,
-    quality_gate: Optional[Dict] = None,
+    quality_scores: Optional[Dict[str, Dict[str, Any]]] = None,
+    quality_gate: Optional[Dict[str, Any]] = None,
     approximation_flags: Optional[Dict[pd.Timestamp, Dict[str, bool]]] = None,
     exclude_approximated_mcap: bool = False,
     orthogonalize_vs_size_beta: bool = False,
@@ -496,7 +500,7 @@ def sticky_promoted_holdings(
 # ---------------------------------------------------------------------------
 
 
-def compute_fy_net_tax(closed_transactions_in_fy: List[Dict]) -> float:
+def compute_fy_net_tax(closed_transactions_in_fy: List[Dict[str, Any]]) -> float:
     """Net capital-gains tax owed for ONE fiscal year: gains are netted within
     the STCG and LTCG buckets, the Indian inter-head set-off is applied, and
     each remaining positive bucket is taxed at its rate.
@@ -579,5 +583,5 @@ def select_forced_sell_for_shortfall(
         return None
     grace_candidates = {t: p for t, p in candidates.items() if getattr(p, "grace_remaining", None) is not None}
     if grace_candidates:
-        return min(grace_candidates.items(), key=lambda tp: tp[1].grace_remaining)[0]
+        return min(grace_candidates.items(), key=lambda tp: getattr(tp[1], "grace_remaining"))[0]
     return max(candidates.items(), key=lambda tp: getattr(tp[1], "entry_rank", None) or 0)[0]

@@ -416,7 +416,8 @@ def signal_counts(
         params.append(strategy_key)
     sql += " GROUP BY strategy_key, source, action ORDER BY n DESC"
     with _conn(db_path, conn) as c:
-        return c.execute(sql, params).fetchdf().to_dict("records")
+        rows: List[Dict[str, Any]] = c.execute(sql, params).fetchdf().to_dict("records")
+        return rows
 
 
 def _as_date(v: Any) -> date:
@@ -437,7 +438,7 @@ class _ConnCtx:
         self._owned = conn is None
         self._db_path = db_path
 
-    def __enter__(self):
+    def __enter__(self) -> Any:
         if self._conn is not None:
             return self._conn
         # A105: strategies/db.py, not a bare get_duckdb_connection — the
@@ -447,9 +448,10 @@ class _ConnCtx:
         self._conn = self._ctx.__enter__()
         return self._conn
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: Any) -> Optional[bool]:
         if self._owned:
-            return self._ctx.__exit__(*exc)
+            suppressed: Optional[bool] = self._ctx.__exit__(*exc)
+            return suppressed
         return False
 
 

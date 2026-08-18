@@ -10,7 +10,7 @@ Churn Factor (reported as both a per-rebalance series and an annualized
 average — 2026-07-14 user decision).
 """
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -42,7 +42,8 @@ def xirr(cash_flows: List[Tuple[str, float]]) -> Optional[float]:
     anchor = min(dates)
 
     def npv(rate: float) -> float:
-        return sum(a / (1.0 + rate) ** ((d - anchor).days / 365.0) for d, a in zip(dates, amounts))
+        total: float = sum(a / (1.0 + rate) ** ((d - anchor).days / 365.0) for d, a in zip(dates, amounts))
+        return total
 
     lo, hi = -0.9999, 10.0
     f_lo, f_hi = npv(lo), npv(hi)
@@ -69,6 +70,13 @@ def total_return(starting_capital: float, ending_value: float) -> float:
     """Net-of-cost total return over the whole run, e.g. 0.42 = +42%."""
     if starting_capital <= 0:
         raise ValueError("starting_capital must be positive")
+    # See core/metrics.calendar_cagr for why: a non-positive ending value
+    # returns a complex from a function declared -> float. This raises rather
+    # than returning None because that is THIS function's existing convention
+    # for an input it cannot annualize, and its callers already catch
+    # ValueError (datastore/api/routers/momentum.py).
+    if ending_value <= 0:
+        raise ValueError("ending_value must be positive to annualize")
     return (ending_value / starting_capital) - 1.0
 
 
@@ -78,13 +86,24 @@ def cagr(starting_capital: float, ending_value: float, start_date: str, end_date
     experimentation period)."""
     if starting_capital <= 0:
         raise ValueError("starting_capital must be positive")
-    years = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days / 365.25
+    # See core/metrics.calendar_cagr for why: a non-positive ending value
+    # returns a complex from a function declared -> float. This raises rather
+    # than returning None because that is THIS function's existing convention
+    # for an input it cannot annualize, and its callers already catch
+    # ValueError (datastore/api/routers/momentum.py).
+    if ending_value <= 0:
+        raise ValueError("ending_value must be positive to annualize")
+    years: float = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days / 365.25
     if years <= 0:
         raise ValueError("end_date must be after start_date")
-    return (ending_value / starting_capital) ** (1.0 / years) - 1.0
+    # float.__pow__ is typed as returning Any in typeshed (a negative base with a
+    # fractional exponent yields complex); bind to a float-annotated local rather
+    # than calling float(), which would RAISE on a value this returns today.
+    cagr_value: float = (ending_value / starting_capital) ** (1.0 / years) - 1.0
+    return cagr_value
 
 
-def churn_factor(rebalance_events: List[Dict]) -> Dict:
+def churn_factor(rebalance_events: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     rebalance_events: list of dicts, one per rebalance, each with at least
     {"date": iso date str, "n_bought": int, "n_sold": int}.
@@ -120,7 +139,9 @@ def churn_factor(rebalance_events: List[Dict]) -> Dict:
 _NEAR_ZERO_STD = 1e-9
 
 
-def sharpe_sortino_calmar(equity_curve: List[Dict], cagr_value: Optional[float]) -> Dict[str, Optional[float]]:
+def sharpe_sortino_calmar(
+    equity_curve: List[Dict[str, Any]], cagr_value: Optional[float],
+) -> Dict[str, Optional[float]]:
     """
     Sharpe/Sortino/Calmar for a MomentumBacktestResult.equity_curve
     (2026-07-27 user request — computed straight from the equity curve
@@ -180,7 +201,7 @@ def sharpe_sortino_calmar(equity_curve: List[Dict], cagr_value: Optional[float])
     return {"sharpe": sharpe, "sortino": sortino, "calmar": calmar, "max_drawdown": mdd}
 
 
-def win_rate(transactions: List[Dict]) -> Optional[float]:
+def win_rate(transactions: List[Dict[str, Any]]) -> Optional[float]:
     """Fraction of CLOSED transactions that sold above their buy price.
 
     transactions : MomentumBacktestResult.transactions — dicts with at
@@ -195,7 +216,7 @@ def win_rate(transactions: List[Dict]) -> Optional[float]:
     return wins / len(closed)
 
 
-def _closed_trade_returns_pct(transactions: List[Dict]) -> List[float]:
+def _closed_trade_returns_pct(transactions: List[Dict[str, Any]]) -> List[float]:
     """Simple (non-annualized) per-trade % return -- sell_price/buy_price
     - 1, as a percentage -- for every closed transaction with real
     buy/sell prices. Distinct from trade_cagr (annualized); this is what
@@ -208,7 +229,7 @@ def _closed_trade_returns_pct(transactions: List[Dict]) -> List[float]:
     return out
 
 
-def avg_winner_return_pct(transactions: List[Dict]) -> Optional[float]:
+def avg_winner_return_pct(transactions: List[Dict[str, Any]]) -> Optional[float]:
     """Mean simple % return across closed trades that sold ABOVE their buy
     price (2026-08-09, "average % gain for stocks with positive return").
     None if there are no winning closed trades."""
@@ -216,7 +237,7 @@ def avg_winner_return_pct(transactions: List[Dict]) -> Optional[float]:
     return sum(winners) / len(winners) if winners else None
 
 
-def avg_loser_return_pct(transactions: List[Dict]) -> Optional[float]:
+def avg_loser_return_pct(transactions: List[Dict[str, Any]]) -> Optional[float]:
     """Mean simple % return across closed trades that sold AT/BELOW their
     buy price (2026-08-09, "average % loss for stocks with negative
     return"). Reported as a negative number (a loss), consistent with
@@ -227,8 +248,8 @@ def avg_loser_return_pct(transactions: List[Dict]) -> Optional[float]:
 
 
 def rolling_window_returns(
-    equity_curve: List[Dict], window_years: int, step_months: int = 3,
-) -> List[Dict]:
+    equity_curve: List[Dict[str, Any]], window_years: int, step_months: int = 3,
+) -> List[Dict[str, Any]]:
     """Every window_years-long rolling-window CAGR from an equity curve,
     window start stepped every step_months (2026-08-09, rolling-return
     consistency reporting -- distinct from the single whole-period CAGR).
@@ -286,7 +307,9 @@ def rolling_window_returns(
     return out
 
 
-def rolling_window_summary(equity_curve: List[Dict], window_years: int) -> Dict[str, Optional[float]]:
+def rolling_window_summary(
+    equity_curve: List[Dict[str, Any]], window_years: int,
+) -> Dict[str, Optional[float]]:
     """min/median/max CAGR across all rolling window_years windows -- the
     at-a-glance consistency figures (worst case, typical, best case) shown
     per (band, category) rather than the full window-by-window series."""
@@ -302,7 +325,9 @@ def rolling_window_summary(equity_curve: List[Dict], window_years: int) -> Dict[
     }
 
 
-def income_mode_summary(capital_resets: List[Dict], target_capital: float) -> Dict[str, Optional[float]]:
+def income_mode_summary(
+    capital_resets: List[Dict[str, Any]], target_capital: float,
+) -> Dict[str, Optional[float]]:
     """Headline figures for MomentumBacktester's annual_capital_reset_target
     ("income mode") -- 2026-08-10 user request. capital_resets is
     MomentumBacktestResult.capital_resets: [{"date","fy_label",
@@ -342,7 +367,7 @@ def income_mode_summary(capital_resets: List[Dict], target_capital: float) -> Di
 
 def return_population_zscores(
     returns_pct: Sequence[Optional[float]], outlier_threshold: float = 3.0,
-) -> Dict:
+) -> Dict[str, Any]:
     """Channel-agnostic core of the outlier-detection math: given a list of
     per-trade % returns (None entries pass through as None, e.g. a trade
     with no realized/unrealized return yet), returns each entry's z-score
@@ -382,7 +407,9 @@ def return_population_zscores(
     return {"zscores": zscores, "n_outliers": n_outliers, "max_abs_zscore": max_abs_z}
 
 
-def trade_quality_metrics(transactions: List[Dict], zscore_outlier_threshold: float = 3.0) -> Dict:
+def trade_quality_metrics(
+    transactions: List[Dict[str, Any]], zscore_outlier_threshold: float = 3.0,
+) -> Dict[str, Any]:
     """Data-quality / summary stats across the FULL transaction ledger
     (open + closed — 2026-08-01 user request: "Total Trades. not just the
     Open Trades"), plus a per-trade return z-score used to auto-flag

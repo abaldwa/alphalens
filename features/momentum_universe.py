@@ -34,7 +34,7 @@ rank to decide whether it belonged in a band years earlier.
 
 import logging
 from datetime import date as date_type
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Tuple, cast
 
 import pandas as pd
 
@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 # 500-800 share their boundary ranks with the band below). Left exactly as
 # specified rather than silently corrected -- flag it if unintended, since
 # a boundary stock is then in two band universes simultaneously.
-RANK_BANDS: List[tuple] = [
+RANK_BANDS: List[Tuple[int, int, int]] = [
     (1, 1, 50),
     (2, 51, 100),
     (3, 101, 150),
@@ -108,7 +108,7 @@ def _all_candidate_tickers(include_delisted: bool = False, normalised_conn: Any 
         from config.build_universe import build_historical_universe_from_delisted
         return build_historical_universe_from_delisted(conn=normalised_conn)
     raw = load_universe_raw()
-    return raw["ticker"].tolist()
+    return cast(List[str], raw["ticker"].tolist())
 
 
 def first_trading_days_per_year(normalised_conn: Any, start_date: str, end_date: str) -> Dict[int, str]:
@@ -268,7 +268,7 @@ def rank_band_tickers(
     if ranked.empty:
         return []
     # rank_start/rank_end are 1-indexed; iloc is 0-indexed.
-    return ranked.iloc[rank_start - 1:rank_end]["ticker"].tolist()
+    return cast(List[str], ranked.iloc[rank_start - 1:rank_end]["ticker"].tolist())
 
 
 def all_yearly_full_rankings(
@@ -292,7 +292,7 @@ def yearly_band_universes_from_rankings(
     """Slice a pre-computed {year_start_date: ranked_dataframe} map (from
     all_yearly_full_rankings) down to one rank band — pure Python, no DB
     access, so this can be called once per band per experiment cheaply."""
-    result = {}
+    result: Dict[str, List[str]] = {}
     for date_str, ranked in yearly_rankings.items():
         if ranked.empty:
             result[date_str] = []

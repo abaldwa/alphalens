@@ -66,14 +66,15 @@ def trailing_momentum(
     if df.empty:
         return pd.Series(dtype=float)
 
-    def _return(group: pd.DataFrame):
+    def _return(group: pd.DataFrame) -> Optional[float]:
         if len(group) < lookback_days + 1:
             return None
         start_close = group.iloc[0]["close"]
         end_close = group.iloc[-1]["close"]
         if start_close is None or start_close == 0:
             return None
-        return (end_close / start_close) - 1.0
+        ret: float = (end_close / start_close) - 1.0
+        return ret
 
     returns = df.groupby("ticker").apply(_return, include_groups=False)
     returns = returns.dropna()
@@ -222,7 +223,8 @@ def top_n_by_momentum(
     momentum = trailing_momentum(normalised_conn, tickers, as_of_date, lookback_days)
     if momentum.empty:
         return []
-    return momentum.sort_values(ascending=False).head(top_n).index.tolist()
+    top: List[str] = momentum.sort_values(ascending=False).head(top_n).index.tolist()
+    return top
 
 
 def orthogonalize_momentum_vs_factors(

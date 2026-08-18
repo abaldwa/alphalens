@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date as date_type
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Protocol
 
 import pandas as pd
 
@@ -60,6 +60,20 @@ from backtest.core.signal_ledger import SignalLedgerRecorder
 from backtest.core.tax import fy_tax_cash_flows
 from config.settings import MIN_ADT_INR
 
+if TYPE_CHECKING:  # import-graph hygiene: runtime imports stay local (see below)
+    from backtest.core.feature_log import FeatureLogWriter
+
+
+class ExitModel(Protocol):
+    """Structural type of the exit policies this engine drives (every
+    systems/ml_signal_engine/models/exit/*Policy and ExitSignalModel).
+    Typing-only: declared here so exit_model params/returns have an honest
+    type without adding a runtime import of systems.ml_signal_engine, which
+    the local-import comments below deliberately avoid."""
+
+    def predict_full(self, X: pd.DataFrame) -> pd.DataFrame:
+        ...
+
 # Same directory the run_*_backtest.py scripts use for their
 # ``orchestrator_{run_id}.json`` / ``phase*_{run_id}.json`` reports, so the
 # trade-log CSV written below always lands next to the JSON report for a run.
@@ -79,7 +93,7 @@ logger = logging.getLogger(__name__)
 _NO_MAX_HOLD_DAYS_SENTINEL = 10**9
 
 
-def _build_default_exit_model(max_hold_days: int = _NO_MAX_HOLD_DAYS_SENTINEL):
+def _build_default_exit_model(max_hold_days: int = _NO_MAX_HOLD_DAYS_SENTINEL) -> "ExitModel":
     """PerTemplateExitPolicy(build_default_template_params()), with every
     template's (and the untagged-position default's) max_hold_days
     replaced by `max_hold_days` (default _NO_MAX_HOLD_DAYS_SENTINEL — see
@@ -99,10 +113,16 @@ def _build_default_exit_model(max_hold_days: int = _NO_MAX_HOLD_DAYS_SENTINEL):
         name: {**params, "max_hold_days": max_hold_days}
         for name, params in build_default_template_params().items()
     }
-    return PerTemplateExitPolicy(
+    # Bound to a typed local before returning (here and at every return in
+    # build_exit_model_for_variant below): mypy runs with
+    # follow_imports = "skip", so every systems.ml_signal_engine class is Any
+    # to it and a bare `return Cls(...)` trips no-any-return. The binding is
+    # purely a type assertion — no runtime behaviour changes.
+    model: ExitModel = PerTemplateExitPolicy(
         template_params,
         default_policy=RuleBasedExitPolicy(max_hold_days=max_hold_days),
     )
+    return model
 
 
 # Exit regimes carried into the 2026-08 Technical re-run.
@@ -171,9 +191,9 @@ _UNCONSTRAINED_STOP_PCT = -0.99
 
 
 def build_exit_model_for_variant(
-    variant: str, regime_conn=None, regime_index_name: str = "Nifty 500",
+    variant: str, regime_conn: Any = None, regime_index_name: str = "Nifty 500",
     max_hold_days: Optional[int] = None,
-):
+) -> "ExitModel":
     """Constructs the exit_model for one of EXIT_POLICY_VARIANTS — the
     factory backtest/run_orchestrator_backtest.py's --exit-variant CLI flag
     calls into. "baseline" (the default) reproduces today's
@@ -213,33 +233,38 @@ def build_exit_model_for_variant(
         return _build_default_exit_model(hold_days)
 
     if variant == "condition":
-        return ConditionBasedExitPolicy()
+        condition_model: ExitModel = ConditionBasedExitPolicy()
+        return condition_model
 
     if variant == "combined":
         # Composes risk_managed, NOT the retired baseline: "barriers OR thesis
         # break" is only a meaningful arm if the barrier half can actually
         # fire, and baseline's could not.
-        return CompositeExitPolicy(
+        combined_model: ExitModel = CompositeExitPolicy(
             [build_exit_model_for_variant("risk_managed", max_hold_days=max_hold_days),
              ConditionBasedExitPolicy()]
         )
+        return combined_model
 
     if variant == "trailing":
         # TrailingStopExitPolicy has no per-template router of its own yet
         # (unlike PerTemplateExitPolicy) — a single global TrailingStopExitPolicy
         # (bootstrap flat target/stop numbers) is used here; a per-template
         # trailing-stop router is a documented follow-up, not built today.
-        return TrailingStopExitPolicy(max_hold_days=hold_days)
+        trailing_model: ExitModel = TrailingStopExitPolicy(max_hold_days=hold_days)
+        return trailing_model
 
     if variant == "atr_adaptive":
-        return ATRAdaptiveExitPolicy(max_hold_days=hold_days)
+        atr_model: ExitModel = ATRAdaptiveExitPolicy(max_hold_days=hold_days)
+        return atr_model
 
     if variant == "regime_conditional":
         template_params = {
             name: {**params, "max_hold_days": hold_days}
             for name, params in build_default_template_params().items()
         }
-        return RegimeConditionalExitPolicy(template_params)
+        regime_model: ExitModel = RegimeConditionalExitPolicy(template_params)
+        return regime_model
 
     if variant == "risk_managed":
         # Per-template stop/target/max-hold, all reachable. Uses the same
@@ -251,11 +276,12 @@ def build_exit_model_for_variant(
             name: {**params, "max_hold_days": hold_days if max_hold_days is not None else params["max_hold_days"]}
             for name, params in build_default_template_params().items()
         }
-        return PerTemplateExitPolicy(
+        risk_managed_model: ExitModel = PerTemplateExitPolicy(
             template_params,
             default_policy=RiskManagedExitPolicy(),
             policy_cls=RiskManagedExitPolicy,
         )
+        return risk_managed_model
 
     if variant == "unconstrained":
         # 2026-07-27: control variant for the CAGR-regression investigation
@@ -269,10 +295,11 @@ def build_exit_model_for_variant(
         # purpose as a fixed control.
         from systems.ml_signal_engine.models.exit.rule_based_exit_policy import RuleBasedExitPolicy as _RBEP
 
-        return _RBEP(
+        unconstrained_model: ExitModel = _RBEP(
             target_pct=_UNCONSTRAINED_TARGET_PCT, stop_pct=_UNCONSTRAINED_STOP_PCT,
             max_hold_days=_NO_MAX_HOLD_DAYS_SENTINEL,
         )
+        return unconstrained_model
 
     raise ValueError(
         f"unknown exit_policy_variant {variant!r}; must be one of {ALL_EXIT_POLICY_VARIANTS} "
@@ -313,6 +340,7 @@ class StrategyAdapter(Protocol):
 
 
 PriceLookup = Callable[[str, date_type], Optional[float]]
+TechnicalFeatureLookup = Callable[[str, date_type], Optional[Dict[str, Any]]]
 UniverseProvider = Callable[[date_type], List[str]]
 SectorLookup = Callable[[str], str]
 IsDelistedCheck = Callable[[str, date_type], bool]
@@ -358,7 +386,7 @@ class RefitEvent:
     model_version: str
 
 
-def canonical_strategy_key(run) -> Optional[str]:
+def canonical_strategy_key(run: BacktestRun) -> Optional[str]:
     """"{channel}:{name}" -- the cross-application strategy identity (A89).
 
     `name` prefers the template/preset the run actually executed, because that
@@ -455,7 +483,10 @@ class ReadinessNotMet(RuntimeError):
     """A run was refused because its data prerequisites were unmet (A103)."""
 
 
-def _enforce_run_readiness(*, run, config, strategy_key: str, strategy_version) -> None:
+def _enforce_run_readiness(
+    *, run: BacktestRun, config: "OrchestratorConfig", strategy_key: str,
+    strategy_version: Optional[int],
+) -> None:
     """Probe a few dates across the run window; refuse if inputs are missing.
 
     Sampling, not exhaustive checking, is the point: the failure this exists
@@ -557,7 +588,7 @@ def _enforce_run_readiness(*, run, config, strategy_key: str, strategy_version) 
     logger.error("%s (continuing: readiness_is_fatal=False)", message)
 
 
-def _curve_to_rows(curve):
+def _curve_to_rows(curve: Optional[pd.Series]) -> List[Dict[str, Any]]:
     """A pandas equity curve -> [{"date": "YYYY-MM-DD", "equity": float}].
 
     Deliberately the same shape, key and sampling as the strategy
@@ -673,8 +704,11 @@ class BacktestOrchestrator:
     """
 
     def __init__(
-        self, feature_log_writer=None, regime_conn=None, regime_index_name: str = "Nifty 500",
-        exit_model=None, technical_feature_lookup=None, exit_policy_variant: Optional[str] = None,
+        self, feature_log_writer: Optional["FeatureLogWriter"] = None, regime_conn: Any = None,
+        regime_index_name: str = "Nifty 500",
+        exit_model: Optional["ExitModel"] = None,
+        technical_feature_lookup: Optional[TechnicalFeatureLookup] = None,
+        exit_policy_variant: Optional[str] = None,
         regime_method: Optional[str] = None, benchmark_index_name: Optional[str] = None,
     ) -> None:
         """feature_log_writer: optional backtest.core.feature_log.FeatureLogWriter.
@@ -775,7 +809,7 @@ class BacktestOrchestrator:
         # left for a reader to infer.
         self._legacy_urgency_fallbacks: int = 0
 
-    def _get_market_cap_rank_for_date(self, ticker: str, as_of_date, all_buy_tickers_this_date: Optional[List[str]] = None) -> Optional[int]:
+    def _get_market_cap_rank_for_date(self, ticker: str, as_of_date: date_type, all_buy_tickers_this_date: Optional[List[str]] = None) -> Optional[int]:
         """Point-in-time {ticker: rank} for `as_of_date`, batched by date and
         cached per orchestrator instance (config.universe.
         get_market_cap_rank_map_as_of, ranked by shares_outstanding * close
@@ -810,7 +844,8 @@ class BacktestOrchestrator:
         return self._market_cap_rank_maps_by_date[as_of_date].get(ticker)
 
     def _reconcile_corporate_actions(
-        self, portfolio, config: "OrchestratorConfig", as_of, data_gaps: List[DataGap],
+        self, portfolio: StrategyPortfolio, config: "OrchestratorConfig", as_of: date_type,
+        data_gaps: List[DataGap],
     ) -> None:
         """Merger/spinoff swaps and delisting force-closes for one date.
 
@@ -880,7 +915,8 @@ class BacktestOrchestrator:
                     portfolio.force_close(ticker, price, as_of, reason="forced_close")
 
     def _check_blackouts(
-        self, portfolio, config: "OrchestratorConfig", prices: Dict[str, float], as_of,
+        self, portfolio: StrategyPortfolio, config: "OrchestratorConfig",
+        prices: Dict[str, float], as_of: date_type,
         blackout_streak: Dict[str, int], last_seen_price: Dict[str, float],
         data_gaps: List[DataGap],
     ) -> None:
@@ -1059,7 +1095,7 @@ class BacktestOrchestrator:
             # excluded from the daily exit-policy pass so it never double-
             # handles a same-day rotation decision (e.g. re-evaluating a
             # ticker sold moments ago, or a brand-new buy with days_held=0).
-            executed_tickers: set = set()
+            executed_tickers: set[str] = set()
             prices: Dict[str, float] = {}
 
             if not is_rebalance_date:
@@ -1101,12 +1137,6 @@ class BacktestOrchestrator:
             # year's bill rather than against money already owed.
             portfolio.apply_due_fy_tax(as_of)
             portfolio.apply_due_sip_injections(as_of)
-            # Annual-reset boundary handling runs BEFORE this date's sizing, so
-            # the year's first buys size against the adjusted capital rather
-            # than last year's. Needs prices (mark-to-market equity decides the
-            # withdrawal), unlike the SIP call above. No-op unless
-            # capital_mode="annual_reset".
-            portfolio.apply_due_annual_reset(as_of, prices)
 
             with timer.phase("corp_actions"):
                 self._reconcile_corporate_actions(portfolio, config, as_of, data_gaps)
@@ -1116,7 +1146,7 @@ class BacktestOrchestrator:
             with timer.phase("signals"):
                 signals = adapter.generate_signals(universe, as_of, run.horizon_bucket)
 
-            prices: Dict[str, float] = {}
+            prices = {}
             with timer.phase("prices"):
                 for ticker in set(list(portfolio.positions.keys()) + [s.ticker for s in signals]):
                     price = config.price_lookup(ticker, as_of)
@@ -1127,6 +1157,26 @@ class BacktestOrchestrator:
                         data_gaps.append(
                             DataGap(ticker, as_of, "no_price_marking_open_position_at_last_known_price")
                         )
+
+            # Annual-reset boundary handling runs BEFORE this date's sizing, so
+            # the year's first buys size against the adjusted capital rather
+            # than last year's. Needs prices (mark-to-market equity decides the
+            # withdrawal), unlike the SIP call above. No-op unless
+            # capital_mode="annual_reset".
+            #
+            # [BUG FIX 2026-08-18] This call used to sit above, next to
+            # apply_due_sip_injections -- and on a rebalance date `prices` is
+            # still the empty dict initialised at the top of the iteration,
+            # because only the non-rebalance branch (which `continue`s) fills
+            # it, and the rebalance branch's own price pass runs further down.
+            # total_equity() falls back to `pos.entry_price` for any ticker
+            # absent from the map, so the reset was deciding on COST BASIS
+            # rather than mark-to-market equity -- the exact thing this call's
+            # own comment says it needs prices for. A year of gains therefore
+            # withdrew too little, and a losing year topped up too little.
+            # Moved below the price pass; still before any sizing, which is
+            # the ordering constraint that matters.
+            portfolio.apply_due_annual_reset(as_of, prices)
 
             self._check_blackouts(
                 portfolio, config, prices, as_of, blackout_streak, last_seen_price, data_gaps,
@@ -1360,10 +1410,12 @@ class BacktestOrchestrator:
                 self._regime_segments_cache = []
         from systems.regime.regime_store import regime_known_as_of
 
-        return regime_known_as_of(self._regime_segments_cache, as_of)
+        label: Optional[str] = regime_known_as_of(self._regime_segments_cache, as_of)
+        return label
 
     def _apply_exit_policy(
-        self, portfolio: StrategyPortfolio, prices: Dict[str, float], as_of: date_type, executed_tickers: set,
+        self, portfolio: StrategyPortfolio, prices: Dict[str, float], as_of: date_type,
+        executed_tickers: set[str],
     ) -> None:
         """Per-position stop-loss/target/urgency exit check, run every trading
         day (see run()'s docstring/comments) independent of rebalance-cadence
@@ -1471,7 +1523,10 @@ class BacktestOrchestrator:
                     ticker, prices[ticker], as_of, reason="exit_model_reduce",
                 )
 
-    def _log_feature(self, run_id, ticker, as_of, horizon_bucket, adapter: StrategyAdapter, action: str) -> None:
+    def _log_feature(
+        self, run_id: str, ticker: str, as_of: date_type, horizon_bucket: HorizonBucket,
+        adapter: StrategyAdapter, action: str,
+    ) -> None:
         if self._feature_log_writer is None:
             return
         self._feature_log_writer.record(

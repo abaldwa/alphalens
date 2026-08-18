@@ -356,13 +356,15 @@ def _is_stub_body(body: list[ast.stmt]) -> str | None:
 # function qualnames (module_rel_path::FunctionName) already known and
 # tracked as legitimately-incomplete scaffolding (BuildLog.md / phase
 # delivery plan Weeks 33-38 — TA and Damodaran systems are 0% built).
-STUB_FUNCTION_ALLOWLIST: set[str] = {
-    # typing.Protocol method declarations — `...` bodies are the correct,
-    # idiomatic form for a structural-typing interface, not incomplete code.
-    # Implementations live in the concrete adapter classes (e.g. ml_adapter.py).
-    "backtest/core/engine.py::generate_signals",
-    "backtest/core/engine.py::feature_vector",
-}
+# [2026-08-18] typing.Protocol methods are no longer listed here individually.
+# They used to be ("backtest/core/engine.py::generate_signals" and
+# "::feature_vector"), and the cost of that showed up immediately: adding one
+# more Protocol method to the same file broke this test for someone who had
+# written entirely correct code. A `...` body inside a Protocol is not
+# incomplete work, it is the only form the language offers for declaring a
+# structural interface -- so it is recognised structurally now, by
+# _protocol_method_lines() below, rather than name by name.
+STUB_FUNCTION_ALLOWLIST: set[str] = set()
 
 # Whole packages that are intentionally-empty scaffolding today (Weeks
 # 33-38 of alphalens_docs/11_phase_delivery_plan.md — not yet built). Listed
@@ -371,6 +373,31 @@ STUB_FUNCTION_ALLOWLIST: set[str] = {
 # dead stub package with zero imports; real logic lives in
 # features/fundamental_composites.py.)
 KNOWN_STUB_PACKAGES: set[str] = set()
+
+
+def _protocol_method_lines(tree: ast.AST) -> set[int]:
+    """Line numbers of methods declared inside a `class X(Protocol)`.
+
+    Matched on the base-class name so both `Protocol` and `typing.Protocol`
+    are recognised. Keyed by line number rather than by name because two
+    classes in one module may legitimately declare the same method name and
+    only one of them may be a Protocol.
+    """
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        is_protocol = any(
+            (isinstance(b, ast.Name) and b.id == "Protocol")
+            or (isinstance(b, ast.Attribute) and b.attr == "Protocol")
+            for b in node.bases
+        )
+        if not is_protocol:
+            continue
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                lines.add(item.lineno)
+    return lines
 
 
 def test_no_unallowlisted_stub_function_bodies():
@@ -385,10 +412,13 @@ def test_no_unallowlisted_stub_function_bodies():
             tree = ast.parse(path.read_text())
         except (SyntaxError, UnicodeDecodeError):
             continue
+        protocol_lines = _protocol_method_lines(tree)
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 reason = _is_stub_body(node.body)
                 if reason is None:
+                    continue
+                if node.lineno in protocol_lines:
                     continue
                 qualname = f"{rel}::{node.name}"
                 if qualname in STUB_FUNCTION_ALLOWLIST:

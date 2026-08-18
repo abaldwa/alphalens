@@ -45,7 +45,7 @@ GRACE_CYCLES = 2
 # One strategy per features.momentum_universe.RANK_BANDS entry, sharing the
 # same top_n/lookback/rebalance/grace config above — only the rank band
 # (i.e. the universe each strategy ranks) differs between them.
-STRATEGIES: List[Dict] = [
+STRATEGIES: List[Dict[str, Any]] = [
     {
         "strategy_id": f"band{band_id}_top15_6m_m_g2",
         "band_id": band_id,
@@ -63,7 +63,7 @@ _STRATEGIES_BY_ID = {s["strategy_id"]: s for s in STRATEGIES}
 DEFAULT_STRATEGY_ID = "band3_top15_6m_m_g2"
 
 
-def get_strategy(strategy_id: str) -> Dict:
+def get_strategy(strategy_id: str) -> Dict[str, Any]:
     if strategy_id not in _STRATEGIES_BY_ID:
         raise ValueError(f"Unknown momentum strategy_id: {strategy_id!r}. Valid: {list(_STRATEGIES_BY_ID)}")
     return _STRATEGIES_BY_ID[strategy_id]
@@ -178,11 +178,11 @@ def is_rebalance_day(normalised_conn: Any, as_of_date: str, strategy_id: str = D
 def compute_rebalance_suggestions(
     normalised_conn: Any,
     rebalance_date: str,
-    current_open_trades: List[Dict],
+    current_open_trades: List[Dict[str, Any]],
     strategy_id: str = DEFAULT_STRATEGY_ID,
     grace_cycles: int = GRACE_CYCLES,
     universe: Optional[List[str]] = None,
-) -> List[Dict]:
+) -> List[Dict[str, Any]]:
     """Diffs currently-held tickers (from momentum_trades' open rows)
     against rebalance_date's fresh strategy_id-band top-15 ranking,
     applying the exact grace-period rule the validated backtest uses
@@ -212,7 +212,7 @@ def compute_rebalance_suggestions(
     held_grace = {t["ticker"]: t.get("grace_remaining") for t in current_open_trades}
     updated_grace = decide_grace_transitions(held_grace, target_set, grace_cycles)
 
-    suggestions: List[Dict] = []
+    suggestions: List[Dict[str, Any]] = []
 
     for ticker in target_set:
         if ticker not in held_grace:
