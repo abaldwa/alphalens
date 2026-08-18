@@ -14,16 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, sharpe_sortino_calmar
-from backtest.momentum_tax import post_tax_ending_value
+from backtest.core.metrics import cagr, sharpe_sortino_calmar
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
 from features.momentum_signal import build_momentum_panel, load_price_panel, load_volume_panel, lookback_trading_days
 from features.momentum_universe import all_yearly_full_rankings, yearly_band_universes_from_rankings
 from scripts.run_momentum_dynamic_report import (
-    GRACE_CYCLES,
     INVESTABLE_PCT,
     REBALANCE_PERIODS,
     STARTING_CAPITAL,
@@ -74,21 +72,22 @@ def _fy_cagrs(equity_curve):
     return out
 
 
-def _run_variant(kwargs, price_panel, yearly_universes, lookback_days, rebalance_days, momentum_panel, **extra):
-    engine = MomentumBacktester(
-        price_panel=price_panel,
-        yearly_universes=yearly_universes,
-        lookback_days=lookback_days,
-        rebalance_every_n_trading_days=rebalance_days,
-        grace_cycles=GRACE_CYCLES,
-        momentum_panel=momentum_panel,
-        **kwargs,
-        **extra,
-    )
-    return engine.run()
+# [H4, 2026-08-18] _run_variant deleted: it built a MomentumBacktester with
+# per_ticker_hmm_regime, deprecated by §19, and main() below now raises
+# before ever calling it -- see main()'s docstring/comment.
 
 
 def main():
+    # [H4, 2026-08-18] Per-ticker HMM regime (per_ticker_hmm_regime/
+    # disable_hmm_regimes) no longer exists on MomentumAdapter -- deprecated
+    # by the 2026-08-18 user decision (§19: pure-play momentum is a plain
+    # rank rotation). This script's entire purpose was to measure that
+    # filter's impact, so there is nothing left to compute.
+    raise NotImplementedError(
+        "per_ticker_hmm_regime/disable_hmm_regimes no longer exist on MomentumAdapter "
+        "(deprecated 2026-08-18, UnifiedGeneratorRefactorPlan.md §19) -- this sweep has no "
+        "meaning to compute."
+    )
     end_date = now_ist().date()
     start_date = date(end_date.year - 10, end_date.month, end_date.day)
 

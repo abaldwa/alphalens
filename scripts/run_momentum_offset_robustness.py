@@ -40,9 +40,9 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr
-from backtest.momentum_tax import post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
@@ -66,8 +66,12 @@ CANDIDATES = [
 
 
 def _run_one(price_panel, yearly_universes, candidate, offset_days):
+    # [H4, 2026-08-18] grace_cycles no longer exists on MomentumAdapter --
+    # deprecated by §19; not passed through. rebalance_offset_days IS still
+    # supported (backtest.momentum_orchestrator_runner slices trading_days),
+    # so this script's actual question -- offset sensitivity -- is unaffected.
     lookback_days = lookback_trading_days(candidate["lookback_months"])
-    engine = MomentumBacktester(
+    result = run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=lookback_days,
@@ -75,10 +79,8 @@ def _run_one(price_panel, yearly_universes, candidate, offset_days):
         starting_capital=STARTING_CAPITAL,
         investable_pct=INVESTABLE_PCT,
         top_n=candidate["top_n"],
-        grace_cycles=candidate["grace_cycles"],
         rebalance_offset_days=offset_days,
     )
-    result = engine.run()
     post_tax_value = post_tax_ending_value(result.ending_value, result.transactions)
     return {
         "label": candidate["label"],

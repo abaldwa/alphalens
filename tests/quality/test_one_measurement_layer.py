@@ -25,10 +25,11 @@ Every metric primitive is DEFINED in exactly one module. Callers may import
 it from anywhere; what may not happen is a second `def sharpe_...` growing
 somewhere else.
 
-`backtest/momentum_metrics.py` is a tracked exception, not an accident: it
-backs published external results and is deleted wholesale by H4, once
-ML40-2.1's parity diff is accepted. Its entry must disappear in that same
-edit -- the same shrink-only contract the sibling gates use.
+`backtest/momentum_metrics.py` WAS a tracked exception (it backed published
+external results). H4 (2026-08-18) deleted it along with MomentumBacktester
+and moved its cagr/sharpe_sortino_calmar/win_rate/rolling_window_summary
+implementations directly into the OWNER module below -- so KNOWN_DUPLICATES
+is now empty, per this file's own shrink-only contract.
 
 PIT Assumptions
 ---------------
@@ -71,15 +72,13 @@ METRIC_PRIMITIVES = frozenset({
 
 # Tracked duplicate definitions. MUST SHRINK TO EMPTY -- asserted exactly, so
 # deleting a duplicate without deleting its entry fails too.
-KNOWN_DUPLICATES: frozenset[Tuple[str, str, str]] = frozenset({
-    (name, "backtest/momentum_metrics.py", "PHASE-H4: delete with MomentumBacktester")
-    for name in (
-        "cagr",
-        "sharpe_sortino_calmar",
-        "win_rate",
-        "rolling_window_summary",
-    )
-})
+#
+# [H4, 2026-08-18] Was {cagr, sharpe_sortino_calmar, win_rate,
+# rolling_window_summary} in backtest/momentum_metrics.py, now empty: H4
+# deleted that module and moved those implementations into OWNER itself
+# (backtest/core/metrics.py), where _find_duplicate_definitions() skips them
+# by definition (`if rel == OWNER: continue`).
+KNOWN_DUPLICATES: frozenset[Tuple[str, str, str]] = frozenset()
 
 
 def _ticket_for(name: str, module: str) -> str:

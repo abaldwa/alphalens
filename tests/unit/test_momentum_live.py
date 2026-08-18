@@ -11,39 +11,9 @@ momentum/grace logic (Band 3 = rank 100-150 in production).
 import pandas as pd
 import pytest
 
-import backtest.momentum_backtest as mb
 import features.momentum_live as ml
 from datastore.api.db import close_all_connections, get_duckdb_connection
 from datastore.schema import create_normalised
-
-
-def _patch_momentum(monkeypatch, fn):
-    """Inject a deterministic momentum ranking into both binding sites.
-
-    [ML40, 2026-08-14] These tests used to patch
-    `backtest.momentum_backtest.trailing_momentum_from_panel`. That name is
-    gone from the engine: ranking moved to the shared
-    features.momentum_strategy.rank_universe, so both engines rank through one
-    implementation and the module no longer imports the primitive at all
-    (which is what clears the `duplicate_momentum_ranking` quality gate).
-
-    Two sites are patched, not one, because the single name the engine used to
-    expose has become two distinct bindings:
-      * features.momentum_strategy — bound into rank_universe, i.e. THE ranking.
-      * features.momentum_signal   — bound into downtrend_tickers, i.e. the
-        short-window reversal filter.
-    They were the same function object when the engine held one import, and
-    the downtrend tests depend on their stub seeing both calls, so patching
-    only one would silently leave the real implementation running for the
-    other and make those tests assert against half-real data.
-    """
-    import features.momentum_signal as _msig
-    import features.momentum_strategy as _mstrat
-
-    monkeypatch.setattr(_mstrat, "trailing_momentum_from_panel", fn)
-    monkeypatch.setattr(_msig, "trailing_momentum_from_panel", fn)
-
-
 
 
 def _patch_params(monkeypatch, **overrides):
@@ -182,81 +152,6 @@ class TestIsRebalanceDay:
     def test_false_when_no_state_row(self, normalised_db):
         with get_duckdb_connection(normalised_db, persist=False, read_only=True) as conn:
             assert ml.is_rebalance_day(conn, "2026-02-02") is False
-
-
-class TestDecideGraceTransitionsRegressionAgainstBacktester:
-    """Guards backtest/momentum_backtest.py's decide_grace_transitions()
-    extraction: running MomentumBacktester over several rebalances and
-    independently replaying the same held-ticker/target-set snapshots
-    through the standalone function must produce identical decisions at
-    every step."""
-
-    def test_matches_backtester_over_multi_period_run(self, monkeypatch):
-        dates = pd.bdate_range("2026-01-01", periods=40)
-        tickers = ["A", "B", "C", "D"]
-        panel = pd.DataFrame({t: [100.0] * len(dates) for t in tickers}, index=dates)
-
-        # Prescribed per-rebalance top-2 rankings that rotate membership,
-        # forcing grace transitions (drop-out, re-entry, exhaustion).
-        rankings_by_call = [
-            pd.Series({"A": 3.0, "B": 2.0, "C": 1.0, "D": 0.0}),  # top2: A,B
-            pd.Series({"A": 0.0, "B": 3.0, "C": 2.0, "D": 1.0}),  # top2: B,C (A drops)
-            pd.Series({"A": 3.0, "B": 0.0, "C": 2.0, "D": 1.0}),  # top2: A,C (A re-enters, B drops)
-            pd.Series({"D": 3.0, "C": 2.0, "A": 1.0, "B": 0.0}),  # top2: D,C (A,B both out)
-            pd.Series({"D": 3.0, "C": 2.0, "A": 1.0, "B": 0.0}),  # same again -> exhausts grace
-        ]
-        call_idx = {"i": 0}
-
-        def fake_momentum(*a, **kw):
-            i = call_idx["i"]
-            call_idx["i"] = min(i + 1, len(rankings_by_call) - 1)
-            return rankings_by_call[i]
-
-        _patch_momentum(monkeypatch, fake_momentum)
-
-        engine = mb.MomentumBacktester(
-            price_panel=panel,
-            yearly_universes={str(dates[0].date()): tickers},
-            lookback_days=1,
-            rebalance_every_n_trading_days=5,
-            starting_capital=1_000_000.0,
-            top_n=2,
-            grace_cycles=2,
-        )
-        result = engine.run()
-
-        # Verify decide_grace_transitions is a pure function of (held_grace,
-        # target_set, grace_cycles) by independently replaying the same
-        # per-rebalance rankings and confirming the resulting held-ticker
-        # set matches what the real engine actually ended up holding.
-
-        # Rebuild, from the transaction ledger, what grace state existed
-        # just before each rebalance, and confirm decide_grace_transitions
-        # reproduces the same buy/sell/hold outcome the engine actually
-        # took. The engine actually runs ceil(40/5)=8 rebalances (not just
-        # len(rankings_by_call)=5) — fake_momentum's clamping means calls
-        # 6-8 replay ranking index 4 again, so the replay must match that.
-        n_rebalances = len(dates[::5])
-        held_grace = {}
-        for step_num in range(n_rebalances):
-            momentum = rankings_by_call[min(step_num, len(rankings_by_call) - 1)]
-            target_set = set(momentum.sort_values(ascending=False).head(2).index)
-            updated = mb.decide_grace_transitions(held_grace, target_set, 2)
-            # Anything that reaches <=0 would be force-sold by the engine;
-            # simulate that removal for the next iteration's input, exactly
-            # as MomentumBacktester.run() does.
-            for ticker in list(updated.keys()):
-                if updated[ticker] is not None and updated[ticker] <= 0:
-                    del updated[ticker]
-            for ticker in target_set:
-                if ticker not in updated:
-                    updated[ticker] = None  # newly bought this step -> core
-            held_grace = updated
-
-        # Final held set after replaying the standalone function must match
-        # the tickers the real engine still holds open at the end of run().
-        engine_open_tickers = {t["ticker"] for t in result.transactions if t["status"] == "open"}
-        assert set(held_grace.keys()) == engine_open_tickers
 
 
 class TestComputeRebalanceSuggestions:

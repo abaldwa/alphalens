@@ -22,8 +22,10 @@ channel-agnostic — it operates on a plain cash-flow list, no
 momentum-specific assumptions).
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -31,6 +33,55 @@ import pandas as pd
 
 
 TRADING_DAYS_PER_YEAR = 252
+
+# [H4, 2026-08-18] trade_cagr, moved here verbatim from backtest/momentum_
+# backtest.py (deleted with MomentumBacktester) -- channel-agnostic despite
+# living there originally, and still needed by backtest/export_trade_book.py.
+# [DATA QUALITY, 2026-08-02] Dedicated log for trade_cagr's OverflowError
+# guard (see its docstring) -- these trades' extreme price ratios are a
+# real-data-corruption signal (an un-smoothed adj_factor discontinuity at a
+# corporate action), not just a numeric edge case, so every occurrence is
+# recorded here for later data-quality triage rather than silently dropped
+# alongside the None return value.
+DATA_QUALITY_ANOMALY_LOG_PATH = Path(__file__).resolve().parent.parent.parent / "logs" / "data_quality_anomalies.log"
+_anomaly_logger = logging.getLogger("backtest.data_quality_anomalies")
+if not _anomaly_logger.handlers:
+    DATA_QUALITY_ANOMALY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _handler = logging.FileHandler(DATA_QUALITY_ANOMALY_LOG_PATH, mode="a")
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _anomaly_logger.addHandler(_handler)
+    _anomaly_logger.setLevel(logging.WARNING)
+    _anomaly_logger.propagate = False
+
+
+def trade_cagr(
+    buy_price: float, sell_price: Optional[float], holding_days: Optional[int],
+    *, ticker: Optional[str] = None, buy_date: Optional[str] = None,
+    sell_date: Optional[str] = None, run_id: Optional[str] = None,
+) -> Optional[float]:
+    """Per-trade annualized price gain: (sell/buy)^(365.25/holding_days) - 1.
+
+    None for a still-open position (sell_price/holding_days not yet known)
+    or a same-day round-trip (holding_days <= 0 makes annualizing
+    meaningless -- division by a near-zero exponent denominator blows up).
+
+    ticker/buy_date/sell_date/run_id are optional, log-only context (not
+    used in the calculation) so an OverflowError anomaly can be traced back
+    to the actual trade without changing this function's return contract
+    for existing positional callers.
+    """
+    if sell_price is None or holding_days is None or holding_days <= 0 or buy_price <= 0:
+        return None
+    try:
+        return (sell_price / buy_price) ** (365.25 / holding_days) - 1
+    except OverflowError:
+        _anomaly_logger.warning(
+            "trade_cagr_overflow ticker=%s run_id=%s buy_date=%s sell_date=%s "
+            "buy_price=%s sell_price=%s ratio=%s holding_days=%s",
+            ticker, run_id, buy_date, sell_date, buy_price, sell_price,
+            (sell_price / buy_price) if buy_price else None, holding_days,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -839,4 +890,262 @@ __all__ = [
     "BacktestMetrics", "calendar_cagr", "trading_day_cagr", "max_drawdown", "sharpe_ratio", "sortino_ratio",
     "calmar_ratio", "win_rate_and_profit_factor", "turnover_ratio", "benchmark_metrics",
     "compute_metrics", "churn_factor", "xirr", "infer_periods_per_year",
+    "total_return", "cagr", "sharpe_sortino_calmar", "win_rate", "avg_winner_return_pct",
+    "avg_loser_return_pct", "rolling_window_returns", "rolling_window_summary_from_capital_curve",
+    "income_mode_summary", "trade_quality_metrics", "trade_cagr",
 ]
+
+
+# ---------------------------------------------------------------------------
+# [H4, 2026-08-18, UnifiedGeneratorRefactorPlan.md] Momentum-specific metric
+# helpers, moved here verbatim from backtest/momentum_metrics.py (deleted
+# with MomentumBacktester) -- see that module's original docstring for
+# provenance (FeatureBacklog.md ML38). These operate on
+# starting_capital/ending_value scalars and MomentumBacktestResult-shaped
+# dict lists, NOT on the pd.Series equity curves the rest of this module
+# uses -- a genuinely different calling convention, not a duplicate, which
+# is why rolling_window_summary above and this section's
+# rolling_window_summary_from_capital_curve coexist under different names
+# rather than colliding.
+# ---------------------------------------------------------------------------
+
+
+def total_return(starting_capital: float, ending_value: float) -> float:
+    """Net-of-cost total return over the whole run, e.g. 0.42 = +42%."""
+    if starting_capital <= 0:
+        raise ValueError("starting_capital must be positive")
+    if ending_value <= 0:
+        raise ValueError("ending_value must be positive to annualize")
+    return (ending_value / starting_capital) - 1.0
+
+
+def cagr(starting_capital: float, ending_value: float, start_date: str, end_date: str) -> float:
+    """Compounded annual growth rate over the real elapsed calendar time
+    between start_date and end_date."""
+    if starting_capital <= 0:
+        raise ValueError("starting_capital must be positive")
+    if ending_value <= 0:
+        raise ValueError("ending_value must be positive to annualize")
+    years = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days / 365.25
+    if years <= 0:
+        raise ValueError("end_date must be after start_date")
+    return (ending_value / starting_capital) ** (1.0 / years) - 1.0
+
+
+def sharpe_sortino_calmar(
+    equity_curve: List[Dict[str, Any]], cagr_value: Optional[float],
+) -> Dict[str, Optional[float]]:
+    """Sharpe/Sortino/Calmar for a MomentumBacktestResult-shaped equity
+    curve ([{"date","total_value"}], one row per rebalance/day -- NOT a
+    pd.Series) -- computed straight from the equity curve every sweep/
+    experimentation run already has, no fresh backtest needed.
+
+    Infers real periods-per-year from the curve's own average calendar-day
+    spacing (NOT a hardcoded 252) so a weekly/biweekly/monthly/bimonthly/
+    quarterly momentum rebalance schedule annualizes correctly -- see
+    tests/quality/test_one_measurement_layer.py's docstring for why a
+    hardcoded 252 was the entire reason a second Sharpe implementation
+    was ever written (2.46 vs 1.12 on the same weekly returns).
+
+    cagr_value : this variant's already-computed calendar/365.25 CAGR
+        (core.metrics.cagr) -- reused for Calmar rather than recomputed,
+        for consistency with the CAGR already reported elsewhere in the
+        same variant dict.
+    """
+    if len(equity_curve) < 3:
+        return {"sharpe": None, "sortino": None, "calmar": None}
+
+    dates = pd.to_datetime([e["date"] for e in equity_curve])
+    values = np.array([e["total_value"] for e in equity_curve], dtype=float)
+
+    period_returns = pd.Series(values[1:] / values[:-1] - 1.0)
+    period_returns = period_returns[np.isfinite(period_returns)]
+    if len(period_returns) < 2:
+        return {"sharpe": None, "sortino": None, "calmar": None}
+
+    span_days = (dates[-1] - dates[0]).days
+    periods_per_year = (len(dates) - 1) / max(span_days / 365.25, 1e-9)
+
+    std = period_returns.std()
+    sharpe = (
+        float(period_returns.mean() / std * (periods_per_year**0.5))
+        if pd.notna(std) and std > _NEAR_ZERO_STD else None
+    )
+
+    downside = period_returns[period_returns < 0]
+    if len(downside) == 0:
+        sortino = None
+    else:
+        downside_std = downside.std()
+        sortino = (
+            float((period_returns.mean() * periods_per_year) / (downside_std * (periods_per_year**0.5)))
+            if pd.notna(downside_std) and downside_std > _NEAR_ZERO_STD else None
+        )
+
+    running_max = np.maximum.accumulate(values)
+    drawdown = (values - running_max) / running_max
+    mdd = float(drawdown.min()) if len(drawdown) else 0.0
+    calmar = (cagr_value / abs(mdd)) if (cagr_value is not None and abs(mdd) > _NEAR_ZERO_STD) else None
+
+    return {"sharpe": sharpe, "sortino": sortino, "calmar": calmar, "max_drawdown": mdd}
+
+
+def win_rate(transactions: List[Dict[str, Any]]) -> Optional[float]:
+    """Fraction of CLOSED transactions that sold above their buy price.
+
+    transactions : dicts with at least {"status", "buy_price", "sell_price"}.
+    Open positions (status != "closed") are excluded. None if there are no
+    closed transactions to judge.
+    """
+    closed = [t for t in transactions if t["status"] == "closed"]
+    if not closed:
+        return None
+    wins = sum(1 for t in closed if t["sell_price"] is not None and t["sell_price"] > t["buy_price"])
+    return wins / len(closed)
+
+
+def _closed_trade_returns_pct(transactions: List[Dict[str, Any]]) -> List[float]:
+    """Simple (non-annualized) per-trade % return for every closed
+    transaction with real buy/sell prices."""
+    out = []
+    for t in transactions:
+        if t["status"] != "closed" or t["sell_price"] is None or not t["buy_price"]:
+            continue
+        out.append((t["sell_price"] / t["buy_price"] - 1.0) * 100.0)
+    return out
+
+
+def avg_winner_return_pct(transactions: List[Dict[str, Any]]) -> Optional[float]:
+    """Mean simple % return across closed trades that sold ABOVE their buy
+    price. None if there are no winning closed trades."""
+    winners = [r for r in _closed_trade_returns_pct(transactions) if r > 0]
+    return sum(winners) / len(winners) if winners else None
+
+
+def avg_loser_return_pct(transactions: List[Dict[str, Any]]) -> Optional[float]:
+    """Mean simple % return across closed trades that sold AT/BELOW their
+    buy price. Reported as a negative number. None if there are no losing
+    closed trades."""
+    losers = [r for r in _closed_trade_returns_pct(transactions) if r <= 0]
+    return sum(losers) / len(losers) if losers else None
+
+
+def rolling_window_returns(
+    equity_curve: List[Dict[str, Any]], window_years: int, step_months: int = 3,
+) -> List[Dict[str, Any]]:
+    """Every window_years-long rolling-window CAGR from a
+    MomentumBacktestResult-shaped equity curve ([{"date","total_value"}]),
+    window start stepped every step_months (calendar time, not row index)."""
+    if len(equity_curve) < 2:
+        return []
+    df = pd.DataFrame(equity_curve)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    window_delta = pd.DateOffset(years=window_years)
+    step_delta = pd.DateOffset(months=step_months)
+
+    out = []
+    cursor = df["date"].iloc[0]
+    last_date = df["date"].iloc[-1]
+    while cursor <= last_date:
+        start_candidates = df[df["date"] >= cursor]
+        if start_candidates.empty:
+            break
+        start_row = start_candidates.iloc[0]
+        start_date, start_value = start_row["date"], start_row["total_value"]
+
+        target_end = start_date + window_delta
+        end_candidates = df[df["date"] >= target_end]
+        if end_candidates.empty:
+            break
+        end_row = end_candidates.iloc[0]
+        end_date, end_value = end_row["date"], end_row["total_value"]
+        if start_value > 0 and end_value > 0:
+            years = (end_date - start_date).days / 365.25
+            cagr_pct = ((end_value / start_value) ** (1.0 / years) - 1.0) * 100.0
+            out.append({
+                "window_start": start_date.date().isoformat(),
+                "window_end": end_date.date().isoformat(),
+                "cagr_pct": cagr_pct,
+            })
+        cursor = cursor + step_delta
+    return out
+
+
+def rolling_window_summary_from_capital_curve(
+    equity_curve: List[Dict[str, Any]], window_years: int,
+) -> Dict[str, Optional[float]]:
+    """min/median/max CAGR across all rolling window_years windows, from a
+    MomentumBacktestResult-shaped equity curve -- see rolling_window_summary
+    above for the pd.Series-based equivalent every other channel uses."""
+    windows = rolling_window_returns(equity_curve, window_years)
+    if not windows:
+        return {"min_cagr_pct": None, "median_cagr_pct": None, "max_cagr_pct": None, "n_windows": 0}
+    values = [w["cagr_pct"] for w in windows]
+    return {
+        "min_cagr_pct": min(values),
+        "median_cagr_pct": float(np.median(values)),
+        "max_cagr_pct": max(values),
+        "n_windows": len(values),
+    }
+
+
+def income_mode_summary(
+    capital_resets: List[Dict[str, Any]], target_capital: float,
+) -> Dict[str, Optional[float]]:
+    """Headline figures for annual_capital_reset_target ("income mode").
+    capital_resets: [{"date","fy_label","pre_reset_value","withdrawal",
+    "injection"}], one entry per FY boundary."""
+    n_years = len(capital_resets)
+    if n_years == 0 or target_capital <= 0:
+        return {
+            "total_withdrawn": None, "total_injected": None,
+            "avg_annual_yield_pct": None, "years_survived_pct": None, "n_years": 0,
+        }
+    total_withdrawn = sum(c["withdrawal"] for c in capital_resets)
+    total_injected = sum(c["injection"] for c in capital_resets)
+    net_per_year = [(c["withdrawal"] - c["injection"]) / target_capital * 100.0 for c in capital_resets]
+    n_survived = sum(1 for c in capital_resets if c["withdrawal"] > 0)
+    return {
+        "total_withdrawn": total_withdrawn,
+        "total_injected": total_injected,
+        "avg_annual_yield_pct": sum(net_per_year) / n_years,
+        "years_survived_pct": n_survived / n_years * 100.0,
+        "n_years": n_years,
+    }
+
+
+def trade_quality_metrics(
+    transactions: List[Dict[str, Any]], zscore_outlier_threshold: float = 3.0,
+) -> Dict[str, Any]:
+    """Data-quality / summary stats across the FULL transaction ledger
+    (open + closed), plus a per-trade return z-score used to auto-flag
+    price artifacts.
+
+    Mutates each transaction dict in place, adding "return_pct" and
+    "return_zscore".
+    """
+    total_trades = len(transactions)
+    durations = [t["holding_days"] for t in transactions if t.get("holding_days") is not None]
+    avg_trade_duration_days = (sum(durations) / len(durations)) if durations else None
+
+    returns: List[Optional[float]] = []
+    for t in transactions:
+        if t.get("sell_price") is not None and t.get("buy_price"):
+            r = (t["sell_price"] / t["buy_price"] - 1) * 100
+        else:
+            r = None
+        t["return_pct"] = r
+        returns.append(r)
+
+    z_result = return_population_zscores(returns, zscore_outlier_threshold)
+    for t, z in zip(transactions, z_result["zscores"]):
+        t["return_zscore"] = z
+
+    return {
+        "total_trades": total_trades,
+        "avg_trade_duration_days": avg_trade_duration_days,
+        "n_outlier_trades": z_result["n_outliers"],
+        "max_abs_return_zscore": z_result["max_abs_zscore"],
+    }

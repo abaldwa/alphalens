@@ -74,14 +74,14 @@ from typing import Dict, List, Optional
 import duckdb
 import numpy as np
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import (
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import (
     avg_loser_return_pct,
     avg_winner_return_pct,
     cagr,
     churn_factor,
     income_mode_summary,
-    rolling_window_summary,
+    rolling_window_summary_from_capital_curve as rolling_window_summary,
     sharpe_sortino_calmar,
     win_rate,
     xirr,
@@ -97,14 +97,12 @@ from features.momentum_signal import (
     load_volume_panel,
 )
 from features.momentum_universe import all_yearly_full_rankings, yearly_band_universes_from_rankings
-from features.regime_signal import HIGH_VOL
 from scripts.build_momentum_yoy_report import build_yoy
 from scripts.run_momentum_filter_overlays import (
     CIRCUIT_BAND_PCT,
     QUALITY_GATE,
     _build_market_cap_panel,
     _load_beta_map,
-    _load_per_ticker_hmm_regime,
     _load_quality_scores,
     _load_regime_series,
     _load_static_shares_outstanding,
@@ -127,7 +125,7 @@ STARTING_CAPITAL = 1_000_000.0
 SIP_STARTING_CAPITAL = 10_000.0
 SIP_AMOUNT = 10_000.0
 INVESTABLE_PCT = 0.8
-GRACE_CYCLES = 2
+GRACE_CYCLES = 2  # [H4, 2026-08-18] vestigial -- MomentumAdapter has no grace_cycles knob (§19)
 TOP_N_OPTIONS = [10, 15, 20]
 REBALANCE_PERIODS = {"weekly": 5, "biweekly": 10, "monthly": 21, "bimonthly": 42, "quarterly": 63}
 
@@ -154,12 +152,16 @@ def _compute_variant(args):
         yearly_universes = _G["yearly_universes"][band_id]
         strategy_kwargs = _G["strategies"][strategy_name]
         price_panel = _G["price_panel"]
-        momentum_panel = _G["momentum_panels"][lookback_days]
+        # [H4, 2026-08-18] _G["momentum_panels"] precompute is now unused
+        # here -- MomentumAdapter always recomputes momentum from
+        # price_panel, no override panel accepted. Left in _G's population
+        # rather than removed there too, to keep this diff scoped to the
+        # actual lint fix.
 
         result = _run_variant(
             strategy_kwargs, price_panel, yearly_universes, lookback_days, rebalance_days,
             starting_capital=STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
-            top_n=top_n, momentum_panel=momentum_panel,
+            top_n=top_n,
         )
         # 2026-08-09 user correction: post-tax CAGR is no longer a lump-sum
         # tax netted off the final ending value (that ignored the
@@ -172,12 +174,12 @@ def _compute_variant(args):
         post_tax_result = _run_variant(
             strategy_kwargs, price_panel, yearly_universes, lookback_days, rebalance_days,
             starting_capital=STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
-            top_n=top_n, momentum_panel=momentum_panel, withhold_fy_tax=True,
+            top_n=top_n, withhold_fy_tax=True,
         )
         sip_result = _run_variant(
             strategy_kwargs, price_panel, yearly_universes, lookback_days, rebalance_days,
             starting_capital=SIP_STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
-            top_n=top_n, sip_amount=SIP_AMOUNT, momentum_panel=momentum_panel,
+            top_n=top_n, sip_amount=SIP_AMOUNT,
         )
         # 2026-08-10 user requirement: "income mode" -- a THIRD full engine
         # pass that pays real YoY tax then withdraws any surplus above
@@ -188,7 +190,7 @@ def _compute_variant(args):
         income_result = _run_variant(
             strategy_kwargs, price_panel, yearly_universes, lookback_days, rebalance_days,
             starting_capital=STARTING_CAPITAL, investable_pct=INVESTABLE_PCT,
-            top_n=top_n, momentum_panel=momentum_panel,
+            top_n=top_n,
             annual_capital_reset_target=STARTING_CAPITAL,
         )
         income_summary = income_mode_summary(income_result.capital_resets, STARTING_CAPITAL)
@@ -285,29 +287,36 @@ SCORE_WEIGHTS = {"sharpe": 0.30, "sortino": 0.25, "post_tax_cagr": 0.25, "abs_ma
 
 
 def _run_variant(kwargs: Dict, price_panel, yearly_universes: Dict, lookback_days: int, rebalance_days: int, **extra):
-    engine = MomentumBacktester(
+    # [H4, 2026-08-18] grace_cycles no longer exists on MomentumAdapter -- see
+    # module-level GRACE_CYCLES note.
+    return run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=lookback_days,
         rebalance_every_n_trading_days=rebalance_days,
-        grace_cycles=GRACE_CYCLES,
         **kwargs,
         **extra,
     )
-    return engine.run()
 
 
 def _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, quality_scores) -> Dict[str, Dict]:
+    # [H4, 2026-08-18] max_pct_of_adtv (ADTV-capped sizing) no longer exists
+    # on MomentumAdapter -- deprecated by §19. regime_series/disable_in_regimes
+    # also don't map: MomentumAdapter conditions on regime via a live
+    # regime_conn (DB connection), not a precomputed pd.Series, the same
+    # self-fetched pattern TechnicalAdapter uses -- plumbing one through this
+    # sweep script is left for a follow-up; "risk_managed"/"max_defensive"
+    # below therefore no longer differ from "balanced" on regime, only on
+    # orthogonalize_vs_size_beta.
     all_risk: Dict = {}
     balanced = {
         "volume_panel": volume_panel,
         "min_adtv_cr": RECOMMENDED_MIN_ADTV_CR,
-        "max_pct_of_adtv": MAX_ORDER_VS_ADTV,
         "circuit_band_pct": CIRCUIT_BAND_PCT,
         "quality_scores": quality_scores,
         "quality_gate": QUALITY_GATE,
     }
-    risk_managed = dict(balanced, regime_series=regime_series, disable_in_regimes={HIGH_VOL})
+    risk_managed = dict(balanced)
     max_defensive = dict(
         risk_managed, orthogonalize_vs_size_beta=True, market_cap_panel=market_cap_panel, beta_map=beta_map,
     )
@@ -443,17 +452,11 @@ def run_dynamic_report(
     regime_series = _load_regime_series()
     quality_scores = _load_quality_scores(candidate_tickers)
 
-    # Per-ticker HMM regime from daily feature parquets (for regime filter testing)
-    per_ticker_hmm_regime = _load_per_ticker_hmm_regime(
-        candidate_tickers, start_date.isoformat(), end_date.isoformat()
-    )
+    # [H4, 2026-08-18] per-ticker HMM regime is deprecated (§19) -- it no
+    # longer exists on MomentumAdapter, so it is not loaded or attached to
+    # any strategy config.
 
     strategies = _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, quality_scores)
-
-    # Add per-ticker HMM regime to all strategy configs (it's a filter, not a strategy variant)
-    for strategy_kwargs in strategies.values():
-        strategy_kwargs["per_ticker_hmm_regime"] = per_ticker_hmm_regime
-        strategy_kwargs["disable_hmm_regimes"] = {0.0}  # bearish only
 
     # Precompute momentum panels ONCE per lookback, reused across all 4
     # categories and both lump+SIP passes. Previously every one of the 3,360

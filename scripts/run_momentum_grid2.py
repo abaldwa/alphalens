@@ -27,9 +27,10 @@ from datetime import date
 from pathlib import Path
 from typing import Dict, List
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, churn_factor, total_return, xirr
-from backtest.momentum_tax import compute_total_tax, post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr, churn_factor, total_return, xirr
+from backtest.core.tax import compute_total_tax
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
@@ -53,7 +54,12 @@ BANDS2 = [
 LOOKBACK_MONTHS2 = [6, 9, 12]
 REBALANCE_PERIODS2 = {"weekly": 5, "fortnightly": 10, "monthly": 21}
 TOP_N_OPTIONS2 = [10, 15, 20]
-GRACE_CYCLES2 = [0, 2, 5, 10]
+# [H4, 2026-08-18] grace_cycles no longer exists on MomentumAdapter --
+# deprecated by the 2026-08-18 user decision (§19: pure-play momentum is a
+# plain rank rotation). This axis is collapsed to one placeholder value
+# (band/lookback/rebalance/top_n stay real, independent axes) rather than
+# silently sweeping a knob that no longer changes anything.
+GRACE_CYCLES2 = [None]
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "backtest" / "reports" / "momentum"
 
@@ -104,7 +110,7 @@ def _summarize(result, top_n: int, grace_cycles: int) -> Dict:
 
 
 def _sip_summary(price_panel, yearly_universes, lookback_days, rebalance_days, top_n, grace_cycles) -> Dict:
-    engine = MomentumBacktester(
+    result = run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=lookback_days,
@@ -112,10 +118,8 @@ def _sip_summary(price_panel, yearly_universes, lookback_days, rebalance_days, t
         starting_capital=STARTING_CAPITAL,
         investable_pct=INVESTABLE_PCT,
         top_n=top_n,
-        grace_cycles=grace_cycles,
         sip_amount=SIP_MONTHLY_AMOUNT,
     )
-    result = engine.run()
     cash_flows = [(cf["date"], cf["amount"]) for cf in result.cash_flows]
     cash_flows.append((result.end_date, result.ending_value))
     sip_xirr = xirr(cash_flows)
@@ -156,10 +160,10 @@ def run_grid2(years_back: int = 10) -> Dict:
                     for grace_cycles in GRACE_CYCLES2:
                         done += 1
                         logger.info(
-                            "[%d/%d] band=%d (rank %d-%d) lookback=%dmo rebalance=%s top_n=%d grace=%d",
+                            "[%d/%d] band=%d (rank %d-%d) lookback=%dmo rebalance=%s top_n=%d grace=%s",
                             done, total, band_id, rank_start, rank_end, lookback_months, rebalance_name, top_n, grace_cycles,
                         )
-                        engine = MomentumBacktester(
+                        result = run_momentum_orchestrated(
                             price_panel=price_panel,
                             yearly_universes=yearly_universes,
                             lookback_days=lookback_days,
@@ -167,9 +171,7 @@ def run_grid2(years_back: int = 10) -> Dict:
                             starting_capital=STARTING_CAPITAL,
                             investable_pct=INVESTABLE_PCT,
                             top_n=top_n,
-                            grace_cycles=grace_cycles,
                         )
-                        result = engine.run()
                         summary = _summarize(result, top_n, grace_cycles)
                         sip = _sip_summary(price_panel, yearly_universes, lookback_days, rebalance_days, top_n, grace_cycles)
                         variants.append({

@@ -35,7 +35,7 @@ gross, at time of sale) into the FY-netted engine the user specified
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 STCG_RATE = 0.20
 LTCG_RATE = 0.125
@@ -221,3 +221,42 @@ def total_tax(transactions: List[Transaction]) -> float:
 def post_tax_ending_value(ending_value: float, transactions: List[Transaction]) -> float:
     """Ending portfolio value net of FY-netted capital-gains tax across the whole run."""
     return ending_value - total_tax(transactions)
+
+
+# ---------------------------------------------------------------------------
+# [H4, 2026-08-18, UnifiedGeneratorRefactorPlan.md] Per-transaction gross tax
+# helpers, moved here verbatim from backtest/momentum_tax.py (deleted with
+# MomentumBacktester). These operate on MomentumBacktestResult-shaped
+# transaction DICTS (with "qty"/"holding_days"/"sell_price" keys), NOT on
+# this module's Transaction dataclass -- deliberately kept as separate,
+# differently-named functions rather than merged into total_tax/
+# post_tax_ending_value above, since the two approaches compute genuinely
+# different numbers (see momentum_tax.py's original docstring:
+# per-transaction gross tax on winners only, no loss set-off, vs this
+# module's FY-netted engine with real set-off rules) and merging them under
+# one name would silently change which figure a caller got.
+# ---------------------------------------------------------------------------
+
+
+def compute_transaction_tax(txn: Dict[str, Any]) -> float:
+    """Tax owed (INR) on one transaction's gain, 0 if the trade lost money
+    or has no sell_price."""
+    if txn["sell_price"] is None:
+        return 0.0
+    gain = (txn["sell_price"] - txn["buy_price"]) * txn["qty"]
+    if gain <= 0:
+        return 0.0
+    rate = LTCG_RATE if txn["holding_days"] >= LTCG_HOLDING_DAYS else STCG_RATE
+    tax: float = gain * rate
+    return tax
+
+
+def compute_total_tax(transactions: List[Dict[str, Any]]) -> float:
+    return sum(compute_transaction_tax(t) for t in transactions)
+
+
+def post_tax_ending_value_from_dicts(ending_value: float, transactions: List[Dict[str, Any]]) -> float:
+    """Ending portfolio value net of per-transaction gross capital-gains
+    tax (see the module-level note above for how this differs from
+    post_tax_ending_value)."""
+    return ending_value - compute_total_tax(transactions)

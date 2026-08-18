@@ -30,9 +30,10 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, churn_factor, total_return
-from backtest.momentum_tax import compute_total_tax, post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr, churn_factor, total_return
+from backtest.core.tax import compute_total_tax
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
@@ -50,9 +51,9 @@ BAND_ID, RANK_START, RANK_END = 3, 100, 150
 TOP_N_OPTIONS = [9, 10, 11, 12, 13]
 LOOKBACK_MONTHS_OPTIONS = [6]
 
-# grace_cycles: engine-native unit (rebalance cycles a dropped-out name is
-# held before force-sell). See module docstring for the month->cycle note.
-GRACE_OPTIONS = {"sell_immediately": 0, "sell_after_1_rebalance": 1, "sell_after_2_rebalances": 2}
+# [H4, 2026-08-18] grace_cycles no longer exists on MomentumAdapter --
+# deprecated by §19. Collapsed to one placeholder value.
+GRACE_OPTIONS = {"n/a_deprecated": None}
 
 # calendar days -> trading days at 21 trading days / 30 calendar days.
 REBALANCE_CALENDAR_DAYS = [40, 45, 50]
@@ -133,7 +134,7 @@ def run_refinement(years_back: int = 10) -> dict:
                         "[%d/%d] lookback=%dmo rebalance=%dcd(%dtd) grace=%s top_n=%d",
                         i, total, lookback_months, rebalance_calendar_days, rebalance_trading_days, grace_label, top_n,
                     )
-                    engine = MomentumBacktester(
+                    result = run_momentum_orchestrated(
                         price_panel=price_panel,
                         yearly_universes=yearly_universes,
                         lookback_days=lookback_days,
@@ -141,9 +142,7 @@ def run_refinement(years_back: int = 10) -> dict:
                         starting_capital=STARTING_CAPITAL,
                         investable_pct=INVESTABLE_PCT,
                         top_n=top_n,
-                        grace_cycles=grace_cycles,
                     )
-                    result = engine.run()
                     summary = _summarize(result, top_n, grace_label, rebalance_calendar_days)
                     variants.append({
                         "band_id": BAND_ID,

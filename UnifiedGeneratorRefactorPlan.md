@@ -1279,3 +1279,100 @@ sequence needs no reset at all: it survives the rename and is recreated only
 `IF NOT EXISTS`, so it keeps its position.
 
 All 7 configs preserved. Backups: `~/alphalens_backups/*_20260818_*.parquet`.
+
+---
+
+## §21 — H4 delivered; H5/F3 deferred; A3-ml scaffolded; G2 added (2026-08-18)
+
+### H4 — MomentumBacktester retired
+
+`backtest/momentum_backtest.py`, `backtest/momentum_metrics.py` and
+`backtest/momentum_tax.py` are deleted, along with their dedicated unit
+tests. The 13 `scripts/run_momentum_*.py` / `run_band*.py` scripts and
+`systems/copilot/backtest_bridge.py` now run through
+`backtest/momentum_orchestrator_runner.py` — a new compatibility layer that
+drives `MomentumAdapter` + `BacktestOrchestrator` (the same generator every
+production run uses) and reshapes the output into the old
+`MomentumBacktestResult` field shape, so calling code needed no rewrite
+beyond the construction call.
+
+The channel-agnostic pieces of `momentum_metrics.py`/`momentum_tax.py`
+(`cagr`, `sharpe_sortino_calmar`, `win_rate`, `trade_quality_metrics`,
+`trade_cagr`, etc.) moved into `backtest/core/metrics.py` and
+`backtest/core/tax.py`, following H1's already-established pattern.
+`tests/quality/test_one_measurement_layer.py`'s `KNOWN_DUPLICATES` is now
+empty, per its own shrink-only contract.
+
+**Deprecated-knob scripts.** Several scripts' entire premise was a knob §19
+already deleted from `MomentumAdapter` (`grace_cycles`, `exit_rank`,
+`trailing_stop_pct`, per-ticker HMM regime): `run_momentum_grace_comparison.py`,
+`run_band7_tier01_backtest.py`, `run_band_best_hmm_regime_sweep.py`, and
+`run_min_momentum_comparison()` inside `run_momentum_experimentation.py` now
+raise `NotImplementedError` with a clear message rather than silently
+reporting a comparison where every variant is identical — retained as
+historical record, not deleted, per the plan's own "the class backs
+published results" caution. Scripts where the deprecated knob was one axis
+among several (`run_momentum_grid2.py`, `run_momentum_refinement.py`/`_v2.py`)
+collapsed that axis to a single placeholder value rather than dropping the
+whole script. `run_momentum_dynamic_report.py`/`_filter_overlays.py`/
+`_recommended_strategies.py` dropped `max_pct_of_adtv` and the
+`regime_series`/`disable_in_regimes` filter (MomentumAdapter conditions on
+regime via a live DB connection, not a precomputed series — not plumbed
+through these sweep scripts). `scripts/compare_momentum_simulation_paths.py`
+(ML40-2.1's parity tool) is deleted — its whole premise, comparing against
+`MomentumBacktester`, is moot per §19's "no reconciliation" decision.
+
+`rebalance_offset_days` IS still supported — the runner slices
+`trading_days` before handing it to `OrchestratorConfig`, reproducing the
+offset exactly, so `run_momentum_offset_robustness.py` needed no
+compromise.
+
+A caught bug: the first draft of the moved `sharpe_sortino_calmar` silently
+changed its signature (equity-curve/risk-free-rate based, using
+`infer_periods_per_year`) instead of preserving the original
+equity-curve/cagr-value based implementation every caller actually invokes
+positionally. Fixed before any caller was left mismatched — every call site
+uses `sharpe_sortino_calmar(equity_curve, cagr_value)` project-wide.
+
+### H5 / F3 — deferred, not attempted
+
+Investigation before writing anything found `backtest/engine.py`'s
+`BacktestEngine` is not a thin wrapper: it is a complete, self-contained ML
+walk-forward training/backtest engine (its own fold-splitting, P&D→Signal→
+MetaLabel→Exit training, its own `PortfolioSimulator`), used by
+`train_stacking.py`, `iterative_retrain.py`, and `run_phase1_backtest.py`.
+Giving `ml_adapter.py` a real `generate_signals()` and then deleting
+`backtest/engine.py` means decomposing that entire training loop into the
+per-date `StrategyAdapter` protocol — a from-scratch redesign of how ML
+models train and backtest, not a repoint, and one that touches the code
+producing live trading signals. User decision (2026-08-18): skip for now
+rather than attempt blind. `KNOWN_VIOLATIONS` in
+`test_one_generator_per_channel.py` therefore still carries its 1
+`missing_generator` + 3 `legacy_engine_import` entries — H4 did not touch
+them, since none was ever attributed to `MomentumBacktester`.
+
+### A3-ml — scaffolded, not implemented
+
+`tests/integration/test_live_backtest_parity.py` gained
+`test_a3_ml_parity_harness_scaffold()` — a named, discoverable slot
+(matching the file's per-channel pattern) that `pytest.skip`s with a clear
+reason and `pytest.fail`s loudly if `ml_adapter` ever gains
+`generate_signals` without this test being filled in, so H5 landing can't
+silently leave the harness stale.
+
+### G1 — still blocked
+
+`KNOWN_VIOLATIONS` is not empty (see H5/F3 above); G1 requires H5 and F3
+first, unchanged from §8's assessment.
+
+### G2 — delivered
+
+`tests/quality/test_live_eligible_invariant.py`: a repo-wide static gate
+asserting no code path outside `GATE_7_MODULES` (currently empty — the
+human-gated Gate-7 flow does not exist yet) sets `backtest_runs.live_eligible`
+to a truthy value, in Python or embedded SQL. Verified today: the invariant
+already holds (`iterative_retrain.py`'s INSERT hardcodes `FALSE`;
+`run_store.py` only ever reads/lists the column) — this gate makes it
+impossible to regress silently, matching `datastore/api/routers/
+paper_trading_unified.py`'s existing narrower per-router version of the
+same check.

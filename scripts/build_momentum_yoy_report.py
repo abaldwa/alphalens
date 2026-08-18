@@ -50,7 +50,7 @@ from typing import Dict, List, Optional
 import duckdb
 import pandas as pd
 
-from backtest.momentum_tax import compute_transaction_tax
+from backtest.core.tax import compute_transaction_tax
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)

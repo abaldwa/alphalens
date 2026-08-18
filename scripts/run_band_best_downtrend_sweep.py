@@ -14,16 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, sharpe_sortino_calmar
-from backtest.momentum_tax import post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr, sharpe_sortino_calmar
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
 from features.momentum_signal import build_momentum_panel, load_price_panel, load_volume_panel, lookback_trading_days
 from features.momentum_universe import all_yearly_full_rankings, yearly_band_universes_from_rankings
 from scripts.run_momentum_dynamic_report import (
-    GRACE_CYCLES,
     INVESTABLE_PCT,
     REBALANCE_PERIODS,
     STARTING_CAPITAL,
@@ -71,17 +70,18 @@ def _fy_cagrs(equity_curve):
 
 
 def _run_variant(kwargs, price_panel, yearly_universes, lookback_days, rebalance_days, momentum_panel, **extra):
-    engine = MomentumBacktester(
+    # [H4, 2026-08-18] grace_cycles/momentum_panel no longer exist on
+    # MomentumAdapter -- deprecated by §19 (grace_cycles) / always
+    # recomputed from price_panel (momentum_panel override). momentum_panel
+    # param kept for call-site compatibility but ignored.
+    return run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=lookback_days,
         rebalance_every_n_trading_days=rebalance_days,
-        grace_cycles=GRACE_CYCLES,
-        momentum_panel=momentum_panel,
         **kwargs,
         **extra,
     )
-    return engine.run()
 
 
 def main():

@@ -38,7 +38,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from backtest.momentum_backtest import trade_cagr as _trade_cagr
+from backtest.core.metrics import trade_cagr as _trade_cagr
 from backtest.core.metrics import return_population_zscores
 from backtest.trade_book_html import render_trade_book_html
 from config.settings import BACKTEST_DUCKDB_PATH

@@ -67,15 +67,14 @@ from typing import Dict, List
 
 import duckdb
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, trade_quality_metrics
-from backtest.momentum_tax import post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr, churn_factor, sharpe_sortino_calmar, trade_quality_metrics
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH, MAX_ORDER_VS_ADTV
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
 from features.momentum_signal import LOOKBACK_MONTHS, lookback_trading_days, load_price_panel, load_volume_panel
 from features.momentum_universe import all_yearly_full_rankings, yearly_band_universes_from_rankings
-from features.regime_signal import HIGH_VOL
 from scripts.build_momentum_yoy_report import build_yoy
 from scripts.run_momentum_filter_overlays import (
     CIRCUIT_BAND_PCT,
@@ -104,7 +103,7 @@ BALANCED_ONLY_BAND_IDS = {3, 4}
 
 STARTING_CAPITAL = 1_000_000.0
 INVESTABLE_PCT = 0.8
-GRACE_CYCLES = 2
+GRACE_CYCLES = 2  # [H4, 2026-08-18] vestigial -- MomentumAdapter has no grace_cycles knob (§19)
 TOP_N_OPTIONS = [10, 15, 20]
 REBALANCE_PERIODS = {"weekly": 5, "biweekly": 10, "monthly": 21, "bimonthly": 42, "quarterly": 63}
 
@@ -118,7 +117,7 @@ def _run_variant(
     kwargs: Dict, price_panel, yearly_universes: Dict,
     lookback_days: int, rebalance_days: int, top_n: int,
 ):
-    engine = MomentumBacktester(
+    return run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=lookback_days,
@@ -126,24 +125,28 @@ def _run_variant(
         starting_capital=STARTING_CAPITAL,
         investable_pct=INVESTABLE_PCT,
         top_n=top_n,
-        grace_cycles=GRACE_CYCLES,
         **kwargs,
     )
-    return engine.run()
 
 
 def _build_strategies(
     volume_panel, market_cap_panel, beta_map, regime_series, quality_scores,
 ) -> Dict[str, Dict]:
+    # [H4, 2026-08-18] max_pct_of_adtv (ADTV-capped sizing) is deprecated off
+    # MomentumAdapter entirely (§19). regime_series/disable_in_regimes don't
+    # map either -- MomentumAdapter conditions on regime via a live
+    # regime_conn, not a precomputed series (same limitation documented in
+    # run_momentum_dynamic_report.py/_filter_overlays.py). "risk_managed"
+    # therefore no longer differs from "balanced" on regime -- only
+    # "max_defensive" still adds something real (size/beta orthogonalization).
     balanced = {
         "volume_panel": volume_panel,
         "min_adtv_cr": RECOMMENDED_MIN_ADTV_CR,
-        "max_pct_of_adtv": MAX_ORDER_VS_ADTV,
         "circuit_band_pct": CIRCUIT_BAND_PCT,
         "quality_scores": quality_scores,
         "quality_gate": QUALITY_GATE,
     }
-    risk_managed = dict(balanced, regime_series=regime_series, disable_in_regimes={HIGH_VOL})
+    risk_managed = dict(balanced)
     max_defensive = dict(
         risk_managed,
         orthogonalize_vs_size_beta=True,

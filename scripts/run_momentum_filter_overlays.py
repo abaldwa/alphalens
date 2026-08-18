@@ -65,9 +65,9 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, trade_quality_metrics
-from backtest.momentum_tax import post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr, churn_factor, sharpe_sortino_calmar, trade_quality_metrics
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH, MAX_ORDER_VS_ADTV, MIN_ADTV_CR
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
@@ -89,7 +89,7 @@ WIDE_BANDS = [(8, 201, 250), (6, 251, 500), (7, 501, 800)]
 
 STARTING_CAPITAL = 1_000_000.0
 INVESTABLE_PCT = 0.8
-GRACE_CYCLES = 2
+GRACE_CYCLES = 2  # [H4, 2026-08-18] vestigial -- MomentumAdapter has no grace_cycles knob (§19)
 TOP_N_OPTIONS = [10, 15, 20]
 REBALANCE_PERIODS = {"weekly": 5, "biweekly": 10, "monthly": 21, "bimonthly": 42, "quarterly": 63}
 
@@ -252,8 +252,8 @@ def _load_per_ticker_hmm_regime(
 def _run_variant(
     filter_name: str, kwargs: Dict, price_panel: pd.DataFrame, yearly_universes: Dict,
     lookback_days: int, rebalance_days: int, top_n: int,
-) -> MomentumBacktester:
-    engine = MomentumBacktester(
+):
+    return run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=lookback_days,
@@ -261,10 +261,8 @@ def _run_variant(
         starting_capital=STARTING_CAPITAL,
         investable_pct=INVESTABLE_PCT,
         top_n=top_n,
-        grace_cycles=GRACE_CYCLES,
         **kwargs,
     )
-    return engine.run()
 
 
 def run_overlays(years_back: int = 10) -> Dict:
@@ -293,14 +291,22 @@ def run_overlays(years_back: int = 10) -> Dict:
         len(quality_scores),
     )
 
+    # [H4, 2026-08-18] Two of the original 7 filters are dropped:
+    #   - adtv_capped_sizing (max_pct_of_adtv): deprecated off MomentumAdapter
+    #     entirely by the 2026-08-18 user decision (§19).
+    #   - regime_conditional: MomentumAdapter conditions on regime via a live
+    #     regime_conn (DB connection), not a precomputed regime_series/
+    #     disable_in_regimes pair -- same limitation noted in
+    #     run_momentum_dynamic_report.py::_build_strategies, not plumbed
+    #     through here either.
+    # regime_series is still loaded/logged above for visibility into what
+    # would be available, even though no filter below consumes it.
     filters: Dict[str, Dict] = {
         "liquidity_floor": {"volume_panel": volume_panel, "min_adtv_cr": MIN_ADTV_CR},
-        "adtv_capped_sizing": {"volume_panel": volume_panel, "max_pct_of_adtv": MAX_ORDER_VS_ADTV},
         "circuit_lock_proxy": {"circuit_band_pct": CIRCUIT_BAND_PCT},
         "downtrend_filter": {
             "downtrend_filter_pct": DOWNTREND_FILTER_PCT, "downtrend_lookback_days": DOWNTREND_LOOKBACK_DAYS,
         },
-        "regime_conditional": {"regime_series": regime_series, "disable_in_regimes": {HIGH_VOL}},
         "size_beta_orthogonalized": {
             "orthogonalize_vs_size_beta": True, "market_cap_panel": market_cap_panel, "beta_map": beta_map,
         },

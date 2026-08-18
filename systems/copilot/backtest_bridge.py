@@ -20,11 +20,10 @@ import logging
 from datetime import date as date_type
 from typing import Any, Dict, List, Optional, Tuple
 
-from backtest.costs import IndianTransactionCosts
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr as compute_cagr
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr as compute_cagr
 from backtest.core.metrics import churn_factor
-from backtest.momentum_metrics import total_return
+from backtest.core.metrics import total_return
 from config.settings import COPILOT_BACKTEST_YEARS, DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from features.momentum_universe import yearly_band_universes
@@ -132,15 +131,16 @@ def run_backtest(spec: StrategySpec) -> Dict[str, Any]:
             "caveats": caveats,
         }
 
-    engine = MomentumBacktester(
+    # [H4, 2026-08-18] costs is no longer accepted (BacktestOrchestrator
+    # prices costs internally through StrategyPortfolio) -- dropped rather
+    # than passed as a no-op kwarg.
+    result = run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=spec.rules.lookback_days,
         rebalance_every_n_trading_days=spec.rules.rebalance_every_n_trading_days,
         top_n=spec.rules.top_n or 20,
-        costs=IndianTransactionCosts(),
     )
-    result = engine.run()
 
     ending_value = result.ending_value
     starting_capital = result.starting_capital

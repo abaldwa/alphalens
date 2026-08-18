@@ -32,9 +32,10 @@ import csv
 import hashlib
 
 from backtest.core.horizon import HorizonBucket
-from backtest.momentum_backtest import MomentumBacktester, MomentumBacktestResult
-from backtest.momentum_metrics import cagr, churn_factor, sharpe_sortino_calmar, total_return, trade_quality_metrics, xirr
-from backtest.momentum_tax import compute_total_tax, post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated, MomentumOrchestratorResult
+from backtest.core.metrics import cagr, churn_factor, sharpe_sortino_calmar, total_return, trade_quality_metrics, xirr
+from backtest.core.tax import compute_total_tax
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from backtest.strategy_id import build_strategy_id
 from config.settings import BACKTEST_DUCKDB_PATH, DUCKDB_PATH
 from config.timezone import now_ist
@@ -89,7 +90,7 @@ def _union_tickers(yearly_rankings: Dict[str, "pd.DataFrame"]) -> List[str]:
     return sorted(tickers)
 
 
-def _summarize(result: MomentumBacktestResult, top_n: int, min_momentum: Optional[float] = None) -> Dict:
+def _summarize(result: MomentumOrchestratorResult, top_n: int, min_momentum: Optional[float] = None) -> Dict:
     """Per-variant metrics: the original equity-curve-based CAGR/Total
     Return/Churn, plus (2026-07-14 additions) Total Invested / Total Sell
     Value / transaction-based Total Return, win rate, and post-tax CAGR
@@ -154,7 +155,7 @@ def _sip_summary(
     returns only the 3 aggregate numbers needed for comparison — not the
     SIP run's own transaction ledger/equity curve, to keep report size
     bounded (this doubles engine runs but not output size)."""
-    engine = MomentumBacktester(
+    result = run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
         lookback_days=lookback_days,
@@ -162,10 +163,8 @@ def _sip_summary(
         starting_capital=STARTING_CAPITAL,
         investable_pct=INVESTABLE_PCT,
         top_n=top_n,
-        grace_cycles=GRACE_CYCLES,
         sip_amount=SIP_MONTHLY_AMOUNT,
     )
-    result = engine.run()
     cash_flows = [(cf["date"], cf["amount"]) for cf in result.cash_flows]
     cash_flows.append((result.end_date, result.ending_value))
     sip_xirr = xirr(cash_flows)
@@ -269,7 +268,7 @@ def run_experimentation(
                         "Running band=%d (rank %d-%d) lookback=%dmo rebalance=%s top_n=%d",
                         band_id, rank_start, rank_end, lookback_months, rebalance_name, top_n,
                     )
-                    engine = MomentumBacktester(
+                    result = run_momentum_orchestrated(
                         price_panel=price_panel,
                         yearly_universes=yearly_universes,
                         lookback_days=lookback_days,
@@ -277,9 +276,7 @@ def run_experimentation(
                         starting_capital=STARTING_CAPITAL,
                         investable_pct=INVESTABLE_PCT,
                         top_n=top_n,
-                        grace_cycles=GRACE_CYCLES,
                     )
-                    result = engine.run()
                     summary = _summarize(result, top_n)
                     sip = _sip_summary(price_panel, yearly_universes, lookback_days, rebalance_days, top_n)
                     descriptor = _variant_key(band_id, rank_start, rank_end, lookback_months, rebalance_name, top_n)
@@ -303,46 +300,23 @@ def run_min_momentum_comparison(years_back: int, variants_to_test: List[Dict]) -
     """2026-07-14 win-rate exploration: rerun a curated set of already-run
     variants with min_momentum=0.0 (only ever buy names with genuinely
     positive trailing momentum) and report the win-rate/CAGR delta versus
-    their original (unfiltered) run. See FeatureBacklog.md ML38."""
-    end_date = now_ist().date()
-    start_date = date(end_date.year - years_back, end_date.month, end_date.day)
+    their original (unfiltered) run. See FeatureBacklog.md ML38.
 
-    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
-        yearly_rankings = all_yearly_full_rankings(
-            conn, start_date.isoformat(), end_date.isoformat(), include_delisted=True,
-        )  # 2026-07-20 survivorship-bias fix — BacktestUmbrellaPlan.md Gap #1
-        candidate_tickers = _union_tickers(yearly_rankings)
-        price_panel = load_price_panel(conn, candidate_tickers, start_date.isoformat(), end_date.isoformat())
+    [H4, 2026-08-18] min_momentum was deprecated off MomentumAdapter by the
+    2026-08-18 user decision (§19: pure-play momentum is a plain rank
+    rotation). This function's entire question -- "how does a min_momentum
+    floor change win rate/CAGR?" -- no longer has an answer to compute, and
+    silently running with the floor dropped would report a "filtered" result
+    identical to baseline, which would misrepresent a real comparison.
+    Retained for reference, not deleted; raises rather than fabricating a
+    result."""
+    raise NotImplementedError(
+        "min_momentum no longer exists on MomentumAdapter (deprecated 2026-08-18, "
+        "UnifiedGeneratorRefactorPlan.md §19) -- this comparison has no meaning to compute."
+    )
+    return []
 
-    comparisons = []
-    for base in variants_to_test:
-        yearly_universes = yearly_band_universes_from_rankings(yearly_rankings, base["rank_start"], base["rank_end"])
-        lookback_days = lookback_trading_days(base["lookback_months"])
-        rebalance_days = REBALANCE_PERIODS[base["rebalance_period"]]
 
-        engine = MomentumBacktester(
-            price_panel=price_panel,
-            yearly_universes=yearly_universes,
-            lookback_days=lookback_days,
-            rebalance_every_n_trading_days=rebalance_days,
-            starting_capital=STARTING_CAPITAL,
-            investable_pct=INVESTABLE_PCT,
-            top_n=base["top_n"],
-            grace_cycles=GRACE_CYCLES,
-            min_momentum=0.0,
-        )
-        result = engine.run()
-        filtered_summary = _summarize(result, base["top_n"], min_momentum=0.0)
-
-        comparisons.append({
-            "band_id": base["band_id"], "rank_start": base["rank_start"], "rank_end": base["rank_end"],
-            "lookback_months": base["lookback_months"], "rebalance_period": base["rebalance_period"],
-            "top_n": base["top_n"],
-            "baseline_win_rate": base["win_rate"], "baseline_cagr": base["cagr"],
-            "filtered_win_rate": filtered_summary["win_rate"], "filtered_cagr": filtered_summary["cagr"],
-            "filtered_n_closed_trades": filtered_summary["n_closed_trades"],
-        })
-    return comparisons
 
 
 def main():

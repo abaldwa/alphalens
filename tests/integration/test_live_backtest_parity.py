@@ -669,3 +669,64 @@ def test_fundamental_live_selection_matches_the_backtested_rule(as_of_date):
     if not report.universe_size:
         pytest.skip(f"no feature panel on {feature_date}")
     assert report.only_live == set() and report.only_backtest == set(), report.describe()
+
+
+# ---------------------------------------------------------------------------
+# A3-ml scaffold (2026-08-18) -- see §9's own ordering rule: "A3 for a
+# channel is only writable once that channel has a live path worth diffing."
+# ML has neither: ml_adapter.py has no generate_signals (the missing_
+# generator KNOWN_VIOLATIONS entry in test_one_generator_per_channel.py),
+# and there is no live ML signal-selection path outside ml_signals writes
+# from run_models/write_signals -- nothing shaped like Momentum's
+# compute_daily_ranking or Technical's screener endpoint to diff against.
+#
+# H5 (bring ml_adapter onto the StrategyAdapter protocol, dual-write into
+# strategy_signals) was deliberately deferred: backtest/engine.py's
+# BacktestEngine is a complete, self-contained walk-forward training loop
+# (its own fold-splitting, P&D->Signal->MetaLabel->Exit training, its own
+# PortfolioSimulator) that was never decomposed into the per-date
+# generate_signals() protocol the other three channels use ("wrap, don't
+# refactor" -- BacktestUmbrellaPlan.md). Giving it a real generate_signals
+# means redesigning how ML models train and backtest, not writing an
+# adapter shim -- out of scope for a mechanical repoint pass, and too high-
+# stakes (it would touch the code that produces live trading signals) to
+# attempt without dedicated review.
+#
+# This is the scaffold that stays skipped until H5 lands: it names exactly
+# what the harness would need and fails loudly (not silently) if either
+# precondition is met without this test being filled in.
+# ---------------------------------------------------------------------------
+
+
+def test_a3_ml_parity_harness_scaffold():
+    """A3-ml is blocked on H5. This test exists so the harness has a named,
+    discoverable slot (matching test_live_backtest_parity.py's per-channel
+    pattern) rather than requiring someone to know to add one from scratch.
+
+    Once H5 ships, replace this body with a real parity report: run
+    ml_adapter.MLAdapter.generate_signals(universe, as_of_date) against
+    whatever H5's live ML signal path becomes, diff the selected/ranked
+    tickers the same way build_momentum_parity_report/build_fundamental_
+    parity_report do, and assert only_live == only_backtest == set().
+    """
+    import inspect
+
+    from backtest.adapters import ml_adapter
+
+    has_generate_signals = any(
+        name == "generate_signals" and inspect.isfunction(getattr(obj, name, None))
+        for name, obj in vars(ml_adapter).items()
+        if inspect.isclass(obj)
+        for name in dir(obj)
+    )
+    if has_generate_signals:
+        pytest.fail(
+            "ml_adapter now appears to define generate_signals -- H5 looks done. "
+            "Fill in this test with a real ML parity report (see docstring above) "
+            "instead of leaving it skipped."
+        )
+    pytest.skip(
+        "A3-ml is blocked on H5 (ml_adapter has no generate_signals / StrategyAdapter "
+        "protocol yet, and no live ML signal-selection path exists to diff against) -- "
+        "see UnifiedGeneratorRefactorPlan.md §9 and this test's docstring."
+    )

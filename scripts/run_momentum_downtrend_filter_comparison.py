@@ -25,9 +25,9 @@ from datetime import date
 from pathlib import Path
 from typing import Dict, List
 
-from backtest.momentum_backtest import MomentumBacktester
-from backtest.momentum_metrics import cagr, churn_factor
-from backtest.momentum_tax import post_tax_ending_value
+from backtest.momentum_orchestrator_runner import run_momentum_orchestrated
+from backtest.core.metrics import cagr, churn_factor
+from backtest.core.tax import post_tax_ending_value_from_dicts as post_tax_ending_value
 from config.settings import DUCKDB_PATH
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
@@ -56,6 +56,16 @@ def _union_tickers(yearly_rankings) -> List[str]:
 
 
 def run(years_back: int, grace_cycles: int) -> Dict:
+    # [H4, 2026-08-18] grace_cycles no longer exists on MomentumAdapter --
+    # pure-play momentum is a plain rank rotation (§19). The CLI flag is kept
+    # for callers' existing scripts/muscle memory but is now inert; a
+    # non-default value is surfaced rather than silently swallowed.
+    if grace_cycles != 2:
+        logger.warning(
+            "grace_cycles=%d requested, but MomentumAdapter has no grace_cycles knob "
+            "(deprecated 2026-08-18, UnifiedGeneratorRefactorPlan.md §19) -- ignored.",
+            grace_cycles,
+        )
     end_date = now_ist().date()
     start_date = date(end_date.year - years_back, end_date.month, end_date.day)
 
@@ -77,7 +87,7 @@ def run(years_back: int, grace_cycles: int) -> Dict:
                         "grace=%d band=%d lookback=%dmo rebalance=%s top_n=%d",
                         grace_cycles, band_id, lookback_months, rebalance_name, top_n,
                     )
-                    engine = MomentumBacktester(
+                    result = run_momentum_orchestrated(
                         price_panel=price_panel,
                         yearly_universes=yearly_universes,
                         lookback_days=lookback_days,
@@ -85,11 +95,9 @@ def run(years_back: int, grace_cycles: int) -> Dict:
                         starting_capital=STARTING_CAPITAL,
                         investable_pct=INVESTABLE_PCT,
                         top_n=top_n,
-                        grace_cycles=grace_cycles,
                         downtrend_filter_pct=DOWNTREND_FILTER_PCT,
                         downtrend_lookback_days=DOWNTREND_LOOKBACK_DAYS,
                     )
-                    result = engine.run()
                     churn = churn_factor(result.rebalance_events)
                     post_tax_value = post_tax_ending_value(result.ending_value, result.transactions)
                     closed = [t for t in result.transactions if t["status"] == "closed"]
