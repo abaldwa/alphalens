@@ -48,10 +48,7 @@ import pandas as pd
 
 from config.settings import FEATURES_DAILY_DIR
 from datastore.api.utils.feature_store import resolve_date
-from systems.technical_analysis.screener.templates import (
-    TEMPLATE_MAP,
-    ScreenerTemplate,
-)
+from systems.technical_analysis.screener.templates import ScreenerTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +145,9 @@ class ScreenerEngine:
     """
 
     # Ops that require a second column argument
-    _COL_VS_COL_OPS: frozenset = frozenset({"gt_col", "lt_col", "gte_col", "lte_col"})
+    _COL_VS_COL_OPS: frozenset[str] = frozenset({"gt_col", "lt_col", "gte_col", "lte_col"})
     # Ops that aggregate across the universe (cross-sectional percentile filters)
-    _UNIVERSE_OPS: frozenset = frozenset({"top_pct", "bottom_pct"})
+    _UNIVERSE_OPS: frozenset[str] = frozenset({"top_pct", "bottom_pct"})
 
     def __init__(self) -> None:
         # [PERF, 2026-08-02] _load_df previously re-read the full ~2,300-
@@ -243,7 +240,7 @@ class ScreenerEngine:
         self,
         df: pd.DataFrame,
         condition: Dict[str, Any],
-        available_cols: frozenset,
+        available_cols: frozenset[str],
     ) -> Tuple[pd.Series, bool]:
         """Evaluate one condition dict against the DataFrame, row by row.
 
@@ -269,7 +266,7 @@ class ScreenerEngine:
         """
         feature = condition.get("feature", "")
         op = condition.get("op", "")
-        value = condition.get("value")
+        value: Any = condition.get("value")
         feature2 = condition.get("feature2")
 
         false_mask = pd.Series(False, index=df.index)
@@ -502,6 +499,7 @@ class ScreenerEngine:
         # TEMPLATE_MAP: a fallback would be taken silently on every registry
         # outage, which is how the second declaration would quietly come back.
         from systems.technical_analysis.screener.registry_templates import (
+            list_templates as _registry_list_templates,
             load_template,
             template_exists,
         )
@@ -512,7 +510,7 @@ class ScreenerEngine:
             # translated rather than allowed to surface here.
             raise KeyError(
                 f"Unknown template '{template_name}'. "
-                f"Available: {sorted(TEMPLATE_MAP.keys())}"
+                f"Available: {sorted(t.name for t in _registry_list_templates())}"
             )
 
         template = load_template(template_name)
