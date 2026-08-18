@@ -63,6 +63,7 @@ by order within a section. This file now tracks only the still-open (⏳ pending
 | A105 | **Registry/ledger connections must use the backtest write-lock budget, not the API's** | Backtest / Concurrency | ✅ | 2026-08-14: **done** (`5c4e010a`). `strategies/registry.py` and `strategies/signals.py` opened DuckDB through the bare `get_duckdb_connection` default — `DUCKDB_LOCK_RETRY_ATTEMPTS=6` at 0.5s (~15.5s total, tuned for an API request) — while sitting beside backtest writers budgeted at `DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS=16` with a 10s cap (~125s). A ledger write therefore gave up roughly 8x sooner than the run it belonged to, and the job failed at its tail after completing the whole simulation. New `strategies/db.py` is the single place that decides how registry/ledger connect (`resolve_db_path` + `open_connection`), and `create_strategy_registry_schema` now takes the same budget with `persist=db_path is None` so the DDL connection is not pooled. Also fixed the readiness-gate-per-job problem that shared this root cause: readiness now runs once at queue level, not inside every parallel worker |
 | A106 | **Compute and backfill the six derived fundamental feature columns that make the bespoke strategies declarative** — `margin_of_safety`, `cfo_proxy`, `f_score`, `value_z_max`, `ncav_per_share`, `price_to_ncav` | Features / Fundamental | ⏳ | 2026-08-15: split out of A95-R1 so the remaining registry work is not blocked behind a pipeline change. The DESIGN is settled and recorded in this file's 'Making the 3 bespoke fundamental strategies expressible' section — including the result that **no predicate-grammar extension is needed**: these six columns turn `margin_of_safety`, `piotroski_on_value` and `net_net` into flat AND-lists of plain scalar predicates, so the scaled column comparison (`close <= 0.667 * ncav_per_share`) and the disjunction (`max(ev_ebit_yield, book_to_market) >= 0.84`) both collapse into single-column tests. What is left is implementation with a heavy tail: the columns must be computed in the fundamental feature pipeline and BACKFILLED across history before any predicate can execute, because a strategy switched to predicates over an unpopulated column does not error — it silently selects nothing. Standing hazard: feature Stage 2 overwrites date parquets wholesale, so this cannot be rehearsed on a ticker subset, and this box has a real OOM history on full-universe feature runs (see A44, and the 2026-08-10 backfill OOM) — run it attended, with the memory governor watching. Parity must be asserted per strategy per date (declarative result identical to the imperative `passes`) BEFORE any execution path is switched. Order: `margin_of_safety` and `piotroski_on_value` first (inputs well populated, both possible and useful); `net_net` last and expected to stay dormant — its own module docstring records `current_assets`/`current_liabilities`/`non_current_liabilities` as systemically absent before ~2025 (`non_current_liabilities` is 0/NULL for every row before 2025-03-31) and a real 5-year orchestrator run produced exactly 0 net_net trades, so this makes net_net DECLARATIVE without making it USABLE. That blocker is an ingestion backfill, outside A95's scope. Unblocks: the `not_yet_declarative` flag on those three rows, and the last of A95-R2's fundamental half |
 | A79 | Laptop lid-close suspend behavior (`/etc/systemd/logind.conf`'s `HandleLidSwitch`) was never verified/adjusted, unlike idle-timeout auto-suspend which was disabled | Ops | ⏳ | 2026-08-05: after 3 hard freezes during a long unattended Fyers backfill/feature-recompute run (none showed OOM-kill or kernel panic in `journalctl` — kernel log just goes silent), one freeze was directly preceded by a logged suspend/resume cycle (`PM: suspend exit`, `crng reseeded on system resumption`). Disabled GNOME's idle-triggered auto-suspend on both AC and battery (`gsettings ... sleep-inactive-{ac,battery}-type nothing`) — no freezes since. Lid-close suspend is a separate mechanism (`systemd-logind`, not GNOME's idle timer) and was deliberately left untouched (requires a `/etc/systemd/logind.conf` edit + `systemctl restart systemd-logind`, sudo-gated, not done without explicit go-ahead). Still a plausible freeze trigger if the lid gets closed during a future long-running unattended job |
+| A107 | **Rename the application to GrowCapital, across the board** — repo contents, repo directory, systemd units and DuckDB filenames | Ops / Everywhere | ⏳ | 2026-08-18: **parked at user request; scope decided, nothing executed.** User chose the full scope — (a) code/docs/UI strings + the repo directory, (b) the 6 systemd user units, AND (c) the DuckDB filenames — with the venv **rebuilt from requirements** rather than path-patched. This is deliberately the widest of the three options and the one with a silent-failure mode (see (c) below), so it is written up as an ordered runbook in this file's 'A107 — GrowCapital rename runbook' section rather than executed opportunistically. Must not overlap a scheduler run or a backtest queue. Blocked on nothing technical; it is a scheduling decision — pick a window when nothing is running |
 
 ### Technical
 
@@ -2060,10 +2061,31 @@ ML40-2.1 does, and the A95 quality gate cannot switch on until A95-R1..R3 do.
   path that previously touched only Parquet. The scheduler was `inactive (dead)` at
   cutover, so the first real exercise is the next daily cycle — watch it before
   A95-R3 flips the gate on. The remaining fundamental piece is blocked on A106.
-- **A95-R3** Switch on the `tests/quality/` guard enforcing the AGENTS.md
-  invariants. It would fail today. No longer blocked on the four channel
-  migrations — T15/ML41/F7/ML42 are all ✅ as of this audit and the registry holds
-  3,219 rows — so R3 is now gated only on R1 and R2.
+- **A95-R3** ✅ DONE 2026-08-18. `tests/quality/test_registry_is_load_bearing.py`
+  switches the gate on, asserting the **declaration/implementation split** rather
+  than the absence of imports (per this file's A95-R1 observation, which makes a
+  literal no-imports rule unsatisfiable). It AST-walks the six run-time trees
+  (`systems`, `datastore`, `backtest`, `features`, `ingestion`, `strategies`;
+  `migrations/`, `scripts/` and tests excluded) for imports of the definition
+  CONTAINERS — `TEMPLATES`, `TEMPLATE_MAP`, `TEMPLATE_STYLE`, `STRATEGY_STYLES`,
+  `STRATEGY_CATALOG`, `SCREENER_PRESETS` — while permitting type and callable
+  imports (`ScreenerTemplate`, `SCORE_FUNCTIONS`) from the same modules. AST, not
+  grep, because the conversions are documented in prose next to the code and the
+  container names appear in many comments. The 9 sites that still read a container
+  are listed in `_UNCONVERTED` with their reason (fundamentals router +
+  `fundamental_adapter` blocked on A106; technical router metadata endpoints;
+  `alert_store`, `copilot/dedup`, `screener/outcomes`, the 2 ML exit policies, the
+  TA diagnostic). The list may only SHRINK — a new site fails, and a third test
+  fails on a STALE entry so a converted site cannot leave its exemption behind.
+  Four further assertions make the registry load-bearing in the other direction:
+  every templates.py template has a row; every row's conditions still match
+  templates.py (the cutover parity, asserted continuously instead of once); every
+  fundamental declaration names a resolvable `SCORE_FUNCTIONS`/`SCREENER_PRESETS`
+  implementation; and every runnable preset is declared (the A95-R1 governance gap,
+  held shut). One real conversion shipped with it: `engine.py` imported
+  `TEMPLATE_MAP` solely to list available names in `screen()`'s KeyError — the last
+  definition read on the cutover path — now sourced from `registry_templates.list_templates()`.
+  7 new tests pass; `tests/quality` 44 passed/1 skipped; 114 screener/alert unit tests green.
 - **A95-R4** (done 2026-08-14) Frontend reads the registry: `shared/api/strategies.ts`,
   `useStrategyDefinition.ts`, Definition card in `strategy-detail.tsx`.
 
@@ -2253,7 +2275,9 @@ Run it and watch these specifically, in this order of interest:
 
 ### Stage 3 — after the scheduler cycle completes
 
-**S3.1 — A95-R3.** Switch on the `tests/quality/` guard. It must assert the
+**S3.1 — A95-R3.** ✅ DONE 2026-08-18 (see the A95-R3 entry above). Note it was
+gated on S1.1, not on Stage 2, so it landed with the scheduler still down.
+Switch on the `tests/quality/` guard. It must assert the
 **declaration/implementation split** — that no consumer imports a definition
 source directly — and NOT merely the absence of imports, per this file's A95-R1
 observation. Gated on S1.1 because the alert checker would fail it today.
@@ -2286,3 +2310,97 @@ trade and live" rule points at it. Not scheduled here because there is no eviden
 yet that the two disagree — establishing that (or not) is a measurement, and it
 belongs after Stage 2, when a live ranking for the same date exists to compare
 against a panel ranking.
+
+
+## A107 — GrowCapital rename runbook (parked 2026-08-18, scope decided, NOT executed)
+
+The user asked for the rename and then asked for it to be parked. Everything
+below is the measured blast radius and the order to work it in, recorded now so
+the eventual execution is a checklist and not a rediscovery. **Chosen scope: (a)
++ (b) + (c) with a rebuilt venv** — i.e. the widest option on offer, including
+the DuckDB filenames.
+
+New name: **GrowCapital** (one word, capital C). Three casings exist in the tree
+and each maps to its own replacement, which is why a single case-insensitive
+`sed` is the wrong tool:
+
+| Found | Count | Becomes | Where it lives |
+|---|---|---|---|
+| `AlphaLens` | 440 | `GrowCapital` | prose, docstrings, UI strings, class and module comments |
+| `alphalens` | 455 | `growcapital` | module paths, filenames, unit names, the pyproject `name` |
+| `ALPHALENS` | 9 | `GROWCAPITAL` | env vars — `ALPHALENS_BACKTEST_EXCLUDE`, `ALPHALENS_DISABLE_BULK_CACHE`, `ALPHALENS_SPILL_DIR` |
+
+824 lines across 220 files (77 `.py`, 63 `.html`, 44 `.md`, 8 `.sh`, 7 `.tsx`,
+7 `.css`, 5 `.js`, 3 `.ts`, plus `pyproject.toml`, one `.yml`, one `.json`).
+
+### Order of work
+
+Nothing here may overlap a scheduler cycle or a backtest queue — step 3 renames
+files those processes hold open, and step 1 stops the service that serves them.
+
+1. **Quiesce.** Confirm no scheduler run, no backtest queue, no backfill. Stop
+   `alphalens-api.service`. Commit or stash any open work first — as of parking
+   there is uncommitted frontend pivot-table work on
+   `feature/unified-backtest-report-ui`, and a rename diff tangled with feature
+   work is unreviewable.
+2. **Back up the DBs** before touching a single filename. `alphalens.duckdb` is
+   3.3 GB and there is no undo for a half-renamed data directory.
+3. **Content, three passes, one per casing** — `AlphaLens`→`GrowCapital`,
+   `alphalens`→`growcapital`, `ALPHALENS`→`GROWCAPITAL`, excluding `.git/`,
+   `.venv/`, `node_modules/`, `__pycache__/` and `.claude/worktrees/`. The
+   env-var pass must also cover anything exporting them outside the repo.
+4. **Paths inside the repo**: `alphalens_docs/` → `growcapital_docs/`, and the 5
+   `alphalens_*.html` screens inside it (`_fundamental`, `_ml`, `_technical`,
+   `_forensic`, `_valuation`).
+5. **The DuckDB filenames (c) — the risky step.** `alphalens.duckdb`,
+   `alphalens_fno_data.duckdb`, the staging/cache DBs and ~10 `.bak*`/`.pre_*`
+   copies. **The hazard that makes this different from every other step: a
+   missed reference does not raise.** DuckDB creates a database when it opens a
+   path that does not exist, so a stale `alphalens.duckdb` reference silently
+   yields a fresh EMPTY database and the caller reports success against no data.
+   Mitigation, and it is not optional: after the rename, `grep -r
+   'alphalens.*\.duckdb'` must return zero hits, and the first startup must be
+   checked for a newly-created zero-row file next to the real one. `config/settings.py:128`
+   (`DUCKDB_PATH`) is the primary definition; the paths are also named in prose
+   at `settings.py:152-153,801`.
+6. **Systemd units (b)** — 6 of them: `alphalens-api.service`,
+   `alphalens-scheduler.service`, `alphalens-scheduler-monitor.service` and its
+   `.timer`, `alphalens-feature-backfill.service`,
+   `alphalens-backtest-queue@.service`. **Carry the `.service.d/` drop-ins
+   across** — there are 5 of them, including two per-instance ones
+   (`@ta_full_2007_2026`, `@ta_fyers_2017_2026`), and they hold the OOM tuning
+   (`ManagedOOMPreference=omit`) that exists because systemd-oomd killed the
+   scheduler twice. A drop-in silently left behind reintroduces a fixed outage.
+   Then `daemon-reload`, re-enable, re-verify each unit's `WorkingDirectory`.
+7. **The repo directory**: `/home/amit/projects/AlphaLens` →
+   `/home/amit/projects/GrowCapital`.
+8. **Rebuild the venv** from requirements (user chose this over patching the
+   hardcoded paths in `.venv/bin/*` and `pyvenv.cfg`). Note the trade-off that
+   was accepted: a fresh resolve may install different versions than what is
+   running today, so the full suite is the gate on this step, not a smoke test.
+9. **Full suite green**, then start the API, then a scheduler cycle watched as
+   closely as the one in the branch runbook above.
+
+### Outside the repo, easy to forget
+
+- `~/.claude/settings.json` references the absolute path (2 hits).
+- The Claude memory directory is keyed by path:
+  `~/.claude/projects/-home-amit-projects-AlphaLens/`. Renaming the repo orphans
+  it unless it is moved — every memory in `MEMORY.md` lives there.
+- **The GitHub remote is `git@github.com:abaldwa/alphalens.git`.** Renaming the
+  GitHub repo is a separate, user-owned decision with its own consequences
+  (existing clones, any CI, open PR links). GitHub redirects the old name, so
+  this can lag the local rename safely — but it must be a decision, not an
+  oversight.
+- `pyproject.toml:6` `name = "alphalens"`. `frontend/package.json` is named
+  `"frontend"` and needs no change.
+
+### Deliberately NOT in scope
+
+- Historical DB backup copies could keep their old names — they are dated
+  artifacts, not live paths. Included in (c) above only for consistency; if the
+  rename window is tight, renaming the ~10 `.bak*` files is the first thing to
+  drop, since nothing opens them by a configured path.
+- Data written INSIDE the databases (table names, `source` values, run IDs
+  containing the old string) is untouched. Renaming a column or a stored
+  identifier is a migration, not a rebrand, and would invalidate stored runs.
