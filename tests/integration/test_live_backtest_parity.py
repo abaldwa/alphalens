@@ -304,6 +304,12 @@ def momentum_balanced_report(conn, as_of_date) -> ParityReport:
     )
 
 
+def _live_strategies() -> List[Dict[str, Any]]:
+    from features import momentum_live
+
+    return list(momentum_live.STRATEGIES)
+
+
 def momentum_live_default_strategy_id() -> str:
     from features import momentum_live
 
@@ -348,12 +354,33 @@ def test_unfiltered_momentum_is_already_at_parity(momentum_report):
 
     For the unfiltered `all_risk` category the live ranking and the
     backtested adapter select the same names from the same universe. This
-    is the invariant §3 demands, and it currently HOLDS for this one case --
-    so it is asserted hard, to keep C1/C2 from regressing the one place the
-    two paths already agree while fixing the places they do not."""
+    is the invariant §3 demands."""
     assert momentum_report.backtest_selection == momentum_report.live_selection, (
         momentum_report.describe()
     )
+
+
+@pytest.mark.parametrize(
+    "strategy_id",
+    [s["strategy_id"] for s in _live_strategies()],
+)
+def test_every_band_matches_the_backtested_rule(conn, as_of_date, strategy_id):
+    """C3: parity to zero for Momentum, across every live rank band.
+
+    Band 3 alone was not enough. Before C2 the live path and the adapter
+    agreed on bands 1-4 and 6 while DISAGREEING on bands 7 and 8 -- 8 names
+    out of 15 in band 7, 6 in band 8 -- and a band-3-only test reported
+    perfect parity throughout. The bands that diverged are exactly the
+    illiquid ones, because the old live path counted each ticker's own last
+    126 TRADING ROWS (ROW_NUMBER partitioned by ticker) while the backtest
+    used the shared calendar window. Names that trade every day are
+    unaffected; names with gaps reached further back in calendar time and
+    scored a different trailing return -- up to 14 percentage points.
+
+    Parametrizing over every band is what makes this test able to fail for
+    the reason it exists."""
+    report = build_momentum_parity_report(conn, as_of_date, strategy_id)
+    assert report.backtest_selection == report.live_selection, report.describe()
 
 
 def test_the_harness_would_detect_a_filter_induced_divergence(conn, as_of_date):

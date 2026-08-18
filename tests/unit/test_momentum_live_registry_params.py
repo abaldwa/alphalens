@@ -132,3 +132,59 @@ def test_partially_declared_row_raises(monkeypatch):
     with pytest.raises(momentum_live.StrategyParamsUnavailable, match="grace_cycles"):
         momentum_live.strategy_params(momentum_live.DEFAULT_STRATEGY_ID)
     momentum_live._declared_params.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# C2 -- declared filters are applied, or the strategy is refused
+# ---------------------------------------------------------------------------
+
+
+def test_unsupported_declared_filter_is_refused_not_skipped():
+    """The single most important behaviour C2 adds.
+
+    A `balanced` strategy declares a quality gate; the live path has no
+    quality-score source. Before C2 there was no filter chain at all, so
+    such a strategy would have run COMPLETELY UNFILTERED while its backtest
+    applied the whole chain -- silently, looking perfectly healthy, and
+    deploying capital against a rule nobody measured.
+
+    Refusing is the safe failure. Skipping the filter is the dangerous one,
+    so it must be impossible rather than merely discouraged."""
+    with pytest.raises(momentum_live.StrategyNotRunnableLive, match="quality_gate"):
+        momentum_live._buy_pool_kwargs(
+            "momentum:balanced_b3_101-150_lb6mo_monthly_top15", volume_panel=None,
+        )
+
+
+def test_sizing_only_filters_do_not_block_selection():
+    """`adtv_capped_sizing` is typed `sizing` in filter_registry: it changes
+    how much of a name is bought, not whether it is selected. Treating it as
+    a selection filter would refuse strategies that are perfectly runnable,
+    which is the opposite failure but a failure all the same."""
+    assert "adtv_capped_sizing" in momentum_live._SIZING_ONLY_FILTER_IDS
+    assert "adtv_capped_sizing" not in momentum_live._SUPPORTED_FILTER_IDS
+
+
+@requires_registry
+def test_all_risk_declares_no_selection_filters():
+    """all_risk is the unfiltered baseline, so every live strategy today
+    resolves to an empty kwargs dict -- which is why C2 changed no filter
+    behaviour for them, only the ranking window."""
+    for strategy in momentum_live.STRATEGIES:
+        kwargs = momentum_live._buy_pool_kwargs(strategy["registry_key"], volume_panel=None)
+        assert kwargs == {}, f"{strategy['strategy_id']} unexpectedly declares {kwargs}"
+
+
+def test_adtv_floor_without_volume_history_is_refused(monkeypatch):
+    """A declared liquidity floor with no volume data must refuse, not
+    select without it. Same principle as the unsupported-filter case: the
+    filter was declared, so proceeding without it runs a different strategy
+    from the declared one."""
+    monkeypatch.setattr(
+        "strategies.registry.get_strategy",
+        lambda *a, **k: {"filter_ids": ["adtv_floor"]},
+    )
+    momentum_live._registry_filter_ids.cache_clear()
+    with pytest.raises(momentum_live.StrategyNotRunnableLive, match="volume"):
+        momentum_live._buy_pool_kwargs("momentum:fake_for_test", volume_panel=None)
+    momentum_live._registry_filter_ids.cache_clear()

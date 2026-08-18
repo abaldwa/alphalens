@@ -29,12 +29,17 @@ FeatureBacklog.md ML38):
 
 import logging
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
 from backtest.momentum_backtest import decide_grace_transitions
-from features.momentum_signal import lookback_trading_days, trailing_momentum
+from features.momentum_signal import (
+    load_price_panel,
+    load_volume_panel,
+    lookback_trading_days,
+)
+from features.momentum_strategy import rank_universe, select_buy_pool
 from features.momentum_universe import RANK_BANDS, rank_band_tickers
 
 logger = logging.getLogger(__name__)
@@ -70,6 +75,10 @@ REGISTRY_KEY_TEMPLATE = (
 _LIVE_LOOKBACK_MONTHS = 6
 _LIVE_REBALANCE = "monthly"
 _LIVE_TOP_N = 15
+
+# Extra calendar days loaded beyond the lookback so the panel still contains
+# `lookback_days` TRADING rows after weekends and holiday clusters.
+_PANEL_BUFFER_DAYS = 120
 
 # One strategy per features.momentum_universe.RANK_BANDS entry — only the rank
 # band (i.e. the universe each strategy ranks) differs between them. Each
@@ -160,6 +169,88 @@ def strategy_params(strategy_id: str) -> Dict[str, Any]:
     design -- see the C1 note at the top of this file."""
     return _declared_params(get_strategy(strategy_id)["registry_key"])
 
+# select_buy_pool kwargs that each registry filter_id maps onto, and the
+# extra data each one needs. A declared filter whose data this module cannot
+# supply is REFUSED, never skipped -- see _buy_pool_kwargs.
+#
+# adtv_capped_sizing is deliberately absent: filter_registry types it as
+# "sizing", not "entry"/"universe". It changes how much of a name you buy,
+# not whether the name is selected, so it has no place in the selection pool.
+_SUPPORTED_FILTER_IDS = frozenset({"adtv_floor", "circuit_lock_proxy"})
+_SIZING_ONLY_FILTER_IDS = frozenset({"adtv_capped_sizing"})
+
+
+class StrategyNotRunnableLive(RuntimeError):
+    """A strategy declares a filter this live path cannot apply.
+
+    Raised instead of running the strategy WITHOUT that filter. This is the
+    single most important behaviour added by C2: before it, the live path had
+    no filter chain at all, so a `balanced` or `max_defensive` strategy would
+    have run completely unfiltered while its backtest applied the whole chain
+    -- silently, and looking perfectly healthy. Refusing is the safe failure.
+    """
+
+
+@lru_cache(maxsize=None)
+def _registry_filter_ids(registry_key: str) -> Tuple[str, ...]:
+    """The filter_ids a strategy declares, cached like its parameters."""
+    from strategies.registry import get_strategy as _registry_get_strategy
+
+    row = _registry_get_strategy(registry_key)
+    return tuple((row or {}).get("filter_ids") or [])
+
+
+def _buy_pool_kwargs(
+    registry_key: str,
+    volume_panel: Optional[pd.DataFrame],
+) -> Dict[str, Any]:
+    """Translate a strategy's REGISTRY-DECLARED filter_ids into
+    select_buy_pool kwargs.
+
+    The registry is authoritative about which filters a strategy has
+    (`filter_ids`) and with what parameters (`resolve_filters`), so neither is
+    restated here -- this only maps declaration onto the shared
+    implementation's argument names.
+
+    Every unsupported filter raises. The alternative -- dropping it -- would
+    reproduce exactly the defect this phase exists to remove.
+    """
+    from strategies.registry import get_strategy as _registry_get_strategy
+    from strategies.registry import resolve_filters
+
+    row = _registry_get_strategy(registry_key)
+    filter_ids = list((row or {}).get("filter_ids") or [])
+    selection_filters = [f for f in filter_ids if f not in _SIZING_ONLY_FILTER_IDS]
+    if not selection_filters:
+        return {}
+
+    unsupported = sorted(set(selection_filters) - _SUPPORTED_FILTER_IDS)
+    if unsupported:
+        raise StrategyNotRunnableLive(
+            f"{registry_key!r} declares filter(s) {unsupported} that the live "
+            "path has no data source for (quality scores / HMM regime / market-cap "
+            "and beta panels are backtest-time inputs). Refusing to run it, "
+            "because running it WITHOUT its declared filters would silently "
+            "execute a different strategy from the one that was backtested."
+        )
+
+    kwargs: Dict[str, Any] = {}
+    for spec in resolve_filters(selection_filters):
+        params = spec.get("params") or {}
+        if spec["filter_id"] == "adtv_floor":
+            if volume_panel is None or volume_panel.empty:
+                raise StrategyNotRunnableLive(
+                    f"{registry_key!r} declares an ADTV floor but no real volume "
+                    "history is available for its universe; refusing rather than "
+                    "selecting without the liquidity filter."
+                )
+            kwargs["min_adtv_cr"] = float(params["min_adtv_cr"])
+            kwargs["volume_panel"] = volume_panel
+        elif spec["filter_id"] == "circuit_lock_proxy":
+            kwargs["circuit_band_pct"] = float(params["circuit_band_pct"])
+    return kwargs
+
+
 # How far past as_of_date to look for the next month's first trading day
 # — comfortably wider than any real calendar-month gap (including
 # December -> January and multi-day holiday clusters).
@@ -203,17 +294,65 @@ def compute_daily_ranking(
 
     params = strategy_params(strategy_id)
     lookback_days = lookback_trading_days(int(params["lookback_months"]))
-    momentum = trailing_momentum(normalised_conn, universe, as_of_date, lookback_days)
+
+    # [C2 2026-08-18] Ranking and selection are no longer written here. Both
+    # come from features.momentum_strategy -- rank_universe (the ranking) and
+    # select_buy_pool (the filter chain) -- which are the SAME two functions
+    # MomentumAdapter and MomentumBacktester call. Previously this function
+    # sorted momentum inline and cut at top_n, so the whole filter chain
+    # (ADTV floor, circuit-lock proxy, downtrend, quality gate, regime
+    # disable, orthogonalization, min_momentum) existed only in the backtest.
+    #
+    # A panel is loaded rather than calling trailing_momentum(conn, ...)
+    # because the shared primitives are panel-based; the window is the
+    # lookback plus a buffer for holidays and non-trading days.
+    panel_start = (
+        pd.Timestamp(as_of_date)
+        - pd.Timedelta(days=int(params["lookback_months"]) * 31 + _PANEL_BUFFER_DAYS)
+    ).date()
+    price_panel = load_price_panel(normalised_conn, universe, str(panel_start), as_of_date)
+    if price_panel.empty:
+        return pd.DataFrame(columns=["ticker", "momentum_return", "momentum_rank", "in_top_n"])
+
+    momentum = rank_universe(price_panel, universe, as_of_date, lookback_days)
     if momentum.empty:
         return pd.DataFrame(columns=["ticker", "momentum_return", "momentum_rank", "in_top_n"])
 
+    # Volume is loaded only when a declared filter needs it -- an ADTV floor
+    # is the only current consumer, and loading it unconditionally would add a
+    # second full-universe panel query to every dashboard call.
+    registry_key = get_strategy(strategy_id)["registry_key"]
+    needs_volume = "adtv_floor" in ((_registry_filter_ids(registry_key)) or [])
+    volume_panel = (
+        load_volume_panel(normalised_conn, universe, str(panel_start), as_of_date)
+        if needs_volume else None
+    )
+
+    pool = select_buy_pool(
+        momentum,
+        pd.Timestamp(as_of_date),
+        price_panel=price_panel,
+        # Same convention as MomentumAdapter: no separate forward-filled
+        # panel, so the circuit-lock check reads the raw panel. Passing a
+        # ffilled panel here would make the live decision differ from the
+        # backtested one on exactly the stale-price days the check exists for.
+        price_panel_ffilled=price_panel,
+        **_buy_pool_kwargs(registry_key, volume_panel),
+    )
+
+    # The RANKING is reported over every scored ticker so the dashboard can
+    # still show where a filtered-out name placed. Only in_top_n reflects the
+    # filters -- a name can rank 3rd and still not be held because it failed
+    # the liquidity floor, and hiding that would make the dashboard disagree
+    # with the book for reasons nobody could see.
     ranked = momentum.sort_values(ascending=False)
+    target = set(pool.sort_values(ascending=False).head(int(params["top_n"])).index)
     df = pd.DataFrame({
         "ticker": ranked.index,
         "momentum_return": ranked.values,
     })
     df["momentum_rank"] = range(1, len(df) + 1)
-    df["in_top_n"] = df["momentum_rank"] <= int(params["top_n"])
+    df["in_top_n"] = df["ticker"].isin(target)
     return df.reset_index(drop=True)
 
 

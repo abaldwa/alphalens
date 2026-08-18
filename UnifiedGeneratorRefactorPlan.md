@@ -731,3 +731,105 @@ moved, onto the same function production reads through.
 change and where §5's medium risk really lives. Note from §10: the ADTV
 floor does not bind at current parameters, so C2 must be reviewed on the
 filter chain it enables, not on a same-day diff that will likely show zero.
+
+
+---
+
+## 12. C2 + C3 delivered — and the divergence they found (2026-08-18)
+
+`compute_daily_ranking` no longer ranks inline. It calls
+`features.momentum_strategy.rank_universe` (the ranking) and
+`select_buy_pool` (the filter chain) — the same two functions
+`MomentumAdapter` and `MomentumBacktester` call.
+
+### The live picks DID change, and the reason was not the filter chain
+
+`all_risk` declares no selection filters, so `select_buy_pool` is a no-op
+for every strategy the live path runs today. The expectation was therefore a
+zero diff. Measured against the pre-C2 behaviour on 2026-08-14:
+
+| Band | Rank range | Names changed (of 15) |
+|---|---|---|
+| 1, 2, 3, 4, 6 | 1-200, 201-300 | **0** |
+| 7 | 301-500 | **8** |
+| 8 | 501-800 | **6** |
+
+**Root cause — two implementations of "trailing return" that were never the
+same function.** `features/momentum_signal.trailing_momentum` (the conn-based
+one the live path used) selects each ticker's last `lookback_days` rows with
+
+```sql
+ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC)
+```
+
+i.e. **each ticker's own last 126 trading rows**. The backtested
+`trailing_momentum_from_panel` uses the shared calendar window across the
+whole universe. For a name that trades every day these are identical — which
+is exactly why bands 1-4 and 6 show a zero diff. For a name with trading
+gaps, "126 of its own rows" reaches further back in calendar time, so it
+measured a longer, different window:
+
+```
+AZAD   conn 0.7351  panel 0.7058      max divergence on common tickers: 0.140
+AVALON conn 0.8478  panel 0.8415      (14 percentage points)
+```
+
+It also changed the *eligible set*: the conn path scored 196 tickers in band
+7 where the panel path scored 190. Six names (DIACABS, E2E, GSPL, JSWDULUX,
+MTARTECH, STLTECH) accumulate 126 rows only by reaching outside the panel
+window.
+
+So the pre-C2 live path was ranking illiquid bands on a per-ticker window
+that no backtest ever used. **The published band-7 and band-8 results were
+measured on the calendar-aligned rule; live was running the other one.** The
+change is the correction, and it moves live onto the rule with measured
+returns — §2's principle, applied.
+
+Verified after C2: live selection equals `MomentumAdapter`'s selection
+**exactly, for all 7 bands**.
+
+### C2's most important addition: it refuses rather than skips
+
+`_buy_pool_kwargs` translates a strategy's registry-declared `filter_ids`
+into `select_buy_pool` arguments. A declared filter this path cannot apply —
+`quality_gate`, `hmm_regime`, `size_beta_orthogonalized`, all of which need
+backtest-time inputs the live path has no source for — raises
+`StrategyNotRunnableLive`.
+
+It does **not** drop the filter and proceed. Dropping it would reproduce
+precisely the defect this phase exists to remove: a `balanced` strategy
+running completely unfiltered while its backtest applied the whole chain,
+silently and looking healthy. `adtv_capped_sizing` is exempt because
+`filter_registry` types it `sizing`, not `entry`/`universe` — it changes how
+much is bought, not what is selected.
+
+The registry stays authoritative throughout: which filters a strategy has
+(`filter_ids`) and their parameters (`resolve_filters`) are read, never
+restated.
+
+### C3 — parity to zero for Momentum
+
+The parity harness now parametrizes over **every** live rank band. Band 3
+alone was not enough: before C2 the live path agreed with the adapter on
+bands 1-4 and 6 while disagreeing on 7 and 8, and a band-3-only test reported
+perfect parity throughout. A test that cannot fail for the reason it exists
+is not evidence.
+
+### Gate movements
+
+- `test_one_generator_per_channel.py`: the `live_selection_function` entry
+  for `compute_daily_ranking` is **deleted** — resolved, not appeased.
+  `rank_universe`/`select_buy_pool` are deliberately not scoring primitives:
+  calling the shared implementation is delegation, the same standard
+  `DELEGATING_COMPOSITES` applies to `TechnicalComboAdapter`.
+- The C-phase xfail remains, now correctly scoped: the live path can APPLY a
+  declared filter, but only `adtv_floor` and `circuit_lock_proxy` have live
+  data sources, so 3 of 4 registry categories still cannot run live. They now
+  fail loudly instead of running unfiltered — the gap is contained, not
+  closed.
+
+### Still open in Phase C
+
+Nothing. C1, C2 and C3 are done. The remaining momentum gap is a **data**
+gap, not a code one: wiring live quality-score, HMM-regime and market-cap/beta
+sources would make the other three categories runnable.

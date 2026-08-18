@@ -208,15 +208,15 @@ KNOWN_VIOLATIONS: frozenset[Tuple[str, str, str]] = frozenset({
     # this gate was previously blind to. Each is diagnosed in
     # UnifiedGeneratorRefactorPlan.md §1.2 and deleted by its scheduled fix.
     #
-    # momentum_live.compute_daily_ranking builds the band universe and ranks
-    # it inline, so the entire select_buy_pool filter chain -- ADTV floor,
-    # circuit-lock proxy, downtrend filter, quality gate, regime disable,
-    # size/beta orthogonalization, min_momentum floor -- is absent live.
-    (
-        "live_selection_function",
-        "features/momentum_live.py::compute_daily_ranking",
-        "PHASE-C2: rank via rank_universe + select_buy_pool",
-    ),
+    # [C2, 2026-08-18] features/momentum_live.py::compute_daily_ranking is
+    # RESOLVED and its entry deleted, per the "fixing a violation must delete
+    # its entry" rule above. It no longer ranks inline: it calls
+    # features.momentum_strategy.rank_universe (the ranking) and
+    # select_buy_pool (the filter chain) -- the same two functions
+    # MomentumAdapter and MomentumBacktester call. Calling the shared
+    # implementation is not a second generator, by the same standard
+    # DELEGATING_COMPOSITES applies; that is why rank_universe and
+    # select_buy_pool are deliberately NOT scoring primitives here.
     # The fundamentals router re-implements selection instead of reading
     # FundamentalAdapter output: unranked and uncapped where the adapter
     # ranks by _composite_strength and truncates to top_n.
