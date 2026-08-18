@@ -29,9 +29,6 @@ import {
   type YoyReturn,
 } from '../types.ts'
 
-/** The sweep holds grace cycles constant; it is not encoded in variant_id. */
-const GRACE_CYCLES = 2
-
 const TRADE_BOOK_BASE = '/api/v1/momentum/dynamic_report/trades'
 
 function rollingWindows(v: MomentumDynamicReportVariant): RollingWindow[] {
@@ -103,13 +100,11 @@ export function adaptMomentumVariant(
     capitalMode: 'lump_sum',
     filters: [],
     exitCriterion: {
-      variant: 'rank_grace',
+      variant: 'rank_exit',
       stopPct: null,
       targetPct: null,
       maxHoldDays: null,
       trailingPct: null,
-      exitRank: v.top_n,
-      graceCycles: GRACE_CYCLES,
     },
     benchmarkIndexName: null,
     lookbackMonths: v.lookback_months,
@@ -118,7 +113,6 @@ export function adaptMomentumVariant(
     rankBand: v.band_id,
     rankStart: v.rank_start,
     rankEnd: v.rank_end,
-    graceCycles: GRACE_CYCLES,
     category: v.strategy,
   }
 
@@ -128,7 +122,7 @@ export function adaptMomentumVariant(
 
   return {
     key,
-    label: displayLabel(key, { graceCycles: GRACE_CYCLES }),
+    label: displayLabel(key),
     channel: 'momentum',
     setup,
     returns: {

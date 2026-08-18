@@ -103,13 +103,11 @@ export function parseMomentumVariant(
  * identically on the recommendations page, in the YoY matrix, and on its own
  * detail page.
  *
- * Grace cycles are not in the variant id (the sweep holds them constant at 2),
- * so they are passed in when a caller has them rather than being parsed out of
- * a string that does not carry them.
+ * [2026-08-18] The graceCycles extra is gone with the grace period itself.
  */
 export function displayLabel(
   key: StrategyKey,
-  extras?: { graceCycles?: number | null; exitVariant?: string | null },
+  extras?: { exitVariant?: string | null },
 ): string {
   const { channel, name } = parseKey(key)
 
@@ -124,7 +122,6 @@ export function displayLabel(
         p.rebalance,
         `rank ${p.rankStart}-${p.rankEnd}`,
       ]
-      if (extras?.graceCycles != null) parts.push(`g${extras.graceCycles}`)
       return parts.join(' · ')
     }
     // Preset rows registered without a grid point.

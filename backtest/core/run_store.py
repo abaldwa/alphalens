@@ -144,6 +144,10 @@ def _row_to_summary_dict(row: tuple) -> Dict[str, Any]:
     metrics = json.loads(d.pop("metrics_json")) if d["metrics_json"] else None
     if metrics is not None:
         metrics.pop("cash_position_series", None)
+        # Same reasoning, same size class (A90): one entry per trading day.
+        # The Runs list renders neither series; the strategy detail page
+        # fetches the single run via get_run(), which keeps both.
+        metrics.pop("equity_curve_series", None)
     d["metrics"] = metrics
     d["data_gaps"] = []
     d["integrity_detail"] = {}

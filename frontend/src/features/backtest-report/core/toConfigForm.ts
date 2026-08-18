@@ -33,10 +33,8 @@ export interface ConfigFormPrefill {
   categories?: string[]
   lookback_months?: number
   top_n?: number
-  grace_period?: number
   rebalance_frequency?: 'monthly' | 'biweekly'
-  exit_rank?: number | null
-  trailing_stop_pct?: number | null
+  // [2026-08-18] grace_period, exit_rank and trailing_stop_pct deprecated.
   downtrend_filter_pct?: number | null
   hmm_regime_filter?: 'none' | 'bearish' | 'bearish_sideways'
   initial_capital?: number
@@ -200,17 +198,9 @@ export function toConfigForm(report: StrategyReport): PrefillResult {
   if (setup.topN != null) values.top_n = setup.topN
   else unmapped.push('top_n')
 
-  if (setup.graceCycles != null) values.grace_period = setup.graceCycles
-  else unmapped.push('grace_period')
-
   if (setup.rebalanceFreq === 'monthly' || setup.rebalanceFreq === 'biweekly') {
     values.rebalance_frequency = setup.rebalanceFreq
   } else unmapped.push('rebalance_frequency')
-
-  // Exit parameters: null is a real value here (no trailing stop configured),
-  // so these are mapped rather than flagged.
-  values.exit_rank = setup.exitCriterion.exitRank ?? null
-  values.trailing_stop_pct = setup.exitCriterion.trailingPct ?? null
 
   // SIP is only meaningful if the backtest actually ran one; otherwise it is
   // a deployment choice like the initial capital.

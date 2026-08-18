@@ -32,7 +32,10 @@ export type ReturnMode = 'long_term_cagr' | 'regular_returns'
 /** A field the engines do not populate yet. Carried so the UI can say WHY a
  * cell is empty instead of leaving the reader guessing. */
 export interface PendingField {
-  backlogId: string
+  /** Omitted when the engine itself reported WHY the metric is absent (e.g.
+   * `sortino_none_reason`). That is a fact about this run, not an unbuilt
+   * backlog item, so attaching a backlog ID to it would misattribute it. */
+  backlogId?: string
   reason: string
 }
 
@@ -58,9 +61,9 @@ export interface ExitCriterion {
   targetPct: number | null
   maxHoldDays: number | null
   trailingPct: number | null
-  /** Momentum exits by rank, not by barrier. */
-  exitRank?: number | null
-  graceCycles?: number | null
+  // [2026-08-18] exitRank and graceCycles removed. Momentum exits by rank, but
+  // the exit rank IS top_n -- it was never an independent knob once the
+  // asymmetric exit band and the grace period were deprecated.
 }
 
 export interface StrategySetupCommon {
@@ -85,7 +88,6 @@ export interface MomentumSetup extends StrategySetupCommon {
   rankBand: number | null
   rankStart: number | null
   rankEnd: number | null
-  graceCycles: number | null
   category: string | null
 }
 
@@ -199,6 +201,17 @@ export interface TradeQuality {
   avgWinnerPct: number | null
   avgLoserPct: number | null
   turnoverRatio: number | null
+  /** Breadth: how many different names the strategy actually touched. A high
+   * trade count over three tickers is a different strategy from the same
+   * count over eighty. */
+  nDistinctTickers?: number | null
+  /** Realised tax across the window, on the basis `tax_basis` names. */
+  totalTaxPaid?: number | null
+  /** Trade-book integrity, surfaced on the strategy detail page rather than
+   * the section tables — it qualifies the numbers rather than being one of
+   * the numbers a deploy decision turns on. */
+  nOutlierTrades?: number | null
+  maxAbsReturnZscore?: number | null
 }
 
 export interface IncomeMode {

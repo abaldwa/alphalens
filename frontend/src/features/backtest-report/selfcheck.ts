@@ -144,11 +144,6 @@ eq(
   'one canonical label',
 )
 eq(
-  displayLabel(momKey, { graceCycles: 2 }),
-  'Balanced · Top15 · 6mo · monthly · rank 1-50 · g2',
-  'grace cycles appended when known',
-)
-eq(
   displayLabel(formatKey('momentum', 'preset_max_defensive')),
   'Max Defensive (preset)',
   'preset rows labelled',
@@ -331,7 +326,7 @@ function makeReport(over: {
       },
       benchmarkIndexName: null,
       lookbackMonths: 6, rebalanceFreq: 'monthly', topN: 15, rankBand: 1,
-      rankStart: 1, rankEnd: 50, graceCycles: 2, category: 'balanced',
+      rankStart: 1, rankEnd: 50, category: 'balanced',
     },
     returns: {
       cagrPreTax: over.cagr + 0.03,

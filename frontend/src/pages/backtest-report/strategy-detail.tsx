@@ -22,9 +22,11 @@ import {
   CardHeader,
   CardTitle,
 } from '@/lib/ui'
+import { EquityCurveChart } from '@/features/backtest-report/ui/EquityCurveChart'
 import { MatrixTable } from '@/features/backtest-report/ui/MatrixTable'
 import { TradesLink } from '@/features/backtest-report/ui/TradesLink'
 import { EM_DASH, days, inr, num, pct, rate, rateDelta } from '@/features/backtest-report/core/format'
+import { useEquityCurve } from '@/features/backtest-report/data/useEquityCurve'
 import { useReportData } from '@/features/backtest-report/data/useReportData'
 import { useStrategyDefinition } from '@/features/backtest-report/data/useStrategyDefinition'
 import type { RegistryFilter, RegistryStrategy } from '@/shared/api/strategies'
@@ -71,7 +73,6 @@ function SetupFields({ setup }: { setup: StrategySetup }) {
                 : null
             }
           />
-          <Field label="Grace cycles" value={setup.graceCycles} />
           <Field label="Category" value={setup.category} />
         </>
       )
@@ -278,6 +279,9 @@ export function BacktestStrategyDetailPage() {
   // so no client-side parsing is needed to look the definition up — which is
   // the whole point of A95.
   const definition = useStrategyDefinition(report?.key)
+  // Called before the early returns below: hooks must run unconditionally,
+  // and useEquityCurve is disabled until a run id exists anyway.
+  const equity = useEquityCurve(report?.sourceRunId)
 
   if (isLoading) {
     return (
@@ -430,6 +434,23 @@ export function BacktestStrategyDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>Equity curve</CardTitle>
+          <CardDescription>
+            Portfolio value over the backtest window.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <EquityCurveChart
+            series={equity.series}
+            isLoading={equity.isLoading}
+            isEmpty={equity.isEmpty}
+            initialCapital={setup.capitalDeployed}
+          />
+        </CardContent>
+      </Card>
 
       {consistency.rolling.length > 0 ? (
         <Card className="mt-4">

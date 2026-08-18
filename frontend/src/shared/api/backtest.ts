@@ -28,6 +28,44 @@ export interface BacktestRunMetrics {
   benchmark_status: string
   cash_position_series: { date: string; cash: number }[]
   avg_days_held: number | null
+  /** Which index `benchmark_cagr` was computed against. Without it two rows
+   * compared against different indices read as directly comparable. */
+  benchmark_index_name: string | null
+  /** Which basis `cagr` is stated on. The orchestrator reports post-tax by
+   * default, so `cagr` must NOT be assumed pre-tax. */
+  tax_basis: 'pre_tax' | 'post_tax' | null
+  /** The same CAGR on the opposite basis to `tax_basis`. */
+  cagr_other_basis: number | null
+  total_tax_paid: number | null
+  churn_per_year: number | null
+  avg_winner_pct: number | null
+  avg_loser_pct: number | null
+  /** Per financial year, e.g. `{ fy_label: "FY2023", return_pct: 0.0078 }`. */
+  fy_returns: { fy_label: string; return_pct: number | null; partial?: boolean }[] | null
+  /** Keyed "2y".."5y". `min/median/max_cagr` are annualised, never totals. */
+  rolling_returns: Record<
+    string,
+    {
+      min_cagr: number | null
+      median_cagr: number | null
+      max_cagr: number | null
+      positive_share: number | null
+      n_windows: number | null
+    }
+  > | null
+  /** Why the engine could not compute the ratio — surfaced as the em-dash
+   * tooltip instead of a backlog ID, since the reason is a real fact here. */
+  sortino_none_reason: string | null
+  calmar_none_reason: string | null
+  /** Trade-book integrity. Rendered on the strategy detail page only, so it
+   * does not compete with the numbers a deploy decision turns on. */
+  n_outlier_trades: number | null
+  max_abs_return_zscore: number | null
+  /** A90: mark-to-market portfolio value per trading day. Served only by the
+   * single-run detail endpoint — `list_runs` strips it (and
+   * `cash_position_series`) because at ~one entry per trading day they
+   * dominate the payload and no list column renders them. */
+  equity_curve_series?: { date: string; equity: number }[] | null
 }
 
 export interface BacktestDataGap {

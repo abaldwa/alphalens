@@ -52,7 +52,11 @@ function metricCell(
   return (
     <span
       className="cursor-help text-muted-foreground underline decoration-dotted underline-offset-2"
-      title={`${pending.backlogId}: ${pending.reason}`}
+      title={
+        pending.backlogId
+          ? `${pending.backlogId}: ${pending.reason}`
+          : pending.reason
+      }
     >
       {EM_DASH}
     </span>
@@ -238,6 +242,17 @@ export function returnsColumns(basis: TaxBasis): Col[] {
       size: 110,
       meta: { align: 'right', priority: 'low', group: 'returns' },
       cell: (i) => inr(i.row.original.returns.finalCapital),
+    },
+    {
+      // Low priority and grouped with returns: the post-tax CAGR already
+      // carries the tax, so this is the audit trail behind that number, not a
+      // second headline competing with it.
+      id: 'taxPaid',
+      accessorFn: (r) => r.tradeQuality.totalTaxPaid ?? null,
+      header: 'Tax paid',
+      size: 110,
+      meta: { align: 'right', priority: 'low', group: 'returns' },
+      cell: (i) => inr(i.row.original.tradeQuality.totalTaxPaid ?? null),
     },
   ]
 }
@@ -455,6 +470,17 @@ export function tradeQualityColumns(): Col[] {
       size: 95,
       meta: { align: 'right', priority: 'low', group: 'trade' },
       cell: (i) => metricCell(i.row.original, 'tradeQuality.turnoverRatio', i.row.original.tradeQuality.turnoverRatio, num),
+    },
+    {
+      // Breadth. Low priority because it qualifies the trade count rather than
+      // standing beside it: 40 trades over 8 names and 40 over 40 are
+      // different strategies, and `Trades` alone cannot tell them apart.
+      id: 'distinctTickers',
+      accessorFn: (r) => r.tradeQuality.nDistinctTickers ?? null,
+      header: 'Names',
+      size: 85,
+      meta: { align: 'right', priority: 'low', group: 'trade' },
+      cell: (i) => int(i.row.original.tradeQuality.nDistinctTickers ?? null),
     },
   ]
 }
