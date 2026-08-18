@@ -94,7 +94,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backtest.momentum_metrics import cagr as compute_cagr
-from backtest.momentum_metrics import xirr
+from backtest.core.metrics import xirr
 # [Phase H2, 2026-08-18] Tax comes from core/tax.py -- the FY-netted engine
 # every other channel already uses. It previously came from momentum_tax's
 # per-transaction model, which taxes winning trades in isolation: no

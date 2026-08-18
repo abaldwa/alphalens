@@ -31,7 +31,7 @@ add a symmetric branch once a real cross-channel use case needs it).
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from backtest.momentum_metrics import xirr
+from backtest.core.metrics import xirr
 
 
 def _load_last_close(conn: Any, ticker: str, as_of_date: str) -> Optional[float]:

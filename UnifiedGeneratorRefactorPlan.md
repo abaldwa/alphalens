@@ -361,7 +361,7 @@ in `FeatureBacklog.md`:
   `features/momentum_strategy.py`, a LIVE path, read them from the module being
   retired. Now one declaration in `core/tax.py`. **Done.**
 
-### H1 — Rehome the shared primitives *(no behaviour change)*
+### H1 — Rehome the shared primitives *(no behaviour change)* — ✅ DONE 2026-08-18
 
 Move `xirr`, `churn_factor`, `return_population_zscores` out of
 `backtest/momentum_metrics.py` into `backtest/core/metrics.py`, which is where
@@ -373,9 +373,19 @@ H4 repoints them.
 the module being retired.
 
 *Acceptance:* `core/metrics.py` imports nothing from `momentum_metrics.py`;
-full unit suite unchanged.
+full unit suite unchanged. **Both met.** `xirr`, `churn_factor` and
+`return_population_zscores` now live in `core/metrics.py`; `momentum_metrics.py`
+re-exports them (verified they are the SAME objects, not copies) so the ~13
+`scripts/run_momentum_*.py` keep working until H4. The four non-script
+consumers were repointed at the real home: `datastore/api/portfolio_nav.py`,
+`datastore/api/routers/momentum.py`, `backtest/export_trade_book.py`,
+`backtest/technical_reporting.py` and `systems/copilot/backtest_bridge.py`.
+One thing the move nearly broke and the type checker caught: `_NEAR_ZERO_STD`
+sat inside the extracted region, so it left `momentum_metrics.py` with
+`sharpe_sortino_calmar` still using it — restored there, duplicate removed from
+`core/metrics.py`.
 
-### H2 — One tax engine, including the live surface *(fixes a wrong number)*
+### H2 — One tax engine, including the live surface *(fixes a wrong number)* — ✅ DONE 2026-08-18
 
 Repoint `datastore/api/routers/momentum.py` from `momentum_tax.compute_total_tax`
 /`post_tax_ending_value` to `core/tax.py`'s FY-netted engine.
@@ -426,3 +436,45 @@ the pattern `ml_dual_write.py` already established.
 | H4 | deletes the standalone engine | medium | 2.1 parity accepted first |
 | H5 | new ML ledger rows (additive) | low | ledger shows source=live for ML |
 
+---
+
+## 8. Status audit — what is actually left (2026-08-18)
+
+Verified against the code, not against this document's own claims.
+
+| Step | State | Evidence |
+|---|---|---|
+| **A1** widen the one-generator gate | ⏳ not started | `SCAN_DIRS = ["backtest", "systems", "scripts", "features"]` — `datastore/` still unscanned, so the routers that re-implement selection are invisible to it |
+| **A2** no-hardcoded-params test | ⏳ not started | no such file in `tests/quality/` |
+| **A3** parity harness | ⏳ **not started — and it gates C, D and E** | no `tests/integration/test_live_backtest_parity.py` |
+| **B1/B2** close the ledger | ⏳ not started | `strategy_signals` holds 0 rows; still no `source='live'` or `'paper'` writer. (A108 added the supersede contract that will keep it clean once they exist.) |
+| **C1** de-hardcode momentum | ⏳ not started | `features/momentum_live.py:41-43` still declares `LOOKBACK_MONTHS = 6`, `TOP_N = 15`, `GRACE_CYCLES = 2` at module level while the registry declares all three |
+| **C2/C3** | ⏳ blocked on A3 | |
+| **D1-D4** technical split | ⏳ not started | no `LiveSignalRunner` class anywhere |
+| **E1** collapse `PRESET_EXCLUDED_SECTORS` | ⏳ not started | 21 references across non-test code |
+| **E2/E3** | ⏳ not started | |
+| **F1** `/paper_trading2/.../propose` | ⏳ partial | `paper_trading_unified.py` exists with the `/api/v1/paper_trading2` prefix, but has no `propose` route |
+| **F2** scheduler step | ⏳ not started | |
+| **F3** retire legacy `backtest/engine.py` | ⏳ not started | 5 importers remain (3 tracked in `KNOWN_VIOLATIONS`, plus `backtest/run_phase1_backtest.py` and `backtest/iterative_retrain.py`) |
+| **G1/G2** enforce | ⏳ blocked | `KNOWN_VIOLATIONS` still holds 4 entries: 1 `missing_generator` (ml) + 3 `legacy_engine_import` |
+| **H1** rehome shared primitives | ✅ done 2026-08-18 | `core/metrics.py` imports nothing from `momentum_metrics.py` |
+| **H2** one tax engine | ✅ done 2026-08-18 | Holding Dashboard now taxes through `core/tax.py` |
+| **H3** one metrics entry point | ⏳ next | needs the per-channel assertion test |
+| **ML40-2.1** unify the simulation loop | ⏳ **the critical path** | still two loops; gates H4 and A83 |
+| **H4** retire `MomentumBacktester` | ⏳ blocked on ML40-2.1 parity | 13 scripts + `systems/copilot/backtest_bridge.py` construct it |
+| **H5** ML under the contract | ⏳ not started | `ml_adapter` still has no `generate_signals` — the one `missing_generator` violation |
+
+### The two things that actually matter next
+
+1. **A3, the parity harness.** The plan's own rule is "do not start Phase C, D
+   or E before A3 exists", and nothing in C/D/E has started — so that rule has
+   not yet been broken. It is the single highest-leverage missing piece: without
+   it there is no way to prove the live and backtest paths agree, and §1's
+   finding (they currently do not) stays unquantified.
+
+2. **ML40-2.1.** It blocks H4 and A83 and is the last structural duplication.
+   H1-H3 exist to make its parity diff interpretable — with one measurement
+   layer, any residual difference is the simulation itself.
+
+Everything in Phase H that could be done without touching a simulation is now
+done. The remainder of this plan is gated on those two items, in that order.

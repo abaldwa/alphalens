@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from backtest.momentum_metrics import return_population_zscores
+from backtest.core.metrics import return_population_zscores
 from backtest.portfolio import Trade
 
 
@@ -101,7 +101,10 @@ def signal_failure_breakdown(trades: List[Trade]) -> Dict[str, Any]:
         total = fv.get("total_conditions")
         if matched is None or not total:
             return None
-        return matched / total
+        # Both come out of an untyped feature-vector dict; the guard above
+        # already establishes they are present and total is non-zero.
+        ratio: float = matched / total
+        return ratio
 
     loser_ratios = [r for r in (_ratio(t) for t in losers) if r is not None]
     winner_ratios = [r for r in (_ratio(t) for t in winners) if r is not None]

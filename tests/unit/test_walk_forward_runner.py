@@ -18,6 +18,26 @@ from backtest.core.run_context import BacktestRun
 from backtest.walk_forward.runner import WalkForwardRunner
 
 
+@pytest.fixture(autouse=True)
+def _ledger_writes_go_to_a_throwaway_db(tmp_path, monkeypatch):
+    """A94: OrchestratorConfig.persist_signals defaults True, so every run in
+    this module writes to the strategy_signals ledger. Project policy is that
+    no test ever writes to the real DuckDB -- not even a row it deletes
+    afterwards.
+
+    [2026-08-18] This module did NOT have the fixture that test_core_engine.py
+    has carried since A94, so its runs were persisting into the REAL
+    backtest.duckdb. Found by noticing a `momentum:mom_walk_forward` row for
+    ticker "B" -- a fixture ticker -- sitting in the production ledger after a
+    test run. The row was deleted and this fixture added; the same
+    module-wide redirect is used rather than per-test persist_signals=False,
+    so a test added later cannot forget.
+    """
+    import config.settings as settings
+
+    monkeypatch.setattr(settings, "BACKTEST_DUCKDB_PATH", tmp_path / "signals_ledger.duckdb")
+
+
 def _run(**overrides):
     defaults = dict(
         channel="momentum", strategy_id="mom_walk_forward", horizon_bucket=HorizonBucket.D21,

@@ -36,10 +36,10 @@ import csv
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from backtest.momentum_backtest import trade_cagr as _trade_cagr
-from backtest.momentum_metrics import return_population_zscores
+from backtest.core.metrics import return_population_zscores
 from backtest.trade_book_html import render_trade_book_html
 from config.settings import BACKTEST_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
@@ -78,7 +78,9 @@ def _market_cap_tier(stock_rank: str) -> str:
     return "Nifty800+"
 
 
-def _load_feature_row(conn, run_id: str, ticker: str, as_of_date: str) -> Optional[Dict[str, Any]]:
+def _load_feature_row(
+    conn: Any, run_id: str, ticker: str, as_of_date: str
+) -> Optional[Dict[str, Any]]:
     if not as_of_date:
         return None
     row = conn.execute(
@@ -105,7 +107,9 @@ _CSV_COLUMNS = [
 _HTML_COLUMNS = [c for c in _CSV_COLUMNS if c not in ("entry_indicator_values", "exit_indicator_values")]
 
 
-def _write(conn, run_id: str, trades, out_path: Path, write_html: bool = False) -> None:
+def _write(
+    conn: Any, run_id: str, trades: Sequence[Any], out_path: Path, write_html: bool = False
+) -> None:
     # Two passes: first collect every row's realized return_pct and entry
     # signal score so return_zscore/entry_signal_zscore can be computed
     # against the whole run's population (same population-stats approach

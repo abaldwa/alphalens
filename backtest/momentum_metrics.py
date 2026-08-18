@@ -10,60 +10,26 @@ Churn Factor (reported as both a per-rebalance series and an annualized
 average — 2026-07-14 user decision).
 """
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-
-def xirr(cash_flows: List[Tuple[str, float]]) -> Optional[float]:
-    """
-    Money-weighted annual rate of return for a series of irregularly-timed
-    cash flows (2026-07-14, added for the SIP comparison — plain CAGR only
-    works for a single lump-sum in/out; a monthly SIP needs XIRR since
-    each contribution has its own date).
-
-    cash_flows : [(date_str, amount), ...] — contributions negative
-        (money leaving the investor's pocket), the final value positive
-        (money that would come back if liquidated on that date). Order
-        doesn't matter internally but the first entry's date is used as
-        the discounting anchor.
-
-    Returns
-    -------
-    float or None — None if a rate can't be bracketed (e.g. all cash
-    flows are the same sign, so there's no real rate that zeroes the
-    NPV), rather than raising or guessing a value.
-    """
-    if len(cash_flows) < 2:
-        raise ValueError("xirr needs at least 2 cash flows")
-    dates = [pd.Timestamp(d) for d, _ in cash_flows]
-    amounts = [a for _, a in cash_flows]
-    anchor = min(dates)
-
-    def npv(rate: float) -> float:
-        total: float = sum(a / (1.0 + rate) ** ((d - anchor).days / 365.0) for d, a in zip(dates, amounts))
-        return total
-
-    lo, hi = -0.9999, 10.0
-    f_lo, f_hi = npv(lo), npv(hi)
-    if f_lo == 0:
-        return lo
-    if f_hi == 0:
-        return hi
-    if (f_lo > 0) == (f_hi > 0):
-        return None  # same sign at both ends: can't bracket a root
-
-    for _ in range(200):
-        mid = (lo + hi) / 2.0
-        f_mid = npv(mid)
-        if abs(f_mid) < 1e-6:
-            return mid
-        if (f_lo > 0) == (f_mid > 0):
-            lo, f_lo = mid, f_mid
-        else:
-            hi, f_hi = mid, f_mid
-    return (lo + hi) / 2.0
+# [Phase H1, 2026-08-18] xirr / churn_factor / return_population_zscores now
+# live in backtest/core/metrics.py -- they were never momentum-specific, and
+# core/metrics.py (the shared module every channel reports through) was
+# importing them FROM here, so the shared module depended on the
+# channel-specific one it is meant to replace.
+#
+# Re-exported rather than moved outright because ~13 scripts/run_momentum_*.py
+# plus datastore/api/portfolio_nav.py import them from this module by name.
+# They are repointed in H4, when this module is deleted with
+# MomentumBacktester.
+from backtest.core.metrics import (  # noqa: F401
+    churn_factor,
+    return_population_zscores,
+    xirr,
+)
 
 
 def total_return(starting_capital: float, ending_value: float) -> float:
@@ -103,39 +69,8 @@ def cagr(starting_capital: float, ending_value: float, start_date: str, end_date
     return cagr_value
 
 
-def churn_factor(rebalance_events: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    rebalance_events: list of dicts, one per rebalance, each with at least
-    {"date": iso date str, "n_bought": int, "n_sold": int}.
-
-    Returns
-    -------
-    dict with:
-      per_rebalance: [{"date", "n_bought", "n_sold", "n_transactions"}, ...]
-      avg_transactions_per_year: float — mean of each calendar year's total
-        (bought + sold) transaction count across the run (the "average
-        number of stocks bought+sold through the year" ML38 asked for).
-    """
-    per_rebalance = [
-        {
-            "date": event["date"],
-            "n_bought": event["n_bought"],
-            "n_sold": event["n_sold"],
-            "n_transactions": event["n_bought"] + event["n_sold"],
-        }
-        for event in rebalance_events
-    ]
-    if not per_rebalance:
-        return {"per_rebalance": [], "avg_transactions_per_year": 0.0}
-
-    df = pd.DataFrame(per_rebalance)
-    df["year"] = pd.to_datetime(df["date"]).dt.year
-    per_year = df.groupby("year")["n_transactions"].sum()
-    avg_per_year = float(per_year.mean())
-
-    return {"per_rebalance": per_rebalance, "avg_transactions_per_year": avg_per_year}
-
-
+# Guard for a degenerate (flat-equity) run whose std comes out as float
+# noise like 1e-16 rather than exact zero.
 _NEAR_ZERO_STD = 1e-9
 
 
@@ -363,48 +298,6 @@ def income_mode_summary(
         "years_survived_pct": n_survived / n_years * 100.0,
         "n_years": n_years,
     }
-
-
-def return_population_zscores(
-    returns_pct: Sequence[Optional[float]], outlier_threshold: float = 3.0,
-) -> Dict[str, Any]:
-    """Channel-agnostic core of the outlier-detection math: given a list of
-    per-trade % returns (None entries pass through as None, e.g. a trade
-    with no realized/unrealized return yet), returns each entry's z-score
-    plus population summary stats. Extracted from trade_quality_metrics()
-    (2026-08-01) so backtest/core/metrics.py::compute_metrics can reuse the
-    exact same statistics against backtest.portfolio.Trade's own pnl_pct
-    (Technical/Fundamental/Momentum-via-orchestrator channels) instead of
-    reimplementing it against a differently-shaped transaction dict.
-
-    Returns
-    -------
-    dict with:
-      zscores               — list, same length/order as returns_pct; None
-          where the input was None or the population (<3 non-None values)
-          is too small for a meaningful std.
-      n_outliers             — count with |zscore| > outlier_threshold.
-      max_abs_zscore         — the single most extreme |zscore|, or None.
-    """
-    valid = [r for r in returns_pct if r is not None]
-    mean = float(np.mean(valid)) if len(valid) >= 3 else None
-    std = float(np.std(valid)) if len(valid) >= 3 else None
-
-    zscores: List[Optional[float]] = []
-    n_outliers = 0
-    max_abs_z = None
-    for r in returns_pct:
-        if r is None or mean is None or std is None or std == 0:
-            zscores.append(None)
-            continue
-        z = (r - mean) / std
-        zscores.append(z)
-        if max_abs_z is None or abs(z) > max_abs_z:
-            max_abs_z = abs(z)
-        if abs(z) > outlier_threshold:
-            n_outliers += 1
-
-    return {"zscores": zscores, "n_outliers": n_outliers, "max_abs_zscore": max_abs_z}
 
 
 def trade_quality_metrics(

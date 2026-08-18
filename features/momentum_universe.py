@@ -56,18 +56,27 @@ logger = logging.getLogger(__name__)
 # bands at once, which double-counted one stock across two "distinct"
 # universes.
 #
-# NOTE the same overlap remains by design at 200/300/500 (200-300, 300-500,
-# 500-800 share their boundary ranks with the band below). Left exactly as
-# specified rather than silently corrected -- flag it if unintended, since
-# a boundary stock is then in two band universes simultaneously.
+# 2026-08-18, user-confirmed: the 200/300/500 boundaries are now exclusive on
+# the low side too, so the seven bands PARTITION rank 1-800 with no stock in
+# two universes at once. This closes the overlap the previous note flagged as
+# "left exactly as specified -- flag it if unintended"; it was unintended.
+#
+# CONSEQUENCE, deliberately accepted: strategy keys embed the boundaries
+# (strategies/migrations/momentum.py::variant_name renders
+# "..._b6_200-300_..."), so bands 6/7/8 now resolve to NEW keys and their old
+# rows are superseded. This is the same thing that happened when 100-150 and
+# 150-200 became 101-150 and 151-200 -- the registry still carries both
+# generations for bands 3 and 4 -- and it is why the migration must be re-run
+# after this change, or a --rank-band-id 6/7/8 run emits a key that resolves
+# to nothing.
 RANK_BANDS: List[Tuple[int, int, int]] = [
     (1, 1, 50),
     (2, 51, 100),
     (3, 101, 150),
     (4, 151, 200),
-    (6, 200, 300),
-    (7, 300, 500),
-    (8, 500, 800),
+    (6, 201, 300),
+    (7, 301, 500),
+    (8, 501, 800),
 ]
 
 

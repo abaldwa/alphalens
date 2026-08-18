@@ -18,12 +18,13 @@ is disclosed in the returned `caveats` list, never hidden.
 
 import logging
 from datetime import date as date_type
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from backtest.costs import IndianTransactionCosts
 from backtest.momentum_backtest import MomentumBacktester
 from backtest.momentum_metrics import cagr as compute_cagr
-from backtest.momentum_metrics import churn_factor, total_return
+from backtest.core.metrics import churn_factor
+from backtest.momentum_metrics import total_return
 from config.settings import COPILOT_BACKTEST_YEARS, DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
 from features.momentum_universe import yearly_band_universes
@@ -37,7 +38,9 @@ DEFAULT_RANK_START = 1
 DEFAULT_RANK_END = 200
 
 
-def _apply_technical_prefilter(spec: StrategySpec, candidate_tickers: List[str]) -> tuple:
+def _apply_technical_prefilter(
+    spec: StrategySpec, candidate_tickers: List[str]
+) -> Tuple[List[str], Optional[str]]:
     """Point-in-time technical screen against the latest feature Parquet.
     Returns (filtered_tickers, caveat_or_None)."""
     if not spec.technical:
