@@ -30,6 +30,7 @@ import {
   recommendAll,
 } from '@/features/backtest-report/core/recommendations'
 import { CHANNELS } from '@/features/backtest-report/core/strategyKey'
+import { METRIC_TABS } from '@/features/backtest-report/ui/MetricTabs'
 import { REPORT_SECTIONS, layoutProps } from '@/features/backtest-report/ui/sections'
 import { useReportPage } from '@/features/backtest-report/data/useReportPage'
 
@@ -140,7 +141,17 @@ export function BacktestReportHubPage() {
           <CardTitle>Sections</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-3 text-sm">
-          {REPORT_SECTIONS.filter((s) => s.path !== '/backtest-report').map((s) => (
+          {/* The metric tabs are listed alongside the top-level sections
+              rather than hidden one click behind "Metrics": the hub exists to
+              be a directory, and a reader who wants Risk should be able to
+              land on Risk from here. */}
+          {[
+            ...REPORT_SECTIONS.filter((s) => s.path !== '/backtest-report'),
+            ...METRIC_TABS.filter((t) => t.id !== 'all').map((t) => ({
+              path: t.path,
+              label: t.label,
+            })),
+          ].map((s) => (
             <Link key={s.path} to={s.path} className="text-primary hover:underline">
               {s.label}
             </Link>

@@ -1633,19 +1633,49 @@ class BacktestOrchestrator:
         # 31 March than it holds. That balance is real and unpaid, so it comes
         # off the closing value.
         equity_curve = portfolio.equity_curve
+
+        # [FIX 2026-08-19] Two defects lived in this block, and between them
+        # they made "pre-tax" and "post-tax" incomparable on the report:
+        #
+        # 1. A pre-tax run had its ENTIRE cumulative FY tax docked off the
+        #    final equity point. Over a 17-year, ~58-trades-a-year book that
+        #    lump dwarfs any one year's bill, so the run labelled `pre_tax`
+        #    reported a CAGR *below* the post-tax run of the same strategy
+        #    (4.9%/yr against 19.0%/yr). A pre-tax run is now genuinely
+        #    pre-tax; its post-tax counterpart comes from compute_metrics'
+        #    apply_tax_to_curve, which charges each FY on the day it fell due.
+        # 2. Tax was fed to XIRR as an investor cash flow on BOTH paths, with
+        #    opposite signs. Tax is an expense of the book, not a receipt of
+        #    the investor's, and on the post-tax path it is already out of the
+        #    equity curve — counting it again credited the investor with money
+        #    that went to the taxman. XIRR now sees contributions, real
+        #    withdrawals and the terminal value, on whatever basis the curve is.
+        cash_flows = [
+            (cf["date"], cf["amount"])
+            for cf in portfolio.cash_flows
+            if cf.get("kind") != "tax"
+        ]
         if portfolio.deduct_tax_annually and portfolio.annual_reset is None:
-            cash_flows = [(cf["date"], cf["amount"]) for cf in portfolio.cash_flows]
+            # The only amount left to settle is a liability the book could not
+            # fund from cash — a near-fully-invested portfolio can owe more at
+            # 31 March than it holds. That balance is real and unpaid, so it
+            # comes off the closing value.
             outstanding = portfolio.deferred_tax_liability
+            tax_ledger = list(portfolio.tax_ledger)
         else:
-            # annual_reset nets tax out of its own withdrawal, and a caller
-            # that switched annual deduction off keeps the previous
-            # end-of-run treatment.
-            tax_flows = fy_tax_cash_flows(portfolio.tax_transactions())
-            cash_flows = [(cf["date"], cf["amount"]) for cf in portfolio.cash_flows] + [
-                (d.isoformat(), amt) for d, amt in tax_flows
-            ]
-            outstanding = (
-                -sum(amt for _, amt in tax_flows) if portfolio.annual_reset is None else 0.0
+            # annual_reset nets tax out of its own withdrawal, so it owes
+            # nothing further. A plain pre-tax run owes nothing either — it
+            # simply never paid, which is what pre-tax MEANS.
+            outstanding = 0.0
+            # Synthesised so the pre-tax run can still report the other basis
+            # and a total tax figure: same {fy_end, paid} shape the post-tax
+            # path's real ledger uses, so compute_metrics needs no branch.
+            tax_ledger = (
+                [] if portfolio.annual_reset is not None
+                else [
+                    {"fy_end": d.isoformat(), "assessed": -amt, "paid": -amt, "deferred": 0.0}
+                    for d, amt in fy_tax_cash_flows(portfolio.tax_transactions())
+                ]
             )
         if len(equity_curve) and outstanding:
             equity_curve = equity_curve.copy()
@@ -1706,7 +1736,7 @@ class BacktestOrchestrator:
             # A86: both tax bases from one execution. The ledger says what was
             # actually paid and when; deduct_tax_annually says which basis the
             # headline CAGR is therefore stated on.
-            tax_ledger=list(portfolio.tax_ledger),
+            tax_ledger=tax_ledger,
             deduct_tax_annually=bool(getattr(portfolio, "deduct_tax_annually", False))
             and getattr(portfolio, "annual_reset", None) is None,
         )

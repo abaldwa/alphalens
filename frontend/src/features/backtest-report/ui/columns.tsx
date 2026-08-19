@@ -29,7 +29,28 @@ import { StrategyLink } from './StrategyLink'
 import { TradesLink } from './TradesLink'
 import { cagrOn } from '../core/cagrOn'
 import { EM_DASH, days, inr, int, num, pct, rate, rateDelta } from '../core/format'
+import { countOf, rollingFromYoy } from '../core/rollingFromYoy'
 import type { StrategyReport, TaxBasis } from '../core/types'
+
+/**
+ * Excess return DERIVED from the two numbers on screen, never read from the
+ * stored field.
+ *
+ * The engine records `excess_return` against the basis THAT run was measured
+ * on. Once the table can show a CAGR on the other basis, or re-score the row
+ * against a benchmark the run never used, the stored figure stops being the
+ * difference between the two cells beside it — which is how a row came to
+ * read "CAGR 34%, Benchmark 14.2%, Excess +16.2%". Subtraction is cheap;
+ * three numbers that do not add up are not.
+ */
+function excessOn(r: StrategyReport, basis: TaxBasis): number | null {
+  const own = cagrOn(r, basis)
+  const bench = r.returns.benchmarkCagr
+  if (own == null || bench == null || !Number.isFinite(own) || !Number.isFinite(bench)) {
+    return null
+  }
+  return own - bench
+}
 
 type Col = ColumnDef<StrategyReport, unknown>
 
@@ -223,17 +244,22 @@ export function returnsColumns(basis: TaxBasis): Col[] {
     },
     {
       id: 'excess',
-      accessorFn: (r) => r.returns.excessReturn,
+      accessorFn: (r) => excessOn(r, basis),
       header: 'Excess',
       size: 100,
       meta: { align: 'right' },
-      cell: (i) =>
-        metricCell(
-          i.row.original,
-          'returns.excessReturn',
-          i.row.original.returns.excessReturn,
-          rateDelta,
-        ),
+      cell: (i) => (
+        <span
+          title={`${headline} minus the benchmark over the same window. Both figures are annualised, so the difference is in percentage points per year.`}
+        >
+          {metricCell(
+            i.row.original,
+            'returns.excessReturn',
+            excessOn(i.row.original, basis),
+            rateDelta,
+          )}
+        </span>
+      ),
     },
     {
       id: 'finalCapital',
@@ -257,21 +283,44 @@ export function returnsColumns(basis: TaxBasis): Col[] {
   ]
 }
 
+/**
+ * Consistency, measured in FINANCIAL YEARS.
+ *
+ * [FIX 2026-08-19] These columns used to read the engine's `rolling_returns`,
+ * which slides a window along the daily equity curve: a 17-year run produced
+ * 57 near-identical "3-year windows", one per rebalance date. That made
+ * "positive 3-year windows: 87.7%" a statement about days rather than about
+ * decisions, and it disagreed with the year-on-year matrix printed directly
+ * below it — on `mom_top10_3m_condition_21d` the daily basis reported a 29.7%
+ * median and a -8.7% worst window where the sixteen actual three-financial-
+ * year holdings gave 31.0% and -6.2%.
+ *
+ * core/rollingFromYoy recomputes them over consecutive financial years, so
+ * every figure here can be checked by eye against the matrix, and counts are
+ * shown as counts ("13 of 16") rather than as a share that hides how few
+ * windows there were. The engine's daily-basis figures are not discarded —
+ * they remain on the strategy detail page, where the difference in method can
+ * be stated rather than silently swapped in.
+ */
 export function consistencyColumns(): Col[] {
   const windowCol = (years: number): Col => ({
     id: `rolling${years}y`,
-    accessorFn: (r) =>
-      r.consistency.rolling.find((w) => w.window === years)?.medianCagr ?? null,
+    accessorFn: (r) => rollingFromYoy(r.consistency.yoy, years)?.medianCagr ?? null,
     header: `${years}y median`,
-    size: 105,
+    size: 110,
     meta: { align: 'right' },
     cell: (i) => {
-      const w = i.row.original.consistency.rolling.find((x) => x.window === years)
-      return metricCell(
-        i.row.original,
-        'consistency.rolling',
-        w?.medianCagr ?? null,
-        rate,
+      const w = rollingFromYoy(i.row.original.consistency.yoy, years)
+      return (
+        <span
+          title={
+            w
+              ? `Median of the ${w.nWindows} rolling ${years}-financial-year windows in this run, annualised.`
+              : undefined
+          }
+        >
+          {metricCell(i.row.original, 'consistency.yoy', w?.medianCagr ?? null, rate)}
+        </span>
       )
     },
   })
@@ -281,35 +330,43 @@ export function consistencyColumns(): Col[] {
     windowCol(5),
     {
       id: 'worstWindow',
-      accessorFn: (r) =>
-        r.consistency.rolling.find((w) => w.window === 3)?.minCagr ?? null,
+      accessorFn: (r) => rollingFromYoy(r.consistency.yoy, 3)?.minCagr ?? null,
       header: 'Worst 3y',
       size: 100,
       meta: { align: 'right', priority: 'medium' },
-      cell: (i) =>
-        metricCell(
-          i.row.original,
-          'consistency.rolling',
-          i.row.original.consistency.rolling.find((w) => w.window === 3)?.minCagr ??
-            null,
-          rate,
-        ),
+      cell: (i) => {
+        const w = rollingFromYoy(i.row.original.consistency.yoy, 3)
+        return (
+          <span title="The worst any three consecutive financial years did, annualised. This is the stretch you would actually have had to sit through.">
+            {metricCell(i.row.original, 'consistency.yoy', w?.minCagr ?? null, rate)}
+          </span>
+        )
+      },
     },
     {
+      // Sorts on the share so the ranking is comparable across runs of
+      // different lengths; DISPLAYS the count, because "13 of 16" and "13 of
+      // 16000" are the same percentage and not remotely the same evidence.
       id: 'positiveWindows',
-      accessorFn: (r) =>
-        r.consistency.rolling.find((w) => w.window === 3)?.positiveShare ?? null,
+      accessorFn: (r) => {
+        const w = rollingFromYoy(r.consistency.yoy, 3)
+        return w && w.nWindows ? w.nPositive / w.nWindows : null
+      },
       header: 'Positive 3y windows',
-      size: 140,
+      size: 150,
       meta: { align: 'right', priority: 'medium' },
-      cell: (i) =>
-        metricCell(
-          i.row.original,
-          'consistency.rolling',
-          i.row.original.consistency.rolling.find((w) => w.window === 3)
-            ?.positiveShare ?? null,
-          pct,
-        ),
+      cell: (i) => {
+        const w = rollingFromYoy(i.row.original.consistency.yoy, 3)
+        if (!w) return metricCell(i.row.original, 'consistency.yoy', null, pct)
+        return (
+          <span
+            className="tabular-nums"
+            title={`${w.nPositive} of the ${w.nWindows} rolling 3-financial-year windows ended positive (${pct(w.nPositive / w.nWindows)}).`}
+          >
+            {countOf(w.nPositive, w.nWindows)}
+          </span>
+        )
+      },
     },
     {
       id: 'positiveYears',
@@ -318,16 +375,18 @@ export function consistencyColumns(): Col[] {
         return yoy.length ? yoy.filter((y) => (y.returnPct ?? 0) > 0).length / yoy.length : null
       },
       header: 'Positive years',
-      size: 115,
+      size: 120,
       meta: { align: 'right' },
       cell: (i) => {
         const yoy = i.row.original.consistency.yoy.filter((y) => y.returnPct != null)
-        const share = yoy.length
-          ? yoy.filter((y) => (y.returnPct ?? 0) > 0).length / yoy.length
-          : null
+        if (!yoy.length) return metricCell(i.row.original, 'consistency.yoy', null, pct)
+        const up = yoy.filter((y) => (y.returnPct ?? 0) > 0).length
         return (
-          <span title={yoy.length ? `${yoy.length} financial years` : undefined}>
-            {metricCell(i.row.original, 'consistency.yoy', share, pct)}
+          <span
+            className="tabular-nums"
+            title={`${up} of ${yoy.length} financial years ended positive (${pct(up / yoy.length)}). A year marked * in the matrix is partial.`}
+          >
+            {countOf(up, yoy.length)}
           </span>
         )
       },
@@ -419,12 +478,24 @@ export function tradeQualityColumns(): Col[] {
         ),
     },
     {
+      // "Win rate" and "Avg win" were being read as the same idea in two
+      // units. They are different questions: HOW OFTEN the strategy is right,
+      // and HOW MUCH it makes when it is. The headers now say which.
       id: 'winRate',
       accessorFn: (r) => r.tradeQuality.winRate,
-      header: 'Win rate',
-      size: 90,
+      header: '% trades won',
+      size: 110,
       meta: { align: 'right' },
-      cell: (i) => metricCell(i.row.original, 'tradeQuality.winRate', i.row.original.tradeQuality.winRate, pct),
+      cell: (i) => (
+        <span title="Share of closed trades that ended in profit. Says nothing about size — a strategy can win 70% of the time and still lose money.">
+          {metricCell(
+            i.row.original,
+            'tradeQuality.winRate',
+            i.row.original.tradeQuality.winRate,
+            pct,
+          )}
+        </span>
+      ),
     },
     {
       id: 'avgWinLoss',
@@ -436,8 +507,8 @@ export function tradeQualityColumns(): Col[] {
         if (avgWinnerPct == null || !avgLoserPct) return null
         return Math.abs(avgWinnerPct / avgLoserPct)
       },
-      header: 'Avg win / loss',
-      size: 130,
+      header: 'Avg gain / avg loss per trade',
+      size: 190,
       meta: { align: 'right' },
       cell: (i) => {
         const { avgWinnerPct, avgLoserPct } = i.row.original.tradeQuality
@@ -446,8 +517,18 @@ export function tradeQualityColumns(): Col[] {
         }
         // These are per-trade outcomes, not period performance, so they are
         // plain percentages — annualising a 3-day trade is meaningless.
+        //
+        // [FIX 2026-08-19] They arrive from the engine already in percent
+        // (24.13 meaning 24.13%) and were being run through pct(), which
+        // multiplies by 100 — a 24% average winner rendered as "2413.2%",
+        // which is the "numbers out of place" on the Trade quality screen.
+        // The conversion now happens once in core/adapters/runs.ts, at the
+        // boundary where the unit changes.
         return (
-          <span className="tabular-nums">
+          <span
+            className="tabular-nums"
+            title="Mean return of the winning trades against the mean return of the losing ones. Read it beside '% trades won': a 3:1 ratio at a 30% win rate and a 1:1 ratio at a 60% win rate are different strategies."
+          >
             <span className="text-green">{pct(avgWinnerPct)}</span>
             {' / '}
             <span className="text-red">{pct(avgLoserPct)}</span>
@@ -477,52 +558,130 @@ export function tradeQualityColumns(): Col[] {
       // different strategies, and `Trades` alone cannot tell them apart.
       id: 'distinctTickers',
       accessorFn: (r) => r.tradeQuality.nDistinctTickers ?? null,
-      header: 'Names',
-      size: 85,
+      // "Names" was market shorthand nobody outside a trading desk reads as
+      // "how many different stocks". Spelled out.
+      header: 'Distinct stocks traded',
+      size: 165,
       meta: { align: 'right', priority: 'low', group: 'trade' },
-      cell: (i) => int(i.row.original.tradeQuality.nDistinctTickers ?? null),
+      cell: (i) => (
+        <span title="How many different tickers the strategy ever held. 40 trades across 8 stocks and 40 across 40 are different strategies, and the trade count alone cannot tell them apart.">
+          {int(i.row.original.tradeQuality.nDistinctTickers ?? null)}
+        </span>
+      ),
     },
   ]
 }
 
+/**
+ * Regular-returns mode: what the strategy PAYS, not what it compounds to.
+ *
+ * Every figure comes from core/regularReturns, which replays the year-on-year
+ * series as a sequence of one-year bets on the same base capital. Counts are
+ * counts here for the same reason they are on the consistency table — "paid
+ * in 11 of 18 years" is a fact you can act on; "61.1%" is a statistic.
+ */
 export function incomeColumns(): Col[] {
   return [
     {
+      id: 'avgAnnualYield',
+      accessorFn: (r) => r.income?.avgAnnualYieldPct ?? null,
+      header: 'Avg annual payout',
+      size: 145,
+      meta: { align: 'right' },
+      cell: (i) => (
+        <span title="Mean yearly withdrawal as a share of the capital at work. A yield, not a growth rate — nothing compounds in this mode, so it is deliberately not called a CAGR.">
+          {metricCell(
+            i.row.original,
+            'income',
+            i.row.original.income?.avgAnnualYieldPct ?? null,
+            pct,
+          )}
+        </span>
+      ),
+    },
+    {
       id: 'totalWithdrawn',
       accessorFn: (r) => r.income?.totalWithdrawn ?? null,
-      header: 'Withdrawn',
-      size: 110,
+      header: 'Total drawn',
+      size: 115,
       meta: { align: 'right' },
-      cell: (i) => inr(i.row.original.income?.totalWithdrawn),
+      cell: (i) => (
+        <span title="Every year's gain above base capital, added up across the run.">
+          {inr(i.row.original.income?.totalWithdrawn)}
+        </span>
+      ),
+    },
+    {
+      id: 'yearsPaid',
+      // Sorts on the share so runs of different lengths rank comparably;
+      // displays the count.
+      accessorFn: (r) => r.income?.yearsSurvivedPct ?? null,
+      header: 'Years it paid',
+      size: 120,
+      meta: { align: 'right' },
+      cell: (i) => {
+        const income = i.row.original.income
+        if (!income || income.nYears == null || income.yearsSurvivedPct == null) {
+          return metricCell(i.row.original, 'income', null, pct)
+        }
+        const paid = Math.round(income.yearsSurvivedPct * income.nYears)
+        return (
+          <span
+            className="tabular-nums"
+            title={`Paid something in ${paid} of ${income.nYears} financial years (${pct(income.yearsSurvivedPct)}). The other years cleared nothing above base capital.`}
+          >
+            {countOf(paid, income.nYears)}
+          </span>
+        )
+      },
     },
     {
       id: 'totalInjected',
       accessorFn: (r) => r.income?.totalInjected ?? null,
-      header: 'Backfilled',
-      size: 110,
-      meta: { align: 'right' },
-      cell: (i) => inr(i.row.original.income?.totalInjected),
-    },
-    {
-      id: 'yearsSurvived',
-      accessorFn: (r) => r.income?.yearsSurvivedPct ?? null,
-      header: 'Profitable years',
-      size: 125,
-      meta: { align: 'right' },
-      cell: (i) =>
-        metricCell(i.row.original, 'income', i.row.original.income?.yearsSurvivedPct ?? null, pct),
-    },
-    {
-      id: 'topUpAfterLoss',
-      accessorFn: (r) => r.income?.topUpAfterLoss ?? null,
-      header: 'After a losing year',
-      size: 150,
+      header: 'Topped back up',
+      size: 130,
+      meta: { align: 'right', priority: 'medium' },
       cell: (i) => {
-        const v = i.row.original.income?.topUpAfterLoss
-        if (v == null) return metricCell(i.row.original, 'income', null, pct)
-        // The two variants the user asked for, named so the difference is
-        // legible: refund the shortfall, or carry on with what is left.
-        return v ? 'Topped back up' : 'Runs on current capital'
+        const income = i.row.original.income
+        if (!income) return metricCell(i.row.original, 'income', null, pct)
+        if (!income.topUpAfterLoss) {
+          return (
+            <span
+              className="text-muted-foreground"
+              title="This run carries its losses instead: nothing is put back after a bad year, so the book must earn its way back to base capital before it pays again."
+            >
+              {EM_DASH}
+            </span>
+          )
+        }
+        return (
+          <span title="Cash put back in after losing years to restore base capital. Money in, not money earned — subtract it from the total drawn before calling the strategy an income source.">
+            {inr(income.totalInjected)}
+          </span>
+        )
+      },
+    },
+    {
+      id: 'netIncome',
+      // The number the mode exists to produce: what the investor actually
+      // ends up with, after funding the bad years.
+      accessorFn: (r) =>
+        r.income ? (r.income.totalWithdrawn ?? 0) - (r.income.totalInjected ?? 0) : null,
+      header: 'Net of top-ups',
+      size: 135,
+      meta: { align: 'right' },
+      cell: (i) => {
+        const income = i.row.original.income
+        if (!income) return metricCell(i.row.original, 'income', null, pct)
+        const net = (income.totalWithdrawn ?? 0) - (income.totalInjected ?? 0)
+        return (
+          <span
+            className={net < 0 ? 'text-red tabular-nums' : 'tabular-nums'}
+            title="Total drawn less everything put back. Negative means the strategy consumed more capital than it ever paid out."
+          >
+            {inr(net)}
+          </span>
+        )
       },
     },
   ]

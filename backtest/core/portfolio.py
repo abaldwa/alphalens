@@ -208,7 +208,7 @@ class StrategyPortfolio:
         self.trades: List[Trade] = []
         self._equity_curve: List[Dict[str, Any]] = []
         self._cash_position_series: List[Dict[str, Any]] = []
-        self.cash_flows: List[Dict[str, Any]] = [{"date": None, "amount": -initial_capital}]  # date stamped by caller on first record
+        self.cash_flows: List[Dict[str, Any]] = [{"date": None, "amount": -initial_capital, "kind": "initial"}]  # date stamped by caller on first record
         self.total_contributed = initial_capital
         self._sip_injection_dates: Optional[List[pd.Timestamp]] = None
         self._sip_injection_idx = 0
@@ -384,7 +384,7 @@ class StrategyPortfolio:
                     topped_up = shortfall
                     self.cash += topped_up
                     self.total_contributed += topped_up
-                    self.cash_flows.append({"date": str(reset_date.date()), "amount": -topped_up})
+                    self.cash_flows.append({"date": str(reset_date.date()), "amount": -topped_up, "kind": "topup"})
                 else:
                     # [2026-08-13] No-top-up variant: the year ends with less
                     # than it started and the next year begins on exactly that.
@@ -402,7 +402,7 @@ class StrategyPortfolio:
                 if withdrawn > 0:
                     self.cash -= withdrawn
                     self.total_withdrawn += withdrawn
-                    self.cash_flows.append({"date": str(reset_date.date()), "amount": withdrawn})
+                    self.cash_flows.append({"date": str(reset_date.date()), "amount": withdrawn, "kind": "withdrawal"})
             self.total_withdrawn_pretax += withdrawn_pretax
 
             equity_after = self.total_equity(prices)
@@ -495,7 +495,11 @@ class StrategyPortfolio:
             self.deferred_tax_liability = max(0.0, due - paid)
 
             if paid > 0:
-                self.cash_flows.append({"date": str(bd), "amount": paid})
+                # `kind` tags this as an EXPENSE of the book rather than a receipt of
+                # the investor's, so the XIRR series in engine._finalize can leave it
+                # out. It stays in the series for the ledger invariants and for anyone
+                # auditing when tax actually left the book.
+                self.cash_flows.append({"date": str(bd), "amount": paid, "kind": "tax"})
 
             self.tax_ledger.append({
                 "fy_end": str(closed_fy_end),
@@ -529,7 +533,7 @@ class StrategyPortfolio:
             injection_date = self._sip_injection_dates[self._sip_injection_idx]
             self.cash += self.sip.amount
             self.total_contributed += self.sip.amount
-            self.cash_flows.append({"date": str(injection_date.date()), "amount": -self.sip.amount})
+            self.cash_flows.append({"date": str(injection_date.date()), "amount": -self.sip.amount, "kind": "sip"})
             self._sip_injection_idx += 1
 
     # ===== Position sizing (horizon-bucket-driven, per HorizonSizingPolicy) =====

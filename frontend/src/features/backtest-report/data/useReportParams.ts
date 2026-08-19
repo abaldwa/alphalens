@@ -32,6 +32,10 @@ export interface ReportParams {
   benchmark: string | null
   taxBasis: TaxBasis
   mode: ReturnMode
+  /** Regular-returns mode only (A88): does a losing year get topped back up
+   * to base capital, or does the book carry the loss and earn its way back?
+   * Defaults to carrying it — nobody refunds a bad year. */
+  topUpAfterLoss: boolean
   channel: Channel | 'all'
   strategy: StrategyKey | null
   /** Pivot section only: the two axes, the summarised metric and how a bucket
@@ -70,6 +74,7 @@ export function useReportParams(): [
         searchParams.get('mode') === 'regular_returns'
           ? 'regular_returns'
           : 'long_term_cagr',
+      topUpAfterLoss: searchParams.get('topUp') === '1',
       channel: (CHANNELS as string[]).includes(channel ?? '')
         ? (channel as Channel)
         : 'all',
@@ -92,9 +97,14 @@ export function useReportParams(): [
         (prev) => {
           const next = new URLSearchParams(prev)
           for (const [k, v] of Object.entries(patch)) {
-            // null/'' clears the key rather than writing "null" into the URL.
-            if (v == null || v === '' || v === 'all') next.delete(k)
-            else next.set(k, String(v))
+            // The URL keeps a short name for this one; the param object keeps
+            // the readable one, so neither the link nor the call sites have to
+            // compromise.
+            const key = k === 'topUpAfterLoss' ? 'topUp' : k
+            // null/''/false/'all' clear the key rather than writing "null" or
+            // "false" into the URL — a default is never frozen into a link.
+            if (v == null || v === '' || v === false || v === 'all') next.delete(key)
+            else next.set(key, v === true ? '1' : String(v))
           }
           return next
         },

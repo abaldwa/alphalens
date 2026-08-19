@@ -70,7 +70,15 @@ def test_the_tax_ledger_records_every_year_it_assessed():
     assert row["assessed"] == pytest.approx(row["paid"] + row["deferred"])
 
 
-def test_tax_appears_as_a_cash_flow_for_xirr():
+def test_tax_appears_in_the_cash_flow_series_tagged_as_tax():
+    """The payment stays visible in the ledger, and says what it is.
+
+    [2026-08-19] It is tagged rather than untagged because the XIRR series
+    must EXCLUDE it: tax leaves the book but never reaches the investor, and
+    on the post-tax path it is already out of the equity curve, so counting it
+    as a receipt credited the investor with money that went to the taxman.
+    engine._finalize filters on this tag; the flow itself is kept for the
+    ledger invariants and for auditing when tax actually left the book."""
     p = _portfolio()
     _book_gain(p, 200_000.0, date(2020, 6, 1), date(2020, 9, 1))
     p.apply_due_fy_tax(pd.Timestamp("2021-04-01"))
@@ -78,6 +86,7 @@ def test_tax_appears_as_a_cash_flow_for_xirr():
     tax_flows = [cf for cf in p.cash_flows if cf["date"] == "2021-04-01"]
     assert tax_flows, "the payment must be visible in the cash-flow series"
     assert tax_flows[0]["amount"] > 0, "money leaving the strategy is a positive flow"
+    assert tax_flows[0]["kind"] == "tax"
 
 
 def test_a_loss_year_pays_nothing():

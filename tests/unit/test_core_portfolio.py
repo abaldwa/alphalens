@@ -23,7 +23,13 @@ class TestInitialization:
 
     def test_initial_cash_flow_recorded_with_none_date_until_primed(self):
         p = _portfolio()
-        assert p.cash_flows == [{"date": None, "amount": -1_000_000.0}]
+        # `kind` tags what each flow IS (initial / sip / tax / withdrawal /
+        # topup) so engine._finalize can build the XIRR series from the flows
+        # the investor actually made — tax is an expense of the book, not a
+        # receipt of theirs, and used to be counted as one.
+        assert p.cash_flows == [
+            {"date": None, "amount": -1_000_000.0, "kind": "initial"}
+        ]
 
     def test_sizing_pulled_from_horizon_bucket(self):
         p = _portfolio(horizon_bucket=HorizonBucket.D5)

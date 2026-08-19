@@ -14,6 +14,8 @@
 
 import { useMemo } from 'react'
 
+import { baseCapitalFor, regularReturns } from '../core/regularReturns'
+import { useBenchmarkOverride } from './useBenchmarkOverride'
 import { useReportData } from './useReportData'
 import { resolveWindow } from '../core/window'
 import { useReportParams } from './useReportParams'
@@ -34,7 +36,12 @@ export function coversWindow(
 
 export function useReportPage() {
   const [params, setParams] = useReportParams()
-  const data = useReportData({ channel: params.channel })
+  // taxBasis is a DATA input, not a formatting one: the two bases are two
+  // separate simulations, so it decides which run each row is drawn from.
+  const data = useReportData({
+    channel: params.channel,
+    taxBasis: params.taxBasis,
+  })
 
   const resolved = useMemo(
     () =>
@@ -45,13 +52,41 @@ export function useReportPage() {
     [params.window, params.startDate, params.endDate, data.latestDate],
   )
 
+  // The benchmark dropdown re-scores the rows against the selected index.
+  // Applied before window filtering so the caveat travels with the row it
+  // belongs to. See useBenchmarkOverride for why this is not a label change.
+  const benchmarked = useBenchmarkOverride(
+    data.strategies,
+    params.benchmark,
+    params.taxBasis,
+  )
+
+  /**
+   * Regular-returns mode fills in `income`, which is null on every row
+   * otherwise — no run in the report was executed with the engine's annual
+   * reset, so selecting the mode used to add four permanently empty columns
+   * and change nothing else. core/regularReturns derives the schedule
+   * exactly from the year-on-year series; see that module for what the
+   * derivation does and does not claim.
+   */
+  const withIncome = useMemo(() => {
+    if (params.mode !== 'regular_returns') return benchmarked.strategies
+    return benchmarked.strategies.map((r) => ({
+      ...r,
+      income: regularReturns(r.consistency.yoy, {
+        baseCapital: baseCapitalFor(r.setup.capitalDeployed),
+        topUpAfterLoss: params.topUpAfterLoss,
+      }),
+    }))
+  }, [benchmarked.strategies, params.mode, params.topUpAfterLoss])
+
   const windowed = useMemo(
     () =>
-      data.strategies.map((r) => ({
+      withIncome.map((r) => ({
         report: r,
         covers: coversWindow(r, resolved.startDate, resolved.endDate),
       })),
-    [data.strategies, resolved.startDate, resolved.endDate],
+    [withIncome, resolved.startDate, resolved.endDate],
   )
 
   /** Strategies whose run covers the selected window. Comparing a 10-year
@@ -81,13 +116,13 @@ export function useReportPage() {
     params,
     setParams,
     strategies,
-    allStrategies: data.strategies,
+    allStrategies: withIncome,
     excludedCount,
     resolved,
     benchmarkOptions,
     recommendedBenchmark: data.indices.data?.recommended_benchmark ?? null,
     fallbackReason: data.indices.data?.fallback_reason ?? null,
     isLoading: data.isLoading,
-    errors: data.errors,
+    errors: [...data.errors, benchmarked.error].filter(Boolean) as Error[],
   }
 }

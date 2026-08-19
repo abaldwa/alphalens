@@ -63,7 +63,11 @@ import {
   worstYear,
   yoyPositiveShare,
 } from './core/recommendations.ts'
-import type { StrategyReport } from './core/types.ts'
+import { collectFiscalYears, shortFyLabel } from './core/fiscalYears.ts'
+import { countOf, median as fyMedian, rollingFromYoy, windowCagr } from './core/rollingFromYoy.ts'
+import { basisScore, pickForBasis, selectByBasis } from './core/selectByBasis.ts'
+import { baseCapitalFor, regularReturns, regularReturnsSchedule } from './core/regularReturns.ts'
+import type { StrategyReport, YoyReturn } from './core/types.ts'
 
 let failures = 0
 let checks = 0
@@ -83,6 +87,17 @@ function eq(actual: unknown, expected: unknown, what: string): void {
   if (a !== e) {
     failures += 1
     console.error(`  FAIL  ${what}\n          expected ${e}\n          actual   ${a}`)
+  }
+}
+
+/** Float comparison. Financial figures here are checked to 4 decimal places
+ * (0.01 of a percentage point), which is finer than anything the UI renders
+ * and coarse enough to be immune to the order of a geometric mean. */
+function approx(actual: number, expected: number, what: string, tolerance = 1e-4): void {
+  checks += 1
+  if (!Number.isFinite(actual) || Math.abs(actual - expected) > tolerance) {
+    failures += 1
+    console.error(`  FAIL  ${what}\n          expected ~${expected}\n          actual   ${actual}`)
   }
 }
 
@@ -871,6 +886,183 @@ eq(heatLevel(0.3, [0.1, 0.2, 0.3], true), 2, 'the best value of a good-high metr
 eq(heatLevel(0.3, [0.1, 0.2, 0.3], false), -2, 'the same value is coldest when lower is better')
 eq(heatLevel(null, [0.1, 0.3], true), 0, 'a null value is unshaded rather than worst')
 eq(heatLevel(0.2, [0.2, 0.2], true), 0, 'a flat grid is unshaded rather than all-green')
+
+section('rolling windows over financial years')
+
+// The exact series from mom_top10_3m_condition_21d_20260819's post-tax run.
+// These four expectations are the numbers a reader derives by hand from the
+// year-on-year matrix; the engine's daily-basis rolling_returns reported 29.7%,
+// -8.7% and "87.7% positive" for the same run, because it slides its window
+// along the equity curve and produces 57 near-identical overlapping windows
+// rather than 16 distinct three-year holdings.
+const REAL_FY: YoyReturn[] = [
+  -0.023, -0.0754, -0.0858, 0.0987, 0.3575, 0.8642, -0.209, 0.5782, 0.925,
+  -0.127, -0.4468, 1.6413, 0.4866, -0.0899, 1.4497, 0.5069, -0.2965, 0.1456,
+].map((returnPct, i) => ({ fyLabel: `FY${2010 + i}`, returnPct }))
+
+const r3 = rollingFromYoy(REAL_FY, 3)!
+const r5 = rollingFromYoy(REAL_FY, 5)!
+approx(r3.medianCagr!, 0.3101, 'the 3-year median is 31.0%/yr, not the daily basis\u2019 29.7%')
+approx(r3.minCagr!, -0.0618, 'the worst 3-year window is -6.2%/yr, not -8.7%')
+eq(r3.nWindows, 16, '18 financial years give 16 rolling 3-year windows')
+eq(r3.nPositive, 13, '13 of those 16 windows ended positive')
+approx(r5.medianCagr!, 0.2842, 'the 5-year median is 28.4%/yr')
+eq(r5.nWindows, 14, 'and 14 rolling 5-year windows')
+
+eq(rollingFromYoy(REAL_FY.slice(0, 2), 3), null, 'a run shorter than the window has no windows, not a zero')
+eq(fyMedian([]), null, 'a median of nothing is null')
+eq(fyMedian([1, 2, 3, 4]), 2.5, 'an even-length median averages the middle pair')
+approx(windowCagr([1, 1, 1], 0, 3)!, 1, 'three years of doubling annualise to +100%/yr')
+eq(windowCagr([0.1, null, 0.1], 0, 3), null, 'a year with no data voids its window rather than counting as flat')
+eq(windowCagr([-1, 0.5, 0.5], 0, 3), null, 'a wiped-out window has no real geometric mean')
+eq(windowCagr([0.1, 0.1], 0, 3), null, 'a window running past the end of the series is null')
+eq(countOf(13, 16), '13 of 16', 'positive windows read as a count, not a share')
+eq(countOf(null, 16), EM_DASH, 'and an unknown count is an em dash')
+
+section('the financial-year axis')
+
+// Tables and the chart deliberately run in OPPOSITE directions — see
+// core/fiscalYears. Getting this wrong on the chart draws every drawdown as a
+// recovery, so it is asserted rather than left to a reviewer to notice.
+const axisRows = [
+  { consistency: { yoy: ['FY2010', 'FY2011', 'FY2026', 'FY2027*'].map((fyLabel) => ({ fyLabel, returnPct: 0.1 })) } },
+  { consistency: { yoy: ['FY2024', 'FY2025'].map((fyLabel) => ({ fyLabel, returnPct: 0.1 })) } },
+] as unknown as StrategyReport[]
+
+eq(
+  collectFiscalYears(axisRows),
+  ['FY2027*', 'FY2026', 'FY2025', 'FY2024', 'FY2011', 'FY2010'],
+  'tables run newest-first, and the partial marker does not push FY2027 to the end',
+)
+eq(
+  collectFiscalYears(axisRows, 'oldest-first'),
+  ['FY2010', 'FY2011', 'FY2024', 'FY2025', 'FY2026', 'FY2027*'],
+  'the chart runs oldest-first: a reversed time axis inverts every trend',
+)
+eq(
+  collectFiscalYears([] as StrategyReport[]),
+  [],
+  'no rows means no year axis, not a fabricated range',
+)
+
+eq(shortFyLabel('FY2027'), 'FY27', 'headings abbreviate to two digits')
+eq(shortFyLabel('FY2009*'), 'FY09*', 'and keep the partial-year marker')
+eq(shortFyLabel('2027'), '2027', 'an unexpected shape passes through rather than being half-parsed')
+
+section('one row, one run')
+
+function runRow(
+  key: string,
+  basis: 'pre_tax' | 'post_tax' | null,
+  overrides: Partial<StrategyReport['returns']> = {},
+  runId = 'r1',
+): StrategyReport {
+  return {
+    key,
+    label: key,
+    channel: 'momentum',
+    setup: {
+      channel: 'momentum', universe: null,
+      window: { startDate: '2009-04-01', endDate: '2026-06-30', years: 17 },
+      capitalDeployed: 1_000_000, sipAmount: null, capitalMode: 'lump_sum',
+      filters: [], benchmarkIndexName: null,
+      exitCriterion: { variant: null, stopPct: null, targetPct: null, maxHoldDays: null, trailingPct: null },
+      lookbackMonths: null, rebalanceFreq: null, topN: null, rankBand: null,
+      rankStart: null, rankEnd: null, category: null,
+    },
+    returns: {
+      cagrPreTax: null, cagrPostTax: null, xirr: null, sipXirr: null,
+      finalCapital: null, totalContributed: null, benchmarkCagr: 0.1421,
+      excessReturn: null, benchmarkIndexName: 'Nifty 500', benchmarkCaveat: null,
+      ...overrides,
+    },
+    consistency: { rolling: [], yoy: [], ragCounts: null },
+    risk: { maxDrawdown: null, sharpe: null, sortino: null, calmar: null, volatility: null },
+    tradeQuality: {
+      nTrades: null, nClosedTrades: null, nOpenTrades: null, winRate: null,
+      profitFactor: null, avgHoldDays: null, churnPerYear: null,
+      avgWinnerPct: null, avgLoserPct: null, turnoverRatio: null,
+    },
+    income: null, equityCurve: null, tradeBookUrl: null,
+    reportedTaxBasis: basis, sourceRunId: runId, pending: {},
+  }
+}
+
+// The real shape of the bug: two runs of ONE strategy, each internally
+// consistent, collapsed into a row that was consistent with neither.
+const postRun = runRow('momentum:s', 'post_tax', { cagrPostTax: 0.1896, excessReturn: 0.0475 }, 'a')
+const preRun = runRow('momentum:s', 'pre_tax', { cagrPreTax: 0.0487, excessReturn: -0.0934 }, 'b')
+
+eq(basisScore(postRun, 'post_tax'), 3, 'a run measured on the requested basis is preferred')
+eq(basisScore(preRun, 'post_tax'), 0, 'a run stating only the other basis is not')
+eq(
+  pickForBasis([preRun, postRun], 'post_tax')?.sourceRunId,
+  'a',
+  'asking for post-tax picks the post-tax run whatever order they arrive in',
+)
+eq(
+  pickForBasis([postRun, preRun], 'pre_tax')?.sourceRunId,
+  'b',
+  'and asking for pre-tax picks the other one — this is what makes the toggle do something',
+)
+
+const collapsed = selectByBasis([preRun, postRun], 'post_tax')
+eq(collapsed.length, 1, 'two runs of one strategy render as one row')
+eq(collapsed[0].returns.cagrPostTax, 0.1896, 'the row shows the chosen run\u2019s CAGR')
+eq(
+  collapsed[0].returns.excessReturn,
+  0.0475,
+  'beside the SAME run\u2019s excess — the old merge showed 19.0%/yr against -9.3 pp/yr',
+)
+
+// Determinism: two runs that answer the basis equally well must not swap
+// places between reloads.
+const twinA = runRow('momentum:t', null, { cagrPreTax: 0.2 }, 'a')
+const twinB = runRow('momentum:t', null, { cagrPreTax: 0.2 }, 'b')
+eq(pickForBasis([twinA, twinB], 'post_tax')?.sourceRunId, 'b', 'ties break deterministically on run id')
+eq(pickForBasis([twinB, twinA], 'post_tax')?.sourceRunId, 'b', 'regardless of arrival order')
+eq(pickForBasis([], 'post_tax'), null, 'no candidates is null, not a fabricated row')
+
+section('regular returns')
+
+// Three years: +50%, -20%, +50% on a 10 lakh base.
+const incomeFy: YoyReturn[] = [
+  { fyLabel: 'FY2021', returnPct: 0.5 },
+  { fyLabel: 'FY2022', returnPct: -0.2 },
+  { fyLabel: 'FY2023', returnPct: 0.5 },
+]
+
+const carried = regularReturnsSchedule(incomeFy, { baseCapital: 1_000_000, topUpAfterLoss: false })
+eq(carried.length, 3, 'every year with a return figure is in the schedule')
+approx(carried[0].withdrawn, 500_000, 'the first year pays out everything above base capital')
+eq(carried[1].withdrawn, 0, 'a losing year pays nothing')
+approx(carried[1].closingCapital, 800_000, 'and the book carries the loss into next year')
+approx(
+  carried[2].withdrawn,
+  200_000,
+  'so the recovery year only pays what it clears ABOVE base, not its whole gain',
+)
+eq(carried.every((y) => y.injected === 0), true, 'nothing is put back when losses are carried')
+
+const toppedUp = regularReturnsSchedule(incomeFy, { baseCapital: 1_000_000, topUpAfterLoss: true })
+approx(toppedUp[1].injected, 200_000, 'the top-up variant funds the shortfall out of pocket')
+approx(toppedUp[2].withdrawn, 500_000, 'so the next year starts from base capital again')
+
+const income = regularReturns(incomeFy, { baseCapital: 1_000_000, topUpAfterLoss: false })!
+approx(income.totalWithdrawn!, 700_000, 'total drawn is the sum of the payouts')
+eq(income.totalInjected, 0, 'and nothing was injected')
+eq(income.nYears, 3, 'over three financial years')
+approx(income.yearsSurvivedPct!, 2 / 3, 'two of which paid something')
+approx(income.avgAnnualYieldPct!, 0.7 / 3, 'the yield is mean payout over base capital, not a CAGR')
+
+eq(
+  regularReturns([{ fyLabel: 'FY2021', returnPct: null }], { baseCapital: 1_000_000, topUpAfterLoss: false }),
+  null,
+  'a strategy with no measurable year has no income schedule, rather than a zero one',
+)
+eq(baseCapitalFor(2_500_000), 2_500_000, 'base capital is what the run actually deployed')
+eq(baseCapitalFor(null), 1_000_000, 'falling back to a stated round figure only when the run never recorded it')
+eq(baseCapitalFor(0), 1_000_000, 'a zero deployment is treated as unrecorded, not as a zero base')
 
 // ---------------------------------------------------------------------------
 console.log(`\n${checks - failures}/${checks} checks passed`)

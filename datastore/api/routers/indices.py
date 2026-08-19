@@ -15,7 +15,7 @@ producing a benchmark CAGR measured over a shorter period than the strategy.
 """
 
 from datetime import date
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
@@ -147,11 +147,15 @@ def list_indices(
     recommended: Optional[str] = None
     fallback_reason: Optional[str] = None
     if start_date and end_date:
+        # benchmark_options returns a heterogeneous dict, so each value is
+        # narrowed at the boundary rather than assigned straight into a typed
+        # local -- mypy cannot see through the dict and the alternative is an
+        # untyped `opts` leaking through the rest of the function.
         opts = benchmark_options(coverage, start_date, end_date, preferred=preferred)
-        live = opts["live"]
-        backcomputed = opts["backcomputed"]
-        recommended = opts["recommended"]
-        fallback_reason = opts["fallback_reason"]
+        live = cast(List[str], opts["live"])
+        backcomputed = cast(List[str], opts["backcomputed"])
+        recommended = cast(Optional[str], opts["recommended"])
+        fallback_reason = cast(Optional[str], opts["fallback_reason"])
         # Over a window, "usable" means the index actually traded then.
         # Anything reachable only through back-computation stays selectable
         # but is reported separately, so the UI marks it rather than hides it.
@@ -192,3 +196,116 @@ def list_indices(
         recommended_benchmark=recommended,
         fallback_reason=fallback_reason,
     )
+
+
+class IndexReturn(BaseModel):
+    """Buy-and-hold performance of one index over one window."""
+
+    index_name: str
+    start_date: Optional[date]
+    end_date: Optional[date]
+    start_close: Optional[float]
+    end_close: Optional[float]
+    cagr: Optional[float] = Field(
+        default=None, description="Annualised, calendar/365.25 basis, as a fraction."
+    )
+    n_rows: int
+    status: str = Field(
+        description="ok | no_data | insufficient_history — never a synthetic figure."
+    )
+    caveat: Optional[str] = None
+
+
+class IndexReturnsResponse(BaseModel):
+    returns: List[IndexReturn]
+
+
+@router.get("/returns", response_model=IndexReturnsResponse)
+def index_returns(
+    start_date: date = Query(description="Window start (inclusive)."),
+    end_date: date = Query(description="Window end (inclusive)."),
+    index_name: Optional[List[str]] = Query(
+        None,
+        description=(
+            "Indices to measure. Repeat the parameter for several. Omitted "
+            "means every index the daily pipeline is still updating."
+        ),
+    ),
+) -> IndexReturnsResponse:
+    """Buy-and-hold CAGR per index over an explicit window (A98/A104).
+
+    WHY THIS EXISTS: a backtest run stores the benchmark it was measured
+    against at run time. The report's benchmark selector could therefore
+    change which index it *said* it was comparing to while every number on
+    screen stayed pinned to the run's original choice — a strategy shown
+    against "Nifty 100" was still being scored against Nifty 500. This
+    endpoint gives the report a real figure for the selected index over the
+    same window, so switching benchmark changes the comparison instead of
+    only the label.
+
+    The measurement is deliberately the same one backtest/core/engine.py's
+    benchmark curve makes: first real close in the window to last real close
+    in the window, annualised on the calendar 365.25 basis. Nothing is
+    interpolated and no missing series is filled — an index with fewer than
+    two real bars in the window reports `status` and a null CAGR rather than
+    a number that would silently be measured over a shorter period than the
+    strategy it is about to be subtracted from.
+    """
+    from config.benchmarks import DEFAULT_BENCHMARK_INDEX  # noqa: F401
+
+    with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        coverage = load_coverage(conn)
+        wanted = (
+            [n for n in index_name if n in coverage]
+            if index_name
+            else sorted(n for n, c in coverage.items() if c.is_fresh)
+        )
+        out: List[IndexReturn] = []
+        for name in wanted:
+            rows = conn.execute(
+                """
+                SELECT date, close FROM index_ohlcv
+                WHERE index_name = ? AND date BETWEEN ? AND ? AND close > 0
+                ORDER BY date
+                """,
+                [name, start_date, end_date],
+            ).fetchall()
+            cov = coverage[name]
+            caveat = cov.comparison_caveat(start_date, end_date)
+            if len(rows) < 2:
+                out.append(
+                    IndexReturn(
+                        index_name=name,
+                        start_date=None,
+                        end_date=None,
+                        start_close=None,
+                        end_close=None,
+                        cagr=None,
+                        n_rows=len(rows),
+                        status="no_data" if not rows else "insufficient_history",
+                        caveat=caveat,
+                    )
+                )
+                continue
+            first_d, first_c = rows[0]
+            last_d, last_c = rows[-1]
+            years = (last_d - first_d).days / 365.25
+            cagr = (
+                (float(last_c) / float(first_c)) ** (1.0 / years) - 1.0
+                if years > 0 and float(first_c) > 0 and float(last_c) > 0
+                else None
+            )
+            out.append(
+                IndexReturn(
+                    index_name=name,
+                    start_date=first_d,
+                    end_date=last_d,
+                    start_close=float(first_c),
+                    end_close=float(last_c),
+                    cagr=cagr,
+                    n_rows=len(rows),
+                    status="ok" if cagr is not None else "insufficient_history",
+                    caveat=caveat,
+                )
+            )
+    return IndexReturnsResponse(returns=out)

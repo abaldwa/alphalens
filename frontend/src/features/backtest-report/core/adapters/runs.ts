@@ -34,8 +34,36 @@ import {
   type RollingWindow,
   type StrategyReport,
   type StrategySetup,
+  type TaxBasis,
   type YoyReturn,
 } from '../types.ts'
+
+/**
+ * `avg_winner_pct` / `avg_loser_pct` arrive in PERCENT (24.13 meaning 24.13%)
+ * — backtest/core/engine.py feeds compute_metrics `t.pnl_pct * 100`. Every
+ * other number in StrategyReport is a FRACTION, and the table's `pct()`
+ * formatter multiplies by 100, so passing these through unscaled rendered an
+ * average winner of 24% as "2413.2%". Converted once, here at the boundary,
+ * rather than left for each call site to remember.
+ */
+function fractionFromPercent(v: number | null | undefined): number | null {
+  return v == null || !Number.isFinite(v) ? null : v / 100
+}
+
+/**
+ * The API origin, read the same way shared/api/client.ts reads it.
+ *
+ * Deliberately NOT imported from there. This module is executed by
+ * `npm run selfcheck` under jiti, which resolves plain relative paths but not
+ * the `@/` alias — every other import here is `import type` and therefore
+ * erased, so pulling in a runtime value from an aliased module is what would
+ * break the check. The duplication is two lines and is asserted against by
+ * the self-check itself.
+ */
+function apiOrigin(): string {
+  const env = (import.meta as { env?: Record<string, string | undefined> }).env
+  return (env?.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '')
+}
 
 /**
  * Metrics this endpoint structurally cannot supply.
@@ -218,6 +246,7 @@ export function adaptRun(run: BacktestRunSummary): StrategyReport {
   if (m?.avg_winner_pct == null && m?.avg_loser_pct == null) {
     pending['tradeQuality.avgWinnerPct'] = PENDING_REASONS['tradeQuality.avgWinnerPct']
   }
+  if (m?.volatility == null) pending['risk.volatility'] = PENDING_REASONS['risk.volatility']
   if (m?.sortino == null && m?.sortino_none_reason) {
     pending['risk.sortino'] = { reason: m.sortino_none_reason }
   }
@@ -254,7 +283,7 @@ export function adaptRun(run: BacktestRunSummary): StrategyReport {
       sharpe: m?.sharpe ?? null,
       sortino: m?.sortino ?? null,
       calmar: m?.calmar ?? null,
-      volatility: null,
+      volatility: m?.volatility ?? null,
     },
     tradeQuality: {
       nTrades: m?.n_trades ?? null,
@@ -264,8 +293,8 @@ export function adaptRun(run: BacktestRunSummary): StrategyReport {
       profitFactor: m?.profit_factor ?? null,
       avgHoldDays: m?.avg_days_held ?? null,
       churnPerYear: m?.churn_per_year ?? null,
-      avgWinnerPct: m?.avg_winner_pct ?? null,
-      avgLoserPct: m?.avg_loser_pct ?? null,
+      avgWinnerPct: fractionFromPercent(m?.avg_winner_pct),
+      avgLoserPct: fractionFromPercent(m?.avg_loser_pct),
       turnoverRatio: m?.turnover_ratio ?? null,
       nDistinctTickers: m?.n_distinct_tickers_traded ?? null,
       totalTaxPaid: m?.total_tax_paid ?? null,
@@ -278,8 +307,14 @@ export function adaptRun(run: BacktestRunSummary): StrategyReport {
     // fetches it per run via useEquityCurve(sourceRunId) rather than the list
     // carrying ~2,500 points per row for a chart no list column draws.
     equityCurve: null,
-    tradeBookUrl: `/api/v1/backtest/experiments/${encodeURIComponent(run.run_id)}/trade_log`,
+    // ABSOLUTE, against the API origin. The frontend is served by Vite on
+    // :5173 with no /api proxy, so a root-relative href opened the dev
+    // server's own 404 page instead of the CSV — the "Trades link 404s" bug.
+    // Every other call goes through apiGet, which does this via `new
+    // URL(path, API_BASE_URL)`; a plain <a href> has to do it itself.
+    tradeBookUrl: `${apiOrigin()}/api/v1/backtest/experiments/${encodeURIComponent(run.run_id)}/trade_log`,
     sourceRunId: run.run_id,
+    reportedTaxBasis: (basis as TaxBasis | null) ?? null,
     pending,
   }
 }

@@ -61,6 +61,11 @@ export interface BacktestRunMetrics {
    * does not compete with the numbers a deploy decision turns on. */
   n_outlier_trades: number | null
   max_abs_return_zscore: number | null
+  /** Annualised standard deviation of periodic returns, as a fraction. Added
+   * 2026-08-19: the Risk table has always had a Volatility column and the
+   * engine never emitted the field behind it, so every row rendered an
+   * explained em dash. Null on runs backtested before that date. */
+  volatility?: number | null
   /** A90: mark-to-market portfolio value per trading day. Served only by the
    * single-run detail endpoint — `list_runs` strips it (and
    * `cash_position_series`) because at ~one entry per trading day they

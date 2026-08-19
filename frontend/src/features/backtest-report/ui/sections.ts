@@ -9,14 +9,22 @@
 import type { ReportParams } from '../data/useReportParams'
 import type { BenchmarkOption } from '../core/types'
 
+/**
+ * The site-level strip: which PART of the report you are in.
+ *
+ * Returns/Consistency/Risk/Trade quality used to be listed here as four peers.
+ * They are now tabs inside the Metrics workspace (ui/MetricTabs), because they
+ * are four views of one comparison rather than four reports — listing them
+ * twice, once here and once as tabs, would give the reader two controls that
+ * do the same thing. Their routes are unchanged, so every existing link and
+ * bookmark still resolves; they simply land on the workspace with that tab
+ * active.
+ */
 export const REPORT_SECTIONS: Array<{ path: string; label: string }> = [
   { path: '/backtest-report', label: 'Overview' },
   { path: '/backtest-report/recommendations', label: 'Recommendations' },
-  { path: '/backtest-report/returns', label: 'Returns' },
+  { path: '/backtest-report/metrics', label: 'Metrics' },
   { path: '/backtest-report/pivot', label: 'Pivot' },
-  { path: '/backtest-report/consistency', label: 'Consistency' },
-  { path: '/backtest-report/risk', label: 'Risk' },
-  { path: '/backtest-report/trade-quality', label: 'Trade quality' },
 ]
 
 /** What ReportLayout needs from a page's useReportPage() result. */

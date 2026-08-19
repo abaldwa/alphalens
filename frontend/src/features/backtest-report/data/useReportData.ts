@@ -30,7 +30,8 @@ import { apiGet } from '@/shared/api/client'
 import { adaptMomentumReport } from '../core/adapters/momentum'
 import { adaptTechnicalReport } from '../core/adapters/technical'
 import { adaptRuns } from '../core/adapters/runs'
-import type { Channel, StrategyReport } from '../core/types'
+import { selectByBasis } from '../core/selectByBasis'
+import type { Channel, StrategyReport, TaxBasis } from '../core/types'
 
 export interface IndexOption {
   index_name: string
@@ -54,6 +55,10 @@ export interface IndexListResponse {
 
 export interface ReportDataOptions {
   channel?: Channel | 'all'
+  /** Which of a strategy's runs to render. See core/selectByBasis: the two
+   * bases are two separate simulations, so this picks a row rather than
+   * swapping one number inside a shared row. */
+  taxBasis?: TaxBasis
   /** Window bounds, forwarded to /api/v1/indices so benchmark options and
    * their caveats reflect the period actually being compared. */
   startDate?: string | null
@@ -61,7 +66,7 @@ export interface ReportDataOptions {
 }
 
 export function useReportData(options: ReportDataOptions = {}) {
-  const { channel = 'all' } = options
+  const { channel = 'all', taxBasis = 'post_tax' } = options
 
   const momentum = useQuery({
     // Same key as pages/momentum/dynamic-report/shared.tsx, deliberately: one
@@ -88,47 +93,39 @@ export function useReportData(options: ReportDataOptions = {}) {
     const fromMomentum = momentum.data ? adaptMomentumReport(momentum.data) : []
     const fromTechnical = technical.data ? adaptTechnicalReport(technical.data) : []
     const fromRuns = adaptRuns(runs.data?.runs ?? null)
-    // The specialised reports win over /runs for channel-specific richness
-    // (rolling windows, YoY, churn). However some metrics (XIRR, post-tax
-    // CAGR, or a declared `universe`) may only be present on the generic
-    // run summary. Merge so that specialised reports override runs, but
-    // missing scalar fields are backfilled from `fromRuns` when available.
-    const merged = new Map<string, StrategyReport>()
-    for (const r of fromRuns) merged.set(r.key, r)
-    for (const r of [...fromTechnical, ...fromMomentum]) merged.set(r.key, r)
 
-    // Backfill missing simple fields on specialised rows from the runs
-    // adapter where the run-level metrics exist (xirr, cagrPostTax, universe,
-    // finalCapital, totalContributed). This preserves the richer report but
-    // supplies missing scalars the table needs to render.
-    for (const runRow of fromRuns) {
-      const existing = merged.get(runRow.key)
-      if (!existing) continue
-      // Returns-level fields to backfill when null in the specialised row.
-      const ret = existing.returns
-      const runRet = runRow.returns
-      if ((ret.cagrPostTax == null || ret.cagrPostTax === undefined) && runRet.cagrPostTax != null) {
-        ret.cagrPostTax = runRet.cagrPostTax
-        delete existing.pending['returns.cagrPostTax']
+    // [FIX 2026-08-19] Runs are collapsed BY TAX BASIS, not by "last one in
+    // the response wins". /runs returns one row per simulation and a strategy
+    // is normally simulated twice — with annual tax deduction and without —
+    // under the same strategy_id. The previous reduction kept an arbitrary
+    // one of the two and then patched its null scalars from the other, which
+    // put one run's CAGR next to the other run's excess return and left the
+    // tax-basis toggle with nothing to change. selectByBasis keeps ONE run
+    // per strategy, whole, so every figure in a row is internally consistent.
+    const runRows = selectByBasis(fromRuns, taxBasis)
+
+    // The specialised reports win over /runs where they exist: they carry
+    // channel-specific richness (rolling windows, YoY, churn) the generic run
+    // summary has no field for. Deliberately NO cross-run scalar backfill —
+    // that is what produced the mixed rows above. A metric the chosen source
+    // genuinely lacks renders as an explained em dash instead.
+    const merged = new Map<string, StrategyReport>()
+    for (const r of runRows) merged.set(r.key, r)
+    for (const r of [...fromTechnical, ...fromMomentum]) {
+      const runRow = merged.get(r.key)
+      // `universe` is the one field the specialised reports systematically
+      // lack and the run summary sometimes has. It is setup metadata, not a
+      // measurement, so carrying it across runs cannot make two numbers
+      // disagree.
+      if (runRow?.setup.universe && !r.setup.universe) {
+        r.setup.universe = runRow.setup.universe
       }
-      if ((ret.xirr == null || ret.xirr === undefined) && runRet.xirr != null) {
-        ret.xirr = runRet.xirr
-        delete existing.pending['returns.xirr']
-      }
-      if ((ret.finalCapital == null || ret.finalCapital === undefined) && runRet.finalCapital != null) {
-        ret.finalCapital = runRet.finalCapital
-        delete existing.pending['returns.finalCapital']
-      }
-      // Setup-level backfill: universe.
-      if ((existing.setup.universe == null || existing.setup.universe === undefined) && runRow.setup.universe) {
-        existing.setup.universe = runRow.setup.universe
-      }
-      merged.set(existing.key, existing)
+      merged.set(r.key, r)
     }
 
     const all = [...merged.values()]
     return channel === 'all' ? all : all.filter((r) => r.channel === channel)
-  }, [momentum.data, technical.data, runs.data, channel])
+  }, [momentum.data, technical.data, runs.data, channel, taxBasis])
 
   const indices = useQuery({
     queryKey: ['indices', options.startDate, options.endDate],

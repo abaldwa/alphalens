@@ -259,6 +259,18 @@ export interface StrategyReport {
   /** The backtest run this row came from, so a live deployment traces back to
    * its evidence. */
   sourceRunId?: string | null
+  /** Which basis THIS row's figures were actually measured on.
+   *
+   * [FIX 2026-08-19] A strategy is typically backtested twice — once
+   * deducting tax annually, once not — and the two runs are separate
+   * simulations with different equity curves, different trades and different
+   * benchmarks-relative excess. The report used to collapse them into one
+   * row and then backfill whichever scalars were missing from the other run,
+   * which produced rows showing one run's CAGR beside the other run's excess
+   * return (a 19.0%/yr strategy displayed as -9.3 pp/yr against a 14.2%/yr
+   * benchmark). Rows now come from exactly one run and this field says
+   * which, so the tax-basis toggle picks a row rather than patching one. */
+  reportedTaxBasis?: TaxBasis | null
   /** Which metrics this row cannot supply yet, keyed by dotted path
    * ("returns.cagrPostTax"). Drives the em-dash tooltip. */
   pending: Record<string, PendingField>
@@ -288,6 +300,11 @@ export const PENDING_REASONS: Record<string, PendingField> = {
   'tradeQuality.avgWinnerPct': {
     backlogId: 'T13',
     reason: 'Average winner/loser return is computed only for Momentum today.',
+  },
+  'risk.volatility': {
+    backlogId: 'A98',
+    reason:
+      'Annualised volatility is emitted by runs backtested from 2026-08-19 onward. This run predates the field; re-run the strategy to populate it.',
   },
   equityCurve: {
     backlogId: 'A90',

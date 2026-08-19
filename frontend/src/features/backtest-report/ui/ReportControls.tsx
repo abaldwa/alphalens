@@ -94,7 +94,49 @@ export function ModeToggle({
           value: 'regular_returns',
           label: 'Regular returns',
           title:
-            'Withdraw the excess each year, backfilling a shortfall and running on at current capital after a losing year.',
+            'Withdraw everything above base capital each March. Ranks strategies by the income they actually pay, not by what they compound to.',
+        },
+      ]}
+    />
+  )
+}
+
+/**
+ * A88's second variant, and only meaningful in regular-returns mode — so it
+ * renders only there rather than sitting greyed out in every header.
+ *
+ * The two are genuinely different strategies to own, not a display option: a
+ * book that is topped back up after a bad year starts every year with the
+ * same stake, while one that is not has to earn its way back to base before
+ * it pays a rupee again. Ranking flips between them.
+ */
+export function TopUpToggle({
+  mode,
+  topUpAfterLoss,
+  onChange,
+}: {
+  mode: ReturnMode
+  topUpAfterLoss: boolean
+  onChange: Patch
+}) {
+  if (mode !== 'regular_returns') return null
+  return (
+    <Segmented<'carry' | 'topup'>
+      label="After a losing year"
+      value={topUpAfterLoss ? 'topup' : 'carry'}
+      onChange={(v) => onChange({ topUpAfterLoss: v === 'topup' })}
+      options={[
+        {
+          value: 'carry',
+          label: 'Runs on what is left',
+          title:
+            'The book carries the loss and pays nothing until it is back above base capital. Nobody refunds a bad year, so this is the default.',
+        },
+        {
+          value: 'topup',
+          label: 'Topped back up',
+          title:
+            'The shortfall is funded out of pocket so every year starts from base capital. Watch the "Topped back up" column — that money is an input, not a return.',
         },
       ]}
     />

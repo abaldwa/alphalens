@@ -16,6 +16,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { AppShell, Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/lib/ui'
 import { cn } from '@/lib/utils'
 
+import { METRIC_TABS } from './MetricTabs'
 import { REPORT_SECTIONS } from './sections'
 import type { ReportParams } from '../data/useReportParams'
 import type { BenchmarkOption } from '../core/types'
@@ -23,6 +24,7 @@ import {
   BenchmarkSelector,
   ModeToggle,
   TaxBasisToggle,
+  TopUpToggle,
   WindowSelector,
 } from './ReportControls'
 
@@ -49,7 +51,15 @@ export function ReportLayout({
   resolvedStart,
   children,
 }: ReportLayoutProps) {
-  const { search } = useLocation()
+  const { pathname, search } = useLocation()
+
+  // The Metrics entry stands for five routes (the workspace and its four
+  // focused tabs), so it has to light up on any of them. NavLink's own
+  // `isActive` only matches the one path it was given, which would leave the
+  // site strip showing nothing selected while the reader is plainly inside
+  // Metrics.
+  const metricPaths = new Set(METRIC_TABS.map((t) => t.path))
+  const inMetrics = metricPaths.has(pathname)
 
   return (
     <AppShell title={title} description={description}>
@@ -65,7 +75,7 @@ export function ReportLayout({
                 className={({ isActive }) =>
                   cn(
                     '-mb-px inline-block border-b-2 px-3 py-2 text-sm',
-                    isActive
+                    isActive || (inMetrics && metricPaths.has(s.path))
                       ? 'border-primary font-semibold text-foreground'
                       : 'border-transparent text-muted-foreground hover:text-foreground',
                   )
@@ -88,6 +98,11 @@ export function ReportLayout({
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-3">
           <ModeToggle mode={params.mode} onChange={onChange} />
+          <TopUpToggle
+            mode={params.mode}
+            topUpAfterLoss={params.topUpAfterLoss}
+            onChange={onChange}
+          />
           <TaxBasisToggle basis={params.taxBasis} onChange={onChange} />
           <WindowSelector
             window={params.window}

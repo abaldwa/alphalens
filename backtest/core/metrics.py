@@ -73,7 +73,7 @@ def trade_cagr(
     if sell_price is None or holding_days is None or holding_days <= 0 or buy_price <= 0:
         return None
     try:
-        return (sell_price / buy_price) ** (365.25 / holding_days) - 1
+        return float((sell_price / buy_price) ** (365.25 / holding_days) - 1)
     except OverflowError:
         _anomaly_logger.warning(
             "trade_cagr_overflow ticker=%s run_id=%s buy_date=%s sell_date=%s "
@@ -148,6 +148,30 @@ def xirr(cash_flows: List[Tuple[str, float]]) -> Optional[float]:
         else:
             hi, f_hi = mid, f_mid
     return (lo + hi) / 2.0
+
+
+def _xirr_cash_flows(
+    cash_flows: Sequence[Tuple[str, float]],
+    end_date: "DateLike",
+    ending_value: float,
+) -> List[Tuple[str, float]]:
+    """The investor-perspective flow series XIRR actually needs.
+
+    `cash_flows` carries what went IN (initial capital, SIP injections, both
+    negative) and what came OUT before the run ended (annual-reset
+    withdrawals, positive). It does not carry the liquidation at the end,
+    because the portfolio does not "pay" it -- it is simply what the book is
+    worth on the last day. Without it there is no positive flow to discount
+    against and the rate is meaningless, so it is appended here rather than
+    left to each of the four call sites to remember.
+
+    A non-positive ending value is passed through as-is: a wiped-out book is
+    a real (-100%-ish) outcome, and xirr() returns None when it cannot
+    bracket a root.
+    """
+    flows = [(str(d), float(a)) for d, a in cash_flows]
+    flows.append((str(end_date), float(ending_value)))
+    return flows
 
 
 def churn_factor(rebalance_events: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -310,6 +334,8 @@ class BacktestMetrics:
     avg_trade_duration_days: Optional[float] = None  # mean holding-period across ALL trades (open + closed)
     n_outlier_trades: Optional[int] = None  # count with |return z-score| > 3 among this run's own closed trades
     max_abs_return_zscore: Optional[float] = None
+    # Annualised stdev of periodic returns, as a fraction. See annualised_volatility.
+    volatility: Optional[float] = None
 
 
 def calendar_cagr(
@@ -404,6 +430,31 @@ def infer_periods_per_year(index: Any) -> float:
     if span_days <= 0:
         return float(TRADING_DAYS_PER_YEAR)
     return float((len(stamps) - 1) / (span_days / 365.25))
+
+
+def annualised_volatility(
+    returns: pd.Series, periods_per_year: Optional[float] = None
+) -> Optional[float]:
+    """Annualised standard deviation of periodic returns, as a fraction.
+
+    [A98 gap, 2026-08-19] The Risk screen has always had a Volatility column
+    and BacktestMetrics has never had the field behind it, so every row
+    rendered an em dash. It is the denominator Sharpe already divides by --
+    the engine was computing it and throwing it away -- and it is the number
+    that says whether a 0.63 Sharpe came from a calm 12%/yr book or a wild
+    45%/yr one, which Sharpe alone cannot.
+
+    None (not zero) below two observations or on a flat curve, matching
+    sharpe_ratio: an unmeasurable volatility and a genuinely riskless one
+    are different facts.
+    """
+    if len(returns) < 2:
+        return None
+    std = returns.std()
+    if pd.isna(std) or std < _NEAR_ZERO_STD:
+        return None
+    ppy = _TRADING_DAYS_PER_YEAR if periods_per_year is None else periods_per_year
+    return float(std * (ppy**0.5))
 
 
 def sharpe_ratio(
@@ -698,6 +749,42 @@ def reconstruct_pre_tax_curve(
     return curve + add_back
 
 
+def apply_tax_to_curve(
+    equity_curve: pd.Series, tax_ledger: Optional[List[Dict[str, Any]]],
+) -> Optional[pd.Series]:
+    """The mirror of reconstruct_pre_tax_curve: the curve a PRE-tax run would
+    have had if each FY's tax had been paid on the day it fell due.
+
+    [FIX 2026-08-19] A pre-tax run used to get its post-tax basis by
+    subtracting the whole run's cumulative FY tax from the LAST point of the
+    curve. Over a 17-year, 58-trades-a-year book that lump is a large
+    multiple of any single year's tax, so the result was not a post-tax
+    figure at all -- it dragged one strategy's reported CAGR from 19.0%/yr
+    down to 4.9%/yr and made the "pre-tax" column read LOWER than the
+    post-tax one. Tax is an annual event; subtracting it from its own
+    payment date onwards is what the post-tax path already does.
+
+    Same caveat as the reconstruction in the other direction: this does not
+    re-simulate. A book that had paid tax each year would have had less cash
+    and might have skipped positions, so this is the honest upper bound on a
+    post-tax run, not a substitute for one.
+    """
+    if equity_curve is None or len(equity_curve) == 0 or not tax_ledger:
+        return None
+    payments = [
+        (pd.Timestamp(row.get("fy_end")), float(row.get("paid") or 0.0))
+        for row in tax_ledger
+        if row.get("paid")
+    ]
+    if not payments:
+        return None
+    curve = equity_curve.copy()
+    take_out = pd.Series(0.0, index=curve.index)
+    for when, amount in payments:
+        take_out.loc[take_out.index >= when] += amount
+    return curve - take_out
+
+
 def churn_per_year(
     n_trades: Optional[int], start_date: DateLike, end_date: DateLike,
 ) -> Optional[float]:
@@ -751,7 +838,12 @@ def _equity_curve_to_series(equity_curve: Optional[pd.Series]) -> List[Dict[str,
 
 def compute_metrics(
     equity_curve: pd.Series,
-    cash_flows: List[Tuple[str, float]],  # [(date_str, amount), ...] incl. initial capital, SIP, tax outflows
+    # [(date_str, amount), ...] — what the INVESTOR paid in (negative) and
+    # took out (positive) DURING the run: initial capital, SIP injections,
+    # annual-reset withdrawals. Do NOT include the closing liquidation; it is
+    # appended from the equity curve by _xirr_cash_flows, so that every caller
+    # gets it and none can double it.
+    cash_flows: List[Tuple[str, float]],
     trade_pnls: List[float],
     trade_values: List[float],
     distinct_tickers: List[str],
@@ -800,13 +892,24 @@ def compute_metrics(
     returns = equity_curve.pct_change().dropna() if len(equity_curve) > 1 else pd.Series(dtype=float)
 
     cagr_value = calendar_cagr(starting_capital, ending_value, start_date, end_date)
-    xirr_value = xirr(cash_flows) if len(cash_flows) >= 2 else None
+
+    # [FIX 2026-08-19] XIRR was computed on the CONTRIBUTION side only: the
+    # liquidation inflow at end_date was never appended, so the solver was
+    # asked for the rate that zeroes a series of outflows plus a handful of
+    # FY tax events. That has no economic meaning -- it returned None when
+    # every flow shared a sign, and an arbitrary negative root when the tax
+    # events happened to bracket one (a run with a 21.4%/yr CAGR reported
+    # XIRR of -3.3%/yr). The terminal value is what the investor would get
+    # back on that date, and XIRR is undefined without it.
+    xirr_flows = _xirr_cash_flows(cash_flows, end_date, float(ending_value))
+    xirr_value = xirr(xirr_flows) if len(xirr_flows) >= 2 else None
     mdd = max_drawdown(equity_curve)
     win_rate, profit_factor = win_rate_and_profit_factor(trade_pnls)
     bench_cagr, excess_return, bench_status = benchmark_metrics(
         cagr_value, benchmark_equity_curve, start_date, end_date
     )
     sharpe_value = sharpe_ratio(returns)
+    volatility_value = annualised_volatility(returns)
     sortino_value, sortino_reason = sortino_ratio(returns)
     calmar_value, calmar_reason = calmar_ratio(cagr_value, mdd)
 
@@ -825,10 +928,15 @@ def compute_metrics(
     _total_tax = (
         sum(float(r.get("paid") or 0.0) for r in tax_ledger) if tax_ledger else None
     )
+    # A86 both ways round. A pre-tax run's other basis is its post-tax path,
+    # which until 2026-08-19 was not computed at all here -- the engine
+    # instead docked the whole run's tax off the final equity point and
+    # reported THAT as the headline, so `cagr` on a pre-tax run was neither
+    # basis. See apply_tax_to_curve.
     _other_curve = (
         reconstruct_pre_tax_curve(equity_curve, tax_ledger)
         if deduct_tax_annually
-        else None
+        else apply_tax_to_curve(equity_curve, tax_ledger)
     )
     _other_cagr = (
         calendar_cagr(
@@ -848,6 +956,7 @@ def compute_metrics(
         win_rate=win_rate,
         profit_factor=profit_factor,
         sharpe=sharpe_value,
+        volatility=volatility_value,
         sortino=sortino_value,
         sortino_none_reason=sortino_reason,
         calmar=calmar_value,
@@ -929,7 +1038,7 @@ def cagr(starting_capital: float, ending_value: float, start_date: str, end_date
     years = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days / 365.25
     if years <= 0:
         raise ValueError("end_date must be after start_date")
-    return (ending_value / starting_capital) ** (1.0 / years) - 1.0
+    return float((ending_value / starting_capital) ** (1.0 / years) - 1.0)
 
 
 def sharpe_sortino_calmar(
