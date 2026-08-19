@@ -355,7 +355,15 @@ def _momentum_rank_band_wiring(
             f"(see features/momentum_universe.py::RANK_BANDS)"
         )
     _, rank_start, rank_end = band
+    from backtest import shared_panels
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+        # NOT memoised, deliberately. Measured 2026-08-19 at only 3.6s of the
+        # 72s this function cost -- the expensive half is the universe
+        # provider below. A process-lifetime memo here would also hide this
+        # call from the spy in
+        # tests/unit/test_run_orchestrator_backtest.py::TestMomentumRankBandWiring,
+        # which is what guards include_delisted=True (the 2026-07-20
+        # survivorship-bias fix). Not worth 3.6s.
         yearly_rankings = all_yearly_full_rankings(
             conn, start_date.isoformat(), end_date.isoformat(),
             max_rank=max(rank_end, MAX_TRACKED_RANK), include_delisted=True,
@@ -378,6 +386,12 @@ def _momentum_rank_band_wiring(
             "universe_provider": build_momentum_universe_provider(
                 conn, trading_day_calendar(conn, through=end_date.isoformat()),
                 rank_start, rank_end,
+                # [2026-08-19] MEASURED 66.3s per call, and the ranked frame it
+                # builds per grid point is IDENTICAL for every band and every
+                # strategy -- only the rank slice differs. This was the single
+                # largest per-job cost in a sweep. One job = one miss, exactly
+                # as before; a sweep pays it once.
+                snapshot_cache=shared_panels.universe_snapshot_cache(),
             ),
             "approximation_flags": yearly_band_approximation_flags_from_rankings(
                 yearly_rankings, rank_start, rank_end,
@@ -873,7 +887,9 @@ def _run_immediate(
     prefetch_feature_parquets: bool, rank_band_id: Optional[int], ohlcv_snapshot_dir: Optional[Any],
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
-    *, annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
+    *, rebalance_cadence_days: Optional[int] = None,
+    defer_feature_log: bool = False,
+    annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
     block_circuit_fills: bool = False,
     max_blackout_sessions: Optional[int] = None,
     # A98: the index this run is COMPARED against. None keeps the historical
@@ -895,6 +911,10 @@ def _run_immediate(
         )
         config.exit_policy_cadence = _exit_policy_cadence_for(channel)
         config.sizing_overrides = _sizing_overrides_for(channel, top_n)
+        # None keeps engine.py's horizon-derived default; an explicit value
+        # is the only way to reach a cadence the HORIZON_SIZING table cannot
+        # express (biweekly=10, bimonthly=42) -- see the CLI flag's help.
+        config.rebalance_cadence_days = rebalance_cadence_days
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
         # price/volume panels from the same ohlcv pull momentum's branch
         # below already uses — passed to Technical/Fundamental too so their
@@ -1068,6 +1088,16 @@ def _run_immediate(
                 "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
                 "disable_buys_in_regime": disable_buys_in_regime,
                 "combo_templates": combo_templates,
+                # The cadence the engine ACTUALLY slices on (core/engine.py:1007),
+                # not the override -- which is None whenever the horizon default
+                # was taken. Recorded because until 2026-08-19 cadence survived
+                # only as a WORD inside strategy_id ("..._bimonthly_..."), so the
+                # stored config could not answer the one knob the momentum sweep
+                # varies most.
+                "rebalance_cadence_days": (
+                    config.rebalance_cadence_days
+                    or sizing_for(horizon).default_rebalance_cadence_days
+                ),
             },
         )
 
@@ -1200,7 +1230,9 @@ def _run_deferred(
     prefetch_feature_parquets: bool, rank_band_id: Optional[int], ohlcv_snapshot_dir: Optional[Any],
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
-    *, annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
+    *, rebalance_cadence_days: Optional[int] = None,
+    defer_feature_log: bool = False,
+    annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
     block_circuit_fills: bool = False,
     max_blackout_sessions: Optional[int] = None,
     # A98: the index this run is COMPARED against. None keeps the historical
@@ -1234,6 +1266,7 @@ def _run_deferred(
     config.enforce_readiness = False
     config.exit_policy_cadence = _exit_policy_cadence_for(channel)
     config.sizing_overrides = _sizing_overrides_for(channel, top_n)
+    config.rebalance_cadence_days = rebalance_cadence_days
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
     # Hoisted out of the technical branch — see the matching note in
@@ -1357,6 +1390,16 @@ def _run_deferred(
             "downtrend_filter_pct": downtrend_filter_pct, "circuit_band_pct": circuit_band_pct,
             "disable_buys_in_regime": disable_buys_in_regime,
             "combo_templates": combo_templates,
+            # The cadence the engine ACTUALLY slices on (core/engine.py:1007),
+            # not the override -- which is None whenever the horizon default
+            # was taken. Recorded because until 2026-08-19 cadence survived
+            # only as a WORD inside strategy_id ("..._bimonthly_..."), so the
+            # stored config could not answer the one knob the momentum sweep
+            # varies most.
+            "rebalance_cadence_days": (
+                config.rebalance_cadence_days
+                or sizing_for(horizon).default_rebalance_cadence_days
+            ),
         },
     )
 
@@ -1430,7 +1473,22 @@ def _run_deferred(
             retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
             retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
         ) as conn:
-            load_spill_file(conn, spill_path)
+            # [2026-08-19] defer_feature_log: leave the spill file on disk for
+            # a sweep-level bulk load instead of inserting it here.
+            #
+            # MEASURED in a warm job: this insert was 7.6s of duckdb
+            # executemany plus 3.9s re-reading the spill -- 11.5s of a 31.2s
+            # job, for a per-decision DEBUG log, not results.
+            #
+            # Durability is unaffected, which is the point: the spill file is
+            # already written and fsynced by FeatureLogWriter, so deferring
+            # moves rows that are on disk into the DB later rather than
+            # holding anything in memory. An OOM or a crash loses no feature
+            # rows -- the files are still there to load. backtest_runs and
+            # strategy_signals (the actual RESULTS) are still written per job
+            # by _persist_run_result below, unchanged.
+            if not defer_feature_log:
+                load_spill_file(conn, spill_path)
             _persist_run_result(
                 conn, run_id, channel, descriptor, run_date, result,
                 template_name, preset, top_n, lookback_months,
@@ -1475,6 +1533,8 @@ def run_orchestrator_backtest(
     precomputed_matches_dir: Optional[str] = None,
     prefetch_feature_parquets: bool = False,
     rank_band_id: Optional[int] = None,
+    rebalance_cadence_days: Optional[int] = None,
+    defer_feature_log: bool = False,
     ohlcv_snapshot_dir: Optional[str] = None,
     # capital_mode="annual_reset" only — the LTCG regime is a run-level input
     # because it changes the FY withdrawal and therefore the trades taken.
@@ -1578,7 +1638,11 @@ def run_orchestrator_backtest(
             # falls back to exactly this). Taken from the same place the run
             # will take it, so the name can never describe a cadence the run
             # did not use.
-            rebalance_cadence_days=sizing_for(horizon).default_rebalance_cadence_days,
+            rebalance_cadence_days=(
+                rebalance_cadence_days
+                if rebalance_cadence_days is not None
+                else sizing_for(horizon).default_rebalance_cadence_days
+            ),
             # Built the same way _run_immediate/_run_deferred build it (from
             # the two score params) — the dict itself is assembled inside those
             # functions and does not exist in this scope. Only its TRUTHINESS
@@ -1643,6 +1707,8 @@ def run_orchestrator_backtest(
         quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
         bear_drawdown_pct,
         combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
+        rebalance_cadence_days=rebalance_cadence_days,
+        defer_feature_log=defer_feature_log,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
         block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
         benchmark_index_name=benchmark_index_name,
@@ -1905,6 +1971,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--rebalance-cadence-days", type=int, default=None,
+        help=(
+            "trading days between rebalances. Omit to use the resolved horizon bucket's "
+            "default (backtest/core/horizon.py::HORIZON_SIZING), which is what every run "
+            "did before 2026-08-19. Needed because that table only expresses 5/21/63/252 "
+            "days, while the momentum registry grid declares FIVE cadences — weekly=5, "
+            "biweekly=10, monthly=21, bimonthly=42, quarterly=63. Without this flag the "
+            "biweekly and bimonthly rows (672 of the 1,680) were unreachable from the CLI: "
+            "they resolved to no registry name and fell back to a generated descriptor."
+        ),
+    )
+    parser.add_argument(
         "--rank-band-id", type=int, default=None, choices=[b[0] for b in RANK_BANDS],
         help=(
             "momentum channel only (2026-08-05): select from one of features/momentum_universe.py's "
@@ -1968,6 +2046,7 @@ def main() -> None:
         precomputed_matches_dir=args.precomputed_matches_dir,
         prefetch_feature_parquets=args.prefetch_feature_parquets,
         rank_band_id=args.rank_band_id,
+        rebalance_cadence_days=args.rebalance_cadence_days,
         ohlcv_snapshot_dir=args.ohlcv_snapshot_dir,
     )
 

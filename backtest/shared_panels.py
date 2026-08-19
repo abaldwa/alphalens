@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date as date_type
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -69,8 +69,16 @@ logger = logging.getLogger(__name__)
 #: workload -- a sweep shares one window. Raising it is a deliberate act.
 MAX_CACHED_WINDOWS = 4
 
-_ohlcv_cache: Dict[Tuple, pd.DataFrame] = {}
-_artifact_cache: Dict[Tuple, Dict[str, Any]] = {}
+_ohlcv_cache: Dict[Tuple[Any, ...], pd.DataFrame] = {}
+_artifact_cache: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+#: Ranked liquid universe per (grid date, adtv top-n, include_delisted).
+#: Handed to features.momentum_universe.build_momentum_universe_provider,
+#: which owns no global of its own so live/paper can never read a stale one.
+_universe_snapshot_cache: Dict[Any, Any] = {}
+#: PIT shares outstanding per (database, as_of, ticker). Handed to
+#: config.universe.get_market_cap_rank_map_as_of. Subset-independent, unlike
+#: the rank map it feeds, which ranks within the ticker list it is given.
+_pit_shares_cache: Dict[Any, Any] = {}
 
 _stats = {"ohlcv_hits": 0, "ohlcv_misses": 0, "artifact_hits": 0, "artifact_misses": 0}
 
@@ -78,14 +86,14 @@ _stats = {"ohlcv_hits": 0, "ohlcv_misses": 0, "artifact_hits": 0, "artifact_miss
 def ohlcv_key(
     max_tickers: Optional[int], min_history_days: int,
     start_date: date_type, end_date: date_type, ohlcv_snapshot_dir: Optional[str],
-) -> Tuple:
+) -> Tuple[Any, ...]:
     """Everything that can change which rows come back. `sector_map` is
     deliberately absent -- it is derived downstream and does not affect the
     OHLCV itself."""
     return (max_tickers, min_history_days, str(start_date), str(end_date), ohlcv_snapshot_dir)
 
 
-def get_ohlcv(key: Tuple, build) -> pd.DataFrame:
+def get_ohlcv(key: Tuple[Any, ...], build: Callable[[], pd.DataFrame]) -> pd.DataFrame:
     """Memoised OHLCV. `build` is called only on a miss.
 
     Returns the SAME object on every hit, not a copy: copying a 7.1M-row
@@ -115,13 +123,22 @@ def get_ohlcv(key: Tuple, build) -> pd.DataFrame:
     return frame
 
 
-def artifact_key(ohlcv_cache_key: Tuple, top_n_by_adtv: Optional[int], block_circuit_fills: bool) -> Tuple:
+def artifact_key(
+    ohlcv_cache_key: Any, top_n_by_adtv: Optional[int], block_circuit_fills: bool,
+) -> Tuple[Any, ...]:
     """The derived artifacts depend on the OHLCV *and* on the two options
-    that change what is derived from it."""
+    that change what is derived from it.
+
+    `ohlcv_cache_key` is Any rather than Tuple deliberately: the sole caller
+    (_build_config) passes id(ohlcv), because it holds the frame itself and
+    not the key it was cached under. Any hashable identity works here -- the
+    key is compared, never destructured."""
     return (ohlcv_cache_key, top_n_by_adtv, bool(block_circuit_fills))
 
 
-def get_artifacts(key: Tuple, build) -> Dict[str, Any]:
+def get_artifacts(
+    key: Tuple[Any, ...], build: Callable[[], Dict[str, Any]],
+) -> Dict[str, Any]:
     """Memoised {ticker_dates, adtv_panel, locked_bars, price_panel,
     volume_panel} -- the per-run derivations of one OHLCV frame."""
     if key in _artifact_cache:
@@ -133,6 +150,28 @@ def get_artifacts(key: Tuple, build) -> Dict[str, Any]:
     return built
 
 
+def universe_snapshot_cache() -> Dict[Any, Any]:
+    """The sweep-lifetime ranked-universe cache (see the dict's own note).
+
+    Returned by reference: features.momentum_universe's
+    build_momentum_universe_provider fills it on a miss, so every later band
+    and strategy in the same process reuses it. Keyed by database as well as
+    date, so two stores can never share an entry.
+    """
+    return _universe_snapshot_cache
+
+
+def pit_shares_cache() -> Dict[Any, Any]:
+    """The sweep-lifetime PIT shares-outstanding cache (see the dict's note).
+
+    Returned by reference so the first strategy to need a date populates it
+    and every later strategy reuses it, instead of each orchestrator instance
+    re-fetching the same dates and throwing the result away at the end of its
+    own run.
+    """
+    return _pit_shares_cache
+
+
 def stats() -> Dict[str, int]:
     return dict(_stats)
 
@@ -141,4 +180,6 @@ def clear() -> None:
     """Drop everything. Call between windows, or to release memory."""
     _ohlcv_cache.clear()
     _artifact_cache.clear()
+    _universe_snapshot_cache.clear()
+    _pit_shares_cache.clear()
     logger.info("shared_panels: cleared")

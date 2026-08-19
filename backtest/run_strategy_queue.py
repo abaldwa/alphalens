@@ -87,6 +87,9 @@ _ORCHESTRATOR_FLAGS = {
     # 2026-08-05 Momentum engine consolidation Phase 2: market-cap rank-band
     # universe selection (features/momentum_universe.py RANK_BANDS ids 1-5).
     "rank_band_id",
+    # 2026-08-19: needed to reach the momentum registry's biweekly (10) and
+    # bimonthly (42) cadences, which the horizon table cannot express.
+    "rebalance_cadence_days",
     # 2026-08-12 capital_mode="annual_reset" (the user's third measure). The
     # LTCG regime must be per-job: it changes the FY withdrawal, hence next
     # year's capital, hence which trades execute, so the two regimes are

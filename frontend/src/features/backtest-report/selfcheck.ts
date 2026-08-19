@@ -63,7 +63,7 @@ import {
   worstYear,
   yoyPositiveShare,
 } from './core/recommendations.ts'
-import { collectFiscalYears, shortFyLabel } from './core/fiscalYears.ts'
+import { collectFiscalYears, shortFyLabel, yoyValueFor, isPartialFor } from './core/fiscalYears.ts'
 import { countOf, median as fyMedian, rollingFromYoy, windowCagr } from './core/rollingFromYoy.ts'
 import { basisScore, pickForBasis, selectByBasis } from './core/selectByBasis.ts'
 import { baseCapitalFor, regularReturns, regularReturnsSchedule } from './core/regularReturns.ts'
@@ -931,13 +931,49 @@ const axisRows = [
 
 eq(
   collectFiscalYears(axisRows),
-  ['FY2027*', 'FY2026', 'FY2025', 'FY2024', 'FY2011', 'FY2010'],
+  ['FY2027', 'FY2026', 'FY2025', 'FY2024', 'FY2011', 'FY2010'],
   'tables run newest-first, and the partial marker does not push FY2027 to the end',
 )
 eq(
   collectFiscalYears(axisRows, 'oldest-first'),
-  ['FY2010', 'FY2011', 'FY2024', 'FY2025', 'FY2026', 'FY2027*'],
+  ['FY2010', 'FY2011', 'FY2024', 'FY2025', 'FY2026', 'FY2027'],
   'the chart runs oldest-first: a reversed time axis inverts every trend',
+)
+
+// [2026-08-19] THE REGRESSION THIS PINS. The axis used to union the MARKED
+// label, so one strategy starting mid-2019 minted an "FY2020*" column beside
+// "FY2020" -- blank for all 631 other rows, and holding that row's 2020 where
+// nobody else's 2020 was. Observed live on /backtest-report/metrics as empty
+// FY20 and FY22 columns.
+const mixedPartialRows = [
+  { consistency: { yoy: [{ fyLabel: 'FY2020', returnPct: 0.1 }, { fyLabel: 'FY2021', returnPct: 0.2 }] } },
+  { consistency: { yoy: [{ fyLabel: 'FY2020*', returnPct: 0.3 }, { fyLabel: 'FY2021', returnPct: 0.4 }] } },
+] as unknown as StrategyReport[]
+
+eq(
+  collectFiscalYears(mixedPartialRows, 'oldest-first'),
+  ['FY2020', 'FY2021'],
+  'a partial year is the SAME year: it must not mint a second column',
+)
+eq(
+  yoyValueFor(mixedPartialRows[1].consistency.yoy, 'FY2020')?.returnPct,
+  0.3,
+  'a row whose own label is marked still resolves against the bare-year axis',
+)
+eq(
+  yoyValueFor(mixedPartialRows[0].consistency.yoy, 'FY2020')?.returnPct,
+  0.1,
+  'and an unmarked row resolves unchanged',
+)
+eq(
+  isPartialFor(mixedPartialRows[1].consistency.yoy, 'FY2020'),
+  true,
+  'partial-ness is still reported, per row rather than per column',
+)
+eq(
+  isPartialFor(mixedPartialRows[0].consistency.yoy, 'FY2020'),
+  false,
+  'and the same year is not partial for a row that ran it in full',
 )
 eq(
   collectFiscalYears([] as StrategyReport[]),

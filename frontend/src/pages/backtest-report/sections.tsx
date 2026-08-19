@@ -45,7 +45,7 @@ import {
   setupGroup,
   tradeQualityGroup,
 } from '@/features/backtest-report/ui/gridColumns'
-import { collectFiscalYears, shortFyLabel } from '@/features/backtest-report/core/fiscalYears'
+import { collectFiscalYears, shortFyLabel, stripPartialMarker, yoyValueFor } from '@/features/backtest-report/core/fiscalYears'
 import { inr, pct } from '@/features/backtest-report/core/format'
 import {
   baseCapitalFor,
@@ -168,7 +168,7 @@ function useYearSeries(
     return {
       categories,
       value: (row, key) =>
-        row.consistency.yoy.find((y) => y.fyLabel === key)?.returnPct ?? null,
+        yoyValueFor(row.consistency.yoy, key)?.returnPct ?? null,
       label: (row) => row.label,
       // A single financial year's return is a return OVER that year, not a
       // rate per year on top of it, so it is a plain percentage.
@@ -295,8 +295,10 @@ function YoyMatrixCard({ page }: { page: ReturnType<typeof useReportPage> }) {
       .map((s) => ({
         key: s.key,
         label: s.label,
+        // Keyed on the BARE year so a row whose own label carries the
+        // partial marker still lands in the shared column for that year.
         values: Object.fromEntries(
-          s.consistency.yoy.map((y) => [y.fyLabel, y.returnPct]),
+          s.consistency.yoy.map((y) => [stripPartialMarker(y.fyLabel), y.returnPct]),
         ),
       }))
     return { matrixColumns: cols, matrixRows: rows }

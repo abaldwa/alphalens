@@ -25,6 +25,7 @@ one (SPEC-QUALITY-003).
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 HIGH_VOL = "high_vol"
@@ -71,13 +72,13 @@ def compute_realized_vol_regime(
     log_returns = np.log(benchmark_close / benchmark_close.shift(1))
     realized_vol = log_returns.rolling(window=vol_window, min_periods=vol_window).std() * np.sqrt(252)
 
-    def _percentile_rank(window: np.ndarray) -> float:
+    def _percentile_rank(window: "npt.NDArray[np.float64]") -> float:
         current = window[-1]
         if np.isnan(current):
-            return np.nan
+            return float("nan")
         valid = window[~np.isnan(window)]
         if len(valid) < 2:
-            return np.nan
+            return float("nan")
         return float((valid <= current).sum() / len(valid))
 
     pct_rank = realized_vol.rolling(

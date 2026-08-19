@@ -63,7 +63,7 @@ import json
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import duckdb
 
@@ -74,7 +74,7 @@ from config.settings import DUCKDB_PATH, MAX_ORDER_VS_ADTV
 from config.timezone import now_ist
 from datastore.api.db import get_duckdb_connection
 from features.momentum_signal import LOOKBACK_MONTHS, lookback_trading_days, load_price_panel, load_volume_panel
-from features.momentum_universe import all_yearly_full_rankings, yearly_band_universes_from_rankings
+from features.momentum_universe import RANK_BANDS, all_yearly_full_rankings, yearly_band_universes_from_rankings
 from scripts.build_momentum_yoy_report import build_yoy
 from scripts.run_momentum_filter_overlays import (
     CIRCUIT_BAND_PCT,
@@ -94,7 +94,11 @@ logger = logging.getLogger(__name__)
 # the new band (see run_momentum_experimentation.py / run_momentum_filter_
 # overlays.py's WIDE_BANDS) — kept local here too, not added to the shared
 # RANK_BANDS (that constant also drives the 5 live paper-trading strategies).
-BANDS = [(3, 100, 150), (4, 150, 200), (8, 201, 250), (6, 251, 500), (7, 501, 800)]
+# [2026-08-19] Was a local literal carrying the pre-fix 100-150/150-200
+# overlap and the retired 201-250/251-500 split under ids 8/6. Now derived
+# from the canonical constant: bands 3-7, i.e. everything below rank 101
+# excluded, which is what this sweep was always scoped to.
+BANDS = [b for b in RANK_BANDS if b[0] >= 3]
 
 # Bands whose earlier per-filter results were largely cost-free (100-150,
 # 150-200) only get the Balanced variant. The deeper/untested bands get all
@@ -114,9 +118,9 @@ MOMENTUM_YOY_DB = REPORTS_DIR / "momentum_yoy.duckdb"
 
 
 def _run_variant(
-    kwargs: Dict, price_panel, yearly_universes: Dict,
+    kwargs: Dict[str, Any], price_panel: Any, yearly_universes: Dict[str, Any],
     lookback_days: int, rebalance_days: int, top_n: int,
-):
+) -> Any:
     return run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
@@ -130,8 +134,9 @@ def _run_variant(
 
 
 def _build_strategies(
-    volume_panel, market_cap_panel, beta_map, regime_series, quality_scores,
-) -> Dict[str, Dict]:
+    volume_panel: Any, market_cap_panel: Any, beta_map: Any, regime_series: Any,
+    quality_scores: Any,
+) -> Dict[str, Dict[str, Any]]:
     # [H4, 2026-08-18] max_pct_of_adtv (ADTV-capped sizing) is deprecated off
     # MomentumAdapter entirely (§19). regime_series/disable_in_regimes don't
     # map either -- MomentumAdapter conditions on regime via a live
@@ -156,7 +161,7 @@ def _build_strategies(
     return {"balanced": balanced, "risk_managed": risk_managed, "max_defensive": max_defensive}
 
 
-def run_recommended_strategies(years_back: int = 10) -> Dict:
+def run_recommended_strategies(years_back: int = 10) -> Dict[str, Any]:
     end_date = now_ist().date()
     start_date = date(end_date.year - years_back, end_date.month, end_date.day)
 
@@ -184,7 +189,7 @@ def run_recommended_strategies(years_back: int = 10) -> Dict:
 
     strategies = _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, quality_scores)
 
-    variants: List[Dict] = []
+    variants: List[Dict[str, Any]] = []
     for band_id, rank_start, rank_end in BANDS:
         strategy_names = ["balanced"] if band_id in BALANCED_ONLY_BAND_IDS else list(strategies.keys())
         yearly_universes = yearly_band_universes_from_rankings(yearly_rankings, rank_start, rank_end)
@@ -278,7 +283,7 @@ def run_recommended_strategies(years_back: int = 10) -> Dict:
     return report
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="ML38 momentum recommended-strategy composite sweep")
     parser.add_argument("--years-back", type=int, default=10)
     args = parser.parse_args()

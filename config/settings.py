@@ -193,7 +193,20 @@ MODEL_REGISTRY_PATH = MODELS_DIR / "registry.json"
 # batch upserts, and keeping it separate means Phase-6's fine-tuning loop can
 # query/purge backtest history without contending with live signal reads.
 BACKTEST_DIR = DATASTORE_DIR / "backtest_store"
-BACKTEST_DUCKDB_PATH = BACKTEST_DIR / "backtest.duckdb"
+# ALPHALENS_BACKTEST_DUCKDB_PATH (2026-08-19): point ONE process at its own
+# backtest store. DuckDB permits a single writer process per file, so two
+# concurrent sweep shards against the shared store do not merely contend --
+# the second fails outright ("Conflicting lock is held"), and with retries
+# configured it fails slowly: measured 1,384s and 1,496s per job before
+# giving up. Giving each shard its own file removes the contention instead of
+# queueing on it; scripts/merge_backtest_shards.py folds the results back in.
+#
+# Unset (the default) is the shared store, byte-identical to previous
+# behaviour. Only sweep shards should ever set this -- a live or scheduled
+# process writing to a side file would silently strand its results.
+BACKTEST_DUCKDB_PATH = Path(
+    os.environ.get("ALPHALENS_BACKTEST_DUCKDB_PATH", BACKTEST_DIR / "backtest.duckdb")
+)
 
 # Observability
 OBSERVABILITY_LOG_PATH = LOGS_DIR / "observability.jsonl"

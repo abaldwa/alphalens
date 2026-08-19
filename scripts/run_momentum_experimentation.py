@@ -24,7 +24,7 @@ import json
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -48,18 +48,13 @@ from features.momentum_universe import (
     yearly_band_universes_from_rankings,
 )
 
-# 2026-07-24 user request (backtest sweep expansion): two wider bands
-# beyond momentum_universe.py's own RANK_BANDS (which cap at rank 200,
-# the ML38-scoped set used by the live rebalance-suggestion system).
-# Kept local to this script rather than appended to the shared RANK_BANDS
-# constant so the live system's band numbering/behavior is untouched.
-# rank_band_tickers()/full_rank_universe() already support rank_end > 200
-# via their own max(rank_end, MAX_TRACKED_RANK) — no new ranking logic
-# needed, only wider (band_id, rank_start, rank_end) tuples.
-# 2026-07-29 user request: fill the 201-250 gap between RANK_BANDS' 150-200
-# and this script's own 251-500 — same rationale, kept local for the same
-# reason (not part of the 5 live strategies).
-WIDE_BANDS = [(8, 201, 250), (6, 251, 500), (7, 501, 800)]
+# [2026-08-19] WIDE_BANDS removed. It predated RANK_BANDS covering rank
+# 1-800 and carried its OWN 201-250/251-500/501-800 split under ids 8/6/7 --
+# so iterating RANK_BANDS plus it covered band ids 6 and 7 TWICE, with two
+# different rank ranges each, and wrote both results under the same band id.
+# RANK_BANDS now partitions 1-800 on its own (ids 1-7), so the canonical
+# constant is the only band table this script needs.
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -90,7 +85,7 @@ def _union_tickers(yearly_rankings: Dict[str, "pd.DataFrame"]) -> List[str]:
     return sorted(tickers)
 
 
-def _summarize(result: MomentumOrchestratorResult, top_n: int, min_momentum: Optional[float] = None) -> Dict:
+def _summarize(result: MomentumOrchestratorResult, top_n: int, min_momentum: Optional[float] = None) -> Dict[str, Any]:
     """Per-variant metrics: the original equity-curve-based CAGR/Total
     Return/Churn, plus (2026-07-14 additions) Total Invested / Total Sell
     Value / transaction-based Total Return, win rate, and post-tax CAGR
@@ -148,8 +143,9 @@ def _summarize(result: MomentumOrchestratorResult, top_n: int, min_momentum: Opt
 
 
 def _sip_summary(
-    price_panel, yearly_universes: Dict[str, List[str]], lookback_days: int, rebalance_days: int, top_n: int
-) -> Dict:
+    price_panel: Any, yearly_universes: Dict[str, List[str]], lookback_days: int,
+    rebalance_days: int, top_n: int,
+) -> Dict[str, Any]:
     """Runs the same variant a second time with a ₹50,000/month SIP on top
     of the same ₹10,00,000 starting capital (2026-07-14 user request), and
     returns only the 3 aggregate numbers needed for comparison — not the
@@ -181,7 +177,7 @@ def _variant_key(band_id: int, rank_start: int, rank_end: int, lookback_months: 
     return descriptor
 
 
-def _write_trade_book_csv(descriptor: str, txns: List[Dict]) -> Path:
+def _write_trade_book_csv(descriptor: str, txns: List[Dict[str, Any]]) -> Path:
     """One CSV per variant, matching the Technical/Fundamental trade-book
     convention (backtest/export_trade_book.py) — ticker, buy/sell date &
     price, days held, P&L. holding_days is None for still-open positions
@@ -203,7 +199,7 @@ def _write_trade_book_csv(descriptor: str, txns: List[Dict]) -> Path:
     return csv_path
 
 
-def _upsert_strategy_catalog(descriptor: str, params: Dict, run_date) -> None:
+def _upsert_strategy_catalog(descriptor: str, params: Dict[str, Any], run_date: Any) -> None:
     """One strategy_catalog row per momentum variant config. Momentum
     variants don't go through BacktestOrchestrator/backtest_runs, so
     latest_run_id here is this script's own descriptor-derived key, not a
@@ -234,12 +230,12 @@ def _upsert_strategy_catalog(descriptor: str, params: Dict, run_date) -> None:
 
 def run_experimentation(
     years_back: int = 10, write_trade_books: bool = True, end_date: Optional[date] = None,
-) -> Dict:
+) -> Dict[str, Any]:
     end_date = end_date or now_ist().date()
     start_date = date(end_date.year - years_back, end_date.month, end_date.day)
 
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
-        max_rank = max(rank_end for _, _, rank_end in RANK_BANDS + WIDE_BANDS)
+        max_rank = max(rank_end for _, _, rank_end in RANK_BANDS)
         logger.info("Computing yearly full market-cap rankings (top %d) %s..%s", max_rank, start_date, end_date)
         yearly_rankings = all_yearly_full_rankings(
             conn, start_date.isoformat(), end_date.isoformat(), max_rank=max_rank, include_delisted=True,
@@ -258,7 +254,7 @@ def run_experimentation(
 
     run_date = now_ist()
     variants = []
-    for band_id, rank_start, rank_end in RANK_BANDS + WIDE_BANDS:
+    for band_id, rank_start, rank_end in RANK_BANDS:
         yearly_universes = yearly_band_universes_from_rankings(yearly_rankings, rank_start, rank_end)
         for lookback_months in LOOKBACK_MONTHS:
             lookback_days = lookback_trading_days(lookback_months)
@@ -296,7 +292,7 @@ def run_experimentation(
     return {"generated_at": now_ist().isoformat(), "variants": variants}
 
 
-def run_min_momentum_comparison(years_back: int, variants_to_test: List[Dict]) -> List[Dict]:
+def run_min_momentum_comparison(years_back: int, variants_to_test: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """2026-07-14 win-rate exploration: rerun a curated set of already-run
     variants with min_momentum=0.0 (only ever buy names with genuinely
     positive trailing momentum) and report the win-rate/CAGR delta versus
@@ -319,7 +315,7 @@ def run_min_momentum_comparison(years_back: int, variants_to_test: List[Dict]) -
 
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Run ML38 momentum strategy experimentation")
     parser.add_argument("--years-back", type=int, default=10)
     parser.add_argument("--end-date", type=str, default=None, help="YYYY-MM-DD; defaults to today")

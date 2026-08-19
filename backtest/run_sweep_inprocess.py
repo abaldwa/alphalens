@@ -110,7 +110,7 @@ _QUEUE_ONLY = {"annual_reset_no_top_up", "min_dsr_threshold"}
 CHANNEL_PRIORITY = {"momentum": 0, "technical": 1, "fundamental": 2}
 
 
-def _as_date(v):
+def _as_date(v: Any) -> Any:
     return date.fromisoformat(v) if isinstance(v, str) else v
 
 
@@ -165,15 +165,82 @@ def _describe(job: Dict[str, Any]) -> str:
     )
 
 
+def drain_feature_log_spills(label: str = "sweep") -> int:
+    """Bulk-load every pending feature-log spill file into the DB, once.
+
+    The counterpart to run_orchestrator_backtest(defer_feature_log=True).
+    Each job leaves its spill JSONL on disk instead of paying 11.5s of
+    executemany + re-read inside its own write tail (measured 2026-08-19 on a
+    31.2s warm job); this drains them all in ONE lock acquisition at the end.
+
+    Crash-safe by construction: the spill files are the durable copy, so an
+    OOM or a hard kill loses nothing that was written -- re-running this
+    drains whatever is still there. Results (backtest_runs, strategy_signals)
+    were already written per job and are never deferred.
+    """
+    from backtest.batch_common import exclusive_backtest_lock
+    from backtest.core.feature_log import load_spill_file
+    from backtest.run_orchestrator_backtest import _feature_log_spill_dir
+    from config.settings import (
+        BACKTEST_DUCKDB_PATH, DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+        DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+    )
+    from datastore.api.db import get_duckdb_connection
+
+    spills = sorted(_feature_log_spill_dir().glob("backtest_feature_log_spill_*.jsonl"))
+    if not spills:
+        return 0
+    total = 0
+    with exclusive_backtest_lock(label=f"{label}[feature-log-drain]"):
+        with get_duckdb_connection(
+            BACKTEST_DUCKDB_PATH, read_only=False, persist=False,
+            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        ) as conn:
+            for path in spills:
+                try:
+                    total += load_spill_file(conn, path)
+                except Exception:  # noqa: BLE001 -- one bad spill must not
+                    # strand the rest; the file is left in place to retry.
+                    logger.exception("feature-log spill failed to load: %s", path)
+    print(f"feature-log drain: {total} rows from {len(spills)} spill file(s)", flush=True)
+    return total
+
+
 def run_sweep(
     jobs: List[Dict[str, Any]], report_suffix: str, resume: bool = True,
     stop_on_error: bool = False, enable_screener_cache: bool = False,
+    shard: int = 0, num_shards: int = 1, defer_feature_log: bool = False,
 ) -> int:
-    progress_dir = PROGRESS_ROOT / report_suffix
+    """shard/num_shards (2026-08-19): run only the jobs where
+    `idx % num_shards == shard`.
+
+    WHY SHARDING RATHER THAN A THREAD POOL. The whole point of this module is
+    the process-lifetime memo in shared_panels -- the OHLCV frame, the derived
+    config artifacts and (since 2026-08-19) the yearly rankings, which alone
+    measured 72.0s per call and is identical for every strategy in the sweep.
+    A memo cannot cross a process boundary, so run_strategy_queue's
+    subprocess-per-job parallelism pays that 72s 1,260 times over. Threads
+    would share the memo but not the GIL, and the simulation is Python-bound.
+
+    Sharding gets both: N processes, each paying the setup ONCE and then
+    reusing it across its ~1,260/N jobs. Setup cost goes from O(jobs) to
+    O(shards).
+
+    Each shard keeps its OWN progress file, so --resume is per shard and two
+    shards can never interleave writes into one jsonl. Job report suffixes
+    stay keyed by the GLOBAL index, so shard membership is not baked into any
+    artifact name -- re-running with a different --num-shards resumes cleanly.
+    """
+    if not (0 <= shard < num_shards):
+        raise ValueError(f"shard {shard} out of range for num_shards {num_shards}")
+    suffix_dir = report_suffix if num_shards == 1 else f"{report_suffix}_shard{shard}"
+    progress_dir = PROGRESS_ROOT / suffix_dir
     progress_dir.mkdir(parents=True, exist_ok=True)
     jsonl = progress_dir / "progress.jsonl"
 
-    done: set = set()
+    done: set[Any] = set()
     if resume and jsonl.exists():
         for line in jsonl.read_text().splitlines():
             if not line.strip():
@@ -185,12 +252,16 @@ def run_sweep(
             if rec.get("outcome") == "ok":
                 done.add(rec["idx"])
 
-    indexed = list(enumerate(jobs))
-    indexed.sort(key=lambda pair: CHANNEL_PRIORITY.get(pair[1].get("channel"), 99))
+    indexed = [(i, j) for i, j in enumerate(jobs) if i % num_shards == shard]
+    # A job with no "channel" sorts last, like an unrecognised one -- str()
+    # so the lookup is well-typed rather than keyed on None.
+    indexed.sort(key=lambda pair: CHANNEL_PRIORITY.get(str(pair[1].get("channel")), 99))
 
     started = time.time()
     ok = failed = 0
-    print(f"{len(jobs)} jobs, {len(done)} already done, running {len(jobs) - len(done)}")
+    mine = len(indexed)
+    todo = sum(1 for i, _ in indexed if i not in done)
+    print(f"shard {shard}/{num_shards}: {mine} of {len(jobs)} jobs, {mine - todo} already done, running {todo}")
     print(f"progress: {progress_dir}")
 
     for idx, job in indexed:
@@ -201,6 +272,7 @@ def run_sweep(
         try:
             run_orchestrator_backtest(
                 **_job_kwargs(job, enable_screener_cache), report_suffix=f"{report_suffix}_job{idx}",
+                defer_feature_log=defer_feature_log,
             )
             outcome, err = "ok", None
             ok += 1
@@ -227,10 +299,14 @@ def run_sweep(
 
         st = shared_panels.stats()
         print(
-            f"  [{ok + failed:>4}/{len(jobs) - len(done)}] {label:<44} {outcome:>6} "
+            f"  [{ok + failed:>4}/{todo}] {label:<44} {outcome:>6} "
             f"{dt:6.1f}s  (panel hits {st['ohlcv_hits']}/{st['ohlcv_hits'] + st['ohlcv_misses']})",
             flush=True,
         )
+
+    if defer_feature_log:
+        # One bulk load for the whole shard, instead of one per job.
+        drain_feature_log_spills(label=f"sweep[{report_suffix}]")
 
     total = time.time() - started
     print(
@@ -249,6 +325,33 @@ def main() -> int:
     ap.add_argument("--stop-on-error", action="store_true", help="abort the sweep on the first failure")
     ap.add_argument("--limit", type=int, help="run only the first N jobs (for timing a sample)")
     ap.add_argument(
+        "--shard", type=int, default=0,
+        help="this process's shard index (0-based). See run_sweep's docstring.",
+    )
+    ap.add_argument(
+        "--defer-feature-log", action="store_true",
+        help=(
+            "leave each job's feature-log spill file on disk and bulk-load them ONCE at "
+            "the end of the shard, instead of inserting per job. Measured 2026-08-19: the "
+            "per-job insert was 11.5s of a 31.2s warm job (7.6s executemany + 3.9s re-read) "
+            "for a per-decision debug log. Safe under OOM: the spill files ARE the durable "
+            "copy and nothing is held in memory, so a crash loses no feature rows and a "
+            "re-run drains whatever remains. Results (backtest_runs/strategy_signals) are "
+            "always written per job and never deferred."
+        ),
+    )
+    ap.add_argument(
+        "--num-shards", type=int, default=1,
+        help=(
+            "split the queue across this many PROCESSES, each running the jobs where "
+            "idx %% num_shards == shard. Each shard pays the shared_panels setup once "
+            "(OHLCV frame, config artifacts, and the 72s yearly rankings) and reuses it "
+            "across its share of the jobs -- so setup cost is O(shards), not O(jobs), "
+            "which is what subprocess-per-job parallelism cannot do. Launch one process "
+            "per shard yourself; memory is the limit, not cores."
+        ),
+    )
+    ap.add_argument(
         "--enable-screener-cache", action="store_true",
         help=(
             "Take the immediate path so technical_screener_cache is populated and reused. "
@@ -264,6 +367,8 @@ def main() -> int:
     return run_sweep(
         jobs, args.report_suffix, resume=not args.no_resume,
         stop_on_error=args.stop_on_error, enable_screener_cache=args.enable_screener_cache,
+        shard=args.shard, num_shards=args.num_shards,
+        defer_feature_log=args.defer_feature_log,
     )
 
 

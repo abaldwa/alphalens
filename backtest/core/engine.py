@@ -856,8 +856,15 @@ class BacktestOrchestrator:
                 try:
                     from config.universe import get_market_cap_rank_map_as_of
 
+                    from backtest import shared_panels
+
+                    # The rank MAP stays per-orchestrator (it ranks within
+                    # this date's buy list, so it is not shareable across
+                    # strategies). Only the PIT shares lookup underneath it is
+                    # shared -- that IS per-ticker and identical for everyone.
                     self._market_cap_rank_maps_by_date[as_of_date] = get_market_cap_rank_map_as_of(
                         self._regime_conn, all_buy_tickers_this_date or [ticker], as_of_date,
+                        shares_cache=shared_panels.pit_shares_cache(),
                     )
                 except Exception:
                     logger.warning(

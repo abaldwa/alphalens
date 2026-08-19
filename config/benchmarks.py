@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Broad-market indices: the default when a strategy's universe is not
 # size-scoped.
@@ -79,9 +79,11 @@ RANK_BAND_BENCHMARKS: Dict[int, str] = {
     2: "Nifty Next 50",        # ranks 51-100
     3: "Nifty Midcap 100",     # ranks 101-150
     4: "Nifty Midcap 150",     # ranks 151-200
-    6: "Nifty Smallcap 250",   # ranks 200-300 (straddles the 250 midcap/smallcap seam)
-    7: "Nifty Smallcap 250",   # ranks 300-500 (the 251-500 smallcap tier)
-    8: "Nifty Microcap 250",   # ranks 500-800 (the 501+ microcap tier)
+    # 2026-08-19: renumbered from 6/7/8 to 5/6/7 with RANK_BANDS. Ranges
+    # unchanged; only the ids moved.
+    5: "Nifty Smallcap 250",   # ranks 201-300 (straddles the 250 midcap/smallcap seam)
+    6: "Nifty Smallcap 250",   # ranks 301-500 (the smallcap tier)
+    7: "Nifty Microcap 250",   # ranks 501-800 (the microcap tier)
 }
 
 # The regime index is a separate decision from the benchmark index (A98).
@@ -172,7 +174,7 @@ class IndexCoverage:
         return None
 
 
-def load_coverage(conn) -> Dict[str, IndexCoverage]:
+def load_coverage(conn: Any) -> Dict[str, IndexCoverage]:
     """Measure coverage from index_ohlcv. Nothing here is declared -- an
     index is fresh because rows are arriving, not because it appears in a
     list."""
@@ -276,6 +278,9 @@ def benchmark_options(
     backcomputed = [n for n in all_covering if n not in live]
 
     fallback_reason: Optional[str] = None
+    # Optional because every fallback below bottoms out at `live[0] if live
+    # else None` -- with no live index at all there is nothing to recommend.
+    recommended: Optional[str] = None
 
     if preferred and preferred in live:
         recommended = preferred
@@ -344,7 +349,7 @@ def default_benchmark_for(
     return DEFAULT_BENCHMARK_INDEX
 
 
-def _as_date(v) -> Optional[date]:
+def _as_date(v: Any) -> Optional[date]:
     if v is None:
         return None
     if isinstance(v, date):

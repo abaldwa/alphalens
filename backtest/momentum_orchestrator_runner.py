@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date as date_type
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set, cast
 
 import pandas as pd
 
@@ -246,7 +246,7 @@ def run_momentum_orchestrated(
         yearly_rank_lookup=yearly_rank_lookup,
     )
 
-    capital_mode = "annual_reset" if annual_capital_reset_target is not None else (
+    capital_mode: Literal["lump", "sip", "annual_reset"] = "annual_reset" if annual_capital_reset_target is not None else (
         "sip" if sip_amount else "lump"
     )
     config = OrchestratorConfig(
@@ -309,7 +309,13 @@ def run_momentum_orchestrated(
                 # and several scripts' t["qty"] accesses depend on.
                 "qty": int(getattr(row, "qty")),
                 "status": "closed",
-                "buy_momentum_rank": None if pd.isna(stock_rank) or stock_rank == "" else int(stock_rank),
+                # stock_rank is Any from the trade log and may be NaN, "" or
+                # None; the guards above cover all three, so the cast states
+                # what they already established rather than widening it.
+                "buy_momentum_rank": (
+                    None if stock_rank is None or pd.isna(stock_rank) or stock_rank == ""
+                    else int(cast(Any, stock_rank))
+                ),
                 # trade log only carries entry rank, never exit rank -- see module docstring
                 "sell_momentum_rank": None,
                 "trade_cagr": None,  # not recomputed here; callers use .get("trade_cagr")

@@ -7,6 +7,7 @@ and measure impact on negative FYs vs overall CAGR.
 
 import logging
 import sys
+from typing import Any, Dict, List
 from datetime import date
 from pathlib import Path
 
@@ -38,8 +39,19 @@ from scripts.run_momentum_dynamic_report import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# [2026-08-19] STALE BAND NUMBERING -- deliberately NOT renumbered.
+# RANK_BANDS was renumbered to a contiguous 1-7 on this date, but the configs
+# below were selected by the 2026-08-05 sweep, which ran against the OLD
+# tables: ids 8/6/7 there meant ranks 201-250 / 251-500 / 501-800. Only
+# 501-800 survives unchanged (it is band 7 today); 201-250 and 251-500 were
+# replaced by the 201-300 / 301-500 partition, so there is no id that means
+# the same universe those two rows were measured on. Renumbering the keys
+# would silently attach an empirical finding to a universe it was never
+# measured against. The inline `_bands` literal below is kept for the same
+# reason: it is what these results correspond to. Re-run the band sweep on
+# the current RANK_BANDS before trusting these for bands 5-7.
 # Current band-best configs (from the 2026-08-05 report)
-BAND_BEST = {
+BAND_BEST: Dict[int, Dict[str, Any]] = {
     1: dict(strategy="max_defensive", lookback_months=9, rebalance="bimonthly", top_n=15),
     2: dict(strategy="all_risk", lookback_months=3, rebalance="quarterly", top_n=15),
     3: dict(strategy="balanced", lookback_months=6, rebalance="bimonthly", top_n=10),
@@ -54,8 +66,8 @@ DOWN_CANDIDATES = [0.10, 0.15, 0.20]
 DOWN_LOOKBACK = 20
 
 
-def _fy_cagrs(equity_curve):
-    buckets = {}
+def _fy_cagrs(equity_curve: Any) -> Dict[str, float]:
+    buckets: Dict[str, List[Any]] = {}
     for pt in equity_curve:
         d = pd.Timestamp(pt["date"])
         fy_year = d.year if d.month >= 4 else d.year - 1
@@ -69,7 +81,10 @@ def _fy_cagrs(equity_curve):
     return out
 
 
-def _run_variant(kwargs, price_panel, yearly_universes, lookback_days, rebalance_days, momentum_panel, **extra):
+def _run_variant(
+    kwargs: Any, price_panel: Any, yearly_universes: Any, lookback_days: Any,
+    rebalance_days: Any, momentum_panel: Any, **extra: Any,
+) -> Any:
     # [H4, 2026-08-18] grace_cycles/momentum_panel no longer exist on
     # MomentumAdapter -- deprecated by §19 (grace_cycles) / always
     # recomputed from price_panel (momentum_panel override). momentum_panel
@@ -84,7 +99,7 @@ def _run_variant(kwargs, price_panel, yearly_universes, lookback_days, rebalance
     )
 
 
-def main():
+def main() -> None:
     end_date = now_ist().date()
     start_date = date(end_date.year - 10, end_date.month, end_date.day)
 
@@ -104,10 +119,14 @@ def main():
     quality_scores = _load_quality_scores(candidate_tickers)
     strategies = _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, quality_scores)
 
-    results = []
+    results: List[Dict[str, Any]] = []
 
     for band_id, cfg in BAND_BEST.items():
         strategy_kwargs = strategies[cfg["strategy"]]
+        # The OLD band table, kept deliberately -- see the STALE BAND
+        # NUMBERING note at the top of this module. These configs were
+        # selected against these ranges; RANK_BANDS today means something
+        # else for ids 6 and 8.
         _bands = [
             (1, 1, 50), (2, 51, 100), (3, 101, 150), (4, 151, 200),
             (8, 201, 250), (6, 251, 500), (7, 501, 800),
@@ -178,7 +197,9 @@ def main():
     print(f"{'Band':<5}{'Strategy':<15}{'Config':<20}{'Down%':<7}{'CAGR':>8}{'ΔCAGR':>8}{'PostTax':>8}{'ΔPostTax':>9}{'Sharpe':>7}{'MaxDD':>7}{'NegFYs'}")
     print("-" * 110)
     for r in results:
-        neg_str = ", ".join(f"{fy[:6]}{r:.0%}" for fy, r in sorted(r["neg_fys"].items()))
+        # `ret`, not `r` -- the old name shadowed the row being formatted.
+        neg_fys: Dict[str, float] = r["neg_fys"]
+        neg_str = ", ".join(f"{fy[:6]}{ret:.0%}" for fy, ret in sorted(neg_fys.items()))
         print(f"{r['band']:<5}{r['strategy']:<15}{r['config']:<20}{r['downtrend']:<7.0%}"
               f"{r['cagr']:>7.1%}{r['cagr']-r['cagr']:>8}{r['post_tax_cagr']:>7.1%}"
               f"{r['post_tax_cagr']-r['post_tax_cagr']:>9}{r['sharpe']:>7.2f}"

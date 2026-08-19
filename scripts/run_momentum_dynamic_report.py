@@ -69,7 +69,7 @@ import logging
 import multiprocessing
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 import numpy as np
@@ -96,7 +96,7 @@ from features.momentum_signal import (
     load_price_panel,
     load_volume_panel,
 )
-from features.momentum_universe import all_yearly_full_rankings, yearly_band_universes_from_rankings
+from features.momentum_universe import RANK_BANDS, all_yearly_full_rankings, yearly_band_universes_from_rankings
 from scripts.build_momentum_yoy_report import build_yoy
 from scripts.run_momentum_filter_overlays import (
     CIRCUIT_BAND_PCT,
@@ -112,14 +112,13 @@ from scripts.run_momentum_filter_overlays import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# 2026-07-30: exactly the 7 bands the user named. Labels below relabel
-# RANK_BANDS' band_id 3/4 (100-150/150-200) to the non-overlapping
-# 101-150/151-200 the user asked for; band_id 5 (100-200 mixed) is dropped
-# — not part of this sweep.
-BANDS = [
-    (1, 1, 50), (2, 51, 100), (3, 101, 150), (4, 151, 200),
-    (8, 201, 250), (6, 251, 500), (7, 501, 800),
-]
+# [2026-08-19] Was a local 7-band literal that had drifted from the canonical
+# constant: it kept the retired 201-250/251-500 split under ids 8/6, so this
+# report's "band 6" was a different universe from the sweep's "band 6". The
+# relabelling this list existed to do (RANK_BANDS' old 100-150/150-200
+# overlap) was fixed in the constant itself long ago, so there is nothing
+# left for a local copy to correct.
+BANDS = list(RANK_BANDS)
 
 STARTING_CAPITAL = 1_000_000.0
 SIP_STARTING_CAPITAL = 10_000.0
@@ -139,10 +138,10 @@ MOMENTUM_YOY_DB = REPORTS_DIR / "momentum_yoy.duckdb"
 # Parallel execution: fork workers inherit these globals via CoW (no pickling
 # of large panels).  Set once in the parent BEFORE Pool creation.
 # ---------------------------------------------------------------------------
-_G: Dict = {}
+_G: Dict[str, Any] = {}
 
 
-def _compute_variant(args):
+def _compute_variant(args: Any) -> Any:
     """Run one (lump + SIP) pair for a single config — runs in a forked worker,
     inherits shared panels from _G via CoW (zero-copy until modified)."""
     band_id, rank_start, rank_end, strategy_name, lookback_months, rebalance_name, top_n = args
@@ -286,7 +285,10 @@ def _compute_variant(args):
 SCORE_WEIGHTS = {"sharpe": 0.30, "sortino": 0.25, "post_tax_cagr": 0.25, "abs_max_drawdown": -0.20}
 
 
-def _run_variant(kwargs: Dict, price_panel, yearly_universes: Dict, lookback_days: int, rebalance_days: int, **extra):
+def _run_variant(
+    kwargs: Dict[str, Any], price_panel: Any, yearly_universes: Dict[str, Any],
+    lookback_days: int, rebalance_days: int, **extra: Any,
+) -> Any:
     # [H4, 2026-08-18] grace_cycles no longer exists on MomentumAdapter -- see
     # module-level GRACE_CYCLES note.
     return run_momentum_orchestrated(
@@ -299,7 +301,10 @@ def _run_variant(kwargs: Dict, price_panel, yearly_universes: Dict, lookback_day
     )
 
 
-def _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, quality_scores) -> Dict[str, Dict]:
+def _build_strategies(
+    volume_panel: Any, market_cap_panel: Any, beta_map: Any, regime_series: Any,
+    quality_scores: Any,
+) -> Dict[str, Dict[str, Any]]:
     # [H4, 2026-08-18] max_pct_of_adtv (ADTV-capped sizing) no longer exists
     # on MomentumAdapter -- deprecated by §19. regime_series/disable_in_regimes
     # also don't map: MomentumAdapter conditions on regime via a live
@@ -308,7 +313,7 @@ def _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, q
     # sweep script is left for a follow-up; "risk_managed"/"max_defensive"
     # below therefore no longer differ from "balanced" on regime, only on
     # orthogonalize_vs_size_beta.
-    all_risk: Dict = {}
+    all_risk: Dict[str, Any] = {}
     balanced = {
         "volume_panel": volume_panel,
         "min_adtv_cr": RECOMMENDED_MIN_ADTV_CR,
@@ -328,7 +333,7 @@ def _build_strategies(volume_panel, market_cap_panel, beta_map, regime_series, q
     }
 
 
-def _export_trade_csv(variant_id: str, transactions: List[Dict]) -> str:
+def _export_trade_csv(variant_id: str, transactions: List[Dict[str, Any]]) -> str:
     DYNAMIC_TRADES_DIR.mkdir(parents=True, exist_ok=True)
     out_path = DYNAMIC_TRADES_DIR / f"{variant_id}.csv"
     fields = [
@@ -366,7 +371,7 @@ def _zscore(values: List[float]) -> List[float]:
     return [float((v - mean) / std) if np.isfinite(v) else 0.0 for v in arr]
 
 
-def _zscore_scores(variants: List[Dict]) -> List[float]:
+def _zscore_scores(variants: List[Dict[str, Any]]) -> List[float]:
     """Band/cohort-level weighted score for each variant, z-scored across
     the given set (NOT per-category). Shared by _score_cohort (within a
     (band, category) cohort) and _score_band (within a whole band) so the
@@ -390,7 +395,7 @@ def _zscore_scores(variants: List[Dict]) -> List[float]:
     ]
 
 
-def _score_cohort(variants: List[Dict]) -> None:
+def _score_cohort(variants: List[Dict[str, Any]]) -> None:
     """Mutates each variant dict in-place: adds 'score' and, on exactly one
     variant per (band_id, category) cohort, 'is_recommended': True. The
     score is z-scored within this (band, category) cohort of 60 variants so
@@ -403,7 +408,7 @@ def _score_cohort(variants: List[Dict]) -> None:
     variants[best_idx]["is_recommended"] = True
 
 
-def _score_band(band_variants: List[Dict]) -> None:
+def _score_band(band_variants: List[Dict[str, Any]]) -> None:
     """Per-band best (2026-08-08 user request — one strategy per band, no
     global pick): for each band, z-score ALL its variants (any category /
     lookback / rebalance / top_n) together and mark the single top one
@@ -424,7 +429,7 @@ def run_dynamic_report(
     workers: int = 8,
     start_date_override: Optional[str] = None,
     end_date_override: Optional[str] = None,
-) -> Dict:
+) -> Dict[str, Any]:
     # 2026-08-09: explicit start/end date args, for a fixed historical
     # window (e.g. "2007-04-01 through 2026-06-30") instead of always a
     # rolling years_back-from-today window -- years_back stays the default
@@ -501,11 +506,11 @@ def run_dynamic_report(
 
     # Re-group into (band_id, category) cohorts so _score_cohort picks exactly
     # one winner per cohort, matching the pre-parallel output.
-    cohort_map: Dict[tuple, List[Dict]] = {}
+    cohort_map: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
     for v in raw_variants:
         cohort_map.setdefault((v["band_id"], v["strategy"]), []).append(v)
 
-    variants: List[Dict] = []
+    variants: List[Dict[str, Any]] = []
     for (band_id, strategy_name) in sorted(cohort_map):
         cohort = cohort_map[(band_id, strategy_name)]
         _score_cohort(cohort)
@@ -521,7 +526,7 @@ def run_dynamic_report(
     # Per-band: (a) best strategy across all 240 configs via band-wide
     # z-scored score — this is the "Best Strategy for this band" the user
     # deploys; (b) top-2 variants by raw CAGR for comparison.
-    by_band: Dict[int, List[Dict]] = {}
+    by_band: Dict[int, List[Dict[str, Any]]] = {}
     for v in variants:
         by_band.setdefault(v["band_id"], []).append(v)
 
@@ -569,7 +574,7 @@ def run_dynamic_report(
     return report
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="ML38 momentum dynamic report (7 bands x 4 categories x 60 configs x 2 passes)")
     parser.add_argument("--years-back", type=int, default=10,
                         help="rolling window size, ignored if --start-date/--end-date are given")

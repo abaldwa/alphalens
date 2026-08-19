@@ -26,7 +26,7 @@ import { StrategyLink } from './StrategyLink'
 import { TradesLink } from './TradesLink'
 import { cagrOn } from '../core/cagrOn'
 import { EM_DASH, inr, int, num, pct, rate, rateDelta } from '../core/format'
-import { collectFiscalYears, shortFyLabel } from '../core/fiscalYears'
+import { collectFiscalYears, shortFyLabel, yoyValueFor, isPartialFor } from '../core/fiscalYears'
 import { baseCapitalFor, regularReturnsByYear } from '../core/regularReturns'
 import { rollingFromYoy } from '../core/rollingFromYoy'
 import type { StrategyReport, TaxBasis } from '../core/types'
@@ -616,13 +616,17 @@ export function fiscalYearGroup(rows: StrategyReport[]): Group | null {
       // four-digit years is what makes the span scroll sideways, and nobody
       // reading FY27 in a run that starts in 2009 wonders which century.
       headerName: shortFyLabel(label),
-      headerTooltip:
-        label.endsWith('*')
-          ? `${label.slice(0, -1)} is a PARTIAL financial year — the run opened or closed mid-year.`
-          : label,
+      // The header names a CALENDAR year and nothing more. Whether the year
+      // was partial depends on the row, so it is stated per cell below rather
+      // than in a header shared by every strategy.
+      headerTooltip: label,
       width: 100,
       valueGetter: (p) =>
-        p.data?.consistency.yoy.find((y) => y.fyLabel === label)?.returnPct ?? null,
+        yoyValueFor(p.data?.consistency.yoy ?? [], label)?.returnPct ?? null,
+      tooltipValueGetter: (p) =>
+        isPartialFor(p.data?.consistency.yoy ?? [], label)
+          ? `${label} is a PARTIAL financial year for this strategy — its run opened or closed mid-year.`
+          : undefined,
       valueFormatter: fmt(pct),
       context: HEATMAP_COLUMN,
     })),

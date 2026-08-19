@@ -42,3 +42,34 @@ def test_bands_cover_the_declared_range():
     ordered = sorted(RANK_BANDS, key=lambda b: b[1])
     assert ordered[0][1] == 1
     assert ordered[-1][2] == 800
+
+
+def test_band_ids_are_contiguous_from_one():
+    """2026-08-19, user-specified: the ids are 1..7 with no gap.
+
+    Before this, the ids ran 1,2,3,4,6,7,8 — id 5 was a hole left by the
+    retired 100-200 band, and every report that numbered its rows 1-7 was
+    therefore off by one against the band ids from band 5 onward.
+    """
+    ids = sorted(b[0] for b in RANK_BANDS)
+    assert ids == list(range(1, len(RANK_BANDS) + 1)), (
+        f"band ids must be contiguous from 1, got {ids}"
+    )
+
+
+def test_legacy_band_id_map_preserves_ranges():
+    """The 2026-08-19 renumber was a pure relabel: an old id and the current
+    id it maps to must describe the SAME rank range, or historical results
+    read through the map would be attributed to a universe they never ran
+    against."""
+    from features.momentum_universe import LEGACY_BAND_ID_TO_CURRENT, RETIRED_BAND_IDS
+
+    by_id = {b[0]: (b[1], b[2]) for b in RANK_BANDS}
+    legacy_ranges = {6: (201, 300), 7: (301, 500), 8: (501, 800)}
+    for old_id, new_id in LEGACY_BAND_ID_TO_CURRENT.items():
+        assert by_id[new_id] == legacy_ranges[old_id], (
+            f"old band {old_id} was {legacy_ranges[old_id]} but current band "
+            f"{new_id} is {by_id[new_id]} — this is not a relabel"
+        )
+    # A retired id must NOT be claimed as a relabel of a live one.
+    assert not (set(RETIRED_BAND_IDS) & set(LEGACY_BAND_ID_TO_CURRENT))

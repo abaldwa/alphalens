@@ -276,7 +276,8 @@ def get_market_cap_rank_map() -> Dict[str, int]:
 
 
 def get_market_cap_rank_map_as_of(
-    conn: Any, tickers: List[str], as_of_date: "date | datetime"
+    conn: Any, tickers: List[str], as_of_date: "date | datetime",
+    *, shares_cache: Optional[Dict[Any, Any]] = None,
 ) -> Dict[str, int]:
     """
     {ticker: rank} ranked by a genuinely point-in-time market cap as of
@@ -324,21 +325,62 @@ def get_market_cap_rank_map_as_of(
 
     as_of_dt = as_of_date if isinstance(as_of_date, datetime) else datetime.combine(as_of_date, datetime.min.time())
 
-    fundamentals = get_fundamentals_pit(conn, tickers, as_of_dt)
-    if fundamentals.empty or "shares_outstanding" not in fundamentals.columns:
-        return {}
+    # shares_cache (2026-08-19): an OPTIONAL caller-owned {(db, as_of, ticker):
+    # shares_or_None} memo. Shares outstanding as of a date is a property of
+    # the TICKER, not of which other tickers were asked about, so unlike the
+    # rank map itself (which ranks WITHIN `tickers` and therefore cannot be
+    # shared across callers with different lists) this is safe to reuse.
+    #
+    # MEASURED in a warm sweep job: get_fundamentals_pit was 4.48s of a 31.2s
+    # job, re-fetching the same dates for every strategy because the engine's
+    # own rank-map cache lives on the orchestrator instance and dies with each
+    # run. Caller-owned rather than a module global for the usual reason: a
+    # long-running live process must never serve fundamentals cached at boot.
+    #
+    # A cached None means "known to have no shares_outstanding here" and is
+    # NOT re-queried -- the missing-data convention is part of what is cached,
+    # or a universe of never-reported tickers would defeat the memo entirely.
+    cache_key_db = None
+    to_fetch = list(tickers)
+    shares_by_ticker: Dict[str, Any] = {}
+    if shares_cache is not None:
+        try:
+            cache_key_db = next(
+                (r[2] for r in conn.execute("PRAGMA database_list").fetchall() if r[2]), "__memory__"
+            )
+        except Exception:  # noqa: BLE001
+            cache_key_db = f"__unidentified_{id(conn)}__"
+        to_fetch = []
+        for t in tickers:
+            k = (cache_key_db, as_of_dt, t)
+            if k in shares_cache:
+                v = shares_cache[k]
+                if v is not None:
+                    shares_by_ticker[t] = v
+            else:
+                to_fetch.append(t)
 
-    # get_fundamentals_pit already returns one row per (ticker, fiscal_year,
-    # quarter) using each quarter's latest as-of-as_of_dt snapshot, sorted
-    # by announcement_date ascending — take the LAST row per ticker (the
-    # most recent quarter known as of as_of_date), same "latest known"
-    # semantics as the function's own docstring.
-    shares_by_ticker = (
-        fundamentals.dropna(subset=["shares_outstanding"])
-        .groupby("ticker", as_index=True)
-        .last()["shares_outstanding"]
-        .to_dict()
-    )
+    if to_fetch:
+        fundamentals = get_fundamentals_pit(conn, to_fetch, as_of_dt)
+        if fundamentals.empty or "shares_outstanding" not in fundamentals.columns:
+            fetched: Dict[str, Any] = {}
+        else:
+            # get_fundamentals_pit already returns one row per (ticker,
+            # fiscal_year, quarter) using each quarter's latest as-of-as_of_dt
+            # snapshot, sorted by announcement_date ascending — take the LAST
+            # row per ticker (the most recent quarter known as of as_of_date),
+            # same "latest known" semantics as the function's own docstring.
+            fetched = (
+                fundamentals.dropna(subset=["shares_outstanding"])
+                .groupby("ticker", as_index=True)
+                .last()["shares_outstanding"]
+                .to_dict()
+            )
+        shares_by_ticker.update(fetched)
+        if shares_cache is not None:
+            for t in to_fetch:
+                shares_cache[(cache_key_db, as_of_dt, t)] = fetched.get(t)
+
     if not shares_by_ticker:
         return {}
 

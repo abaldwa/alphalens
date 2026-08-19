@@ -21,6 +21,18 @@
  * Labels carry a trailing `*` when the engine marked the year partial (the run
  * opened or closed mid-year). `stripPartialMarker` is used for ordering only,
  * so "FY2027*" sorts beside FY2027 rather than after every unmarked label.
+ *
+ * THE AXIS IS KEYED ON THE BARE YEAR, and that is the whole point of this
+ * module. Partial-ness is a property of a ROW, not of a year: FY2020 was a
+ * stub for a strategy that started in January 2020 and a full year for every
+ * strategy that did not, but it is the same twelve months on the calendar.
+ * Unioning the marked label instead (as this did until 2026-08-19) minted a
+ * SECOND column — "FY20*" beside "FY20" — populated for the one row that
+ * started mid-year and blank for the other 631, which read as "FY20 is empty"
+ * and, worse, filed that row's 2020 in a different column from everybody
+ * else's 2020. Cross-strategy comparison in exactly those years was
+ * misaligned. Use `yoyValueFor` to read a cell so the lookup tolerates the
+ * marker the row's own label still carries.
  */
 
 import type { StrategyReport } from './types'
@@ -47,7 +59,10 @@ export function collectFiscalYears(
   order: 'newest-first' | 'oldest-first' = 'newest-first',
 ): string[] {
   const labels = new Set<string>()
-  for (const r of rows) for (const y of r.consistency.yoy) labels.add(y.fyLabel)
+  // The BARE year, never the marked label -- see the module docstring.
+  for (const r of rows) {
+    for (const y of r.consistency.yoy) labels.add(stripPartialMarker(y.fyLabel))
+  }
   const sorted = [...labels].sort(byYear)
   return order === 'newest-first' ? sorted.reverse() : sorted
 }
@@ -68,4 +83,28 @@ export function collectFiscalYears(
 export function shortFyLabel(label: string): string {
   const match = /^FY(\d{2})(\d{2})(\*?)$/.exec(label)
   return match ? `FY${match[2]}${match[3]}` : label
+}
+
+
+/**
+ * One row's entry for a financial year, matched on the bare year.
+ *
+ * The axis is keyed on "FY2020" while a row that opened mid-2019 still labels
+ * its own entry "FY2020*", so an === comparison silently misses and renders a
+ * populated year as blank. Every year-column value getter goes through here.
+ */
+export function yoyValueFor(
+  yoy: Array<{ fyLabel: string; returnPct: number | null }>,
+  label: string,
+): { fyLabel: string; returnPct: number | null } | undefined {
+  const want = stripPartialMarker(label)
+  return yoy.find((y) => stripPartialMarker(y.fyLabel) === want)
+}
+
+/** Whether this row's entry for `label` is the engine-flagged partial year. */
+export function isPartialFor(
+  yoy: Array<{ fyLabel: string; returnPct: number | null }>,
+  label: string,
+): boolean {
+  return yoyValueFor(yoy, label)?.fyLabel.endsWith('*') ?? false
 }

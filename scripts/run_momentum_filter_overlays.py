@@ -61,7 +61,7 @@ import json
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -84,8 +84,13 @@ HMM_REGIME_BULLISH = 2.0
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# 2026-07-29: 201-250 band added to match run_momentum_experimentation.py
-WIDE_BANDS = [(8, 201, 250), (6, 251, 500), (7, 501, 800)]
+# [2026-08-19] WIDE_BANDS removed. It predated RANK_BANDS covering rank
+# 1-800 and carried its OWN 201-250/251-500/501-800 split under ids 8/6/7 --
+# so iterating RANK_BANDS plus it covered band ids 6 and 7 TWICE, with two
+# different rank ranges each, and wrote both results under the same band id.
+# RANK_BANDS now partitions 1-800 on its own (ids 1-7), so the canonical
+# constant is the only band table this script needs.
+
 
 STARTING_CAPITAL = 1_000_000.0
 INVESTABLE_PCT = 0.8
@@ -102,15 +107,15 @@ REPORTS_DIR = Path(__file__).resolve().parent.parent / "backtest" / "reports" / 
 MOMENTUM_YOY_DB = REPORTS_DIR / "momentum_yoy.duckdb"
 
 
-def _union_tickers(yearly_rankings) -> List[str]:
-    tickers = set()
+def _union_tickers(yearly_rankings: Any) -> List[str]:
+    tickers: set[str] = set()
     for ranked in yearly_rankings.values():
         if not ranked.empty:
             tickers.update(ranked["ticker"].tolist())
     return sorted(tickers)
 
 
-def _load_static_shares_outstanding(conn, tickers: List[str]) -> Dict[str, float]:
+def _load_static_shares_outstanding(conn: Any, tickers: List[str]) -> Dict[str, float]:
     """ticker -> earliest real fundamentals.shares_outstanding — the same
     fallback market_cap_snapshot() uses for pre-2024 dates, applied here
     as one flat value per ticker (see module docstring)."""
@@ -139,7 +144,7 @@ def _build_market_cap_panel(price_panel: pd.DataFrame, shares_map: Dict[str, flo
     return price_panel[cols].mul(shares, axis=1) / 1e7  # INR crore, matching momentum_universe.py's convention
 
 
-def _load_beta_map(conn, tickers: List[str]) -> Dict[str, float]:
+def _load_beta_map(conn: Any, tickers: List[str]) -> Dict[str, float]:
     if not tickers:
         return {}
     placeholders = ",".join("?" for _ in tickers)
@@ -211,7 +216,7 @@ def _load_per_ticker_hmm_regime(
         return {}
 
     logger.info("Loading per-ticker HMM regime from %s", FEATURES_DAILY_DIR)
-    regime_by_ticker = {}
+    regime_by_ticker: Dict[str, Any] = {}
     ticker_set = set(tickers)
 
     parquets = sorted(FEATURES_DAILY_DIR.glob("*.parquet"))
@@ -250,9 +255,9 @@ def _load_per_ticker_hmm_regime(
 
 
 def _run_variant(
-    filter_name: str, kwargs: Dict, price_panel: pd.DataFrame, yearly_universes: Dict,
+    filter_name: str, kwargs: Dict[str, Any], price_panel: pd.DataFrame, yearly_universes: Dict[str, Any],
     lookback_days: int, rebalance_days: int, top_n: int,
-):
+) -> Any:
     return run_momentum_orchestrated(
         price_panel=price_panel,
         yearly_universes=yearly_universes,
@@ -265,7 +270,7 @@ def _run_variant(
     )
 
 
-def run_overlays(years_back: int = 10) -> Dict:
+def run_overlays(years_back: int = 10) -> Dict[str, Any]:
     end_date = now_ist().date()
     start_date = date(end_date.year - years_back, end_date.month, end_date.day)
 
@@ -301,7 +306,7 @@ def run_overlays(years_back: int = 10) -> Dict:
     #     through here either.
     # regime_series is still loaded/logged above for visibility into what
     # would be available, even though no filter below consumes it.
-    filters: Dict[str, Dict] = {
+    filters: Dict[str, Dict[str, Any]] = {
         "liquidity_floor": {"volume_panel": volume_panel, "min_adtv_cr": MIN_ADTV_CR},
         "circuit_lock_proxy": {"circuit_band_pct": CIRCUIT_BAND_PCT},
         "downtrend_filter": {
@@ -315,7 +320,7 @@ def run_overlays(years_back: int = 10) -> Dict:
 
     variants = []
     for filter_name, filter_kwargs in filters.items():
-        for band_id, rank_start, rank_end in RANK_BANDS + WIDE_BANDS:
+        for band_id, rank_start, rank_end in RANK_BANDS:
             yearly_universes = yearly_band_universes_from_rankings(yearly_rankings, rank_start, rank_end)
             for lookback_months in LOOKBACK_MONTHS:
                 lookback_days = lookback_trading_days(lookback_months)
@@ -384,7 +389,7 @@ def run_overlays(years_back: int = 10) -> Dict:
     }
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="ML38 momentum filter-overlay robustness sweep")
     parser.add_argument("--years-back", type=int, default=10)
     args = parser.parse_args()

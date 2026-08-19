@@ -28,7 +28,7 @@ def available_mb() -> Optional[float]:
     try:
         import psutil
 
-        return psutil.virtual_memory().available / (1024 * 1024)
+        return float(psutil.virtual_memory().available) / (1024 * 1024)
     except ImportError:  # pragma: no cover - psutil is a hard dependency elsewhere in the repo
         return None
 
@@ -44,7 +44,10 @@ def wait_for_headroom(
         return
 
     deadline = time.monotonic() + wait_timeout_s
-    while available < min_free_mb:
+    # psutil was importable once, so it stays importable -- but available_mb()
+    # is Optional by signature, so each re-read is re-narrowed rather than
+    # asserted away.
+    while available is not None and available < min_free_mb:
         if time.monotonic() >= deadline:
             raise RuntimeError(
                 f"{label}: only {available:.0f}MB free after waiting {wait_timeout_s:.0f}s "
@@ -53,6 +56,12 @@ def wait_for_headroom(
         logger.info(f"{label}: {available:.0f}MB free, below {min_free_mb:.0f}MB floor — waiting...")
         time.sleep(poll_interval_s)
         available = available_mb()
+
+
+#: First retry delay for exclusive_backtest_lock, in seconds. Doubles up to
+#: the caller's poll_interval_s. Small because the common contention case is
+#: another job's short write tail, not a whole job.
+_LOCK_BACKOFF_INITIAL_S = 0.01
 
 
 @contextlib.contextmanager
@@ -89,6 +98,19 @@ def exclusive_backtest_lock(
     fd = open(lock_path, "w")
     deadline = time.monotonic() + wait_timeout_s
     acquired = False
+    # [2026-08-19] Exponential backoff, not a flat poll_interval_s wait.
+    # MEASURED in a warm sweep job: time.sleep accounted for 5.000s of a
+    # 31.2s job -- 16% -- because the previous job's write TAIL holds this
+    # lock for milliseconds, and a fixed 5s poll turned every one of those
+    # into a full 5-second wait. Across a 1,260-job sweep that is ~1.75
+    # hours of sleeping, and it hits every channel.
+    #
+    # The lock's SEMANTICS are unchanged -- still one backtest at a time,
+    # still a flock the kernel releases on crash. Only the frequency of
+    # asking changes: start at 10ms and double up to poll_interval_s, so a
+    # tail that frees in 10ms costs 10ms while a genuinely long-running job
+    # is still only polled every 5s.
+    backoff = _LOCK_BACKOFF_INITIAL_S
     try:
         while not acquired:
             try:
@@ -100,8 +122,12 @@ def exclusive_backtest_lock(
                         f"{label}: could not acquire the backtest execution lock after waiting "
                         f"{wait_timeout_s:.0f}s — another backtest job is still running"
                     )
-                logger.info(f"{label}: another backtest job is currently running — waiting for it to finish...")
-                time.sleep(poll_interval_s)
+                if backoff >= poll_interval_s:
+                    # Only log once we are in the slow-poll regime; a job
+                    # waiting out a millisecond tail should not emit a line.
+                    logger.info(f"{label}: another backtest job is currently running — waiting for it to finish...")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, poll_interval_s)
         logger.info(f"{label}: acquired the backtest execution lock")
         yield
     finally:

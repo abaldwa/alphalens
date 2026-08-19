@@ -138,6 +138,15 @@ SYNTHETIC_DATA_ALLOWLIST: dict[str, set[str]] = {
 # the surrounding code is legitimate — e.g. a documented archive entry, an
 # intentional no-op, or an honest-NaN explanatory comment).
 KEYWORD_ALLOWLIST: dict[str, set[str]] = {
+    # [H4, 2026-08-18] UnifiedGeneratorRefactorPlan.md §19 deleted the
+    # per-ticker HMM / grace-cycle knobs from MomentumAdapter. In these three
+    # research scripts that knob was ONE axis of a grid, so the axis was
+    # collapsed to a single fixed value rather than the whole script being
+    # dropped. The word describes a collapsed SWEEP AXIS -- one code path
+    # where there used to be several -- not fabricated data.
+    "scripts/run_momentum_refinement.py": {"one placeholder value"},
+    "scripts/run_momentum_refinement_v2.py": {"one placeholder value"},
+    "scripts/run_momentum_grid2.py": {"one placeholder value"},
     "systems/ml_signal_engine/models/multibagger/analogue_miner.py": {
         "SYNTHETIC", "synthetic"
     },
@@ -364,7 +373,18 @@ def _is_stub_body(body: list[ast.stmt]) -> str | None:
 # incomplete work, it is the only form the language offers for declaring a
 # structural interface -- so it is recognised structurally now, by
 # _protocol_method_lines() below, rather than name by name.
-STUB_FUNCTION_ALLOWLIST: set[str] = set()
+STUB_FUNCTION_ALLOWLIST: set[str] = {
+    # [H4, 2026-08-18] Scripts whose ENTIRE premise was a knob §19 deleted
+    # from MomentumAdapter (per-ticker HMM regime; grace cycles). They now
+    # raise NotImplementedError with a message saying so, which is the
+    # honest behaviour -- the alternative was reporting a comparison in
+    # which every variant is identical. UnifiedGeneratorRefactorPlan.md
+    # (~line 1306) records the decision to RETAIN rather than delete them,
+    # because the class backs published results. Allowlisted because these
+    # are deliberately-terminal scripts, not unimplemented work.
+    "scripts/run_band_best_hmm_regime_sweep.py::main",
+    "scripts/run_momentum_grace_comparison.py::run",
+}
 
 # Whole packages that are intentionally-empty scaffolding today (Weeks
 # 33-38 of alphalens_docs/11_phase_delivery_plan.md — not yet built). Listed

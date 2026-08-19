@@ -70,15 +70,36 @@ logger = logging.getLogger(__name__)
 # generations for bands 3 and 4 -- and it is why the migration must be re-run
 # after this change, or a --rank-band-id 6/7/8 run emits a key that resolves
 # to nothing.
+# 2026-08-19, user-specified numbering: the ids are now CONTIGUOUS 1-7. Ids
+# 5, 6 and 7 previously did not exist / were numbered 6, 7 and 8, a hangover
+# from the retired band 5 (ranks 100-200) whose slot was never reclaimed when
+# it was dropped. The RANGES are unchanged by this edit -- only the labels --
+# so band 5 here is exactly the universe band 6 named yesterday.
+#
+# Historical records (strategy_registry keys, strategy_catalog descriptors,
+# backtest_runs rows) still carry the OLD ids. Read them through
+# LEGACY_BAND_ID_TO_CURRENT below rather than assuming an id means the same
+# band it means today.
 RANK_BANDS: List[Tuple[int, int, int]] = [
     (1, 1, 50),
     (2, 51, 100),
     (3, 101, 150),
     (4, 151, 200),
-    (6, 201, 300),
-    (7, 301, 500),
-    (8, 501, 800),
+    (5, 201, 300),
+    (6, 301, 500),
+    (7, 501, 800),
 ]
+
+#: Old band id -> current band id, for the ids that were renumbered on
+#: 2026-08-19. Same ranges on both sides -- this is a pure relabel, so a
+#: historical result filed under old id 6 IS a current band 5 result.
+LEGACY_BAND_ID_TO_CURRENT: Dict[int, int] = {6: 5, 7: 6, 8: 7}
+
+#: Band ids that were retired outright and have NO current equivalent. Band 5
+#: was ranks 100-200 -- it overlapped bands 3 and 4 rather than partitioning
+#: with them, and was dropped in commit 99a120ca. Results filed under it are
+#: not comparable to any band in RANK_BANDS today.
+RETIRED_BAND_IDS: Dict[int, Tuple[int, int]] = {5: (100, 200)}
 
 
 def _all_candidate_tickers(include_delisted: bool = False, normalised_conn: Any = None) -> List[str]:
@@ -622,6 +643,36 @@ def liquid_universe(
     return [str(r[0]) for r in rows]
 
 
+def ranked_liquid_universe(
+    normalised_conn: Any, as_of_date: str,
+    *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N, include_delisted: bool = True,
+) -> pd.DataFrame:
+    """The liquid universe on `as_of_date`, ranked by market cap: columns
+    ticker / market_cap_cr / rank.
+
+    Extracted from momentum_band_universe on 2026-08-19 because it is the
+    expensive half AND it does not depend on the rank band -- the band is the
+    two-line slice below. Measured: build_momentum_universe_provider cost
+    66.3s for a 17-year window (204 grid points x two DB queries), and it cost
+    that again for every band and every strategy in a sweep, even though every
+    one of those calls produced the SAME ranked frame per grid point.
+
+    Returns an empty frame (not a fabricated one) when either half is missing,
+    preserving momentum_band_universe's own missing-data convention.
+    """
+    liquid = liquid_universe(
+        normalised_conn, as_of_date, top_n=top_n_by_adtv, include_delisted=include_delisted,
+    )
+    if not liquid:
+        return pd.DataFrame(columns=["ticker", "market_cap_cr", "rank"])
+    snapshot = market_cap_snapshot(normalised_conn, liquid, as_of_date)
+    if snapshot.empty:
+        return pd.DataFrame(columns=["ticker", "market_cap_cr", "rank"])
+    ranked = snapshot.sort_values("market_cap_cr", ascending=False).reset_index(drop=True)
+    ranked["rank"] = ranked.index + 1
+    return ranked
+
+
 def momentum_band_universe(
     normalised_conn: Any, as_of_date: str, rank_start: int, rank_end: int,
     *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N, include_delisted: bool = True,
@@ -633,16 +684,12 @@ def momentum_band_universe(
     universe through this function, so a band cannot mean one thing in a
     backtest and another thing today.
     """
-    liquid = liquid_universe(
-        normalised_conn, as_of_date, top_n=top_n_by_adtv, include_delisted=include_delisted,
+    ranked = ranked_liquid_universe(
+        normalised_conn, as_of_date,
+        top_n_by_adtv=top_n_by_adtv, include_delisted=include_delisted,
     )
-    if not liquid:
+    if ranked.empty:
         return []
-    snapshot = market_cap_snapshot(normalised_conn, liquid, as_of_date)
-    if snapshot.empty:
-        return []
-    ranked = snapshot.sort_values("market_cap_cr", ascending=False).reset_index(drop=True)
-    ranked["rank"] = ranked.index + 1
     band = ranked[(ranked["rank"] >= rank_start) & (ranked["rank"] <= rank_end)]
     return [str(t) for t in band["ticker"]]
 
@@ -650,6 +697,7 @@ def momentum_band_universe(
 def build_momentum_universe_provider(
     normalised_conn: Any, trading_days: pd.DatetimeIndex, rank_start: int, rank_end: int,
     *, top_n_by_adtv: int = ADTV_UNIVERSE_TOP_N, include_delisted: bool = True,
+    snapshot_cache: Optional[Dict[Any, pd.DataFrame]] = None,
 ) -> Callable[[date_type], List[str]]:
     """A `UniverseProvider` over the 21-trading-day grid, for backtests.
 
@@ -664,13 +712,50 @@ def build_momentum_universe_provider(
     refresh yields an empty universe rather than back-dating the first
     snapshot onto it, which would be look-ahead.
     """
-    snapshots = {
-        refresh_date: momentum_band_universe(
-            normalised_conn, str(refresh_date.date()), rank_start, rank_end,
-            top_n_by_adtv=top_n_by_adtv, include_delisted=include_delisted,
+    # snapshot_cache (2026-08-19): an OPTIONAL caller-owned dict memoising the
+    # RANKED frame per grid point. The ranking is band-independent -- the band
+    # is the slice below -- so a sweep over seven bands x many strategies was
+    # rebuilding one identical frame per grid point every time, at a measured
+    # 66.3s per provider for a 17-year window.
+    #
+    # Caller-owned rather than a module global on purpose: this function is
+    # the BACKTEST entry point, while live and paper go through
+    # current_momentum_band_universe. A process-lifetime global here would
+    # also be read by any long-running live process that ever touched this
+    # function, and a universe cached at boot is exactly the kind of staleness
+    # that must never reach a live order. Passing None (the default) keeps the
+    # original per-call behaviour byte for byte.
+    cache = snapshot_cache if snapshot_cache is not None else {}
+    # The DATABASE is part of the key. Without it two connections to different
+    # files -- a test's temp fixture and the real store, or two windows of a
+    # rehearsal DB -- collide on (date, top_n, include_delisted) and one
+    # silently serves the other's universe. Caught by
+    # tests/unit/test_run_orchestrator_backtest.py::TestMomentumRankBandWiring,
+    # which seeds a fresh temp DB per test in one process.
+    try:
+        _db = next(
+            (row[2] for row in normalised_conn.execute("PRAGMA database_list").fetchall() if row[2]),
+            "__memory__",
         )
-        for refresh_date in universe_refresh_dates(trading_days)
-    }
+    except Exception:  # noqa: BLE001 -- a connection that cannot name itself
+        # gets a private cache rather than sharing an ambiguous one.
+        _db = f"__unidentified_{id(normalised_conn)}__"
+    snapshots: Dict[str, pd.DataFrame] = {}
+    for refresh_date in universe_refresh_dates(trading_days):
+        as_of = str(refresh_date.date())
+        key = (_db, as_of, top_n_by_adtv, bool(include_delisted))
+        ranked = cache.get(key)
+        if ranked is None:
+            ranked = ranked_liquid_universe(
+                normalised_conn, as_of,
+                top_n_by_adtv=top_n_by_adtv, include_delisted=include_delisted,
+            )
+            cache[key] = ranked
+        if ranked.empty:
+            snapshots[refresh_date] = []
+        else:
+            band = ranked[(ranked["rank"] >= rank_start) & (ranked["rank"] <= rank_end)]
+            snapshots[refresh_date] = [str(t) for t in band["ticker"]]
 
     def universe_provider(as_of: date_type) -> List[str]:
         snapshot_date = universe_snapshot_date(trading_days, as_of)

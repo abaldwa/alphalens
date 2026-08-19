@@ -105,21 +105,39 @@ def test_no_momentum_path_falls_back_to_the_market_cap_only_lookup():
 
 def test_the_definition_composes_liquidity_before_market_cap():
     """The order is the decision, so it is asserted structurally as well as
-    behaviourally (tests/unit/test_momentum_universe_definition.py): inside
-    momentum_band_universe, the liquid set must be computed BEFORE the
-    market-cap snapshot, and the snapshot must be taken over it."""
+    behaviourally (tests/unit/test_momentum_universe_definition.py): the
+    liquid set must be computed BEFORE the market-cap snapshot, and the
+    snapshot must be taken over it.
+
+    The composition moved one level down on 2026-08-19, when the band-
+    independent half was extracted into ranked_liquid_universe so a sweep
+    could memoise it. momentum_band_universe now delegates rather than
+    composing directly -- so this asserts BOTH halves of that arrangement:
+    the order inside the extracted function, and that the entry point still
+    reaches it. Asserting only the order would let a caller quietly stop
+    using it; asserting only the delegation would let the order invert.
+    """
     tree = _parse(OWNER_MODULE)
-    func = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "momentum_band_universe"
-    )
-    calls = [
-        node.func.id for node in ast.walk(func)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    ]
-    assert "liquid_universe" in calls, "the liquidity step is gone"
-    assert "market_cap_snapshot" in calls, "the market-cap step is gone"
-    assert calls.index("liquid_universe") < calls.index("market_cap_snapshot"), (
+
+    def _calls_in(name: str) -> list:
+        func = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        return [
+            node.func.id for node in ast.walk(func)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+
+    composer = _calls_in("ranked_liquid_universe")
+    assert "liquid_universe" in composer, "the liquidity step is gone"
+    assert "market_cap_snapshot" in composer, "the market-cap step is gone"
+    assert composer.index("liquid_universe") < composer.index("market_cap_snapshot"), (
         "market cap is being ranked before liquidity is filtered — that leaves a "
         "band short whenever an illiquid large-cap holds a slot"
+    )
+
+    assert "ranked_liquid_universe" in _calls_in("momentum_band_universe"), (
+        "momentum_band_universe no longer goes through ranked_liquid_universe, "
+        "so the composition asserted above is not the one the band actually uses."
     )
