@@ -1,0 +1,41 @@
+# .claudeignore — hides files/directories from Claude's automatic searches (grep, codebase queries)
+# These are gitignored already but added here to skip search bloat.
+# See CLAUDE.md for file-structure reference before citing large docs.
+
+# Python cache & analysis
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+*.egg-info/
+
+# Build & dependency artifacts (not in VCS but large)
+.venv/
+frontend/node_modules/
+
+# IDE/editor caches
+.idea/
+*.swp
+*.swo
+
+# Runtime caches & logs (generated, large, not source)
+catboost_info/
+logs/
+execution_logs/
+*.log
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Backtest artifacts (generated, multi-GB, already gitignored but hide from search)
+backtest/cache/
+backtest/reports/
+
+# Feature store runtime
+datastore/snapshots/
+datastore/backups/
+datastore/restore_staging/
+.vscode/
