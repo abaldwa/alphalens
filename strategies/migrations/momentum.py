@@ -178,10 +178,31 @@ def variant_name(
     rebalance: str,
     top_n: int,
 ) -> str:
-    """The report's existing variant_id, reproduced verbatim so registry rows
-    and report rows match without a translation table."""
+    """The canonical momentum variant name.
+
+    [2026-08-20, user decision] Reformatted from
+    `{category}_b{id}_{lo}-{hi}_lb{N}mo_{rebalance}_top{N}` to
+    `M{id}_{lo}_{hi}_{category}_lb{N}mo_{rebalance}_top{N}`.
+
+    Three changes, each deliberate:
+
+    - The BAND leads. Band is the first thing a reader sorts by, and an
+      `M` prefix keeps momentum out of the letter space Technical template
+      codes occupy (Technical has templates B1-B5; momentum had bands
+      b1-b7, so a bare `b1_` was ambiguous between channels once the
+      `mom_`/`ta_` prefixes were dropped from strategy_id).
+    - The rank range uses `_` not `-`, so the whole name is one
+      underscore-delimited token sequence and splits uniformly.
+    - The category loses its own underscores (`all_risk` -> `allrisk`),
+      because it sits mid-name now and a two-word segment would make
+      position-based parsing ambiguous.
+
+    Callers pass band_id already renumbered to the contiguous 1-12
+    M-numbering (features/momentum_universe.py::RANK_BANDS), which orders
+    all twelve ranges by (rank_start, rank_end) ascending.
+    """
     return (
-        f"{category}_b{band_id}_{rank_start}-{rank_end}_"
+        f"M{band_id}_{rank_start}_{rank_end}_{category.replace('_', '')}_"
         f"lb{lookback_months}mo_{rebalance}_top{top_n}"
     )
 

@@ -386,10 +386,32 @@ MEASURE_3_STATUS = {
 }
 
 
-def _template_of(strategy_id: str) -> str:
-    """'ta_c6_63d_20260812' -> 'C6'. See the module docstring on why this exists."""
-    parts = (strategy_id or "").split("_")
-    return parts[1].upper() if len(parts) > 1 else (strategy_id or "?")
+def _template_of(run: Dict[str, Any]) -> str:
+    """The template code for a run. See the module docstring on why this exists.
+
+    Reads config.template_name first — that is what the orchestrator actually
+    ran, and it does not depend on how the id happens to be spelled.
+
+    The strategy_id fallback tolerates BOTH id formats, because
+    backtest/reports/ holds both: ids built before 2026-08-20 are
+    'ta_c6_63d_20260812' (channel prefix first, template SECOND), and current
+    ids are 'C6_unconstrained_63d' (template FIRST, no prefix). Parsing
+    position 1 unconditionally — correct for the old shape — returns
+    'UNCONSTRAINED' as the template for every current run, which is not an
+    error anything downstream would catch: it is a plausible-looking string
+    that silently collapses all 63 templates onto one row.
+    """
+    config = run.get("config") or {}
+    declared = config.get("template_name")
+    if declared:
+        return str(declared).upper()
+
+    parts = [p for p in (run.get("strategy_id") or "").split("_") if p]
+    if not parts:
+        return run.get("strategy_id") or "?"
+    if parts[0] in ("ta", "fund", "mom"):  # pre-2026-08-20 id
+        return parts[1].upper() if len(parts) > 1 else "?"
+    return parts[0].upper()
 
 
 def _fy_end_of(d: date) -> date:
@@ -635,7 +657,7 @@ def build(report_globs: List[str]) -> Dict[str, Any]:
         run = report.get("run") or {}
         if not run.get("strategy_id"):
             continue
-        template = _template_of(run["strategy_id"])
+        template = _template_of(run)
         variant = report.get("exit_policy_variant") or "baseline"
         mode = run.get("capital_mode") or "lump"
         regime = run.get("annual_reset_regime_label")

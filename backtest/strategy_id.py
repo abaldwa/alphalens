@@ -62,8 +62,11 @@ CODE_TO_HORIZON = {v: k for k, v in HORIZON_CODES.items()}
 CHANNEL_PREFIX = {"technical": "ta", "fundamental": "fund", "momentum": "mom"}
 PREFIX_TO_CHANNEL = {v: k for k, v in CHANNEL_PREFIX.items()}
 
+# [2026-08-20] Channel prefix and trailing date are gone from the id (see
+# build_strategy_id). Descriptor is now mixed-case, because template codes
+# ("E6") and momentum band ids ("M10") are uppercase.
 _STRATEGY_ID_RE = re.compile(
-    r"^(?P<channel>[a-z]+)_(?P<descriptor>[a-z0-9_]+)_(?P<horizon>5d|21d|63d|1y|mb|cust)_(?P<date>\d{8})$"
+    r"^(?P<descriptor>[A-Za-z0-9_]+)_(?P<horizon>5d|21d|63d|1y|mb|cust)$"
 )
 
 # ---------------------------------------------------------------------------
@@ -252,47 +255,62 @@ def build_strategy_id(
     ValueError
         If channel is not one of the three recognized channels.
     """
+    # channel is still validated, and still required, even though it no longer
+    # appears in the returned string: a caller passing a bogus channel has a
+    # real bug, and silently naming the run anyway would hide it.
     if channel not in CHANNEL_PREFIX:
         raise ValueError(f"unknown channel {channel!r}; must be one of {list(CHANNEL_PREFIX)}")
-    as_of = as_of or date_type.today()
-    clean_descriptor = re.sub(r"[^a-z0-9_]+", "_", descriptor.lower()).strip("_")
-    return f"{CHANNEL_PREFIX[channel]}_{clean_descriptor}_{_horizon_code(horizon_bucket)}_{as_of.strftime('%Y%m%d')}"
+    # [2026-08-20, user decision] Neither the channel prefix nor the trigger
+    # date is part of the id any more. Channel is its own column on
+    # backtest_runs, and the trigger date is created_at -- both were duplicated
+    # into the string, and the duplication is what made the ids long enough to
+    # be unreadable at a glance. `as_of` is retained in the signature (unused)
+    # so the many call sites that pass it keep working.
+    #
+    # Case is PRESERVED: template codes are uppercase ("E6"), momentum band
+    # ids are "M10", and lowercasing them made every id look like a different
+    # naming scheme than the one the registry and the reports use.
+    clean_descriptor = re.sub(r"[^A-Za-z0-9_]+", "_", descriptor).strip("_")
+    return f"{clean_descriptor}_{_horizon_code(horizon_bucket)}"
 
 
 @dataclass(frozen=True)
 class ParsedStrategyId:
-    channel: str
+    """What a canonical strategy_id still carries.
+
+    `channel` and `run_date` were dropped on 2026-08-20 along with the parts
+    of the string that encoded them. Both remain available on backtest_runs
+    (the `channel` column and `created_at`), which is where they always were
+    -- the id merely duplicated them. Nothing in production read this
+    dataclass; it is exercised by tests/unit/test_strategy_id.py only.
+    """
+
     descriptor: str
     horizon_bucket: HorizonBucket
-    run_date: date_type
 
 
 def parse_strategy_id(strategy_id: str) -> ParsedStrategyId:
     """
-    Recovers channel/descriptor/horizon_bucket/run_date from a
-    canonical strategy_id built by build_strategy_id().
+    Recovers descriptor/horizon_bucket from a canonical strategy_id built by
+    build_strategy_id().
 
     Raises
     ------
     ValueError
         If `strategy_id` doesn't match the canonical format — e.g. an
-        older free-text strategy_id predating this convention. Callers
-        that need to tolerate both should catch ValueError, not assume
-        every strategy_id in backtest_runs is canonical (pre-existing
+        older free-text strategy_id predating this convention, or one built
+        before 2026-08-20 that still carries a channel prefix and a date.
+        Callers that need to tolerate both should catch ValueError, not
+        assume every strategy_id in backtest_runs is canonical (pre-existing
         rows from before this convention are real data, not a bug).
     """
     m = _STRATEGY_ID_RE.match(strategy_id)
     if not m:
         raise ValueError(
             f"{strategy_id!r} is not a canonical strategy_id "
-            f"({{channel}}_{{descriptor}}_{{horizon_code}}_{{YYYYMMDD}}) — cannot recover its date"
+            f"({{descriptor}}_{{horizon_code}})"
         )
-    channel_prefix = m.group("channel")
-    if channel_prefix not in PREFIX_TO_CHANNEL:
-        raise ValueError(f"{strategy_id!r}: unrecognized channel prefix {channel_prefix!r}")
     return ParsedStrategyId(
-        channel=PREFIX_TO_CHANNEL[channel_prefix],
         descriptor=m.group("descriptor"),
         horizon_bucket=CODE_TO_HORIZON[m.group("horizon")],
-        run_date=date_type(int(m.group("date")[:4]), int(m.group("date")[4:6]), int(m.group("date")[6:8])),
     )

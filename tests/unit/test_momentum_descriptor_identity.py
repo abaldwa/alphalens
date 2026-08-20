@@ -78,7 +78,8 @@ class TestRegistryResolvedIdentity:
         name = registry_name(
             rank_band_id=1, lookback_months=3, rebalance_cadence_days=5, top_n=10,
         )
-        assert name == "all_risk_b1_1-50_lb3mo_weekly_top10"
+        # 2026-08-20 rename: M{band}_{lo}_{hi}_{category}, category de-underscored.
+        assert name == "M1_1_50_allrisk_lb3mo_weekly_top10"
         try:
             assert self._resolves(name)
         except Exception:
@@ -90,15 +91,15 @@ class TestRegistryResolvedIdentity:
         base = dict(rank_band_id=3, lookback_months=6, rebalance_cadence_days=21, top_n=15)
         balanced_flags = dict(min_adtv_cr=1.0, circuit_band_pct=0.05, quality_gate={"min_f_score": 4})
 
-        assert registry_name(**base).startswith("all_risk_")
-        assert registry_name(**base, **balanced_flags).startswith("balanced_")
+        assert registry_name(**base) == "M3_51_100_allrisk_lb6mo_monthly_top15"
+        assert registry_name(**base, **balanced_flags).endswith("_balanced_lb6mo_monthly_top15")
         assert registry_name(
             **base, **balanced_flags, disable_buys_in_regime={"Bear"},
-        ).startswith("risk_managed_")
+        ).endswith("_riskmanaged_lb6mo_monthly_top15")
         assert registry_name(
             **base, **balanced_flags, disable_buys_in_regime={"Bear"},
             orthogonalize_vs_size_beta=True,
-        ).startswith("max_defensive_")
+        ).endswith("_maxdefensive_lb6mo_monthly_top15")
 
     def test_undeclared_combinations_return_none_rather_than_guessing(self):
         """A name invented for an undeclared run is worse than no name: it

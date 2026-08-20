@@ -74,16 +74,33 @@ SIZE_INDICES = [
 # smallcap, 501+ microcap):
 #   200-300 splits the midcap/smallcap seam at 250, so it takes Smallcap 250 --
 #    the next distinct tier below the Midcap 150 that bands 3/4 already claim.
+# 2026-08-20: TWELVE bands. Five new ranges joined the seven and all were
+# renumbered together by (rank_start, rank_end) — so EVERY id below moved
+# except 1. Ranges are unchanged; the mapping rule is unchanged (each band
+# takes the NSE size tier that best matches what it holds, per standard Nifty
+# construction: ranks 101-250 midcap, 251-500 smallcap, 501+ microcap).
+#
+# The five new ranges are wider and straddle tier seams more than the
+# original seven did, so each one takes the tier covering the BULK of its
+# span rather than its endpoints:
+#   1-75    mostly large cap, spills 25 ranks into Next 50's territory
+#   76-160  Next 50 into midcap; midcap is the majority
+#   161-275 squarely midcap, 25 ranks past the 250 seam
+#   276-550 smallcap, 50 ranks past the 500 seam
+#   551-800 microcap outright
 RANK_BAND_BENCHMARKS: Dict[int, str] = {
     1: "Nifty 50",             # ranks 1-50
-    2: "Nifty Next 50",        # ranks 51-100
-    3: "Nifty Midcap 100",     # ranks 101-150
-    4: "Nifty Midcap 150",     # ranks 151-200
-    # 2026-08-19: renumbered from 6/7/8 to 5/6/7 with RANK_BANDS. Ranges
-    # unchanged; only the ids moved.
-    5: "Nifty Smallcap 250",   # ranks 201-300 (straddles the 250 midcap/smallcap seam)
-    6: "Nifty Smallcap 250",   # ranks 301-500 (the smallcap tier)
-    7: "Nifty Microcap 250",   # ranks 501-800 (the microcap tier)
+    2: "Nifty 100",            # ranks 1-75    (new)
+    3: "Nifty Next 50",        # ranks 51-100
+    4: "Nifty Midcap 150",     # ranks 76-160  (new)
+    5: "Nifty Midcap 100",     # ranks 101-150
+    6: "Nifty Midcap 150",     # ranks 151-200
+    7: "Nifty Midcap 150",     # ranks 161-275 (new)
+    8: "Nifty Smallcap 250",   # ranks 201-300 (straddles the 250 midcap/smallcap seam)
+    9: "Nifty Smallcap 250",   # ranks 276-550 (new)
+    10: "Nifty Smallcap 250",  # ranks 301-500 (the smallcap tier)
+    11: "Nifty Microcap 250",  # ranks 501-800 (the microcap tier)
+    12: "Nifty Microcap 250",  # ranks 551-800 (new)
 }
 
 # The regime index is a separate decision from the benchmark index (A98).

@@ -80,20 +80,59 @@ logger = logging.getLogger(__name__)
 # backtest_runs rows) still carry the OLD ids. Read them through
 # LEGACY_BAND_ID_TO_CURRENT below rather than assuming an id means the same
 # band it means today.
+# 2026-08-20, user-specified: TWELVE bands, not seven. Five new ranges
+# (1-75, 76-160, 161-275, 276-550, 551-800) join the seven that existed, and
+# all twelve are renumbered together in ascending (rank_start, rank_end)
+# order -- so the numbering is a property of the RANGE, not of when the band
+# was added. Rendered as M1..M12 by variant_name().
+#
+# THESE NO LONGER PARTITION 1-800. The twelve ranges deliberately OVERLAP:
+# M1 (1-50) and M2 (1-75) both contain rank 20. That is the point -- the two
+# families are alternative slicings of the same ladder, run side by side so
+# they can be compared, not a single cover. Any code that assumed RANK_BANDS
+# tiles 1-800 exactly once (see tests/unit/test_momentum_universe_bands.py)
+# must now assert contiguity WITHIN a family instead.
+#
+# Note M9 (276-550) sorts BEFORE M10 (301-500): ordering is by rank_start
+# first, so a wider band with a lower start precedes a narrower one. Correct
+# per the stated rule, and worth stating because it reads oddly.
 RANK_BANDS: List[Tuple[int, int, int]] = [
     (1, 1, 50),
-    (2, 51, 100),
-    (3, 101, 150),
-    (4, 151, 200),
-    (5, 201, 300),
-    (6, 301, 500),
-    (7, 501, 800),
+    (2, 1, 75),
+    (3, 51, 100),
+    (4, 76, 160),
+    (5, 101, 150),
+    (6, 151, 200),
+    (7, 161, 275),
+    (8, 201, 300),
+    (9, 276, 550),
+    (10, 301, 500),
+    (11, 501, 800),
+    (12, 551, 800),
 ]
 
-#: Old band id -> current band id, for the ids that were renumbered on
-#: 2026-08-19. Same ranges on both sides -- this is a pure relabel, so a
-#: historical result filed under old id 6 IS a current band 5 result.
-LEGACY_BAND_ID_TO_CURRENT: Dict[int, int] = {6: 5, 7: 6, 8: 7}
+#: The seven ranges that predate the 2026-08-20 expansion, by their CURRENT
+#: id. Kept so a caller can still sweep exactly the original slicing.
+LEGACY_BAND_IDS: Tuple[int, ...] = (1, 3, 5, 6, 8, 10, 11)
+
+#: The five ranges added on 2026-08-20.
+V2_BAND_IDS: Tuple[int, ...] = (2, 4, 7, 9, 12)
+
+#: Old band id -> current band id. Two generations of renumbering compose
+#: here: the 2026-08-19 relabel (6/7/8 -> 5/6/7) and the 2026-08-20
+#: twelve-band expansion. Keys are the ORIGINAL pre-2026-08-19 ids, values
+#: the current ones, so one lookup takes a historical record straight to
+#: today's id without the caller chaining hops. Ranges are unchanged
+#: throughout -- every entry here is a pure relabel.
+LEGACY_BAND_ID_TO_CURRENT: Dict[int, int] = {
+    1: 1,   # 1-50
+    2: 3,   # 51-100
+    3: 5,   # 101-150
+    4: 6,   # 151-200
+    6: 8,   # 201-300  (was id 6 pre-08-19, id 5 after, id 8 now)
+    7: 10,  # 301-500
+    8: 11,  # 501-800
+}
 
 #: Band ids that were retired outright and have NO current equivalent. Band 5
 #: was ranks 100-200 -- it overlapped bands 3 and 4 rather than partitioning

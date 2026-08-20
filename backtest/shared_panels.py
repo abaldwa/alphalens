@@ -86,11 +86,22 @@ _stats = {"ohlcv_hits": 0, "ohlcv_misses": 0, "artifact_hits": 0, "artifact_miss
 def ohlcv_key(
     max_tickers: Optional[int], min_history_days: int,
     start_date: date_type, end_date: date_type, ohlcv_snapshot_dir: Optional[str],
+    pit_adtv_top_n: Optional[int] = None,
 ) -> Tuple[Any, ...]:
     """Everything that can change which rows come back. `sector_map` is
     deliberately absent -- it is derived downstream and does not affect the
-    OHLCV itself."""
-    return (max_tickers, min_history_days, str(start_date), str(end_date), ohlcv_snapshot_dir)
+    OHLCV itself.
+
+    pit_adtv_top_n IS part of the key even though this function does no
+    ranking: it decides whether _fetch_real_ohlcv_uncached truncates the
+    candidate list by static ADTV at all (see its docstring). Two runs
+    differing only in that flag get genuinely different row sets, so sharing
+    one cached frame between them would serve the wrong universe silently.
+    """
+    return (
+        max_tickers, min_history_days, str(start_date), str(end_date),
+        ohlcv_snapshot_dir, pit_adtv_top_n,
+    )
 
 
 def get_ohlcv(key: Tuple[Any, ...], build: Callable[[], pd.DataFrame]) -> pd.DataFrame:

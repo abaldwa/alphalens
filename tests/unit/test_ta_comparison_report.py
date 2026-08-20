@@ -20,14 +20,31 @@ def _curve(points):
 
 
 class TestTemplateOf:
-    def test_extracts_template_from_strategy_id(self):
-        assert _template_of("ta_c6_63d_20260812") == "C6"
-        assert _template_of("ta_s001_21d_20260812") == "S001"
+    """_template_of takes the whole run dict as of 2026-08-20 — it prefers
+    config.template_name and only parses strategy_id as a fallback."""
+
+    def test_prefers_the_declared_template_name(self):
+        run = {"strategy_id": "C6_unconstrained_63d", "config": {"template_name": "C6"}}
+        assert _template_of(run) == "C6"
+
+    def test_parses_pre_rename_strategy_id(self):
+        """Reports written before 2026-08-20 are still on disk and still
+        collated: 'ta_c6_63d_20260812' puts the template SECOND."""
+        assert _template_of({"strategy_id": "ta_c6_63d_20260812"}) == "C6"
+        assert _template_of({"strategy_id": "ta_s001_21d_20260812"}) == "S001"
+
+    def test_parses_current_strategy_id(self):
+        """Current ids put the template FIRST and the exit variant second.
+        Parsing position 1 here would return 'UNCONSTRAINED' for every run
+        and silently collapse all 63 templates onto one row."""
+        assert _template_of({"strategy_id": "C6_unconstrained_63d"}) == "C6"
+        assert _template_of({"strategy_id": "S001_unconstrained_21d"}) == "S001"
 
     def test_degrades_without_raising(self):
         # Keying the whole dashboard off this, so it must never explode.
-        assert _template_of("") == "?"
-        assert _template_of("weird") == "weird"
+        assert _template_of({"strategy_id": ""}) == "?"
+        assert _template_of({}) == "?"
+        assert _template_of({"strategy_id": "weird"}) == "WEIRD"
 
 
 class TestFinancialYearEnd:

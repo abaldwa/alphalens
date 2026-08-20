@@ -203,7 +203,7 @@ HORIZON_BUCKET_MAP = {b.value: b for b in HorizonBucket}
 
 def _fetch_real_ohlcv(
     max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type,
-    ohlcv_snapshot_dir: Optional[str] = None,
+    ohlcv_snapshot_dir: Optional[str] = None, pit_adtv_top_n: Optional[int] = None,
 ) -> pd.DataFrame:
     """Memoised wrapper over _fetch_real_ohlcv_uncached (A87 Stage 1).
 
@@ -217,18 +217,20 @@ def _fetch_real_ohlcv(
     """
     from backtest import shared_panels
 
-    key = shared_panels.ohlcv_key(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
+    key = shared_panels.ohlcv_key(
+        max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir, pit_adtv_top_n,
+    )
     return shared_panels.get_ohlcv(
         key,
         lambda: _fetch_real_ohlcv_uncached(
-            max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir,
+            max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir, pit_adtv_top_n,
         ),
     )
 
 
 def _fetch_real_ohlcv_uncached(
     max_tickers: Optional[int], min_history_days: int, start_date: date_type, end_date: date_type,
-    ohlcv_snapshot_dir: Optional[str] = None,
+    ohlcv_snapshot_dir: Optional[str] = None, pit_adtv_top_n: Optional[int] = None,
 ) -> pd.DataFrame:
     """Real OHLCV (config.universe's curated universe) over exactly
     [start_date, end_date] — the run's own requested window, not
@@ -258,9 +260,33 @@ def _fetch_real_ohlcv_uncached(
     a shared Parquet snapshot instead (backtest/core/ohlcv_prewarm.py) —
     the queue driver prewarms it once before launching jobs. None (default)
     is today's unchanged always-live-fetch behavior.
+
+    [2026-08-20] pit_adtv_top_n DISABLES the static truncation above. Both
+    filters rank on ADTV, but get_top_adtv_tickers reads the adtv_cr column
+    of TODAY'S universe CSV -- one present-day snapshot applied to the whole
+    window -- while the PIT stage (_build_pit_adtv_panel + universe_provider)
+    ranks on a trailing 21-session mean as of each date. Running the static
+    one FIRST made the PIT one a no-op: ranking 800 names and taking the top
+    800 returns all 800, so every historical date screened a pool selected by
+    2026 liquidity.
+
+    Measured on the momentum band 501-800 universe: the static list retained
+    16.7% of the band's names in 2009, rising monotonically to 51.7% in 2026
+    -- the shape of survivorship bias, not of a liquidity filter. The 19-Aug
+    grid traded 274 distinct tickers where the pre-repoint engine traded 722.
+
+    So when the caller asks for PIT ranking, load the full curated universe
+    and let the PIT stage do the selecting it was written to do. max_tickers
+    still truncates statically when pit_adtv_top_n is None, which keeps every
+    non-PIT caller byte-identical.
     """
     client = DataStoreClient()
-    tickers = get_top_adtv_tickers(max_tickers) if max_tickers else get_tickers()
+    if max_tickers and pit_adtv_top_n:
+        tickers = get_tickers()
+    elif max_tickers:
+        tickers = get_top_adtv_tickers(max_tickers)
+    else:
+        tickers = get_tickers()
     # [2026-08-12] Withhold any ticker whose price history has been reviewed
     # and judged unverifiable (config/backtest_exclusions.py). Empty by
     # default, so this is a no-op unless someone has deliberately populated
@@ -902,7 +928,9 @@ def _run_immediate(
     throughout. Extracted verbatim from run_orchestrator_backtest() only to
     make room for _run_deferred() as a sibling — no logic changed."""
     with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
-        ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
+        ohlcv = _fetch_real_ohlcv(
+            max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir, pit_adtv_top_n,
+        )
         sector_map = _real_sector_map()
         config = _build_config(
             ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n,
@@ -1248,7 +1276,9 @@ def _run_deferred(
     save + catalog + trade-book) reacquires the lock."""
     from backtest.core.feature_log import load_spill_file
 
-    ohlcv = _fetch_real_ohlcv(max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir)
+    ohlcv = _fetch_real_ohlcv(
+        max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir, pit_adtv_top_n,
+    )
     sector_map = _real_sector_map()
     config = _build_config(
             ohlcv, sector_map, top_n_by_adtv=pit_adtv_top_n,
@@ -1625,8 +1655,18 @@ def run_orchestrator_backtest(
     # unconditionally (not just when strategy_id is auto-built) since
     # strategy_catalog needs it regardless of whether the caller passed an
     # explicit strategy_id.
+    # [2026-08-20, user decision] Technical carries its exit variant IN the
+    # descriptor ("E6_unconstrained"), so the same template under two exit
+    # policies is distinguishable by name and not only by joining
+    # backtest_runs.exit_policy_variant. Momentum deliberately does NOT: its
+    # variant_name is the registry's declared identity, and exit policy is a
+    # run parameter there, not part of what strategy was run (see
+    # strategies/momentum_identity.py::registry_name).
+    _technical_descriptor = "+".join(combo_templates) if combo_templates else template_name
+    if _technical_descriptor and exit_policy_variant:
+        _technical_descriptor = f"{_technical_descriptor}_{exit_policy_variant}"
     descriptor = {
-        "technical": ("+".join(combo_templates) if combo_templates else template_name),
+        "technical": _technical_descriptor,
         "fundamental": preset,
         "momentum": _momentum_descriptor(
             top_n, lookback_months, min_adtv_cr, downtrend_filter_pct,

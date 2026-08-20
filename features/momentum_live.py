@@ -63,10 +63,19 @@ logger = logging.getLogger(__name__)
 # this module has no way to apply -- see PHASE-C2, which is what makes them
 # expressible. Naming all_risk explicitly is the honest description of
 # today's behaviour rather than a silent default.
-REGISTRY_KEY_TEMPLATE = (
-    "momentum:all_risk_b{band_id}_{rank_start}-{rank_end}"
-    "_lb{lookback_months}mo_{rebalance}_top{top_n}"
-)
+# [2026-08-20] Built by strategies.migrations.momentum::variant_name rather
+# than an inline f-string. This module held a SECOND copy of the name format,
+# and when the format changed (the M-band rename) the copies disagreed
+# silently -- the live path went looking for a key that the migration no
+# longer writes. That is the same failure momentum_identity.py::registry_name
+# already carries a comment about; one format, one function.
+def _registry_key(band_id: int, rank_start: int, rank_end: int) -> str:
+    from strategies.migrations.momentum import variant_name
+
+    return "momentum:" + variant_name(
+        "all_risk", band_id, rank_start, rank_end,
+        _LIVE_LOOKBACK_MONTHS, _LIVE_REBALANCE, _LIVE_TOP_N,
+    )
 
 # The parameter set the live path runs, as DECLARED by the registry row above.
 # Kept as the shape of a definition_json rather than loose constants so that
@@ -91,14 +100,7 @@ STRATEGIES: List[Dict[str, Any]] = [
         "rank_end": rank_end,
         "label": f"Rank {rank_start}-{rank_end}",
         "category": "all_risk",
-        "registry_key": REGISTRY_KEY_TEMPLATE.format(
-            band_id=band_id,
-            rank_start=rank_start,
-            rank_end=rank_end,
-            lookback_months=_LIVE_LOOKBACK_MONTHS,
-            rebalance=_LIVE_REBALANCE,
-            top_n=_LIVE_TOP_N,
-        ),
+        "registry_key": _registry_key(band_id, rank_start, rank_end),
     }
     for band_id, rank_start, rank_end in RANK_BANDS
 ]
@@ -107,7 +109,13 @@ _STRATEGIES_BY_ID = {s["strategy_id"]: s for s in STRATEGIES}
 # The original, single-band strategy this feature launched with (Rank
 # 100-150) — kept as the default so existing recorded trades/contributions
 # from before multi-strategy support keep resolving to the same strategy_id.
-DEFAULT_STRATEGY_ID = "band3_top15_6m_m_g2"
+# [2026-08-20] Was "band3_..." — which meant ranks 101-150 under the seven-band
+# numbering. The twelve-band renumber moved 101-150 to id 5 and gave id 3 to
+# ranks 51-100, so leaving this string alone would have silently repointed the
+# live default at a DIFFERENT universe while every log line and dashboard label
+# still read "band3". Following the RANGE, not the number, is what keeps the
+# default meaning what it has always meant.
+DEFAULT_STRATEGY_ID = "band5_top15_6m_m_g2"
 
 
 def get_strategy(strategy_id: str) -> Dict[str, Any]:

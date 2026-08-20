@@ -136,11 +136,24 @@ class TestUsableBenchmarks:
 class TestDefaultSelection:
     @pytest.mark.parametrize(
         "band,expected",
-        # Band ids renumbered to a contiguous 1-7 on 2026-08-19; the ranges
-        # they map to are unchanged, so the expected indices are too.
-        [(1, "Nifty 50"), (2, "Nifty Next 50"), (3, "Nifty Midcap 100"),
-         (4, "Nifty Midcap 150"), (5, "Nifty Smallcap 250"),
-         (6, "Nifty Smallcap 250"), (7, "Nifty Microcap 250")],
+        # 2026-08-20: twelve bands, renumbered together by (rank_start,
+        # rank_end), so every id except 1 moved. Listed with its range so a
+        # future renumber shows up here as a range/index mismatch rather than
+        # as a silently-passing wrong pairing.
+        [
+            (1, "Nifty 50"),             # 1-50
+            (2, "Nifty 100"),            # 1-75
+            (3, "Nifty Next 50"),        # 51-100
+            (4, "Nifty Midcap 150"),     # 76-160
+            (5, "Nifty Midcap 100"),     # 101-150
+            (6, "Nifty Midcap 150"),     # 151-200
+            (7, "Nifty Midcap 150"),     # 161-275
+            (8, "Nifty Smallcap 250"),   # 201-300
+            (9, "Nifty Smallcap 250"),   # 276-550
+            (10, "Nifty Smallcap 250"),  # 301-500
+            (11, "Nifty Microcap 250"),  # 501-800
+            (12, "Nifty Microcap 250"),  # 551-800
+        ],
     )
     def test_rank_band_maps_to_a_size_matched_index(self, band, expected):
         """A rank 150-200 band measured against Nifty 500 is scored partly on

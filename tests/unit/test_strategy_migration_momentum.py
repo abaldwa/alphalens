@@ -64,7 +64,7 @@ class TestGrid:
         rows and report rows cannot be joined."""
         assert (
             variant_name("balanced", 1, 1, 50, 6, "monthly", 15)
-            == "balanced_b1_1-50_lb6mo_monthly_top15"
+            == "M1_1_50_balanced_lb6mo_monthly_top15"
         )
 
     def test_generated_names_use_that_format(self):
@@ -77,7 +77,7 @@ class TestGrid:
             and r["definition"]["rebalance_frequency"] == "monthly"
             and r["definition"]["top_n"] == 15
         )
-        assert row["name"] == "balanced_b1_1-50_lb6mo_monthly_top15"
+        assert row["name"] == "M1_1_50_balanced_lb6mo_monthly_top15"
 
 
 class TestPresetLayering:
