@@ -1,0 +1,50 @@
+{
+  "_note": "reproducibility spot-check of 3 unconstrained lump runs vs the 2026-08-19/20 sweep",
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "template_name": "E6",
+      "top_n": 200,
+      "start_date": "2009-04-01",
+      "end_date": "2026-08-10",
+      "initial_capital": 1000000.0,
+      "capital_mode": "lump",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "exit_variant": "unconstrained",
+      "defer_db_writes": true
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "template_name": "C1",
+      "top_n": 200,
+      "start_date": "2009-04-01",
+      "end_date": "2026-08-10",
+      "initial_capital": 1000000.0,
+      "capital_mode": "lump",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "exit_variant": "unconstrained",
+      "defer_db_writes": true
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "technical",
+      "template_name": "A2",
+      "top_n": 200,
+      "start_date": "2009-04-01",
+      "end_date": "2026-08-10",
+      "initial_capital": 1000000.0,
+      "capital_mode": "lump",
+      "universe_spec": "curated",
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "exit_variant": "unconstrained",
+      "defer_db_writes": true
+    }
+  ]
+}

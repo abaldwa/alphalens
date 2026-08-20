@@ -98,10 +98,22 @@ function equityCurve(lump: TAComparisonLump | null): EquityPoint[] | null {
   return lump.equity_monthly.map((p) => ({ date: p.date, value: p.index }))
 }
 
+/** The LTCG regime in force today; ta_comparison_report.py defaults to the
+ *  same one, so the report and the UI name the same numbers. */
+const CURRENT_LTCG_REGIME = 'ltcg_12_5pct_1_25L'
+
 function incomeMode(s: TAComparisonStrategy): IncomeMode | null {
-  const resets = Object.values(s.annual_reset ?? {})
-  if (resets.length === 0) return null
-  const r = resets[0]
+  const byRegime = s.annual_reset ?? {}
+  const regimes = Object.keys(byRegime).sort()
+  if (regimes.length === 0) return null
+  // A run is simulated under BOTH LTCG regimes and the two give different
+  // numbers, so taking Object.values()[0] silently rendered whichever key
+  // happened to come first. Pick the current statutory regime deliberately,
+  // falling back to a deterministic order rather than insertion order.
+  const chosen = regimes.includes(CURRENT_LTCG_REGIME)
+    ? CURRENT_LTCG_REGIME
+    : regimes[0]
+  const r = byRegime[chosen]
   return {
     targetWithdrawal: null,
     totalWithdrawn: r.withdrawn_post_tax_total,
@@ -151,9 +163,12 @@ export function adaptTechnicalStrategy(s: TAComparisonStrategy): StrategyReport 
   }
 
   const pending: Record<string, PendingField> = {}
-  // The comparison report has no post-tax CAGR: tax is computed on the trade
-  // book afterwards, not as a rate.
-  pending['returns.cagrPostTax'] = PENDING_REASONS['returns.cagrPostTax']
+  // A86 supplies both tax bases from one run, so post-tax CAGR is a real
+  // figure now rather than a gap. It stays pending only when the opposite
+  // basis could not be reconstructed for this particular run.
+  if (lump?.cagr_post_tax_pct == null) {
+    pending['returns.cagrPostTax'] = PENDING_REASONS['returns.cagrPostTax']
+  }
   if (!lump) {
     pending['returns.cagrPreTax'] = {
       backlogId: 'T13',
@@ -161,7 +176,10 @@ export function adaptTechnicalStrategy(s: TAComparisonStrategy): StrategyReport 
     }
   }
 
-  const cagr = frac(lump?.cagr_pct ?? null)
+  // cagr_pct is stated on whichever basis tax_basis names, so it is NOT
+  // interchangeable with the pre-tax column. Prefer the explicitly resolved
+  // field and fall back only for reports built before it existed.
+  const cagr = frac(lump?.cagr_pre_tax_pct ?? lump?.cagr_pct ?? null)
   const benchmarkCagr = frac(lump?.benchmark_cagr_pct ?? null)
 
   return {
@@ -171,17 +189,16 @@ export function adaptTechnicalStrategy(s: TAComparisonStrategy): StrategyReport 
     setup,
     returns: {
       cagrPreTax: cagr,
-      cagrPostTax: null,
-      xirr: null,
+      cagrPostTax: frac(lump?.cagr_post_tax_pct ?? null),
+      xirr: frac(lump?.xirr_pct ?? null),
       sipXirr: null,
       finalCapital: lump?.final_capital ?? null,
       totalContributed: null,
       benchmarkCagr,
       excessReturn:
-        cagr != null && benchmarkCagr != null ? cagr - benchmarkCagr : null,
-      // The report does not record WHICH index it compared against; A98 adds
-      // that. Naming a guess here would be worse than admitting the gap.
-      benchmarkIndexName: null,
+        frac(lump?.excess_return_pct ?? null) ??
+        (cagr != null && benchmarkCagr != null ? cagr - benchmarkCagr : null),
+      benchmarkIndexName: lump?.benchmark_index_name ?? null,
       benchmarkCaveat: null,
     },
     consistency: consistency(lump),
@@ -190,7 +207,7 @@ export function adaptTechnicalStrategy(s: TAComparisonStrategy): StrategyReport 
       sharpe: lump?.sharpe ?? null,
       sortino: lump?.sortino ?? null,
       calmar: lump?.calmar ?? null,
-      volatility: null,
+      volatility: frac(lump?.volatility_pct ?? null),
     },
     tradeQuality: {
       nTrades: lump?.total_trades ?? stats?.n_closed ?? null,
@@ -199,10 +216,12 @@ export function adaptTechnicalStrategy(s: TAComparisonStrategy): StrategyReport 
       winRate: frac(lump?.win_rate_pct ?? stats?.win_rate_pct ?? null),
       profitFactor: lump?.profit_factor ?? null,
       avgHoldDays: stats?.avg_hold_days ?? lump?.avg_days_held ?? null,
-      churnPerYear: null,
+      churnPerYear: lump?.churn_per_year ?? null,
+      nDistinctTickers: lump?.n_distinct_tickers_traded ?? null,
+      totalTaxPaid: lump?.total_tax_paid ?? null,
       avgWinnerPct: frac(stats?.avg_win_pct ?? null),
       avgLoserPct: frac(stats?.avg_loss_pct ?? null),
-      turnoverRatio: null,
+      turnoverRatio: lump?.turnover_ratio ?? null,
     },
     income: incomeMode(s),
     equityCurve: equityCurve(lump),

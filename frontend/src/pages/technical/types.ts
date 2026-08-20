@@ -453,6 +453,20 @@ export interface TAComparisonLump {
   profit_factor: number | null
   final_capital: number | null
   avg_days_held: number | null
+  xirr_pct: number | null
+  volatility_pct: number | null
+  excess_return_pct: number | null
+  churn_per_year: number | null
+  turnover_ratio: number | null
+  n_distinct_tickers_traded: number | null
+  benchmark_index_name: string | null
+  /** A86: which basis `cagr_pct` is stated on — 'pre_tax' | 'post_tax'. */
+  tax_basis: string | null
+  /** Both bases resolved server-side against tax_basis, so they are never
+   *  swapped here. Null when the opposite basis could not be reconstructed. */
+  cagr_pre_tax_pct: number | null
+  cagr_post_tax_pct: number | null
+  total_tax_paid: number | null
   fy_returns: TAFyReturn[]
   rolling_returns: Record<string, TARollingWindow>
   trade_log_path: string | null

@@ -988,7 +988,7 @@ class HorizonWatchlistResponse(BaseModel):
     observability on the dashboard."""
 
     date: Optional[str] = None
-    models: dict = Field(default_factory=dict)  # model_name -> List[WatchlistRow]
+    models: Dict[str, Any] = Field(default_factory=dict)  # model_name -> List[WatchlistRow]
 
 
 class ActionDecisionResponse(BaseModel):
@@ -1916,6 +1916,23 @@ class TAComparisonLumpOut(BaseModel):
     profit_factor: Optional[float] = None
     final_capital: Optional[float] = None
     avg_days_held: Optional[float] = None
+    xirr_pct: Optional[float] = None
+    volatility_pct: Optional[float] = None
+    excess_return_pct: Optional[float] = None
+    churn_per_year: Optional[float] = None
+    turnover_ratio: Optional[float] = None
+    n_distinct_tickers_traded: Optional[int] = None
+    tax_basis: Optional[str] = Field(
+        default=None,
+        description="Basis the CAGR above is measured on; 'pre_tax' on every run to date.",
+    )
+    cagr_pre_tax_pct: Optional[float] = None
+    cagr_post_tax_pct: Optional[float] = Field(
+        default=None,
+        description="A86: resolved against tax_basis, so pre/post are never swapped. "
+                    "Null when the opposite basis could not be reconstructed.",
+    )
+    total_tax_paid: Optional[float] = None
     fy_returns: List[TAFyReturnOut] = Field(default_factory=list)
     rolling_returns: Dict[str, TARollingWindowOut] = Field(default_factory=dict)
     trade_log_path: Optional[str] = None

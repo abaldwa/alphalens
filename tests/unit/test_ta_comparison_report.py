@@ -48,7 +48,10 @@ class TestFyReturns:
             ("2022-04-01", 1_500_000.0), ("2023-03-31", 1_350_000.0),
         ])
         rows = fy_returns(curve)
-        assert [r["fy_label"] for r in rows] == ["FY2020-21", "FY2021-22", "FY2022-23"]
+        # Labelled by FY-ENDING year, matching core/metrics.py. Both channels
+        # must agree: the report grid keys its year columns on this string, so
+        # two conventions produced two columns for the same financial year.
+        assert [r["fy_label"] for r in rows] == ["FY2021", "FY2022", "FY2023"]
         assert rows[0]["return_pct"] == pytest.approx(20.0)
         assert rows[1]["return_pct"] == pytest.approx(25.0)
         assert rows[2]["return_pct"] == pytest.approx(-10.0)

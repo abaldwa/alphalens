@@ -27,7 +27,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from backtest.ta_comprehensive_metrics import compute_comprehensive_metrics
 
@@ -146,11 +146,14 @@ def build_comparison(
         if not template_name:
             return "Unknown"
         try:
-            return technical_template_style(template_name)
+            # Annotated rather than returned directly: the import is untyped,
+            # so returning it straight is an implicit Any -> str.
+            style: str = technical_template_style(template_name)
+            return style
         except DefinitionNotFound:
             return "Unknown"
 
-    bench_cache: Dict[tuple, Optional[float]] = {}
+    bench_cache: Dict[Tuple[str, str], Optional[float]] = {}
 
     strategies: List[Dict[str, Any]] = []
     failures: List[Dict[str, str]] = []
@@ -419,7 +422,7 @@ def fy_returns(equity_curve: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         close_equity = points[-1][1]
         out.append({
             "fy_end": fy_end.isoformat(),
-            "fy_label": f"FY{fy_end.year - 1}-{str(fy_end.year)[2:]}",
+            "fy_label": f"FY{fy_end.year}",
             "opening_equity": open_equity,
             "closing_equity": close_equity,
             "return_pct": ((close_equity / open_equity) - 1.0) * 100.0 if open_equity else None,
@@ -429,8 +432,23 @@ def fy_returns(equity_curve: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _basis(metrics: Dict[str, Any], want: str) -> Optional[float]:
+    """The run's CAGR on the requested tax basis, or None if unavailable.
+
+    `cagr` is on metrics["tax_basis"]; `cagr_other_basis` is the reconstructed
+    opposite (A86) and is None on runs where it could not be reconstructed.
+    """
+    stated = metrics.get("tax_basis") or "pre_tax"
+    return metrics.get("cagr") if stated == want else metrics.get("cagr_other_basis")
+
+
+def _as_pct(value: Optional[float]) -> Optional[float]:
+    """Fraction -> percent, preserving None rather than collapsing it to 0.0."""
+    return None if value is None else value * 100.0
+
+
 def rolling_returns(equity_curve: List[Dict[str, Any]],
-                    windows_years=ROLLING_WINDOWS_YEARS) -> Dict[str, Any]:
+                    windows_years: Sequence[int] = ROLLING_WINDOWS_YEARS) -> Dict[str, Any]:
     """Annualised return over every N-year window, stepped by FY.
 
     Reported as the distribution (best/median/worst/n) rather than a single
@@ -664,6 +682,26 @@ def build(report_globs: List[str]) -> Dict[str, Any]:
                 "profit_factor": metrics.get("profit_factor"),
                 "final_capital": metrics.get("final_capital"),
                 "avg_days_held": metrics.get("avg_days_held"),
+                # Straight pass-through of metrics core/metrics.py already
+                # computes. None stays None: a blank cell and a zero are
+                # different facts, so these deliberately skip the `or 0.0`
+                # coercion the older fields above use.
+                "xirr_pct": _as_pct(metrics.get("xirr")),
+                "volatility_pct": _as_pct(metrics.get("volatility")),
+                "excess_return_pct": _as_pct(metrics.get("excess_return")),
+                "churn_per_year": metrics.get("churn_per_year"),
+                "turnover_ratio": metrics.get("turnover_ratio"),
+                "n_distinct_tickers_traded": metrics.get("n_distinct_tickers_traded"),
+                "benchmark_index_name": metrics.get("benchmark_index_name"),
+                # A86: `cagr` is stated on ONE basis, named by tax_basis, and
+                # cagr_other_basis is the reconstructed opposite. Resolve both
+                # here so a consumer never has to know which way round it was
+                # -- reading them the wrong way silently swaps a pre-tax figure
+                # into a post-tax column.
+                "tax_basis": metrics.get("tax_basis"),
+                "cagr_pre_tax_pct": _as_pct(_basis(metrics, "pre_tax")),
+                "cagr_post_tax_pct": _as_pct(_basis(metrics, "post_tax")),
+                "total_tax_paid": metrics.get("total_tax_paid"),
                 "trade_log_path": report.get("trade_log_path"),
                 "trade_stats": trade_stats(report.get("trade_log_path")),
                 "fy_returns": fy_returns(curve),
