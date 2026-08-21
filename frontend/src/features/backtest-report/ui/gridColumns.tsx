@@ -53,7 +53,7 @@ const NUMERIC: Partial<Col> = {
 
 /** Identity, pinned left so the row never loses its label while the reader
  * scrolls eighteen fiscal years sideways. */
-export function identityGroup(section: string): Group {
+export function identityGroup(): Group {
   return {
     headerName: 'Strategy',
     marryChildren: true,
@@ -73,11 +73,11 @@ export function identityGroup(section: string): Group {
         suppressMovable: true,
         cellRenderer: (p: { data?: StrategyReport }) =>
           p.data ? (
-            <StrategyLink
-              strategyKey={p.data.key}
-              label={p.data.label}
-              section={section}
-            />
+            // No `section`: the link goes to the strategy's detail page, which
+            // is what the header tooltip promises. Passing the current tab
+            // here (which every caller did) built a link from the risk tab
+            // back to the risk tab -- clicking the name simply did nothing.
+            <StrategyLink strategyKey={p.data.key} label={p.data.label} />
           ) : null,
       },
       {

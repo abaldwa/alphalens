@@ -310,10 +310,29 @@ async def get_template_leaderboard() -> Dict[str, Any]:
     except Exception as exc:  # pragma: no cover - depends on live DB state
         raise HTTPException(status_code=503, detail=f"backtest store unavailable: {exc}") from exc
 
+    # [2026-08-20] Superseded runs (run_supersessions) came from a retired
+    # logic version -- they stay in backtest_runs as evidence of what the
+    # defect did, but must never be ranked as a recommendation. The clause is
+    # assembled here rather than guarded inside the SQL because DuckDB binds
+    # the whole statement before executing it: naming a table that does not
+    # exist fails at bind time, so an `OR NOT EXISTS(... duckdb_tables ...)`
+    # guard would not save a fresh database.
+    _has_supersessions = bt.execute(
+        "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = 'run_supersessions'"
+    ).fetchone()[0]
+    _not_superseded = (
+        "AND NOT EXISTS (SELECT 1 FROM run_supersessions rs "
+        "WHERE rs.run_id = backtest_runs.run_id)"
+        if _has_supersessions
+        else ""
+    )
+
     rows = bt.execute(
-        """
+        f"""
         SELECT config_json, metrics_json, start_date, end_date, integrity_passed, dsr, exit_policy_variant
-        FROM backtest_runs WHERE channel = 'technical' AND metrics_json IS NOT NULL
+        FROM backtest_runs
+        WHERE channel = 'technical' AND metrics_json IS NOT NULL
+        {_not_superseded}
         """
     ).fetchall()
 

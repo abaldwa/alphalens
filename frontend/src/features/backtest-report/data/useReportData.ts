@@ -86,7 +86,11 @@ export function useReportData(options: ReportDataOptions = {}) {
 
   const runs = useQuery({
     queryKey: ['backtest-runs-report'],
-    queryFn: () => listBacktestRuns({ sort_by: 'cagr', limit: 1000 }),
+    // 2026-08-21: raised from 1000 -- the momentum sweep now has 1,440 live
+    // runs alone, so 1000 silently dropped the tail of the cagr-sorted list.
+    // 2000 is the API's hard cap (le=2000 in backtest_runs.py); live count is
+    // 1,503 as of this run, so there is headroom before this needs paging.
+    queryFn: () => listBacktestRuns({ sort_by: 'cagr', limit: 2000 }),
   })
 
   const strategies = useMemo<StrategyReport[]>(() => {
@@ -102,7 +106,19 @@ export function useReportData(options: ReportDataOptions = {}) {
     // put one run's CAGR next to the other run's excess return and left the
     // tax-basis toggle with nothing to change. selectByBasis keeps ONE run
     // per strategy, whole, so every figure in a row is internally consistent.
-    const runRows = selectByBasis(fromRuns, taxBasis)
+    // [FIX 2026-08-21] Technical's comparison report keys on
+    // {template, exit_variant} only -- it does not carry horizon -- while
+    // /runs' strategy_id does (e.g. "E6_unconstrained_21d" vs the
+    // comparison row's "E6"). Those keys never collided, so BOTH sources
+    // survived the merge below: 63 comparison rows plus 63 /runs rows became
+    // 126 grid rows for one 63-strategy channel. The comparison report is
+    // confirmed 1:1 with live technical runs (63/63, one row per template),
+    // so once it has data it is the complete picture for that channel and
+    // the generic fallback must step aside rather than add duplicates under
+    // different keys.
+    const runRows = selectByBasis(fromRuns, taxBasis).filter(
+      (r) => !(r.channel === 'technical' && fromTechnical.length > 0),
+    )
 
     // The specialised reports win over /runs where they exist: they carry
     // channel-specific richness (rolling windows, YoY, churn) the generic run

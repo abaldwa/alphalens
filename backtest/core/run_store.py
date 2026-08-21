@@ -170,9 +170,44 @@ _SORT_COLUMNS = {
 }
 
 
+
+def _supersession_clause(conn, include_superseded: bool) -> str:
+    """A `NOT EXISTS` predicate hiding runs listed in run_supersessions, or ""
+    when there is nothing to hide.
+
+    [2026-08-20] run_supersessions records runs whose numbers were produced by
+    a logic version we have since retired -- the static-ADTV universe defect
+    being the case that created it. Those rows stay in backtest_runs on
+    purpose: their trade logs are the evidence for what the defect did, and
+    deleting them would destroy the before/after comparison. But a superseded
+    run must never appear in a listing a human reads as current, which is what
+    was happening -- `ta_e6_21d_20260820` sat in the dashboard's run table
+    alongside its own replacement.
+
+    Filtering here rather than in the router means every consumer of
+    list_runs/count_runs/list_experiments inherits it, and the count and the
+    rows cannot disagree.
+
+    The table is absent in fresh/in-memory databases and in per-shard side
+    stores, so its existence is checked rather than assumed.
+    """
+    if include_superseded:
+        return ""
+    exists = conn.execute(
+        "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = 'run_supersessions'"
+    ).fetchone()[0]
+    if not exists:
+        return ""
+    return (
+        "NOT EXISTS (SELECT 1 FROM run_supersessions rs "
+        "WHERE rs.run_id = backtest_runs.run_id)"
+    )
+
+
 def list_runs(
     conn, channel: Optional[str] = None, mode: Optional[str] = None,
     strategy_id: Optional[str] = None, limit: int = 100, sort_by: str = "created_at",
+    include_superseded: bool = False,
 ) -> List[Dict[str, Any]]:
     """List runs, optionally filtered by channel/mode/strategy_id.
 
@@ -192,6 +227,9 @@ def list_runs(
     if strategy_id is not None:
         where.append("strategy_id = ?")
         params.append(strategy_id)
+    superseded = _supersession_clause(conn, include_superseded)
+    if superseded:
+        where.append(superseded)
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
     order_col = _SORT_COLUMNS[sort_by]
     params.append(limit)
@@ -205,6 +243,7 @@ def list_runs(
 
 def count_runs(
     conn, channel: Optional[str] = None, mode: Optional[str] = None, strategy_id: Optional[str] = None,
+    include_superseded: bool = False,
 ) -> int:
     """Total matching row count, ignoring any page/limit — lets a caller
     show "N runs total" even when list_runs()'s own `limit` truncates the
@@ -222,6 +261,9 @@ def count_runs(
     if strategy_id is not None:
         where.append("strategy_id = ?")
         params.append(strategy_id)
+    superseded = _supersession_clause(conn, include_superseded)
+    if superseded:
+        where.append(superseded)
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
     return conn.execute(f"SELECT COUNT(*) FROM backtest_runs {where_clause}", params).fetchone()[0]
 
@@ -233,6 +275,7 @@ def list_experiments(
     exit_policy_variant: Optional[str] = None,
     regime_label: Optional[str] = None,
     limit: int = 500,
+    include_superseded: bool = False,
 ) -> List[Dict[str, Any]]:
     """List runs for the Experiments comparison page (270-job exit-variant
     x template/preset matrix, experiment_matrix_45x6.json) — most recent
@@ -255,6 +298,9 @@ def list_experiments(
     if regime_label is not None:
         where.append("regime_label = ?")
         params.append(regime_label)
+    superseded = _supersession_clause(conn, include_superseded)
+    if superseded:
+        where.append(superseded)
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
     params.append(limit)
     rows = conn.execute(

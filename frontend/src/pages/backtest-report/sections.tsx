@@ -195,7 +195,7 @@ function MetricWorkspace({ tab }: { tab: MetricTabId }) {
   const columns = useMemo(
     () =>
       [
-        identityGroup(tab),
+        identityGroup(),
         ...groupsFor(tab, page.params.taxBasis, regular),
         // Regular-returns mode replaces the percent year columns with rupee
         // ones. Showing both would put two numbers under the same year
