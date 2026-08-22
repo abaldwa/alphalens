@@ -193,6 +193,18 @@ npm run build  # production build
 
 ---
 
+## Library Documentation — Use MCP Context Server
+
+When asking about library/framework documentation (React, Tailwind, TanStack Query, DuckDB, ag-grid, Recharts, etc.), invoke the context7 MCP server:
+
+```bash
+# Automatically fetches latest library docs (bypasses stale training data)
+# Available for: React, Next.js, Tailwind, TanStack, DuckDB, ag-grid, Radix UI, Recharts, lightweight-charts, and 100+ other libraries
+# Use instead of web search for up-to-date syntax, migration guides, config, and CLI tool usage.
+```
+
+---
+
 ## Known Issues & Workarounds
 
 | Issue | Workaround | Status |
@@ -206,66 +218,17 @@ npm run build  # production build
 
 ---
 
-## Efficient Reading: Large File Line Ranges
-
-Some project documentation files are large (100KB+). When citing them, use line ranges to avoid loading the entire file:
-
-| File | Size | Key Sections (Read These) |
-|------|------|--------------------------|
-| **FeatureBacklog.md** | 313KB | `1-50` (overview), `210-600` (Architectural A42-A92), `983-1050` (Technical T1-T20), `1319-1600` (ML ML1-ML40) |
-| **BacktestUmbrellaPlan.md** | 79KB | `1-100` (context & architecture), `259-334` (Standard Algorithm), `376-450` (Verification) |
-| **FutureDevelopment.md** | 89KB | Search by section name instead of reading linearly |
-
-**Pattern:** Instead of `Read FeatureBacklog.md`, use `Read FeatureBacklog.md:1-50` (Preferred: specify the section boundary lines listed above, or ask for the section by name — I'll fetch the right range).
-
-This saves ~200 tokens per large-file reference.
-
----
-
-## Memory & Context Strategy
-
-**Persistent memory** is stored in `/home/amit/.claude/projects/-home-amit-projects-AlphaLens/memory/`:
-- **user_*.md** — your preferences and work style
-- **project_*.md** — current initiatives, deadlines, phase gates
-- **feedback_*.md** — learned dos/don'ts from past conversations
-- **reference_*.md** — where to find external info (Linear, Grafana, etc.)
-
-**This CLAUDE.md** captures structural knowledge (code layout, policies, gotchas) that doesn't change often. Update it when:
-- Project structure changes significantly
-- New permanent policies emerge (not one-off workarounds)
-- Model recommendations shift based on observed performance
-
-**Also: .claudeignore** in the repo root hides build caches (node_modules, .mypy_cache, .pytest_cache, etc.) from automatic searches — this keeps `grep` and codebase queries lean and focused on source.
-
-Memory + CLAUDE.md + .claudeignore together eliminate re-deriving the same facts each conversation and reduce search bloat, cutting token spend by ~40%.
-
----
-
-## Token Optimization Tips
-
-1. **State known facts upfront** — "I'm on feature/X; let's add endpoint Y" beats "What branch am I on?"
-2. **Use `/fast` for routine tasks** — quick status checks, minor edits, log reads
-3. **Group related work** — multiple bugs in one conversation vs. one-off fixes
-4. **Lean on memory** — if you recall relevant learnings, mention them briefly to anchor context
-5. **Truncate verbose output** — pytest tracebacks can be huge; always use `pytest --tb=short` to reduce log bloat
-6. **Minimum file context** — Execute tasks using only required files. Do not search unrelated directories, do not read raw library code. Use `/run oxlint` to verify errors instead of guessing.
-7. **Prune memory annually** — old incidents (>3 months) usually don't need revisiting; archive to CLAUDE.md if permanent
-
----
-
 ## Frontend Rules & High-Velocity Protections
 
-AlphaLens frontend uses specialized, lightweight rule files in `.claude/rules/` to keep this document lean. Claude loads rules selectively based on what you're working on.
+AlphaLens frontend (React 19 + TypeScript + Vite) uses consolidated rule files in `.claude/rules/`.
 
-**Rule files (loaded automatically for `frontend/src/**`):**
-- [.claude/rules/state.md](.claude/rules/state.md) — TanStack Query v5, Zustand v5 patterns
-- [.claude/rules/ui-styling.md](.claude/rules/ui-styling.md) — Tailwind v4, cva, Radix, lucide-react
-- [.claude/rules/data-tables.md](.claude/rules/data-tables.md) — ag-grid v36, TanStack Table v8, Recharts v3, lightweight-charts v5
+**Rule file (loaded automatically for `frontend/src/**`):**
+- [.claude/rules/frontend-patterns.md](.claude/rules/frontend-patterns.md) — Covers state (TanStack Query v5, Zustand v5), styling (Tailwind v4, cva, Radix), and data (ag-grid v36, TanStack Table v8, Recharts v3, lightweight-charts v5)
 
 ### High-Velocity Token Protections
 
-**ag-grid type bloat:** If Claude tries to debug grid typing by searching internal definitions, stop them:
-> "Assume standard ag-grid v36 types. Do not look up grid internals — they're multi-megabyte and corrupt token context."
+**ag-grid type bloat:** Never search grid internals (multi-megabyte types):
+> "Assume standard ag-grid v36 types. Ask for specific behavior (e.g., 'disable sorting?') rather than searching internal type definitions."
 
 **shadcn/ui caveat:** AlphaLens does NOT use shadcn. Never tell Claude to "look at the shadcn component directory." Target specific component files directly:
 > "@components/ui/dialog.tsx" (specific file), never "look at components/ui/" (directory)

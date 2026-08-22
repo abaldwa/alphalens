@@ -34,6 +34,9 @@ htmlcov/
 backtest/cache/
 backtest/reports/
 
+# Outdated documentation (superseded by current CLAUDE.md)
+alphalens_docs/
+
 # Feature store runtime
 datastore/snapshots/
 datastore/backups/
