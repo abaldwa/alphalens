@@ -127,6 +127,31 @@ def rank_by_adtv(ohlcv: pd.DataFrame, as_of: pd.Timestamp,
     return pd.Series(range(1, len(adtv) + 1), index=adtv.index, name="adtv_rank")
 
 
+def bucket_by_adtv_quintile(ohlcv: pd.DataFrame, as_of: pd.Timestamp,
+                             lookback: int = ADTV_LOOKBACK_SESSIONS) -> pd.Series:
+    """Assign liquidity quintiles (1=most liquid, 5=least liquid) based on
+    point-in-time ADTV ranking.
+
+    Uses rank_by_adtv() for safe point-in-time ranking, then converts to
+    5 equal-sized (or near-equal) liquidity buckets via pd.qcut().
+
+    Returns:
+        pd.Series indexed by ticker, values in [1, 2, 3, 4, 5] (or fewer if
+        fewer than 5 tickers present). NaN for tickers with no data.
+    """
+    ranks = rank_by_adtv(ohlcv, as_of, lookback)
+    if ranks.empty:
+        return pd.Series(dtype=float)
+
+    try:
+        quintiles = pd.qcut(ranks, q=5, labels=[1, 2, 3, 4, 5], duplicates="drop")
+        quintiles.name = "liquidity_quintile"
+        return quintiles
+    except (ValueError, TypeError):
+        # If we have fewer than 5 tickers or other qcut edge case, return empty
+        return pd.Series(dtype=float)
+
+
 def is_circuit_locked(bars: pd.DataFrame) -> pd.Series:
     """True where a bar is locked at its circuit limit: no intraday range on a
     day that actually traded.
@@ -237,7 +262,7 @@ MIN_BARS_FOR_CHRONIC_JUDGEMENT = 250
 
 def chronic_circuit_tickers(
     lock_stats: pd.DataFrame, threshold_pct: float = CHRONIC_CIRCUIT_LOCK_PCT,
-) -> set:
+) -> set[str]:
     """Tickers to withhold entirely, from a frame of (ticker, n_bars, n_locked).
 
     Separate from the per-bar rule on purpose. They answer different questions:

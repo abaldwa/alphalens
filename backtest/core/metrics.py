@@ -1258,3 +1258,102 @@ def trade_quality_metrics(
         "n_outlier_trades": z_result["n_outliers"],
         "max_abs_return_zscore": z_result["max_abs_zscore"],
     }
+
+
+def aggregate_by_sector(
+    holdings: List[Dict[str, Any]],
+    sector_lookup: Optional[Dict[str, str]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Aggregate holding-level metrics by sector.
+
+    Per Phase 11, this enables sector-breakdown reporting for R11/R12 backtest results.
+
+    Args:
+        holdings: List of holding dicts (from backtest results), each with
+                 'ticker', 'entry_date', 'exit_date', 'return_pct', etc.
+        sector_lookup: Optional dict mapping ticker -> sector (e.g., {"INFY": "IT"}).
+                      If None, all holdings are grouped under a default "Unknown" sector.
+
+    Returns:
+        Dict keyed by sector, with aggregated metrics (avg return, trade count, etc.).
+    """
+    if not holdings or sector_lookup is None:
+        # Fallback: return empty dict or aggregate all as "Unknown"
+        all_returns = [h.get("return_pct") for h in holdings if h.get("return_pct") is not None]
+        if all_returns:
+            return {
+                "Unknown": {
+                    "avg_return_pct": float(np.mean(all_returns)),
+                    "n_trades": len(holdings),
+                }
+            }
+        return {}
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for holding in holdings:
+        ticker = holding.get("ticker")
+        sector = sector_lookup.get(ticker, "Unknown") if ticker else "Unknown"
+
+        if sector not in result:
+            result[sector] = {"n_trades": 0, "returns": []}
+
+        result[sector]["n_trades"] += 1
+        ret = holding.get("return_pct")
+        if ret is not None:
+            result[sector]["returns"].append(ret)
+
+    # Compute aggregates
+    for sector in result:
+        returns = result[sector]["returns"]
+        result[sector]["avg_return_pct"] = float(np.mean(returns)) if returns else None
+        result[sector]["max_return_pct"] = float(np.max(returns)) if returns else None
+        result[sector]["min_return_pct"] = float(np.min(returns)) if returns else None
+        del result[sector]["returns"]  # Clean up temp list
+
+    return result
+
+
+def aggregate_by_regime(
+    daily_returns: pd.Series,
+    regime_labels: Optional[pd.Series] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Aggregate daily returns by regime (bull/bear/crash).
+
+    Per Phase 11, this enables regime-breakdown reporting for R11/R12 backtest results.
+
+    Args:
+        daily_returns: pd.Series of daily portfolio returns, indexed by date.
+        regime_labels: Optional pd.Series of regime labels (e.g., "bull", "bear", "crash"),
+                      indexed by date. If None, all returns are grouped under "Unknown".
+
+    Returns:
+        Dict keyed by regime, with aggregated metrics (avg daily return, volatility, etc.).
+    """
+    if daily_returns.empty:
+        return {}
+
+    if regime_labels is None or regime_labels.empty:
+        return {
+            "Unknown": {
+                "avg_daily_return": float(daily_returns.mean()),
+                "volatility": float(daily_returns.std()),
+                "n_days": len(daily_returns),
+            }
+        }
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for regime in regime_labels.unique():
+        mask = regime_labels == regime
+        regime_returns = daily_returns[mask]
+
+        if len(regime_returns) == 0:
+            continue
+
+        result[regime] = {
+            "avg_daily_return": float(regime_returns.mean()),
+            "volatility": float(regime_returns.std()),
+            "n_days": len(regime_returns),
+            "cumulative_return": float((1 + regime_returns).prod() - 1),
+        }
+
+    return result
