@@ -584,6 +584,12 @@ def _momentum_descriptor(
     top_sectors: int = 5,
     strategy_family: str = "M",
     volatility_measure: str = "daily_return_stddev",
+    crash_regime_enabled: bool = False,
+    crash_drawdown_threshold: float = -0.15,
+    crash_vol_percentile_threshold: float = 0.75,
+    crash_vol_lookback_days: int = 20,
+    crash_disable_buys: bool = True,
+    crash_reduce_sizing: Optional[float] = None,
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
     signals it emits.
@@ -654,6 +660,16 @@ def _momentum_descriptor(
         parts.append(f"dt{downtrend_filter_pct:g}")
     if circuit_band_pct is not None:
         parts.append(f"cb{circuit_band_pct:g}")
+    # Phase 7: crash-aware overlay (all default-off for M-family compatibility)
+    if crash_regime_enabled:
+        crash_key = "crash"
+        if not crash_disable_buys and crash_reduce_sizing is not None:
+            crash_key += f"_size{crash_reduce_sizing:g}"
+        if crash_drawdown_threshold != -0.15:
+            crash_key += f"_dd{crash_drawdown_threshold:g}"
+        if crash_vol_percentile_threshold != 0.75:
+            crash_key += f"_vol{crash_vol_percentile_threshold:g}"
+        parts.append(crash_key)
     # The exit policy changes which sells are emitted, so two runs differing
     # only in it are genuinely different strategies.
     if exit_policy_variant and exit_policy_variant != "risk_managed":
@@ -1430,6 +1446,13 @@ def _run_deferred(
             skip_months=skip_months,
             top_sectors=top_sectors,
             volatility_measure=volatility_measure,
+            # Phase 7: crash-aware overlay (all default-off for M-family compatibility).
+            crash_regime_enabled=crash_regime_enabled,
+            drawdown_threshold=crash_drawdown_threshold,
+            vol_percentile_threshold=crash_vol_percentile_threshold,
+            vol_lookback_days=crash_vol_lookback_days,
+            crash_disable_buys=crash_disable_buys,
+            crash_reduce_sizing=crash_reduce_sizing,
         )
     else:
         raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
@@ -1576,6 +1599,12 @@ def run_orchestrator_backtest(
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
     lookback_months: int = 6, rank_method: str = "trailing_return", skip_months: int = 0,
     top_sectors: int = 5, strategy_family: str = "M", volatility_measure: str = "daily_return_stddev",
+    crash_regime_enabled: bool = False,
+    crash_drawdown_threshold: float = -0.15,
+    crash_vol_percentile_threshold: float = 0.75,
+    crash_vol_lookback_days: int = 20,
+    crash_disable_buys: bool = True,
+    crash_reduce_sizing: Optional[float] = None,
     run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
     # A98: separate from regime_index_name. None means "compare against the
@@ -1736,6 +1765,14 @@ def run_orchestrator_backtest(
             skip_months=skip_months,
             top_sectors=top_sectors,
             strategy_family=strategy_family,
+            volatility_measure=volatility_measure,
+            # Phase 7: crash-aware overlay params for identity string.
+            crash_regime_enabled=crash_regime_enabled,
+            crash_drawdown_threshold=crash_drawdown_threshold,
+            crash_vol_percentile_threshold=crash_vol_percentile_threshold,
+            crash_vol_lookback_days=crash_vol_lookback_days,
+            crash_disable_buys=crash_disable_buys,
+            crash_reduce_sizing=crash_reduce_sizing,
         ),
     }[channel]
     if descriptor is None:
@@ -2123,6 +2160,51 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--crash-regime-enabled", action="store_true",
+        help=(
+            "momentum channel only (Phase 7, R7): enable crash-aware overlay (Daniel-Moskowitz). "
+            "When enabled, buying is disabled or sizing is reduced during market crash regimes "
+            "(drawdown + elevated volatility). Default disabled."
+        ),
+    )
+    parser.add_argument(
+        "--crash-drawdown-threshold", type=float, default=-0.15,
+        help=(
+            "momentum channel only (Phase 7, R7): portfolio drawdown threshold (negative, e.g., -0.15 = -15%) "
+            "for crash regime detection. Used only if --crash-regime-enabled. Default -0.15."
+        ),
+    )
+    parser.add_argument(
+        "--crash-vol-percentile-threshold", type=float, default=0.75,
+        help=(
+            "momentum channel only (Phase 7, R7): volatility percentile (0-1, e.g., 0.75 = 75th) "
+            "for crash regime detection. Used only if --crash-regime-enabled. Default 0.75."
+        ),
+    )
+    parser.add_argument(
+        "--crash-vol-lookback-days", type=int, default=20,
+        help=(
+            "momentum channel only (Phase 7, R7): rolling window (trading days) for volatility "
+            "computation in crash regime detection. Used only if --crash-regime-enabled. Default 20."
+        ),
+    )
+    parser.add_argument(
+        "--crash-disable-buys", action="store_true", default=True,
+        help=(
+            "momentum channel only (Phase 7, R7): if set, completely disable new buys during crash regimes. "
+            "If not set and --crash-reduce-sizing is given, sizing is scaled instead. "
+            "Default: True (disable buys)."
+        ),
+    )
+    parser.add_argument(
+        "--crash-reduce-sizing", type=float, default=None,
+        help=(
+            "momentum channel only (Phase 7, R7): position sizing scale factor (0-1, e.g., 0.5 = 50%) "
+            "during crash regimes. Used only if --crash-regime-enabled and --crash-disable-buys is False. "
+            "Default None (no sizing reduction, disable buys instead)."
+        ),
+    )
+    parser.add_argument(
         "--rank-band-id", type=int, default=None, choices=[b[0] for b in RANK_BANDS],
         help=(
             "momentum channel only (2026-08-05): select from one of features/momentum_universe.py's "
@@ -2172,6 +2254,12 @@ def main() -> None:
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months,
         rank_method=args.rank_method, skip_months=args.skip_months, top_sectors=args.top_sectors, strategy_family=args.strategy_family,
         volatility_measure=args.volatility_measure,
+        crash_regime_enabled=args.crash_regime_enabled,
+        crash_drawdown_threshold=args.crash_drawdown_threshold,
+        crash_vol_percentile_threshold=args.crash_vol_percentile_threshold,
+        crash_vol_lookback_days=args.crash_vol_lookback_days,
+        crash_disable_buys=args.crash_disable_buys,
+        crash_reduce_sizing=args.crash_reduce_sizing,
         run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,

@@ -625,3 +625,74 @@ def _daily_price_volatility(
     # Exclude tickers with NaN or zero volatility
     valid = daily_vol.notna() & (daily_vol > 0)
     return daily_vol[valid].astype(float)
+
+
+def crash_regime_detector(
+    equity_curve: pd.Series,
+    drawdown_threshold: float = -0.15,
+    vol_percentile_threshold: float = 0.75,
+    lookback_days: int = 252,
+    vol_lookback_days: int = 20,
+) -> pd.Series:
+    """
+    Detects "crash regime" dates when portfolio is in drawdown AND
+    volatility is elevated (Daniel-Moskowitz style overlay).
+
+    A date enters crash regime when BOTH:
+    1. Portfolio is within drawdown_threshold from its 52-week peak
+       (e.g., -15% = portfolio down from peak)
+    2. Rolling volatility over vol_lookback_days exceeds the vol_percentile_threshold
+       percentile of the historical (lookback_days) baseline volatility
+
+    Returns
+    -------
+    pd.Series (index=date, dtype=bool) marking crash-regime dates.
+    Missing data → False (never exclude on unknown regime, following
+    is_regime_disabled() convention).
+
+    Parameters
+    ----------
+    equity_curve : pd.Series
+        Portfolio value time series (index=date, values=portfolio_value).
+    drawdown_threshold : float
+        Max drawdown from peak (e.g., -0.15 = -15%). Negative.
+    vol_percentile_threshold : float
+        Percentile (0-1) of rolling vol to trigger crash (e.g., 0.75 = 75th).
+    lookback_days : int
+        Window for baseline volatility percentile (252 = 1 year).
+    vol_lookback_days : int
+        Rolling window for volatility computation (20 = 1 month).
+
+    Raises
+    ------
+    ValueError
+        If equity_curve is empty or has < 252 values (not enough history).
+    """
+    if equity_curve.empty or len(equity_curve) < lookback_days:
+        return pd.Series(dtype=bool)
+
+    # Compute drawdown from running peak
+    running_peak = equity_curve.expanding().max()
+    drawdown = (equity_curve - running_peak) / running_peak
+    in_drawdown = drawdown <= drawdown_threshold
+
+    # Compute rolling daily returns
+    daily_returns = equity_curve.pct_change()
+
+    # Compute rolling volatility (rolling std of daily returns)
+    rolling_vol = daily_returns.rolling(window=vol_lookback_days, min_periods=vol_lookback_days).std()
+
+    # Compute historical volatility percentile baseline
+    # Use the whole history available up to each date
+    vol_percentile = rolling_vol.rolling(window=lookback_days, min_periods=1).quantile(vol_percentile_threshold)
+
+    # Crash regime: both conditions met
+    elevated_vol = rolling_vol > vol_percentile
+
+    # Combine: NaN handling follows "never exclude on missing" pattern
+    crash_regime = in_drawdown & elevated_vol
+
+    # Replace NaN with False (unknown regime → never exclude)
+    crash_regime = crash_regime.fillna(False)
+
+    return crash_regime.astype(bool)

@@ -59,7 +59,9 @@ import pandas as pd
 from backtest.adapters.panel_filters import adtv_series, is_circuit_locked
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
-from features.momentum_signal import lookback_trading_days, pct_of_52wk_high
+from features.momentum_signal import (
+    lookback_trading_days, pct_of_52wk_high, crash_regime_detector,
+)
 from features.momentum_strategy import (
     rank_universe,
     select_buy_pool,
@@ -102,6 +104,13 @@ class MomentumAdapter:
         rank_fn: Optional[Any] = None,
         top_sectors: int = 5,
         volatility_measure: str = "daily_return_stddev",
+        # Phase 7: crash-aware momentum overlay (all default-off)
+        crash_regime_enabled: bool = False,
+        drawdown_threshold: float = -0.15,
+        vol_percentile_threshold: float = 0.75,
+        vol_lookback_days: int = 20,
+        crash_disable_buys: bool = True,
+        crash_reduce_sizing: Optional[float] = None,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -247,6 +256,14 @@ class MomentumAdapter:
         self.skip_months = skip_months
         self.top_sectors = top_sectors
         self.volatility_measure = volatility_measure
+        # Phase 7: crash-aware momentum overlay (all default-off).
+        self.crash_regime_enabled = crash_regime_enabled
+        self.drawdown_threshold = drawdown_threshold
+        self.vol_percentile_threshold = vol_percentile_threshold
+        self.vol_lookback_days = vol_lookback_days
+        self.crash_disable_buys = crash_disable_buys
+        self.crash_reduce_sizing = crash_reduce_sizing
+        self._crash_regime_cache: Optional[pd.Series] = None
         # Build rank_fn from rank_method if not explicitly provided
         if rank_fn is None and rank_method == "pct_of_52wk_high":
             def _rank_fn_pct_52wk(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
@@ -483,7 +500,13 @@ class MomentumAdapter:
         # CAP, never ADTV) was already added to the ranking pool above, so if
         # it still earns a top_n slot it stays. If it does not, it sells here
         # like anything else.
+        #
+        # [Phase 7] Crash-aware overlay: disable buys or reduce sizing during
+        # crash regimes (drawdown + elevated volatility).
         buys_disabled = self._is_buys_disabled(as_of_date)
+        in_crash_regime = self._is_crash_regime_today(as_of_date)
+        if in_crash_regime and self.crash_disable_buys:
+            buys_disabled = True
         signals: List[Signal] = []
         new_held: Set[str] = set()
 
@@ -507,9 +530,13 @@ class MomentumAdapter:
                 # Skipped this rebalance only; target is recomputed fresh each
                 # call, so it is naturally reconsidered next time.
                 continue
+            conviction = float(momentum.get(ticker, 0.0))
+            # [Phase 7] Reduce conviction during crash regime if configured
+            if in_crash_regime and self.crash_reduce_sizing is not None:
+                conviction *= self.crash_reduce_sizing
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
-                conviction=float(momentum.get(ticker, 0.0)), adtv_cr=self._adtv_cr(ticker, as_of_date),
+                conviction=conviction, adtv_cr=self._adtv_cr(ticker, as_of_date),
             ))
             new_held.add(ticker)
 
@@ -522,3 +549,39 @@ class MomentumAdapter:
             "lookback_days": self.lookback_days,
             "in_top_n": ticker in self._held,
         }
+
+    def update_portfolio_equity(self, date: date_type, equity: float) -> None:
+        """
+        Track portfolio equity value for crash-regime detection.
+        Called by BacktestOrchestrator after each rebalance/update.
+        Builds time series: {date: equity_value}.
+        """
+        if not self.crash_regime_enabled:
+            return
+        if self._crash_regime_cache is None:
+            self._crash_regime_cache = pd.Series(dtype=float)
+        date_ts = pd.Timestamp(date) if not isinstance(date, pd.Timestamp) else date
+        self._crash_regime_cache = pd.concat([
+            self._crash_regime_cache,
+            pd.Series([equity], index=[date_ts])
+        ])
+
+    def _is_crash_regime_today(self, as_of_date: date_type) -> bool:
+        """
+        Check if today is a crash regime day (drawdown + elevated vol).
+        Returns False if crash detection is disabled or insufficient data.
+        """
+        if not self.crash_regime_enabled or self._crash_regime_cache is None or self._crash_regime_cache.empty:
+            return False
+        try:
+            crash_series = crash_regime_detector(
+                self._crash_regime_cache,
+                drawdown_threshold=self.drawdown_threshold,
+                vol_percentile_threshold=self.vol_percentile_threshold,
+                vol_lookback_days=self.vol_lookback_days,
+            )
+            date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
+            return bool(crash_series.get(date_ts, False))
+        except (ValueError, KeyError):
+            # Insufficient data for detector, treat as not in crash regime
+            return False
