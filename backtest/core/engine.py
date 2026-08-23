@@ -1448,6 +1448,15 @@ class BacktestOrchestrator:
                     # apart from every other can_buy rejection reason.
                     data_gaps.append(DataGap(signal.ticker, execution_date, "skipped_illiquid_below_min_adt_floor"))
                     continue
+                # Compute position-sizing multiplier: channel weighting × regime exposure.
+                # Channel weighting (e.g., Momentum volume_weighted) scales conviction;
+                # regime exposure (EMA-RSI) scales capital deployment based on market regime.
+                # Both default to 1.0 (no scaling) when not configured.
+                size_multiplier = signal.size_multiplier if signal.size_multiplier is not None else 1.0
+                regime = self.get_regime_for_date(execution_date)
+                regime_multiplier = regime.exposure if regime is not None else 1.0
+                combined_multiplier = size_multiplier * regime_multiplier
+
                 portfolio.buy(
                     signal.ticker, config.sector_lookup(signal.ticker), fill_prices[signal.ticker], execution_date,
                     prices, adtv_cr=signal.adtv_cr, template=signal.template, pillar=adapter.channel,
@@ -1462,11 +1471,7 @@ class BacktestOrchestrator:
                     # already returns) onto the position so a losing trade
                     # can be inspected against its actual entry signal later.
                     entry_feature_vector=adapter.feature_vector(signal.ticker, execution_date),
-                    # 2026-08-05: an adapter with a per-ticker weighting
-                    # scheme (Momentum's volume_weighted sizing) scales its
-                    # own slot here; None means "size normally", which is
-                    # every other channel.
-                    weight_multiplier=signal.size_multiplier if signal.size_multiplier is not None else 1.0,
+                    weight_multiplier=combined_multiplier,
                 )
 
             # Daily exit-policy pass (task requirement: checked EVERY trading
