@@ -581,6 +581,7 @@ def _momentum_descriptor(
     disable_buys_in_regime: Optional[List[str]] = None,
     orthogonalize_vs_size_beta: bool = False,
     rank_method: str = "trailing_return", skip_months: int = 0,
+    top_sectors: int = 5,
     strategy_family: str = "M",
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
@@ -642,6 +643,8 @@ def _momentum_descriptor(
         parts.append(f"skip{skip_months}m")
     if rank_method != "trailing_return":
         parts.append(f"rank_{rank_method}")
+    if rank_method == "industry_momentum" and top_sectors != 5:
+        parts.append(f"sectors{top_sectors}")
     if min_adtv_cr is not None:
         parts.append(f"adtv{min_adtv_cr:g}")
     if downtrend_filter_pct is not None:
@@ -911,7 +914,7 @@ def _run_immediate(
     capital_mode: str, initial_capital: float, sip_amount: Optional[float],
     universe_spec: str, max_tickers: Optional[int], min_history_days: int,
     template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
-    rank_method: str = "trailing_return", skip_months: int = 0,
+    rank_method: str = "trailing_return", skip_months: int = 0, top_sectors: int = 5,
     report_suffix: Optional[str] = None, regime_index_name: Optional[str] = None,
     exit_policy_variant: str = "baseline", regime_method: Optional[str] = None, regime_type: Optional[str] = None, max_hold_days: Optional[int] = None,
     min_adtv_cr: Optional[float] = None, quality_gate_min_f_score: Optional[float] = None,
@@ -1105,6 +1108,7 @@ def _run_immediate(
                 # Phase 0: R-family strategy dispatch (all default-off for M-family compatibility).
                 rank_method=rank_method,
                 skip_months=skip_months,
+                top_sectors=top_sectors,
                 # regime_conn wired post-construction below, same deferred
                 # pattern as the technical branch (the connection doesn't
                 # exist yet at this point in the function).
@@ -1262,7 +1266,7 @@ def _run_deferred(
     capital_mode: str, initial_capital: float, sip_amount: Optional[float],
     universe_spec: str, max_tickers: Optional[int], min_history_days: int,
     template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
-    rank_method: str = "trailing_return", skip_months: int = 0,
+    rank_method: str = "trailing_return", skip_months: int = 0, top_sectors: int = 5,
     report_suffix: Optional[str] = None, regime_index_name: Optional[str] = None,
     exit_policy_variant: str = "baseline", regime_method: Optional[str] = None, regime_type: Optional[str] = None, max_hold_days: Optional[int] = None,
     min_adtv_cr: Optional[float] = None, quality_gate_min_f_score: Optional[float] = None,
@@ -1415,6 +1419,10 @@ def _run_deferred(
             rank_start=(momentum_band or {}).get("rank_start"),
             approximation_flags=(momentum_band or {}).get("approximation_flags"),
             yearly_rank_lookup=(momentum_band or {}).get("yearly_rank_lookup"),
+            # Phase 0: R-family strategy dispatch (all default-off for M-family compatibility).
+            rank_method=rank_method,
+            skip_months=skip_months,
+            top_sectors=top_sectors,
         )
     else:
         raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
@@ -1560,7 +1568,7 @@ def run_orchestrator_backtest(
     universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
     lookback_months: int = 6, rank_method: str = "trailing_return", skip_months: int = 0,
-    strategy_family: str = "M",
+    top_sectors: int = 5, strategy_family: str = "M",
     run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
     # A98: separate from regime_index_name. None means "compare against the
@@ -1719,6 +1727,7 @@ def run_orchestrator_backtest(
             # Phase 0: R-family strategy dispatch params for identity string.
             rank_method=rank_method,
             skip_months=skip_months,
+            top_sectors=top_sectors,
             strategy_family=strategy_family,
         ),
     }[channel]
@@ -2089,6 +2098,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--top-sectors", type=int, default=5,
+        help=(
+            "momentum channel only (Phase 4, R4): when using --rank-method industry_momentum, "
+            "select this many top-ranked sectors by average momentum, then rank constituents "
+            "within those sectors. Default 5 sectors. No effect unless --rank-method is industry_momentum."
+        ),
+    )
+    parser.add_argument(
         "--rank-band-id", type=int, default=None, choices=[b[0] for b in RANK_BANDS],
         help=(
             "momentum channel only (2026-08-05): select from one of features/momentum_universe.py's "
@@ -2136,7 +2153,7 @@ def main() -> None:
         initial_capital=args.initial_capital, sip_amount=args.sip_amount, universe_spec=args.universe_spec,
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months,
-        rank_method=args.rank_method, skip_months=args.skip_months, strategy_family=args.strategy_family,
+        rank_method=args.rank_method, skip_months=args.skip_months, top_sectors=args.top_sectors, strategy_family=args.strategy_family,
         run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,

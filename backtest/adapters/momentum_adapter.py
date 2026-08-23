@@ -65,6 +65,8 @@ from features.momentum_strategy import (
     select_buy_pool,
     sticky_promoted_holdings,
     rank_fn_for_skip_months,
+    rank_sectors,
+    rank_constituents_within_sectors,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +100,7 @@ class MomentumAdapter:
         rank_method: str = "trailing_return",
         skip_months: int = 0,
         rank_fn: Optional[Any] = None,
+        top_sectors: int = 5,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -241,6 +244,7 @@ class MomentumAdapter:
         # R-family strategy dispatch params (Phase 0).
         self.rank_method = rank_method
         self.skip_months = skip_months
+        self.top_sectors = top_sectors
         # Build rank_fn from rank_method if not explicitly provided
         if rank_fn is None and rank_method == "pct_of_52wk_high":
             def _rank_fn_pct_52wk(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
@@ -427,6 +431,15 @@ class MomentumAdapter:
             # No fabricated ranking when there isn't enough real history yet
             # (No-Mock-Data Policy) — just hold whatever's already held.
             return []
+
+        # [Phase 4] Sector momentum (industry_momentum): two-stage ranking
+        if self.rank_method == "industry_momentum" and self._sector_lookup:
+            sector_scores = rank_sectors(momentum, self._sector_lookup, self.top_sectors)
+            if not sector_scores.empty:
+                top_sectors_list = sector_scores.head(self.top_sectors).index.tolist()
+                momentum = rank_constituents_within_sectors(momentum, self._sector_lookup, top_sectors_list)
+            if momentum.empty:
+                return []
 
         # BUY side: the filtered pool. Every entry filter is buy-side only.
         pool = self._selection_pool(momentum, as_of_date)

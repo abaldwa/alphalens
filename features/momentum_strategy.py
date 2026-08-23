@@ -617,3 +617,70 @@ def select_forced_sell_for_shortfall(
     if grace_candidates:
         return min(grace_candidates.items(), key=lambda tp: getattr(tp[1], "grace_remaining"))[0]
     return max(candidates.items(), key=lambda tp: getattr(tp[1], "entry_rank", None) or 0)[0]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Sector momentum — two-stage ranking
+# ---------------------------------------------------------------------------
+def rank_sectors(
+    momentum: pd.Series,
+    sector_lookup: Dict[str, str],
+    top_sectors: int = 5,
+) -> pd.Series:
+    """Rank sectors by average momentum of their constituents, returning
+    a sector-level momentum score for each sector in the input.
+
+    momentum : ticker -> momentum_score Series
+    sector_lookup : ticker -> sector mapping
+    top_sectors : used by the caller to select which sectors are "top"
+
+    Returns a Series indexed by sector name with average momentum score.
+    Tickers with "Unknown" or missing sector are grouped together as
+    "Unknown" (never excluded on missing data per the strategy convention)."""
+    if momentum.empty or not sector_lookup:
+        return pd.Series(dtype=float)
+
+    sector_scores: dict[str, list[float]] = {}
+    for ticker, score in momentum.items():
+        sector = sector_lookup.get(ticker, "Unknown")
+        if sector not in sector_scores:
+            sector_scores[sector] = []
+        sector_scores[sector].append(score)
+
+    sector_avg: dict[str, float] = {}
+    for sector, scores in sector_scores.items():
+        if scores:
+            sector_avg[sector] = pd.Series(scores).mean()
+
+    return pd.Series(sector_avg).sort_values(ascending=False)
+
+
+def rank_constituents_within_sectors(
+    momentum: pd.Series,
+    sector_lookup: Dict[str, str],
+    top_sectors_list: List[str],
+) -> pd.Series:
+    """Filter momentum scores to only tickers within the specified top
+    sectors. Used as the second stage of two-stage sector momentum ranking.
+
+    momentum : ticker -> momentum_score Series
+    sector_lookup : ticker -> sector mapping
+    top_sectors_list : list of sector names that are "top" (already ranked)
+
+    Returns filtered momentum Series with only constituents of top sectors,
+    preserving original momentum scores (no re-weighting)."""
+    if momentum.empty or not sector_lookup or not top_sectors_list:
+        return momentum
+
+    top_sectors_set = set(top_sectors_list)
+    top_constituents = []
+    for ticker, score in momentum.items():
+        sector = sector_lookup.get(ticker, "Unknown")
+        if sector in top_sectors_set:
+            top_constituents.append((ticker, score))
+
+    if not top_constituents:
+        return pd.Series(dtype=float)
+
+    result = pd.Series(dict(top_constituents))
+    return result.sort_values(ascending=False)
