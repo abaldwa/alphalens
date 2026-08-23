@@ -1,0 +1,65 @@
+{
+  "_description": "Phase 9 validation (R9): Moreira-Muir generalized volatility scaling (all 4 modes). Fast validation window (2019-2025) to confirm implementation works end-to-end. Full backtest follows if confirmed.",
+  "_metadata": {
+    "phase": "Phase 9",
+    "strategy": "R9",
+    "scaling_modes": ["inverse_volatility", "inverse_variance", "target_volatility", "downside_volatility"],
+    "backtest_period": "2019-01-01:2025-12-31",
+    "created_at": "2026-08-23"
+  },
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 9,
+      "top_n": 10,
+      "lookback_months": 12,
+      "strategy_family": "R",
+      "vol_scaling_mode": "inverse_volatility",
+      "vol_scaling_lookback_days": 126,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 9,
+      "top_n": 10,
+      "lookback_months": 12,
+      "strategy_family": "R",
+      "vol_scaling_mode": "inverse_variance",
+      "vol_scaling_lookback_days": 126,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 9,
+      "top_n": 10,
+      "lookback_months": 12,
+      "strategy_family": "R",
+      "vol_scaling_mode": "target_volatility",
+      "vol_scaling_lookback_days": 126,
+      "vol_scaling_leverage_cap": 1.0,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 9,
+      "top_n": 10,
+      "lookback_months": 12,
+      "strategy_family": "R",
+      "vol_scaling_mode": "downside_volatility",
+      "vol_scaling_lookback_days": 126,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    }
+  ]
+}

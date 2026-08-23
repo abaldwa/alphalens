@@ -590,6 +590,13 @@ def _momentum_descriptor(
     crash_vol_lookback_days: int = 20,
     crash_disable_buys: bool = True,
     crash_reduce_sizing: Optional[float] = None,
+    vol_target_enabled: bool = False,
+    vol_target_pct: float = 0.15,
+    vol_target_lookback_days: int = 126,
+    vol_target_leverage_cap: float = 1.0,
+    vol_scaling_mode: Optional[str] = None,
+    vol_scaling_lookback_days: int = 126,
+    vol_scaling_leverage_cap: Optional[float] = None,
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
     signals it emits.
@@ -670,6 +677,23 @@ def _momentum_descriptor(
         if crash_vol_percentile_threshold != 0.75:
             crash_key += f"_vol{crash_vol_percentile_threshold:g}"
         parts.append(crash_key)
+    if vol_target_enabled:
+        vol_key = "voltarget"
+        if vol_target_pct != 0.15:
+            vol_key += f"_{vol_target_pct:g}"
+        if vol_target_lookback_days != 126:
+            vol_key += f"_ld{vol_target_lookback_days}"
+        if vol_target_leverage_cap != 1.0:
+            vol_key += f"_cap{vol_target_leverage_cap:g}"
+        parts.append(vol_key)
+    # Phase 9: R9 generalized volatility scaling (Moreira-Muir, all default-off)
+    if vol_scaling_mode is not None:
+        vol_key = f"volscale_{vol_scaling_mode}"
+        if vol_scaling_lookback_days != 126:
+            vol_key += f"_ld{vol_scaling_lookback_days}"
+        if vol_scaling_leverage_cap is not None:
+            vol_key += f"_cap{vol_scaling_leverage_cap:g}"
+        parts.append(vol_key)
     # The exit policy changes which sells are emitted, so two runs differing
     # only in it are genuinely different strategies.
     if exit_policy_variant and exit_policy_variant != "risk_managed":
@@ -943,6 +967,13 @@ def _run_immediate(
     bear_drawdown_pct: Optional[float] = None,
     combo_templates: Optional[List[str]] = None, precomputed_matches_dir: Optional[Any] = None,
     prefetch_feature_parquets: bool = False, rank_band_id: Optional[int] = None, ohlcv_snapshot_dir: Optional[Any] = None,
+    crash_regime_enabled: bool = False, crash_drawdown_threshold: float = -0.15,
+    crash_vol_percentile_threshold: float = 0.75, crash_vol_lookback_days: int = 20,
+    crash_disable_buys: bool = True, crash_reduce_sizing: Optional[float] = None,
+    vol_target_enabled: bool = False, vol_target_pct: float = 0.15,
+    vol_target_lookback_days: int = 126, vol_target_leverage_cap: float = 1.0,
+    vol_scaling_mode: Optional[str] = None, vol_scaling_lookback_days: int = 126,
+    vol_scaling_leverage_cap: Optional[float] = None,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
@@ -1130,6 +1161,22 @@ def _run_immediate(
                 skip_months=skip_months,
                 top_sectors=top_sectors,
                 volatility_measure=volatility_measure,
+                # Phase 7: crash-aware overlay (all default-off for M-family compatibility).
+                crash_regime_enabled=crash_regime_enabled,
+                drawdown_threshold=crash_drawdown_threshold,
+                vol_percentile_threshold=crash_vol_percentile_threshold,
+                vol_lookback_days=crash_vol_lookback_days,
+                crash_disable_buys=crash_disable_buys,
+                crash_reduce_sizing=crash_reduce_sizing,
+                # Phase 8: volatility-managed overlay (all default-off for M-family compatibility).
+                vol_target_enabled=vol_target_enabled,
+                vol_target_pct=vol_target_pct,
+                vol_target_lookback_days=vol_target_lookback_days,
+                vol_target_leverage_cap=vol_target_leverage_cap,
+                # Phase 9: R9 generalized volatility scaling (all default-off for M-family compatibility).
+                vol_scaling_mode=vol_scaling_mode,
+                vol_scaling_lookback_days=vol_scaling_lookback_days,
+                vol_scaling_leverage_cap=vol_scaling_leverage_cap,
                 # regime_conn wired post-construction below, same deferred
                 # pattern as the technical branch (the connection doesn't
                 # exist yet at this point in the function).
@@ -1297,6 +1344,13 @@ def _run_deferred(
     bear_drawdown_pct: Optional[float] = None,
     combo_templates: Optional[List[str]] = None, precomputed_matches_dir: Optional[Any] = None,
     prefetch_feature_parquets: bool = False, rank_band_id: Optional[int] = None, ohlcv_snapshot_dir: Optional[Any] = None,
+    crash_regime_enabled: bool = False, crash_drawdown_threshold: float = -0.15,
+    crash_vol_percentile_threshold: float = 0.75, crash_vol_lookback_days: int = 20,
+    crash_disable_buys: bool = True, crash_reduce_sizing: Optional[float] = None,
+    vol_target_enabled: bool = False, vol_target_pct: float = 0.15,
+    vol_target_lookback_days: int = 126, vol_target_leverage_cap: float = 1.0,
+    vol_scaling_mode: Optional[str] = None, vol_scaling_lookback_days: int = 126,
+    vol_scaling_leverage_cap: Optional[float] = None,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
@@ -1453,6 +1507,15 @@ def _run_deferred(
             vol_lookback_days=crash_vol_lookback_days,
             crash_disable_buys=crash_disable_buys,
             crash_reduce_sizing=crash_reduce_sizing,
+            # Phase 8: volatility-managed overlay (all default-off for M-family compatibility).
+            vol_target_enabled=vol_target_enabled,
+            vol_target_pct=vol_target_pct,
+            vol_target_lookback_days=vol_target_lookback_days,
+            vol_target_leverage_cap=vol_target_leverage_cap,
+            # Phase 9: R9 generalized volatility scaling (all default-off for M-family compatibility).
+            vol_scaling_mode=vol_scaling_mode,
+            vol_scaling_lookback_days=vol_scaling_lookback_days,
+            vol_scaling_leverage_cap=vol_scaling_leverage_cap,
         )
     else:
         raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
@@ -1605,6 +1668,13 @@ def run_orchestrator_backtest(
     crash_vol_lookback_days: int = 20,
     crash_disable_buys: bool = True,
     crash_reduce_sizing: Optional[float] = None,
+    vol_target_enabled: bool = False,
+    vol_target_pct: float = 0.15,
+    vol_target_lookback_days: int = 126,
+    vol_target_leverage_cap: float = 1.0,
+    vol_scaling_mode: Optional[str] = None,
+    vol_scaling_lookback_days: int = 126,
+    vol_scaling_leverage_cap: Optional[float] = None,
     run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
     # A98: separate from regime_index_name. None means "compare against the
@@ -1773,6 +1843,11 @@ def run_orchestrator_backtest(
             crash_vol_lookback_days=crash_vol_lookback_days,
             crash_disable_buys=crash_disable_buys,
             crash_reduce_sizing=crash_reduce_sizing,
+            # Phase 8: volatility-managed overlay params for identity string.
+            vol_target_enabled=vol_target_enabled,
+            vol_target_pct=vol_target_pct,
+            vol_target_lookback_days=vol_target_lookback_days,
+            vol_target_leverage_cap=vol_target_leverage_cap,
         ),
     }[channel]
     if descriptor is None:
@@ -1820,7 +1895,8 @@ def run_orchestrator_backtest(
         channel, start_date, end_date, run_id, resolved_strategy_id, horizon, descriptor, run_date,
         capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
         template_name, preset, top_n, lookback_months,
-        rank_method=rank_method, skip_months=skip_months,
+        rank_method=rank_method, skip_months=skip_months, top_sectors=top_sectors,
+        volatility_measure=volatility_measure,
         report_suffix=report_suffix, regime_index_name=regime_index_name,
         exit_policy_variant=exit_policy_variant, regime_method=regime_method, regime_type=regime_type, max_hold_days=max_hold_days,
         min_adtv_cr=min_adtv_cr, quality_gate_min_f_score=quality_gate_min_f_score,
@@ -1829,6 +1905,13 @@ def run_orchestrator_backtest(
         bear_drawdown_pct=bear_drawdown_pct,
         combo_templates=combo_templates, precomputed_matches_dir=precomputed_matches_dir,
         prefetch_feature_parquets=prefetch_feature_parquets, rank_band_id=rank_band_id, ohlcv_snapshot_dir=ohlcv_snapshot_dir,
+        crash_regime_enabled=crash_regime_enabled, crash_drawdown_threshold=crash_drawdown_threshold,
+        crash_vol_percentile_threshold=crash_vol_percentile_threshold, crash_vol_lookback_days=crash_vol_lookback_days,
+        crash_disable_buys=crash_disable_buys, crash_reduce_sizing=crash_reduce_sizing,
+        vol_target_enabled=vol_target_enabled, vol_target_pct=vol_target_pct,
+        vol_target_lookback_days=vol_target_lookback_days, vol_target_leverage_cap=vol_target_leverage_cap,
+        vol_scaling_mode=vol_scaling_mode, vol_scaling_lookback_days=vol_scaling_lookback_days,
+        vol_scaling_leverage_cap=vol_scaling_leverage_cap,
         rebalance_cadence_days=rebalance_cadence_days,
         defer_feature_log=defer_feature_log,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
@@ -2205,6 +2288,60 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--vol-target-enabled", action="store_true",
+        help=(
+            "momentum channel only (Phase 8, R8): enable volatility-managed momentum overlay (Barroso-Santa-Clara). "
+            "When enabled, portfolio exposure is scaled inversely with realized volatility to target a constant "
+            "annualized volatility level. Default disabled."
+        ),
+    )
+    parser.add_argument(
+        "--vol-target-pct", type=float, default=0.15,
+        help=(
+            "momentum channel only (Phase 8, R8): target annualized volatility as a decimal (e.g., 0.15 = 15%). "
+            "Used only if --vol-target-enabled. Default 0.15."
+        ),
+    )
+    parser.add_argument(
+        "--vol-target-lookback-days", type=int, default=126,
+        help=(
+            "momentum channel only (Phase 8, R8): rolling window (trading days) for realized volatility computation. "
+            "Used only if --vol-target-enabled. Default 126 (approximately 6 months). "
+            "Spec recommends testing 63/126/252 as separate runs."
+        ),
+    )
+    parser.add_argument(
+        "--vol-target-leverage-cap", type=float, default=1.0,
+        help=(
+            "momentum channel only (Phase 8, R8): maximum exposure multiplier cap (e.g., 1.0 = no leverage). "
+            "Used only if --vol-target-enabled. Default 1.0."
+        ),
+    )
+    parser.add_argument(
+        "--vol-scaling-mode", type=str, default=None,
+        choices=["inverse_volatility", "inverse_variance", "target_volatility", "downside_volatility"],
+        help=(
+            "momentum channel only (Phase 9, R9): Moreira-Muir generalized volatility scaling mode. "
+            "Options: inverse_volatility (1/vol), inverse_variance (1/vol²), target_volatility (Barroso-Santa-Clara, R8 logic), "
+            "downside_volatility (1/downside_vol). When set, applies exposure scaling based on realized portfolio volatility. "
+            "Default (omit) = no scaling. Disabled if --vol-target-enabled is set."
+        ),
+    )
+    parser.add_argument(
+        "--vol-scaling-lookback-days", type=int, default=126,
+        help=(
+            "momentum channel only (Phase 9, R9): rolling window for realized volatility computation (e.g., 126 = ~6 months). "
+            "Used only if --vol-scaling-mode is set. Default 126."
+        ),
+    )
+    parser.add_argument(
+        "--vol-scaling-leverage-cap", type=float, default=None,
+        help=(
+            "momentum channel only (Phase 9, R9): maximum exposure multiplier cap. When None, mode-dependent defaults apply. "
+            "Used only if --vol-scaling-mode is set."
+        ),
+    )
+    parser.add_argument(
         "--rank-band-id", type=int, default=None, choices=[b[0] for b in RANK_BANDS],
         help=(
             "momentum channel only (2026-08-05): select from one of features/momentum_universe.py's "
@@ -2260,6 +2397,13 @@ def main() -> None:
         crash_vol_lookback_days=args.crash_vol_lookback_days,
         crash_disable_buys=args.crash_disable_buys,
         crash_reduce_sizing=args.crash_reduce_sizing,
+        vol_target_enabled=args.vol_target_enabled,
+        vol_target_pct=args.vol_target_pct,
+        vol_target_lookback_days=args.vol_target_lookback_days,
+        vol_target_leverage_cap=args.vol_target_leverage_cap,
+        vol_scaling_mode=args.vol_scaling_mode,
+        vol_scaling_lookback_days=args.vol_scaling_lookback_days,
+        vol_scaling_leverage_cap=args.vol_scaling_leverage_cap,
         run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,

@@ -21,7 +21,7 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import norm, spearmanr
 
 from contracts.interfaces import IModel
 
@@ -220,3 +220,75 @@ def random_feature_test(
     mean_accuracy = float(np.mean(accuracies))
     logger.info(f"Random feature test: mean accuracy {mean_accuracy:.4f} over {n_repeats} repeats")
     return mean_accuracy
+
+
+def information_coefficient(scores: pd.Series, forward_returns: pd.Series) -> Optional[float]:
+    """
+    Cross-sectional Spearman rank correlation between a signal's scores
+    and forward returns on a single date. Measures signal predictiveness
+    independent of portfolio construction, rebalancing, or transaction costs.
+
+    Implements the standard IC (information coefficient) metric used in
+    momentum/factor research to isolate pure signal quality from execution
+    effects.
+
+    Parameters
+    ----------
+    scores : pd.Series
+        Predictive signal scores (e.g., momentum returns, factor exposure)
+        indexed by ticker. Can have NaN values (excluded from correlation).
+    forward_returns : pd.Series
+        Forward-looking returns for the same period, indexed by ticker
+        (must match scores' index structure for alignment). Can have NaN
+        values (excluded from correlation).
+
+    Returns
+    -------
+    float or None
+        Spearman rank correlation coefficient in [-1, 1] if >= 5 paired
+        (non-NaN) observations remain after alignment. Returns None if
+        fewer than 5 paired observations — correlation estimates are
+        unreliable below that sample size and typically accompany low
+        trading volume or sparse universe membership on that date.
+
+    Notes
+    -----
+    1. The minimum threshold of 5 paired observations is conservative for
+       rank correlation (typically stable at n > 30, but chosen to be
+       permissive for sparse signal dates rather than crash on isolated
+       edge cases where 3-4 tickers have both scores and returns).
+    2. Index alignment is strict: tickers present in one series but not
+       the other are excluded (inner join semantics), never forward-filled,
+       interpolated, or defaulted.
+    3. Rank correlation (Spearman) is used instead of Pearson to down-
+       weight outlier returns (fat tails are common in single-day equity
+       returns) while preserving the ordinal ranking relationship between
+       signal and outcome.
+
+    Example
+    -------
+    >>> scores = pd.Series([0.05, 0.02, -0.01, 0.03], index=['A', 'B', 'C', 'D'])
+    >>> fwd_ret = pd.Series([0.04, 0.01, -0.02, 0.02], index=['A', 'B', 'C', 'D'])
+    >>> ic = information_coefficient(scores, fwd_ret)
+    >>> print(f"IC: {ic:.3f}")
+    IC: 1.000
+    """
+    if scores.empty or forward_returns.empty:
+        return None
+
+    # Align on common index, drop NaN
+    aligned_scores = scores[scores.index.intersection(forward_returns.index)].dropna()
+    aligned_returns = forward_returns.loc[aligned_scores.index].dropna()
+
+    # Ensure both have same index after NaN removal
+    common_idx = aligned_scores.index.intersection(aligned_returns.index)
+    aligned_scores = aligned_scores.loc[common_idx]
+    aligned_returns = aligned_returns.loc[common_idx]
+
+    if len(aligned_scores) < 5:
+        return None
+
+    corr, _ = spearmanr(aligned_scores.values, aligned_returns.values)
+    if np.isnan(corr):
+        return None
+    return float(corr)

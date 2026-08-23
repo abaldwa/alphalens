@@ -106,7 +106,7 @@ class TestMomentumAdapterCrashOverlay:
             crash_regime_enabled=False,  # Disabled
         )
         # Should not error, and crash_regime_cache should remain None
-        assert adapter._crash_regime_cache is None
+        assert adapter._equity_history is None
         # Basic signal generation should work unchanged
         assert hasattr(adapter, 'generate_signals')
 
@@ -121,7 +121,7 @@ class TestMomentumAdapterCrashOverlay:
         )
         assert adapter.crash_regime_enabled is True
         # Cache starts as None until update_portfolio_equity is called
-        assert adapter._crash_regime_cache is None
+        assert adapter._equity_history is None
 
     def test_update_portfolio_equity_builds_cache(self):
         """update_portfolio_equity() accumulates equity values."""
@@ -137,8 +137,8 @@ class TestMomentumAdapterCrashOverlay:
         for i, d in enumerate(dates):
             adapter.update_portfolio_equity(d, 1_000_000 + i * 10_000)
         # Cache should now be populated
-        assert adapter._crash_regime_cache is not None
-        assert len(adapter._crash_regime_cache) == 10
+        assert adapter._equity_history is not None
+        assert len(adapter._equity_history) == 10
 
     def test_crash_regime_check_insufficient_data(self):
         """_is_crash_regime_today() returns False if insufficient data."""
@@ -262,4 +262,4 @@ class TestNonRegressionMomentumAdapter:
         )
         # Even if update_portfolio_equity is called, should be no-op
         adapter.update_portfolio_equity(date_type(2025, 1, 1), 1_000_000)
-        assert adapter._crash_regime_cache is None
+        assert adapter._equity_history is None

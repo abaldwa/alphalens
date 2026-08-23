@@ -1283,6 +1283,9 @@ class BacktestOrchestrator:
                 if config.exit_policy_cadence == "daily":
                     self._apply_exit_policy(portfolio, prices, as_of, executed_tickers)
                 portfolio.record_equity(as_of, prices)
+                # Feed portfolio equity to adapter if it supports overlays (Phase 7/8)
+                if hasattr(adapter, "update_portfolio_equity"):
+                    adapter.update_portfolio_equity(as_of, portfolio.equity_curve.iloc[-1])
                 continue
 
             # Walk-Forward retraining (Phase 2.5, BacktestUmbrellaPlan.md "Walk-Forward
@@ -1475,6 +1478,9 @@ class BacktestOrchestrator:
 
             with timer.phase("equity"):
                 portfolio.record_equity(as_of, prices)
+                # Feed portfolio equity to adapter if it supports overlays (Phase 7/8)
+                if hasattr(adapter, "update_portfolio_equity"):
+                    adapter.update_portfolio_equity(as_of, portfolio.equity_curve.iloc[-1])
 
         if self._feature_log_writer is not None:
             self._feature_log_writer.flush()

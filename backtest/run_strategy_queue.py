@@ -112,6 +112,13 @@ _ORCHESTRATOR_FLAGS = {
     "annual_reset_no_top_up",
     # 2026-08-23: regime_type for EMA-RSI and future regime overlays (engine feature)
     "regime_type",
+    # Phase 7 (R7): crash-aware momentum overlay — fixed queue wiring gap
+    "crash_regime_enabled", "crash_drawdown_threshold", "crash_vol_percentile_threshold",
+    "crash_vol_lookback_days", "crash_disable_buys", "crash_reduce_sizing",
+    # Phase 8 (R8): volatility-managed momentum overlay
+    "vol_target_enabled", "vol_target_pct", "vol_target_lookback_days", "vol_target_leverage_cap",
+    # Phase 9 (R9): factor volatility scaling (Moreira-Muir)
+    "vol_scaling_mode", "vol_scaling_lookback_days", "vol_scaling_leverage_cap",
 } | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",

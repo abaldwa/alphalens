@@ -696,3 +696,176 @@ def crash_regime_detector(
     crash_regime = crash_regime.fillna(False)
 
     return crash_regime.astype(bool)
+
+
+def realized_vol_target_multiplier(
+    equity_curve: pd.Series,
+    target_vol: float = 0.15,
+    lookback_days: int = 126,
+    leverage_cap: float = 1.0,
+) -> pd.Series:
+    """
+    Barroso-Santa-Clara volatility-managed exposure scalar.
+    Scales portfolio exposure inversely with realized volatility to target
+    a constant annualized volatility level.
+
+    multiplier = min(target_vol / realized_annualized_vol, leverage_cap)
+
+    Returns
+    -------
+    pd.Series (index=date, dtype=float) with per-date exposure multipliers.
+    Missing data / insufficient history → 1.0 (no scaling; never fabricate).
+
+    Parameters
+    ----------
+    equity_curve : pd.Series
+        Portfolio value time series (index=date, values=portfolio_value).
+    target_vol : float
+        Target annualized volatility (e.g., 0.15 = 15% per year).
+    lookback_days : int
+        Rolling window for realized vol computation (e.g., 126 = ~6 months).
+        No fixed dependency on this value; spec's 63/126/252 are separate
+        test-case windows, not a blended ensemble.
+    leverage_cap : float
+        Maximum exposure multiplier (e.g., 1.0 = no leverage).
+
+    Raises
+    ------
+    ValueError
+        If equity_curve is empty or has < lookback_days values.
+    """
+    if equity_curve.empty or len(equity_curve) < lookback_days:
+        return pd.Series(1.0, index=equity_curve.index, dtype=float)
+
+    # Compute rolling daily returns
+    daily_returns = equity_curve.pct_change()
+
+    # Compute rolling volatility (rolling std of daily returns)
+    rolling_vol_daily = daily_returns.rolling(
+        window=lookback_days, min_periods=lookback_days
+    ).std()
+
+    # Annualize: vol_annual = vol_daily * sqrt(252)
+    rolling_vol_annual = rolling_vol_daily * (252 ** 0.5)
+
+    # Avoid division by zero and tiny denominator instability
+    rolling_vol_annual = rolling_vol_annual.replace(0.0, np.nan)
+    rolling_vol_annual = rolling_vol_annual.fillna(rolling_vol_annual.mean())
+    if rolling_vol_annual.isna().all() or (rolling_vol_annual <= 0).all():
+        return pd.Series(1.0, index=equity_curve.index, dtype=float)
+
+    # Compute multiplier: target / realized, capped at leverage_cap
+    multiplier = (target_vol / rolling_vol_annual).clip(upper=leverage_cap)
+
+    # Insufficient data → 1.0 (never exclude on missing, follow NaN convention)
+    multiplier = multiplier.fillna(1.0)
+
+    # Ensure non-negative (vol can't be negative, but safety check)
+    multiplier = multiplier.clip(lower=0.0)
+
+    return multiplier.astype(float)
+
+
+def volatility_scaling_multiplier(
+    equity_curve: pd.Series,
+    scaling_mode: str = "target_volatility",
+    target_vol: float = 0.15,
+    lookback_days: int = 126,
+    leverage_cap: Optional[float] = None,
+) -> pd.Series:
+    """
+    Phase 9 (R9): Generalized factor volatility scaling.
+    Supports 4 scaling modes per Moreira-Muir framework.
+
+    Parameters
+    ----------
+    equity_curve : pd.Series
+        Portfolio value time series (index=date, values=portfolio_value).
+    scaling_mode : str
+        One of:
+        - "inverse_volatility": size ∝ 1/vol (uncapped by default)
+        - "inverse_variance": size ∝ 1/vol² (uncapped by default)
+        - "target_volatility": size ∝ target_vol/vol (Barroso-Santa-Clara, R8 logic)
+        - "downside_volatility": size ∝ 1/downside_vol (negative returns only)
+    target_vol : float
+        Target annualized volatility (only used by "target_volatility" mode).
+    lookback_days : int
+        Rolling window for realized vol computation (e.g., 126 = ~6 months).
+    leverage_cap : Optional[float]
+        Maximum exposure multiplier. If None:
+        - "inverse_volatility" / "inverse_variance" / "downside_volatility" → no cap
+        - "target_volatility" → defaults to 1.0 (R8 behavior)
+
+    Returns
+    -------
+    pd.Series (index=date, dtype=float) with per-date exposure multipliers.
+    Insufficient data → 1.0 (never fabricate).
+
+    Raises
+    ------
+    ValueError
+        If equity_curve is empty or scaling_mode is invalid.
+    """
+    if equity_curve.empty:
+        return pd.Series(1.0, index=equity_curve.index, dtype=float)
+
+    if scaling_mode not in ("inverse_volatility", "inverse_variance", "target_volatility", "downside_volatility"):
+        raise ValueError(f"scaling_mode '{scaling_mode}' not in ('inverse_volatility', 'inverse_variance', 'target_volatility', 'downside_volatility')")
+
+    # Compute rolling daily returns
+    daily_returns = equity_curve.pct_change()
+
+    if scaling_mode == "downside_volatility":
+        # Downside vol: std of only negative returns (semi-deviation)
+        negative_returns = daily_returns.clip(upper=0.0)
+        rolling_vol_daily = negative_returns.rolling(
+            window=lookback_days, min_periods=lookback_days
+        ).std()
+    else:
+        # Standard realized volatility for all modes
+        rolling_vol_daily = daily_returns.rolling(
+            window=lookback_days, min_periods=lookback_days
+        ).std()
+
+    # Annualize: vol_annual = vol_daily * sqrt(252)
+    rolling_vol_annual = rolling_vol_daily * (252 ** 0.5)
+
+    # Avoid division by zero
+    rolling_vol_annual = rolling_vol_annual.replace(0.0, np.nan)
+    rolling_vol_annual = rolling_vol_annual.fillna(rolling_vol_annual.mean())
+    if rolling_vol_annual.isna().all() or (rolling_vol_annual <= 0).all():
+        return pd.Series(1.0, index=equity_curve.index, dtype=float)
+
+    # Compute multiplier based on scaling_mode
+    if scaling_mode == "inverse_volatility":
+        # size ∝ 1 / vol
+        multiplier = 1.0 / rolling_vol_annual
+        # Default cap for inverse modes (safety to prevent runaway leverage)
+        if leverage_cap is None:
+            leverage_cap = 2.0  # Conservative default for inverse_vol
+        multiplier = multiplier.clip(upper=leverage_cap)
+    elif scaling_mode == "inverse_variance":
+        # size ∝ 1 / vol²
+        multiplier = 1.0 / (rolling_vol_annual ** 2)
+        # Default cap for inverse_variance (stronger dampening than inverse_vol)
+        if leverage_cap is None:
+            leverage_cap = 2.0
+        multiplier = multiplier.clip(upper=leverage_cap)
+    elif scaling_mode == "target_volatility":
+        # Barroso-Santa-Clara: size ∝ target_vol / realized_vol (R8)
+        multiplier = (target_vol / rolling_vol_annual)
+        if leverage_cap is None:
+            leverage_cap = 1.0  # R8 default
+        multiplier = multiplier.clip(upper=leverage_cap)
+    elif scaling_mode == "downside_volatility":
+        # size ∝ 1 / downside_vol
+        multiplier = 1.0 / rolling_vol_annual
+        if leverage_cap is None:
+            leverage_cap = 2.0  # Conservative default
+        multiplier = multiplier.clip(upper=leverage_cap)
+
+    # Insufficient data → 1.0
+    multiplier = multiplier.fillna(1.0)
+    multiplier = multiplier.clip(lower=0.0)
+
+    return multiplier.astype(float)

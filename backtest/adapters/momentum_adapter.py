@@ -111,6 +111,15 @@ class MomentumAdapter:
         vol_lookback_days: int = 20,
         crash_disable_buys: bool = True,
         crash_reduce_sizing: Optional[float] = None,
+        # Phase 8: volatility-managed momentum overlay (all default-off)
+        vol_target_enabled: bool = False,
+        vol_target_pct: float = 0.15,
+        vol_target_lookback_days: int = 126,
+        vol_target_leverage_cap: float = 1.0,
+        # Phase 9: factor volatility scaling (R9, all default-off)
+        vol_scaling_mode: Optional[str] = None,
+        vol_scaling_lookback_days: int = 126,
+        vol_scaling_leverage_cap: Optional[float] = None,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -212,6 +221,21 @@ class MomentumAdapter:
             ranks that matter here are the ones above the band.
             Both None (the default) is today's unchanged behavior.
 
+        Phase 9 (R9): factor volatility-managed overlays (Moreira-Muir framework):
+        vol_scaling_mode : Optional[str]
+            When set to one of ("inverse_volatility", "inverse_variance",
+            "target_volatility", "downside_volatility"), applies a scaling
+            multiplier to position sizing based on realized portfolio volatility.
+            None (default) = no scaling. vol_target_enabled takes precedence if
+            both vol_scaling_mode and vol_target_enabled are set (backward-compat).
+        vol_scaling_lookback_days : int
+            Rolling window for realized vol computation (e.g., 126 = ~6 months).
+            Ignored if vol_scaling_mode is None.
+        vol_scaling_leverage_cap : Optional[float]
+            Maximum exposure multiplier. When None, mode-dependent defaults apply:
+            - "inverse_volatility" / "inverse_variance" / "downside_volatility" → 2.0
+            - "target_volatility" → 1.0
+
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -263,7 +287,17 @@ class MomentumAdapter:
         self.vol_lookback_days = vol_lookback_days
         self.crash_disable_buys = crash_disable_buys
         self.crash_reduce_sizing = crash_reduce_sizing
-        self._crash_regime_cache: Optional[pd.Series] = None
+        # Phase 8: volatility-managed momentum overlay (all default-off).
+        self.vol_target_enabled = vol_target_enabled
+        self.vol_target_pct = vol_target_pct
+        self.vol_target_lookback_days = vol_target_lookback_days
+        self.vol_target_leverage_cap = vol_target_leverage_cap
+        # Phase 9: factor volatility scaling (R9, all default-off).
+        self.vol_scaling_mode = vol_scaling_mode
+        self.vol_scaling_lookback_days = vol_scaling_lookback_days
+        self.vol_scaling_leverage_cap = vol_scaling_leverage_cap
+        # Shared equity history cache used by crash-aware, vol-target, and vol-scaling overlays
+        self._equity_history: Optional[pd.Series] = None
         # Build rank_fn from rank_method if not explicitly provided
         if rank_fn is None and rank_method == "pct_of_52wk_high":
             def _rank_fn_pct_52wk(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
@@ -534,9 +568,12 @@ class MomentumAdapter:
             # [Phase 7] Reduce conviction during crash regime if configured
             if in_crash_regime and self.crash_reduce_sizing is not None:
                 conviction *= self.crash_reduce_sizing
+            # [Phase 8/9] Compute exposure multiplier (R8 vol-target or R9 generic vol scaling)
+            size_mult = self._compute_exposure_multiplier_today(as_of_date)
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
                 conviction=conviction, adtv_cr=self._adtv_cr(ticker, as_of_date),
+                size_multiplier=size_mult if size_mult != 1.0 else None,
             ))
             new_held.add(ticker)
 
@@ -552,17 +589,18 @@ class MomentumAdapter:
 
     def update_portfolio_equity(self, date: date_type, equity: float) -> None:
         """
-        Track portfolio equity value for crash-regime detection.
-        Called by BacktestOrchestrator after each rebalance/update.
+        Track portfolio equity value for crash-regime detection (Phase 7)
+        and volatility-target exposure scaling (Phase 8).
+        Called by BacktestOrchestrator (engine.py) after each day's rebalance/update.
         Builds time series: {date: equity_value}.
         """
-        if not self.crash_regime_enabled:
+        if not (self.crash_regime_enabled or self.vol_target_enabled):
             return
-        if self._crash_regime_cache is None:
-            self._crash_regime_cache = pd.Series(dtype=float)
+        if self._equity_history is None:
+            self._equity_history = pd.Series(dtype=float)
         date_ts = pd.Timestamp(date) if not isinstance(date, pd.Timestamp) else date
-        self._crash_regime_cache = pd.concat([
-            self._crash_regime_cache,
+        self._equity_history = pd.concat([
+            self._equity_history,
             pd.Series([equity], index=[date_ts])
         ])
 
@@ -571,11 +609,11 @@ class MomentumAdapter:
         Check if today is a crash regime day (drawdown + elevated vol).
         Returns False if crash detection is disabled or insufficient data.
         """
-        if not self.crash_regime_enabled or self._crash_regime_cache is None or self._crash_regime_cache.empty:
+        if not self.crash_regime_enabled or self._equity_history is None or self._equity_history.empty:
             return False
         try:
             crash_series = crash_regime_detector(
-                self._crash_regime_cache,
+                self._equity_history,
                 drawdown_threshold=self.drawdown_threshold,
                 vol_percentile_threshold=self.vol_percentile_threshold,
                 vol_lookback_days=self.vol_lookback_days,
@@ -585,3 +623,59 @@ class MomentumAdapter:
         except (ValueError, KeyError):
             # Insufficient data for detector, treat as not in crash regime
             return False
+
+    def _vol_target_multiplier_today(self, as_of_date: date_type) -> float:
+        """
+        Compute volatility-target exposure multiplier for today (Phase 8).
+        Returns 1.0 if vol targeting is disabled or insufficient data.
+        Kept for backward compatibility; _compute_exposure_multiplier_today dispatches.
+        """
+        if not self.vol_target_enabled or self._equity_history is None or self._equity_history.empty:
+            return 1.0
+        try:
+            from features.momentum_signal import realized_vol_target_multiplier
+            mult_series = realized_vol_target_multiplier(
+                self._equity_history,
+                target_vol=self.vol_target_pct,
+                lookback_days=self.vol_target_lookback_days,
+                leverage_cap=self.vol_target_leverage_cap,
+            )
+            date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
+            return float(mult_series.get(date_ts, 1.0))
+        except (ValueError, KeyError, Exception):
+            # Insufficient data or computation error, default to no scaling
+            return 1.0
+
+    def _compute_exposure_multiplier_today(self, as_of_date: date_type) -> float:
+        """
+        Compute exposure multiplier for today (Phase 8/9).
+        Dispatches between:
+        - R8 (vol_target_enabled): Barroso-Santa-Clara vol-target scaling
+        - R9 (vol_scaling_mode): Moreira-Muir generalized volatility scaling
+        Returns 1.0 if disabled or insufficient data.
+        Note: R8 takes precedence if both are set (backward-compat).
+        """
+        if self._equity_history is None or self._equity_history.empty:
+            return 1.0
+
+        # R8 takes precedence over R9 if both are set (backward-compat)
+        if self.vol_target_enabled:
+            return self._vol_target_multiplier_today(as_of_date)
+
+        if self.vol_scaling_mode is None:
+            return 1.0
+
+        try:
+            from features.momentum_signal import volatility_scaling_multiplier
+            mult_series = volatility_scaling_multiplier(
+                self._equity_history,
+                scaling_mode=self.vol_scaling_mode,
+                target_vol=self.vol_target_pct,
+                lookback_days=self.vol_scaling_lookback_days,
+                leverage_cap=self.vol_scaling_leverage_cap,
+            )
+            date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
+            return float(mult_series.get(date_ts, 1.0))
+        except (ValueError, KeyError, Exception):
+            # Insufficient data or computation error, default to no scaling
+            return 1.0

@@ -48,6 +48,10 @@ backtest/cache/
 # Backtest job-output reports (generated JSON, 4.3GB+, not source)
 backtest/reports/
 
+# Archive & backup directories (local organization, not source)
+_archive_temp/
+_backups/
+
 # Pre-migration DuckDB snapshots (8.9GB) and restore scratch (3.3GB). These are
 # point-in-time safety copies taken before backfills/schema changes, not source.
 # Untracked and unignored until 2026-08-12, when a `git add -A` would have tried
