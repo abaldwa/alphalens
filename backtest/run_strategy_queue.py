@@ -74,7 +74,7 @@ _QUEUE_ONLY_ORCHESTRATOR_FIELDS = {"min_dsr_threshold"}
 _ORCHESTRATOR_FLAGS = {
     "channel", "strategy_id", "horizon_bucket", "start_date", "end_date", "capital_mode", "initial_capital",
     "sip_amount", "universe_spec", "max_tickers", "min_history_days", "template_name", "preset", "top_n",
-    "lookback_months", "rank_method", "skip_months", "top_sectors", "strategy_family", "exit_variant", "regime_method",
+    "lookback_months", "rank_method", "skip_months", "volatility_measure", "top_sectors", "strategy_family", "exit_variant", "regime_method",
     # [2026-08-18] grace_cycles and exit_rank are gone: momentum's rotation is
     # a plain list swap, so neither lever exists to sweep.
     # 2026-08-01 Momentum-parity Technical filters (backtest/run_orchestrator_backtest.py
