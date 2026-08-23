@@ -48,6 +48,7 @@ from features.momentum_signal import (
     downtrend_tickers,
     orthogonalize_momentum_vs_factors,
     trailing_momentum_from_panel,
+    trailing_momentum_skip_recent,
 )
 
 
@@ -105,6 +106,26 @@ def build_category_presets(
 
 
 # ---------------------------------------------------------------------------
+# Rank-function builders (Phase 0: R-family strategy dispatch)
+# ---------------------------------------------------------------------------
+def rank_fn_for_skip_months(skip_months: int) -> Optional[Any]:
+    """Returns a rank_fn closure for Jegadeesh-Titman style skip-month
+    momentum, or None if skip_months == 0 (use default trailing momentum).
+
+    The returned function has signature: (price_panel, universe, date, lookback_days) -> pd.Series
+    """
+    if skip_months <= 0:
+        return None
+
+    skip_days = skip_months * 21  # Convert months to trading days
+
+    def rank_skip_month(price_panel: pd.DataFrame, universe: List[str], date: str, lookback_days: int) -> pd.Series:
+        return trailing_momentum_skip_recent(price_panel, universe, date, lookback_days, skip_days)
+
+    return rank_skip_month
+
+
+# ---------------------------------------------------------------------------
 # The momentum ranking itself — the ONE implementation
 # ---------------------------------------------------------------------------
 # [ML40, 2026-08-14] Both momentum engines used to rank the universe with
@@ -125,6 +146,7 @@ def rank_universe(
     date: Union[str, _date, pd.Timestamp],
     lookback_days: int,
     momentum_panel: Optional[pd.DataFrame] = None,
+    rank_fn: Optional[Any] = None,
 ) -> pd.Series:
     """Trailing-momentum score per ticker in `universe`, as of `date`.
 
@@ -142,10 +164,17 @@ def rank_universe(
     callers historically passed different types (the adapter a date, the
     backtester a Timestamp), and normalising here is what lets them share
     one function instead of each formatting the date its own way.
+
+    `rank_fn` is an optional callable that computes a custom ranking score
+    (e.g., 52-week-high, risk-adjusted composite) instead of the default
+    trailing-momentum ranking. When None, defaults to trailing-momentum.
+    Signature: rank_fn(price_panel, universe, date, lookback_days) -> pd.Series.
     """
     ts = pd.Timestamp(date)
     if momentum_panel is not None and ts in momentum_panel.index:
         return momentum_panel.loc[ts].reindex(universe).dropna()
+    if rank_fn is not None:
+        return rank_fn(price_panel, universe, str(ts.date()), lookback_days)
     return trailing_momentum_from_panel(price_panel, universe, str(ts.date()), lookback_days)
 
 

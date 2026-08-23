@@ -69,7 +69,7 @@ def _rebalance_label(cadence_days: Optional[int]) -> Optional[str]:
 
     for label, days in REBALANCE_PERIODS.items():
         if days == cadence_days:
-            return label
+            return str(label)
     return None
 
 
@@ -126,6 +126,8 @@ def registry_name(
     quality_gate: Optional[Dict[str, Any]] = None,
     disable_buys_in_regime: Optional[Any] = None,
     orthogonalize_vs_size_beta: bool = False,
+    strategy_family: str = "M",
+    skip_months: int = 0,
 ) -> Optional[str]:
     """The declared registry name for this run, or None if it declares none.
 
@@ -156,11 +158,20 @@ def registry_name(
         return None
     _, rank_start, rank_end = band
 
+    # R-family strategies use a different naming scheme based on skip_months:
+    # R1 (skip_months=0): R1_{band}_{rank_start}_{rank_end}_lb{months}mo
+    # R3 (skip_months>0): R3_{band}_{rank_start}_{rank_end}_lb{months}mo_skip{skip}mo
+    # M-family uses: {category}_b{band}_{rank_start}-{rank_end}_lb{N}mo_{rebalance}_top{N}
+    if strategy_family == "R":
+        r_family_num = 3 if skip_months > 0 else 1
+        skip_suffix = f"_skip{skip_months}mo" if skip_months > 0 else ""
+        return f"R{r_family_num}_{rank_band_id}_{rank_start}_{rank_end}_lb{lookback_months}mo{skip_suffix}"
+
     from strategies.migrations.momentum import variant_name
 
     # Built by ML41's OWN function rather than a second f-string here. Two
     # copies of a name format is how the generated key and the registry rows
     # came to disagree in the first place.
-    return variant_name(
+    return str(variant_name(
         category, rank_band_id, rank_start, rank_end, lookback_months, rebalance, top_n
-    )
+    ))

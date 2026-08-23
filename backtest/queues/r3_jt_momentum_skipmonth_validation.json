@@ -1,0 +1,89 @@
+{
+  "_description": "R3 Phase 2 validation: test Jegadeesh-Titman skip-month momentum effect (12-7, 6-2) against M1/M2 bands. Baseline to validate spec 7.3 hypothesis that formation-holding period gaps improve signal quality.",
+  "_metadata": {
+    "phase": "Phase 2",
+    "strategy": "R3",
+    "bands": [1, 2],
+    "lookback_variants": [
+      {"lookback_months": 12, "skip_months": 1, "name": "12-7"},
+      {"lookback_months": 6, "skip_months": 1, "name": "6-2"}
+    ],
+    "backtest_period": "2019-01-01:2025-12-31",
+    "note": "Validation run with 7-year window (2019-2025) for quick turnaround. Full 16-year run on demand.",
+    "created_at": "2026-08-23"
+  },
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 1,
+      "lookback_months": 12,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 1,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 1,
+      "lookback_months": 6,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 1,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 2,
+      "lookback_months": 12,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 1,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 2,
+      "lookback_months": 6,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 1,
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+    }
+  ]
+}

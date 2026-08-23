@@ -187,6 +187,110 @@ def trailing_momentum_from_panel(
     return returns.astype(float)
 
 
+def trailing_momentum_skip_recent(
+    price_panel: pd.DataFrame, tickers: List[str], as_of_date: str,
+    total_lookback_days: int, skip_days: int,
+) -> pd.Series:
+    """
+    Trailing momentum computed over (total_lookback_days - skip_days), skipping
+    the most recent skip_days of data. Implements Jegadeesh-Titman style
+    formation-holding period filters (e.g., 12-7: 12-month lookback, skip 1 month).
+
+    Returns a pd.Series indexed by ticker with the skip-adjusted momentum return.
+    Tickers with insufficient history (even after skipping) are excluded.
+    """
+    if price_panel.empty or not tickers or total_lookback_days <= skip_days:
+        return pd.Series(dtype=float)
+
+    as_of_ts = pd.Timestamp(as_of_date)
+    available_dates = price_panel.index[price_panel.index <= as_of_ts]
+
+    # Need (skip_days + adjusted_lookback_days + 1) data points
+    total_days_needed = total_lookback_days + 1
+    if len(available_dates) < total_days_needed:
+        return pd.Series(dtype=float)
+
+    # end_date = skip_days back from as_of_date
+    end_idx = len(available_dates) - skip_days - 1
+    if end_idx < 0:
+        return pd.Series(dtype=float)
+    end_date = available_dates[end_idx]
+
+    # start_date = total_lookback_days before end_date
+    start_idx = end_idx - total_lookback_days
+    if start_idx < 0:
+        return pd.Series(dtype=float)
+    start_date = available_dates[start_idx]
+
+    valid_tickers = [t for t in tickers if t in price_panel.columns]
+    if not valid_tickers:
+        return pd.Series(dtype=float)
+
+    start_prices = price_panel.loc[start_date, valid_tickers]
+    end_prices = price_panel.loc[end_date, valid_tickers]
+    valid = start_prices.notna() & end_prices.notna() & (start_prices != 0)
+    returns = (end_prices[valid] / start_prices[valid]) - 1.0
+    return returns.astype(float)
+
+
+def pct_of_52wk_high(
+    price_panel: pd.DataFrame, tickers: List[str], as_of_date: str,
+    lookback_days: int = 252,
+) -> pd.Series:
+    """
+    52-week-high signal: current price as a percentage of the rolling high
+    over the lookback window (default 252 trading days ≈ 1 year). Returns
+    a score from 0 (at 52-week low) to 1.0+ (at or above 52-week high);
+    scores near 1.0 indicate a ticker near its peak, suggesting momentum.
+
+    Per spec 7.5, this is a pure momentum signal independent of conventional
+    trailing-return ranking — captures price strength/trend-following behavior
+    without explicit return calculation.
+
+    Returns a pd.Series indexed by ticker with pct-of-52wk-high scores.
+    Tickers with insufficient history or missing data are excluded.
+    """
+    if price_panel.empty or not tickers or lookback_days < 1:
+        return pd.Series(dtype=float)
+
+    as_of_ts = pd.Timestamp(as_of_date)
+    available_dates = price_panel.index[price_panel.index <= as_of_ts]
+
+    if len(available_dates) < lookback_days + 1:
+        return pd.Series(dtype=float)
+
+    # Window: from (lookback_days back) to (as_of_date)
+    end_idx = len(available_dates) - 1
+    start_idx = end_idx - lookback_days
+    if start_idx < 0:
+        return pd.Series(dtype=float)
+
+    end_date = available_dates[end_idx]
+    start_date = available_dates[start_idx]
+
+    valid_tickers = [t for t in tickers if t in price_panel.columns]
+    if not valid_tickers:
+        return pd.Series(dtype=float)
+
+    # Extract the window [start_date, end_date] for each ticker
+    window = price_panel.loc[start_date:end_date, valid_tickers]
+    if window.empty:
+        return pd.Series(dtype=float)
+
+    # Current price (most recent close, as_of_date)
+    current_price = price_panel.loc[end_date, valid_tickers]
+
+    # 52-week high within the window
+    high_52wk = window.max()
+
+    # Percent of 52-week high: current / high (scores > 1.0 if current > peak)
+    scores = current_price / high_52wk
+
+    # Exclude tickers missing current price or high
+    valid = current_price.notna() & high_52wk.notna() & (high_52wk != 0)
+    return scores[valid].astype(float)
+
+
 def downtrend_tickers(
     price_panel: pd.DataFrame, tickers: List[str], as_of_date: str,
     downtrend_filter_pct: Optional[float], lookback_days: int = 20,

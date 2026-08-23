@@ -59,11 +59,12 @@ import pandas as pd
 from backtest.adapters.panel_filters import adtv_series, is_circuit_locked
 from backtest.core.engine import Signal
 from backtest.core.horizon import HorizonBucket
-from features.momentum_signal import lookback_trading_days
+from features.momentum_signal import lookback_trading_days, pct_of_52wk_high
 from features.momentum_strategy import (
     rank_universe,
     select_buy_pool,
     sticky_promoted_holdings,
+    rank_fn_for_skip_months,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,10 @@ class MomentumAdapter:
         approximation_flags: Optional[Dict[str, Dict[str, bool]]] = None,
         rank_start: Optional[int] = None,
         yearly_rank_lookup: Optional[Dict[str, Dict[str, int]]] = None,
+        # R-family strategy dispatch params (all default-off for backward compatibility)
+        rank_method: str = "trailing_return",
+        skip_months: int = 0,
+        rank_fn: Optional[Any] = None,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -233,6 +238,17 @@ class MomentumAdapter:
         self.yearly_rank_lookup = {
             pd.Timestamp(k): v for k, v in (yearly_rank_lookup or {}).items()
         }
+        # R-family strategy dispatch params (Phase 0).
+        self.rank_method = rank_method
+        self.skip_months = skip_months
+        # Build rank_fn from rank_method if not explicitly provided
+        if rank_fn is None and rank_method == "pct_of_52wk_high":
+            def _rank_fn_pct_52wk(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
+                return pct_of_52wk_high(price_panel, universe, date.isoformat(), lookback_days)
+            rank_fn = _rank_fn_pct_52wk
+        elif rank_fn is None and skip_months > 0:
+            rank_fn = rank_fn_for_skip_months(skip_months)
+        self.rank_fn = rank_fn
         # [2026-08-18] What this adapter believes it holds. A plain set:
         # grace cycles are gone, so a name is held or it is not.
         self._held: Set[str] = set()
@@ -401,7 +417,10 @@ class MomentumAdapter:
         if sticky:
             universe = list(universe) + sorted(sticky)
         # [ML40] One ranking implementation, shared with MomentumBacktester.
-        momentum = rank_universe(self.price_panel, universe, as_of_date, self.lookback_days)
+        # [Phase 0] Support custom rank functions (rank_fn) for R-family strategies.
+        # [Phase 2] Use skip_months to wire Jegadeesh-Titman variants (e.g., 12-7, 6-2).
+        rank_fn = self.rank_fn or rank_fn_for_skip_months(self.skip_months)
+        momentum = rank_universe(self.price_panel, universe, as_of_date, self.lookback_days, rank_fn=rank_fn)
         self._last_momentum = momentum
         if momentum.empty:
             # No fabricated ranking when there isn't enough real history yet

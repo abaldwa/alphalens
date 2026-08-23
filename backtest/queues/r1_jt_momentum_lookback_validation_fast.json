@@ -1,0 +1,82 @@
+{
+  "_description": "R1 Phase 1 validation (FAST): test Jegadeesh-Titman momentum lookback effect (6, 12 months only) against M1/M2 bands. Reduced from 16 years to 7 years (2019-2025) for quick validation. Full backtest follows if confirmed.",
+  "_metadata": {
+    "phase": "Phase 1",
+    "strategy": "R1",
+    "bands": [1, 2],
+    "lookback_months": [6, 12],
+    "backtest_period": "2019-01-01:2025-12-31",
+    "created_at": "2026-08-22",
+    "note": "Validation run with reduced period for quick turnaround. Full 16-year run on demand."
+  },
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 1,
+      "lookback_months": 6,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 0
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 1,
+      "lookback_months": 12,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 0
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 2,
+      "lookback_months": 6,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 0
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 2,
+      "lookback_months": 12,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "trailing_return",
+      "skip_months": 0
+    }
+  ]
+}
