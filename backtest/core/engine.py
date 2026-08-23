@@ -328,6 +328,16 @@ class Signal:
     # None = "no opinion, size normally" — every channel that doesn't set it
     # is completely unaffected.
     size_multiplier: Optional[float] = None
+    # Regime exposure multiplier (0.0-1.0); set by orchestrator if regime_type is configured
+    regime_exposure: Optional[float] = None
+    # Regime name (BULL, BULL_WEAK, CHOPPY, CHOPPY_BEARISH, BEAR, UNDEFINED); for trade logging
+    regime: Optional[str] = None
+    # Nifty 50 RSI(14) at signal date; for regime analysis
+    nifty_rsi_14: Optional[float] = None
+    # Nifty 50 EMA(5) at signal date
+    nifty_ema_5: Optional[float] = None
+    # Nifty 50 EMA(10) at signal date
+    nifty_ema_10: Optional[float] = None
 
 
 class StrategyAdapter(Protocol):
@@ -734,6 +744,7 @@ class BacktestOrchestrator:
         technical_feature_lookup: Optional[TechnicalFeatureLookup] = None,
         exit_policy_variant: Optional[str] = None,
         regime_method: Optional[str] = None, benchmark_index_name: Optional[str] = None,
+        regime_type: Optional[str] = None,
     ) -> None:
         """feature_log_writer: optional backtest.core.feature_log.FeatureLogWriter.
         None is valid — orchestration/metrics tests that don't need a live
@@ -810,6 +821,7 @@ class BacktestOrchestrator:
         self._exit_model = exit_model if exit_model is not None else _build_default_exit_model()
         self._technical_feature_lookup = technical_feature_lookup
         self._exit_policy_variant = exit_policy_variant
+        self._regime_type = regime_type
         # Bull/Bear/Sideways segments (systems/regime/regime_store.
         # list_regime_segments), fetched once and cached for the life of
         # this orchestrator instance — used to tag each exit_ctx row with
@@ -818,6 +830,10 @@ class BacktestOrchestrator:
         # or whose exit_model never looks at `regime`, never pays this
         # query's cost).
         self._regime_segments_cache: Optional[List[Dict[str, Any]]] = None
+        # EMA-RSI regime data, lazily loaded if regime_type is set
+        self._regime_data: Optional[pd.DataFrame] = None
+        # Date → RegimeData cache for trade logging; populated during run() after _load_regime_data()
+        self._regime_cache: Dict[date_type, Any] = {}
         # {as_of_date: {ticker: rank}} — a genuinely point-in-time market-cap
         # rank map, one entry per DISTINCT buy date actually encountered (not
         # per ticker, not per trade), lazily computed and cached the first
@@ -832,6 +848,103 @@ class BacktestOrchestrator:
         # momentum-exhaustion exits entirely, so it is surfaced rather than
         # left for a reader to infer.
         self._legacy_urgency_fallbacks: int = 0
+
+    def _load_regime_data(self, start_date: date_type, end_date: date_type) -> None:
+        """Load regime data from feature store if regime_type is configured.
+        Cached in _regime_data for the life of this orchestrator instance."""
+        if self._regime_type is None or self._regime_data is not None:
+            return
+
+        try:
+            from config.regime_features import REGIME_REGISTRY
+
+            if self._regime_type not in REGIME_REGISTRY:
+                logger.error(f"Regime type {self._regime_type!r} not found in registry")
+                return
+
+            loader = REGIME_REGISTRY[self._regime_type]
+            self._regime_data = loader(start_date, end_date)
+            logger.info(f"Loaded {len(self._regime_data)} regime records for {self._regime_type}")
+        except Exception as e:
+            logger.error(f"Failed to load regime data: {e}", exc_info=True)
+
+    def get_regime_for_date(self, as_of_date: date_type) -> Optional[Any]:
+        """Lookup regime for a specific date. Returns None if no regime_type is configured or date not found."""
+        if self._regime_type is None or self._regime_data is None:
+            return None
+
+        try:
+            from config.regime_features import RegimeData
+
+            # Convert date to Timestamp for comparison (DataFrame has datetime64[ns])
+            target_date = pd.Timestamp(as_of_date)
+            row = self._regime_data[self._regime_data['date'] == target_date]
+            if row.empty:
+                return None
+
+            row = row.iloc[0]
+            return RegimeData(
+                regime=row['regime'],
+                exposure=row['exposure'],
+                ema_5=row['ema_5'],
+                ema_10=row['ema_10'],
+                rsi_14=row['rsi_14'],
+                date=row['date'].date() if hasattr(row['date'], 'date') else row['date'],
+            )
+        except Exception as e:
+            logger.error(f"Failed to lookup regime for {as_of_date}: {e}", exc_info=True)
+            return None
+
+    def apply_regime_to_signals(self, signals: List[Signal], as_of_date: date_type) -> List[Signal]:
+        """Add regime exposure and state to signals. Returns signals unchanged if no regime_type is configured.
+        Since Signal is frozen, this creates new Signal objects with regime fields set."""
+        if self._regime_type is None:
+            return signals
+
+        regime = self.get_regime_for_date(as_of_date)
+        if regime is None:
+            return signals
+
+        # Reconstruct signals with regime fields added
+        enriched_signals = []
+        for signal in signals:
+            # Create new signal with regime fields
+            enriched = Signal(
+                ticker=signal.ticker,
+                action=signal.action,
+                sector=signal.sector,
+                conviction=signal.conviction,
+                adtv_cr=signal.adtv_cr,
+                template=signal.template,
+                size_multiplier=signal.size_multiplier,
+                regime_exposure=regime.exposure,
+                regime=regime.regime,
+                nifty_rsi_14=regime.rsi_14,
+                nifty_ema_5=regime.ema_5,
+                nifty_ema_10=regime.ema_10,
+            )
+            enriched_signals.append(enriched)
+
+        return enriched_signals
+
+    def _populate_regime_cache(self) -> None:
+        """Populate _regime_cache from _regime_data for fast trade-log lookups.
+        Call after _load_regime_data() is successful."""
+        if self._regime_data is None or self._regime_data.empty:
+            return
+
+        from config.regime_features import RegimeData
+
+        for _, row in self._regime_data.iterrows():
+            regime_date = row['date'].date() if hasattr(row['date'], 'date') else row['date']
+            self._regime_cache[regime_date] = RegimeData(
+                regime=row['regime'],
+                exposure=row['exposure'],
+                ema_5=row['ema_5'],
+                ema_10=row['ema_10'],
+                rsi_14=row['rsi_14'],
+                date=regime_date,
+            )
 
     def _get_market_cap_rank_for_date(self, ticker: str, as_of_date: date_type, all_buy_tickers_this_date: Optional[List[str]] = None) -> Optional[int]:
         """Point-in-time {ticker: rank} for `as_of_date`, batched by date and
@@ -1129,6 +1242,14 @@ class BacktestOrchestrator:
                     getattr(run, "channel", None), getattr(run, "strategy_id", None),
                 )
 
+        # Load regime data if configured
+        if self._regime_type is not None:
+            if config.trading_days:
+                start_date = config.trading_days[0] if isinstance(config.trading_days[0], date_type) else config.trading_days[0].date()
+                end_date = config.trading_days[-1] if isinstance(config.trading_days[-1], date_type) else config.trading_days[-1].date()
+                self._load_regime_data(start_date, end_date)
+                self._populate_regime_cache()
+
         for as_of_date in config.trading_days:
             as_of = as_of_date.date() if hasattr(as_of_date, "date") else as_of_date
             is_rebalance_date = as_of_date in rebalance_date_set
@@ -1186,6 +1307,8 @@ class BacktestOrchestrator:
                 universe = config.universe_provider(as_of)
             with timer.phase("signals"):
                 signals = adapter.generate_signals(universe, as_of, run.horizon_bucket)
+                # Apply regime exposure if configured
+                signals = self.apply_regime_to_signals(signals, as_of)
 
             prices = {}
             with timer.phase("prices"):
@@ -1601,6 +1724,10 @@ class BacktestOrchestrator:
         backtest/export_trade_book.py can build a full trade book (entry/
         exit reason + P&L) without re-deriving pnl or guessing which exit
         condition fired.
+
+        regime/regime_exposure/nifty_rsi_14/nifty_ema_5/nifty_ema_10 (Phase 2 Trade Logging)
+        are looked up from _regime_cache by entry_date if regime_type is configured.
+        Blank ("") if regime data is not available for that entry_date.
         """
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         csv_path = REPORTS_DIR / f"trade_log_{run_id}.csv"
@@ -1608,9 +1735,18 @@ class BacktestOrchestrator:
             writer = csv.writer(fh)
             writer.writerow([
                 "ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank",
-                "pnl_inr", "pnl_pct", "exit_reason",
+                "pnl_inr", "pnl_pct", "exit_reason", "regime", "regime_exposure", "nifty_rsi_14", "nifty_ema_5", "nifty_ema_10",
             ])
             for t in trades:
+                # Lookup regime for trade entry date
+                entry_date_obj = t.entry_date if isinstance(t.entry_date, date_type) else t.entry_date
+                regime_data = self._regime_cache.get(entry_date_obj)
+                regime_str = regime_data.regime if regime_data else ""
+                regime_exp = regime_data.exposure if regime_data else ""
+                rsi = regime_data.rsi_14 if regime_data else ""
+                ema5 = regime_data.ema_5 if regime_data else ""
+                ema10 = regime_data.ema_10 if regime_data else ""
+
                 writer.writerow([
                     t.ticker,
                     t.quantity,
@@ -1622,6 +1758,11 @@ class BacktestOrchestrator:
                     t.pnl_inr,
                     t.pnl_pct,
                     t.exit_reason,
+                    regime_str,
+                    regime_exp,
+                    rsi,
+                    ema5,
+                    ema10,
                 ])
         return csv_path
 

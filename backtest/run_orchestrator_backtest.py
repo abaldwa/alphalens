@@ -580,6 +580,8 @@ def _momentum_descriptor(
     quality_gate: Optional[Dict[str, float]] = None,
     disable_buys_in_regime: Optional[List[str]] = None,
     orthogonalize_vs_size_beta: bool = False,
+    rank_method: str = "trailing_return", skip_months: int = 0,
+    strategy_family: str = "M",
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
     signals it emits.
@@ -629,11 +631,17 @@ def _momentum_descriptor(
         quality_gate=quality_gate,
         disable_buys_in_regime=disable_buys_in_regime,
         orthogonalize_vs_size_beta=orthogonalize_vs_size_beta,
+        strategy_family=strategy_family,
+        skip_months=skip_months,
     )
     if resolved is not None:
         return str(resolved)
 
     parts = [f"top{top_n}", f"{lookback_months}m"]
+    if skip_months > 0:
+        parts.append(f"skip{skip_months}m")
+    if rank_method != "trailing_return":
+        parts.append(f"rank_{rank_method}")
     if min_adtv_cr is not None:
         parts.append(f"adtv{min_adtv_cr:g}")
     if downtrend_filter_pct is not None:
@@ -903,14 +911,15 @@ def _run_immediate(
     capital_mode: str, initial_capital: float, sip_amount: Optional[float],
     universe_spec: str, max_tickers: Optional[int], min_history_days: int,
     template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
-    report_suffix: Optional[str], regime_index_name: Optional[str],
-    exit_policy_variant: str, regime_method: Optional[str], max_hold_days: Optional[int],
-    min_adtv_cr: Optional[float], quality_gate_min_f_score: Optional[float],
-    quality_gate_max_m_score: Optional[float], downtrend_filter_pct: Optional[float],
-    circuit_band_pct: Optional[float], disable_buys_in_regime: Optional[List[str]],
-    bear_drawdown_pct: Optional[float],
-    combo_templates: Optional[List[str]], precomputed_matches_dir: Optional[Any],
-    prefetch_feature_parquets: bool, rank_band_id: Optional[int], ohlcv_snapshot_dir: Optional[Any],
+    rank_method: str = "trailing_return", skip_months: int = 0,
+    report_suffix: Optional[str] = None, regime_index_name: Optional[str] = None,
+    exit_policy_variant: str = "baseline", regime_method: Optional[str] = None, regime_type: Optional[str] = None, max_hold_days: Optional[int] = None,
+    min_adtv_cr: Optional[float] = None, quality_gate_min_f_score: Optional[float] = None,
+    quality_gate_max_m_score: Optional[float] = None, downtrend_filter_pct: Optional[float] = None,
+    circuit_band_pct: Optional[float] = None, disable_buys_in_regime: Optional[List[str]] = None,
+    bear_drawdown_pct: Optional[float] = None,
+    combo_templates: Optional[List[str]] = None, precomputed_matches_dir: Optional[Any] = None,
+    prefetch_feature_parquets: bool = False, rank_band_id: Optional[int] = None, ohlcv_snapshot_dir: Optional[Any] = None,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
@@ -921,6 +930,7 @@ def _run_immediate(
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
     benchmark_index_name: Optional[str] = None,
+    temp_results_dir: Optional[str] = None,
 ) -> BacktestRunResult:
     """defer_db_writes=False path — today's existing, unmodified behavior:
     the whole run (OHLCV fetch through the final DB save) holds
@@ -1092,6 +1102,9 @@ def _run_immediate(
                 rank_start=(momentum_band or {}).get("rank_start"),
                 approximation_flags=(momentum_band or {}).get("approximation_flags"),
                 yearly_rank_lookup=(momentum_band or {}).get("yearly_rank_lookup"),
+                # Phase 0: R-family strategy dispatch (all default-off for M-family compatibility).
+                rank_method=rank_method,
+                skip_months=skip_months,
                 # regime_conn wired post-construction below, same deferred
                 # pattern as the technical branch (the connection doesn't
                 # exist yet at this point in the function).
@@ -1109,6 +1122,7 @@ def _run_immediate(
             annual_reset_top_up_after_loss=(annual_reset_spec or {}).get("top_up_after_loss", True),
             config={
                 "template_name": template_name, "preset": preset, "top_n": top_n, "lookback_months": lookback_months,
+                "rank_method": rank_method, "skip_months": skip_months,
                 "max_tickers": max_tickers, "min_history_days": min_history_days, "exit_variant": exit_policy_variant,
                 "max_hold_days": max_hold_days, "min_adtv_cr": min_adtv_cr,
                 "strategy_name": descriptor,  # [ML40-2.4] the DECLARED name; canonical_strategy_key prefers it
@@ -1248,14 +1262,15 @@ def _run_deferred(
     capital_mode: str, initial_capital: float, sip_amount: Optional[float],
     universe_spec: str, max_tickers: Optional[int], min_history_days: int,
     template_name: Optional[str], preset: Optional[str], top_n: int, lookback_months: int,
-    report_suffix: Optional[str], regime_index_name: Optional[str],
-    exit_policy_variant: str, regime_method: Optional[str], max_hold_days: Optional[int],
-    min_adtv_cr: Optional[float], quality_gate_min_f_score: Optional[float],
-    quality_gate_max_m_score: Optional[float], downtrend_filter_pct: Optional[float],
-    circuit_band_pct: Optional[float], disable_buys_in_regime: Optional[List[str]],
-    bear_drawdown_pct: Optional[float],
-    combo_templates: Optional[List[str]], precomputed_matches_dir: Optional[Any],
-    prefetch_feature_parquets: bool, rank_band_id: Optional[int], ohlcv_snapshot_dir: Optional[Any],
+    rank_method: str = "trailing_return", skip_months: int = 0,
+    report_suffix: Optional[str] = None, regime_index_name: Optional[str] = None,
+    exit_policy_variant: str = "baseline", regime_method: Optional[str] = None, regime_type: Optional[str] = None, max_hold_days: Optional[int] = None,
+    min_adtv_cr: Optional[float] = None, quality_gate_min_f_score: Optional[float] = None,
+    quality_gate_max_m_score: Optional[float] = None, downtrend_filter_pct: Optional[float] = None,
+    circuit_band_pct: Optional[float] = None, disable_buys_in_regime: Optional[List[str]] = None,
+    bear_drawdown_pct: Optional[float] = None,
+    combo_templates: Optional[List[str]] = None, precomputed_matches_dir: Optional[Any] = None,
+    prefetch_feature_parquets: bool = False, rank_band_id: Optional[int] = None, ohlcv_snapshot_dir: Optional[Any] = None,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
@@ -1266,6 +1281,7 @@ def _run_deferred(
     # A98: the index this run is COMPARED against. None keeps the historical
     # behaviour of reusing the regime index, so no existing caller changes.
     benchmark_index_name: Optional[str] = None,
+    temp_results_dir: Optional[str] = None,
 ) -> BacktestRunResult:
     """defer_db_writes=True path (2026-08-02, Technical sweep
     parallelization) — see run_orchestrator_backtest's docstring for the
@@ -1484,7 +1500,7 @@ def _run_deferred(
             regime_index_name=regime_index_name or "Nifty 500",
             benchmark_index_name=benchmark_index_name, exit_model=exit_model,
             technical_feature_lookup=technical_feature_lookup, exit_policy_variant=saved_exit_policy_variant,
-            regime_method=regime_method,
+            regime_method=regime_method, regime_type=regime_type,
         ).run(run, adapter, config)
         feature_log_writer.flush()
 
@@ -1543,13 +1559,16 @@ def run_orchestrator_backtest(
     capital_mode: str = "lump", initial_capital: float = 1_000_000.0, sip_amount: Optional[float] = None,
     universe_spec: str = "curated", max_tickers: Optional[int] = None, min_history_days: int = 60,
     template_name: Optional[str] = None, preset: Optional[str] = None, top_n: int = 10,
-    lookback_months: int = 6, run_id: Optional[str] = None, report_suffix: Optional[str] = None,
+    lookback_months: int = 6, rank_method: str = "trailing_return", skip_months: int = 0,
+    strategy_family: str = "M",
+    run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
     # A98: separate from regime_index_name. None means "compare against the
     # regime index", which is the historical behaviour.
     benchmark_index_name: Optional[str] = None,
     exit_policy_variant: str = "baseline",
     regime_method: Optional[str] = None,
+    regime_type: Optional[str] = None,
     max_hold_days: Optional[int] = None,
     min_adtv_cr: Optional[float] = None,
     quality_gate_min_f_score: Optional[float] = None,
@@ -1566,6 +1585,7 @@ def run_orchestrator_backtest(
     rebalance_cadence_days: Optional[int] = None,
     defer_feature_log: bool = False,
     ohlcv_snapshot_dir: Optional[str] = None,
+    temp_results_dir: Optional[str] = None,
     # capital_mode="annual_reset" only — the LTCG regime is a run-level input
     # because it changes the FY withdrawal and therefore the trades taken.
     annual_reset_ltcg_rate: Optional[float] = None,
@@ -1696,6 +1716,10 @@ def run_orchestrator_backtest(
                 ) if v is not None
             },
             disable_buys_in_regime=disable_buys_in_regime,
+            # Phase 0: R-family strategy dispatch params for identity string.
+            rank_method=rank_method,
+            skip_months=skip_months,
+            strategy_family=strategy_family,
         ),
     }[channel]
     if descriptor is None:
@@ -1742,16 +1766,22 @@ def run_orchestrator_backtest(
     result = run_fn(
         channel, start_date, end_date, run_id, resolved_strategy_id, horizon, descriptor, run_date,
         capital_mode, initial_capital, sip_amount, universe_spec, max_tickers, min_history_days,
-        template_name, preset, top_n, lookback_months, report_suffix, regime_index_name,
-        exit_policy_variant, regime_method, max_hold_days, min_adtv_cr, quality_gate_min_f_score,
-        quality_gate_max_m_score, downtrend_filter_pct, circuit_band_pct, disable_buys_in_regime,
-        bear_drawdown_pct,
-        combo_templates, precomputed_matches_dir, prefetch_feature_parquets, rank_band_id, ohlcv_snapshot_dir,
+        template_name, preset, top_n, lookback_months,
+        rank_method=rank_method, skip_months=skip_months,
+        report_suffix=report_suffix, regime_index_name=regime_index_name,
+        exit_policy_variant=exit_policy_variant, regime_method=regime_method, regime_type=regime_type, max_hold_days=max_hold_days,
+        min_adtv_cr=min_adtv_cr, quality_gate_min_f_score=quality_gate_min_f_score,
+        quality_gate_max_m_score=quality_gate_max_m_score, downtrend_filter_pct=downtrend_filter_pct,
+        circuit_band_pct=circuit_band_pct, disable_buys_in_regime=disable_buys_in_regime,
+        bear_drawdown_pct=bear_drawdown_pct,
+        combo_templates=combo_templates, precomputed_matches_dir=precomputed_matches_dir,
+        prefetch_feature_parquets=prefetch_feature_parquets, rank_band_id=rank_band_id, ohlcv_snapshot_dir=ohlcv_snapshot_dir,
         rebalance_cadence_days=rebalance_cadence_days,
         defer_feature_log=defer_feature_log,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
         block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
         benchmark_index_name=benchmark_index_name,
+        temp_results_dir=temp_results_dir,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -1933,6 +1963,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "per-regime performance breakdown; other variants ignore it."
         ),
     )
+    parser.add_argument(
+        "--regime-type", default=None, choices=["ema_rsi_v1"],
+        help=(
+            "Phase 2: EMA-RSI regime integration. When set, loads regime data from the feature store "
+            "and applies regime exposure to signals. Enriches trade log with regime columns "
+            "(regime, regime_exposure, nifty_rsi_14, nifty_ema_5, nifty_ema_10). "
+            "Currently supports: 'ema_rsi_v1' (Nifty 50 EMA-RSI regime, 2009-2026)."
+        ),
+    )
     # 2026-08-01 Momentum-parity additions — all default to None/off, no
     # behavior change for any existing caller that omits them.
     parser.add_argument(
@@ -2022,6 +2061,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "they resolved to no registry name and fell back to a generated descriptor."
         ),
     )
+    # Phase 0: R-family strategy dispatch parameters (all optional, default-off).
+    parser.add_argument(
+        "--strategy-family", type=str, default="M", choices=["M", "R"],
+        help=(
+            "momentum channel only (Phase 0): strategy family to use. 'M' (default) "
+            "runs M-family strategies (M1-M12); 'R' runs R-family strategies (R1, R3, etc.) "
+            "which are registered separately in strategy_registry with distinct names."
+        ),
+    )
+    parser.add_argument(
+        "--rank-method", type=str, default="trailing_return",
+        choices=["trailing_return", "pct_of_52wk_high", "risk_adjusted", "industry_momentum"],
+        help=(
+            "momentum channel only (Phase 0): ranking signal to use. 'trailing_return' (default) "
+            "is the canonical momentum score. Other methods enable R-family strategies: "
+            "'pct_of_52wk_high' for 52-week-high momentum (7.5), 'risk_adjusted' for the "
+            "volatility-adjusted composite (section 8), 'industry_momentum' for sector momentum (7.4)."
+        ),
+    )
+    parser.add_argument(
+        "--skip-months", type=int, default=0,
+        help=(
+            "momentum channel only (Phase 0, R3): skip this many recent months when computing "
+            "the lookback momentum window. Default 0 uses the full lookback. Set to 1 for the "
+            "canonical 12-1 or 6-1 skip-month variants (e.g., --lookback-months 12 --skip-months 1)."
+        ),
+    )
     parser.add_argument(
         "--rank-band-id", type=int, default=None, choices=[b[0] for b in RANK_BANDS],
         help=(
@@ -2044,6 +2110,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Default (omit) is today's unchanged always-live-fetch behavior."
         ),
     )
+    parser.add_argument(
+        "--temp-results-dir", default=None,
+        help=(
+            "2026-08-23 (queue batch-write optimization): directory to write backtest results as JSON "
+            "files instead of directly to DuckDB. Used by run_strategy_queue.py to eliminate DB write "
+            "lock contention — all jobs write to temp files, queue merges them once at the end. "
+            "Default (omit) uses immediate DuckDB writes."
+        ),
+    )
     return parser
 
 
@@ -2061,10 +2136,11 @@ def main() -> None:
         initial_capital=args.initial_capital, sip_amount=args.sip_amount, universe_spec=args.universe_spec,
         max_tickers=args.max_tickers, min_history_days=args.min_history_days, template_name=args.template_name,
         preset=args.preset, top_n=args.top_n, lookback_months=args.lookback_months,
+        rank_method=args.rank_method, skip_months=args.skip_months, strategy_family=args.strategy_family,
         run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,
-        exit_policy_variant=args.exit_variant, regime_method=args.regime_method,
+        exit_policy_variant=args.exit_variant, regime_method=args.regime_method, regime_type=args.regime_type,
         # 0 is the explicit "rank statically" escape hatch; downstream treats
         # None as disabled, so translate here rather than teaching every
         # consumer a second sentinel.
