@@ -244,7 +244,8 @@ class MomentumAdapter:
         # Build rank_fn from rank_method if not explicitly provided
         if rank_fn is None and rank_method == "pct_of_52wk_high":
             def _rank_fn_pct_52wk(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
-                return pct_of_52wk_high(price_panel, universe, date.isoformat(), lookback_days)
+                date_str = date if isinstance(date, str) else date.isoformat()
+                return pct_of_52wk_high(price_panel, universe, date_str, lookback_days)
             rank_fn = _rank_fn_pct_52wk
         elif rank_fn is None and skip_months > 0:
             rank_fn = rank_fn_for_skip_months(skip_months)
