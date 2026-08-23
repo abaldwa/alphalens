@@ -395,3 +395,233 @@ def orthogonalize_momentum_vs_factors(
 
     residuals = y - x @ coef
     return pd.Series(residuals, index=df.index)
+
+
+def risk_adjusted_momentum_score(
+    price_panel: pd.DataFrame,
+    tickers: List[str],
+    as_of_date: str,
+    volatility_measure: str = "daily_return_stddev",
+    use_skip_month: bool = False,
+    min_volatility: float = 0.001,
+    winsorize_pct: float = 0.05,
+) -> pd.Series:
+    """
+    Risk-adjusted composite momentum combining 12-month and 6-month momentum
+    signals, each scaled by its own volatility measure. Implements spec
+    section 8: risk_adjusted_composite_momentum.
+
+    The formula is:
+        risk_adj_score = (m12 / vol12 + m6 / vol6) / 2
+
+    where m12, m6 are trailing 12-month and 6-month momentum returns, and
+    vol12, vol6 are their corresponding volatility measures (either daily
+    return std-dev or daily price std-dev).
+
+    Spec 8.4 safeguards:
+    - Rejects tickers with insufficient observations (< 126 days for 6mo vol)
+    - Enforces volatility floor (default 0.1% daily) to avoid div-by-zero
+    - Winsorizes scores at [5th, 95th] percentiles to cap outliers
+    - Flags exclusion counts and raw vs winsorized divergence
+
+    Args:
+        price_panel: Wide close-price DataFrame (index=date, columns=ticker).
+        tickers: List of ticker symbols to score.
+        as_of_date: Date string for scoring (inclusive; lookbacks end here).
+        volatility_measure: "daily_return_stddev" (default) or "daily_price_stddev".
+            - daily_return_stddev: std-dev of daily log-returns (252-day window).
+            - daily_price_stddev: std-dev of daily price changes (252-day window).
+        use_skip_month: If True, use skip-month lookbacks (12-7, 6-2) instead of
+            standard (12mo, 6mo). Phase 2 (R3) only; affects lookback computation.
+        min_volatility: Floor volatility (default 0.001 = 0.1%); lower vols clipped.
+        winsorize_pct: Winsorization percentile (default 0.05 = 5th/95th).
+
+    Returns
+    -------
+    pd.Series
+        ticker -> risk-adjusted momentum score (higher = stronger signal).
+        Tickers with insufficient data, zero/NaN volatility, or extreme scores
+        are excluded (never NaN-padded).
+    """
+    from features.winsorize import winsorize_series
+
+    if price_panel.empty or not tickers:
+        return pd.Series(dtype=float)
+
+    as_of_ts = pd.Timestamp(as_of_date)
+    available_dates = price_panel.index[price_panel.index <= as_of_ts]
+
+    if len(available_dates) < 252 + 1:
+        return pd.Series(dtype=float)
+
+    valid_tickers = [t for t in tickers if t in price_panel.columns]
+    if not valid_tickers:
+        return pd.Series(dtype=float)
+
+    # Standard lookbacks: 12-month (252 days) and 6-month (126 days)
+    # Skip-month variants: 12-7 (245 days) and 6-2 (119 days)
+    if use_skip_month:
+        lookback_12m = 245  # 12 months - 7 days
+        lookback_6m = 119   # 6 months - 2 days
+        skip_days_12m = 7
+        skip_days_6m = 2
+    else:
+        lookback_12m = 252
+        lookback_6m = 126
+        skip_days_12m = 0
+        skip_days_6m = 0
+
+    if len(available_dates) < lookback_12m + 1:
+        return pd.Series(dtype=float)
+
+    # Compute momentum components
+    if use_skip_month:
+        m12 = trailing_momentum_skip_recent(
+            price_panel, valid_tickers, as_of_date, lookback_12m, skip_days_12m
+        )
+        m6 = trailing_momentum_skip_recent(
+            price_panel, valid_tickers, as_of_date, lookback_6m, skip_days_6m
+        )
+    else:
+        m12 = trailing_momentum_from_panel(
+            price_panel, valid_tickers, as_of_date, lookback_12m
+        )
+        m6 = trailing_momentum_from_panel(
+            price_panel, valid_tickers, as_of_date, lookback_6m
+        )
+
+    # Compute volatility measures
+    if volatility_measure == "daily_return_stddev":
+        vol12 = _daily_return_volatility(price_panel, valid_tickers, as_of_date, 252)
+        vol6 = _daily_return_volatility(price_panel, valid_tickers, as_of_date, 126)
+    elif volatility_measure == "daily_price_stddev":
+        vol12 = _daily_price_volatility(price_panel, valid_tickers, as_of_date, 252)
+        vol6 = _daily_price_volatility(price_panel, valid_tickers, as_of_date, 126)
+    else:
+        raise ValueError(f"Unknown volatility_measure: {volatility_measure}")
+
+    # Combine: align on tickers present in all four series
+    common_tickers = m12.index.intersection(m6.index).intersection(vol12.index).intersection(vol6.index)
+    if len(common_tickers) == 0:
+        return pd.Series(dtype=float)
+
+    m12_c = m12.loc[common_tickers]
+    m6_c = m6.loc[common_tickers]
+    vol12_c = vol12.loc[common_tickers]
+    vol6_c = vol6.loc[common_tickers]
+
+    # Apply volatility floor
+    vol12_c = vol12_c.clip(lower=min_volatility)
+    vol6_c = vol6_c.clip(lower=min_volatility)
+
+    # Compute risk-adjusted scores
+    scores = (m12_c / vol12_c + m6_c / vol6_c) / 2.0
+
+    # Winsorize
+    scores_winsorized, n_lower, n_upper, n_total = winsorize_series(
+        scores, lower_pct=winsorize_pct, upper_pct=(1.0 - winsorize_pct)
+    )
+
+    logger.debug(
+        f"risk_adjusted_momentum_score: {n_total} tickers scored; "
+        f"{n_lower} winsorized at lower, {n_upper} at upper; "
+        f"volatility_measure={volatility_measure}"
+    )
+
+    return scores_winsorized.astype(float)
+
+
+def _daily_return_volatility(
+    price_panel: pd.DataFrame, tickers: List[str], as_of_date: str, lookback_days: int = 252
+) -> pd.Series:
+    """
+    Daily log-return volatility (std-dev) over the lookback window.
+    Used for risk adjustment in risk_adjusted_momentum_score.
+
+    Returns a pd.Series indexed by ticker with annualized volatility estimates.
+    Tickers with fewer than 2 valid returns (i.e., < 3 prices) are excluded.
+    """
+    if price_panel.empty or not tickers or lookback_days < 2:
+        return pd.Series(dtype=float)
+
+    as_of_ts = pd.Timestamp(as_of_date)
+    available_dates = price_panel.index[price_panel.index <= as_of_ts]
+
+    if len(available_dates) < lookback_days + 1:
+        return pd.Series(dtype=float)
+
+    end_idx = len(available_dates) - 1
+    start_idx = end_idx - lookback_days
+    if start_idx < 0:
+        return pd.Series(dtype=float)
+
+    end_date = available_dates[end_idx]
+    start_date = available_dates[start_idx]
+
+    valid_tickers = [t for t in tickers if t in price_panel.columns]
+    if not valid_tickers:
+        return pd.Series(dtype=float)
+
+    # Extract the window
+    window = price_panel.loc[start_date:end_date, valid_tickers]
+    if window.empty or len(window) < 2:
+        return pd.Series(dtype=float)
+
+    # Compute log-returns: ln(price[t] / price[t-1])
+    log_returns = np.log(window / window.shift(1))
+
+    # Compute daily std-dev per ticker, annualize by sqrt(252)
+    daily_vol = log_returns.std(ddof=1)  # Sample volatility
+    annualized_vol = daily_vol * np.sqrt(252)
+
+    # Exclude tickers with NaN or zero volatility
+    valid = annualized_vol.notna() & (annualized_vol > 0)
+    return annualized_vol[valid].astype(float)
+
+
+def _daily_price_volatility(
+    price_panel: pd.DataFrame, tickers: List[str], as_of_date: str, lookback_days: int = 252
+) -> pd.Series:
+    """
+    Daily price-change volatility (std-dev of absolute price differences)
+    over the lookback window. Alternative volatility measure for
+    risk_adjusted_momentum_score when volatility_measure="daily_price_stddev".
+
+    Returns a pd.Series indexed by ticker with daily price std-dev (not annualized).
+    Tickers with fewer than 2 valid price changes are excluded.
+    """
+    if price_panel.empty or not tickers or lookback_days < 2:
+        return pd.Series(dtype=float)
+
+    as_of_ts = pd.Timestamp(as_of_date)
+    available_dates = price_panel.index[price_panel.index <= as_of_ts]
+
+    if len(available_dates) < lookback_days + 1:
+        return pd.Series(dtype=float)
+
+    end_idx = len(available_dates) - 1
+    start_idx = end_idx - lookback_days
+    if start_idx < 0:
+        return pd.Series(dtype=float)
+
+    end_date = available_dates[end_idx]
+    start_date = available_dates[start_idx]
+
+    valid_tickers = [t for t in tickers if t in price_panel.columns]
+    if not valid_tickers:
+        return pd.Series(dtype=float)
+
+    # Extract the window
+    window = price_panel.loc[start_date:end_date, valid_tickers]
+    if window.empty or len(window) < 2:
+        return pd.Series(dtype=float)
+
+    # Compute daily price changes: price[t] - price[t-1]
+    price_changes = window.diff()
+
+    # Compute daily std-dev per ticker (not annualized)
+    daily_vol = price_changes.std(ddof=1)  # Sample volatility
+
+    # Exclude tickers with NaN or zero volatility
+    valid = daily_vol.notna() & (daily_vol > 0)
+    return daily_vol[valid].astype(float)

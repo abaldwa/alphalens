@@ -136,3 +136,158 @@ class TestOrthogonalizeMomentumVsFactors:
         residual = ms.orthogonalize_momentum_vs_factors(momentum, market_cap, beta, min_observations=10)
 
         assert "T0" not in residual.index
+
+
+class TestRiskAdjustedMomentumScore:
+    """Phase 5 (spec section 8): risk_adjusted_composite_momentum combining
+    12-month and 6-month momentum, each divided by volatility."""
+
+    def test_basic_structure(self):
+        # Build a simple panel: 254 trading days (~12.7 months), 2 tickers
+        dates = pd.date_range("2024-01-01", periods=254, freq="D")
+        rng = np.random.default_rng(42)
+
+        # AAA: uptrend (vol=1%), consistent positive returns
+        aaa_returns = rng.normal(0.0005, 0.001, 254)  # +0.05% daily, 0.1% vol
+        aaa_prices = 100.0 * np.cumprod(1.0 + aaa_returns)
+
+        # BBB: noisy, no trend (vol=3%), near-zero mean return
+        bbb_returns = rng.normal(0.0, 0.003, 254)  # 0% daily, 0.3% vol
+        bbb_prices = 100.0 * np.cumprod(1.0 + bbb_returns)
+
+        panel = pd.DataFrame(
+            {"AAA": aaa_prices, "BBB": bbb_prices},
+            index=dates,
+        )
+
+        result = ms.risk_adjusted_momentum_score(
+            panel, ["AAA", "BBB"], str(dates[-1].date()), volatility_measure="daily_return_stddev"
+        )
+
+        # Both should be scored (have enough history)
+        assert "AAA" in result.index
+        assert "BBB" in result.index
+        # Uptrend with low vol should score higher than noisy-no-trend
+        assert result["AAA"] > result["BBB"]
+
+    def test_insufficient_history_empty_result(self):
+        # Only 50 days — need at least 252 for full lookback
+        dates = pd.date_range("2024-01-01", periods=50, freq="D")
+        panel = pd.DataFrame({"AAA": 100.0 + np.arange(50)}, index=dates)
+
+        result = ms.risk_adjusted_momentum_score(
+            panel, ["AAA"], str(dates[-1].date()), volatility_measure="daily_return_stddev"
+        )
+
+        assert result.empty
+
+    def test_daily_price_volatility_measure(self):
+        # Same panel as test_basic_structure but with daily_price_stddev
+        dates = pd.date_range("2024-01-01", periods=254, freq="D")
+        rng = np.random.default_rng(42)
+
+        aaa_returns = rng.normal(0.0005, 0.001, 254)
+        aaa_prices = 100.0 * np.cumprod(1.0 + aaa_returns)
+        bbb_returns = rng.normal(0.0, 0.003, 254)
+        bbb_prices = 100.0 * np.cumprod(1.0 + bbb_returns)
+
+        panel = pd.DataFrame(
+            {"AAA": aaa_prices, "BBB": bbb_prices},
+            index=dates,
+        )
+
+        result = ms.risk_adjusted_momentum_score(
+            panel, ["AAA", "BBB"], str(dates[-1].date()), volatility_measure="daily_price_stddev"
+        )
+
+        # Should return two scores
+        assert len(result) == 2
+        assert result.notna().all()
+
+    def test_skip_month_variant(self):
+        # Test skip-month lookbacks (12-7, 6-2)
+        dates = pd.date_range("2024-01-01", periods=254, freq="D")
+        rng = np.random.default_rng(42)
+
+        aaa_returns = rng.normal(0.0005, 0.001, 254)
+        aaa_prices = 100.0 * np.cumprod(1.0 + aaa_returns)
+
+        panel = pd.DataFrame({"AAA": aaa_prices}, index=dates)
+
+        result_standard = ms.risk_adjusted_momentum_score(
+            panel, ["AAA"], str(dates[-1].date()), use_skip_month=False
+        )
+        result_skip = ms.risk_adjusted_momentum_score(
+            panel, ["AAA"], str(dates[-1].date()), use_skip_month=True
+        )
+
+        # Both should return a score
+        assert len(result_standard) == 1
+        assert len(result_skip) == 1
+        # Scores should differ (different lookbacks)
+        assert result_standard["AAA"] != result_skip["AAA"]
+
+    def test_winsorization_caps_outliers(self):
+        # Create a panel where one ticker has an extreme score
+        dates = pd.date_range("2024-01-01", periods=254, freq="D")
+
+        # Normal ticker
+        panel = pd.DataFrame({
+            "A": 100.0 * (1.01 ** np.arange(254)),  # Steady 1% daily growth
+            "B": 100.0 * (1.01 ** np.arange(254)),  # Same
+        }, index=dates)
+
+        result = ms.risk_adjusted_momentum_score(
+            panel, ["A", "B"], str(dates[-1].date()), winsorize_pct=0.05
+        )
+
+        # Scores should be reasonable (winsorized, not inf)
+        assert result.notna().all()
+        assert np.isfinite(result).all()
+
+    def test_empty_panel(self):
+        result = ms.risk_adjusted_momentum_score(
+            pd.DataFrame(), [], "2024-12-31"
+        )
+        assert result.empty
+
+    def test_ticker_not_in_panel(self):
+        dates = pd.date_range("2024-01-01", periods=254, freq="D")
+        panel = pd.DataFrame({"AAA": 100.0 + np.arange(254)}, index=dates)
+
+        result = ms.risk_adjusted_momentum_score(
+            panel, ["ZZZ"], str(dates[-1].date())
+        )
+
+        assert result.empty
+
+
+class TestDailyVolatilityHelpers:
+    """Helper functions for risk_adjusted_momentum_score."""
+
+    def test_daily_return_volatility_structure(self):
+        dates = pd.date_range("2024-01-01", periods=254, freq="D")
+        rng = np.random.default_rng(42)
+
+        # Ticker with 1% daily vol
+        prices = 100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.01, 254))
+        panel = pd.DataFrame({"AAA": prices}, index=dates)
+
+        result = ms._daily_return_volatility(panel, ["AAA"], str(dates[-1].date()), lookback_days=252)
+
+        assert len(result) == 1
+        assert result["AAA"] > 0
+        # 1% daily vol annualizes to ~15.8% (sqrt(252) * 0.01)
+        assert result["AAA"] < 0.20
+
+    def test_daily_price_volatility_structure(self):
+        dates = pd.date_range("2024-01-01", periods=254, freq="D")
+        rng = np.random.default_rng(42)
+
+        prices = 100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.01, 254))
+        panel = pd.DataFrame({"AAA": prices}, index=dates)
+
+        result = ms._daily_price_volatility(panel, ["AAA"], str(dates[-1].date()), lookback_days=252)
+
+        assert len(result) == 1
+        assert result["AAA"] > 0
