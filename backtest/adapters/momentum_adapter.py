@@ -304,6 +304,14 @@ class MomentumAdapter:
                 date_str = date if isinstance(date, str) else date.isoformat()
                 return pct_of_52wk_high(price_panel, universe, date_str, lookback_days)
             rank_fn = _rank_fn_pct_52wk
+        elif rank_fn is None and rank_method == "trailing_reversal_1mo":
+            from features.momentum_signal import trailing_reversal_1mo
+
+            def _rank_fn_reversal(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
+                date_str = date if isinstance(date, str) else date.isoformat()
+                # Reversal uses fixed 21-day lookback (1 month), ignoring the passed lookback_days
+                return trailing_reversal_1mo(price_panel, universe, date_str, lookback_days=21)
+            rank_fn = _rank_fn_reversal
         elif rank_fn is None and rank_method == "risk_adjusted_composite":
             from features.momentum_signal import risk_adjusted_momentum_score
 

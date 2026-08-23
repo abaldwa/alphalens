@@ -233,6 +233,25 @@ def trailing_momentum_skip_recent(
     return returns.astype(float)
 
 
+def trailing_reversal_1mo(
+    price_panel: pd.DataFrame, tickers: List[str], as_of_date: str,
+    lookback_days: int = 21,
+) -> pd.Series:
+    """
+    1-month trailing reversal signal: 21-trading-day percentage return.
+    Reversal strategy ranks on LOW returns (losers outperform), so the
+    ranking interpretation is inverted vs momentum (where HIGH returns win).
+
+    This is the same return calculation as trailing_momentum_from_panel,
+    just with a short 21-day lookback window. Callers decide the ranking
+    direction (ascending = reversal, descending = momentum).
+
+    Returns a pd.Series indexed by ticker with 1-month percentage returns.
+    Tickers with insufficient history are excluded.
+    """
+    return trailing_momentum_from_panel(price_panel, tickers, as_of_date, lookback_days)
+
+
 def pct_of_52wk_high(
     price_panel: pd.DataFrame, tickers: List[str], as_of_date: str,
     lookback_days: int = 252,
