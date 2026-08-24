@@ -4,13 +4,18 @@
     "phase": "Phase 7",
     "strategy": "R7",
     "backtest_period": "2019-01-01:2025-12-31",
-    "base_strategies": ["r1_12mo_band1", "r1_12mo_band9", "r3_skip_12_7_band1", "r3_skip_12_7_band9"],
+    "base_strategies": [
+      "r1_12mo_band1",
+      "r1_12mo_band9",
+      "r3_skip_12_7_band1",
+      "r3_skip_12_7_band9"
+    ],
     "overlay_variants": [
       "crash_disable_buys",
       "crash_reduce_sizing_50pct"
     ],
-    "created_at": "2026-08-23",
-    "notes": "Validation runs on 7-year window (2019-2025) for speed. Expected crashes: 2020-03 (COVID), 2022-09-10 (Fed tightening)."
+    "created_at": "2026-08-25",
+    "notes": "FIXED: Using monthly rebalance (21 days) instead of annual so crash overlay can activate during crash windows. Annual rebalancing (1_year horizon) never checked crash regime during March COVID or Sept Fed tightening crashes. Expected crashes: 2020-03 (COVID), 2022-09-10 (Fed tightening)."
   },
   "jobs": [
     {
@@ -23,7 +28,8 @@
       "skip_months": 0,
       "top_n": 10,
       "crash_regime_enabled": false,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -40,7 +46,8 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -57,7 +64,8 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -69,7 +77,8 @@
       "skip_months": 0,
       "top_n": 10,
       "crash_regime_enabled": false,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -86,7 +95,8 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -103,7 +113,8 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -115,7 +126,8 @@
       "skip_months": 1,
       "top_n": 10,
       "crash_regime_enabled": false,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -132,7 +144,8 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -144,7 +157,8 @@
       "skip_months": 1,
       "top_n": 10,
       "crash_regime_enabled": false,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     },
     {
       "kind": "orchestrator",
@@ -161,7 +175,8 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "rebalance_cadence_days": 21
     }
   ]
 }
