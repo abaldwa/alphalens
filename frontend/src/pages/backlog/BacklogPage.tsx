@@ -8,7 +8,7 @@ import { BacklogKanban } from './components/BacklogKanban'
 type ViewType = 'table' | 'kanban'
 type FilterStatus = 'all' | 'blocked' | 'pending' | 'in-progress' | 'resolved'
 type FilterCriticality = 'all' | 'critical' | 'high' | 'medium' | 'low'
-type FilterDomain = 'all' | 'architecture' | 'technical' | 'momentum' | 'ml' | 'frontend' | 'fundamental' | 'forensic' | 'infrastructure'
+type FilterDomain = 'all' | 'FEAT' | 'BACK' | 'FRON' | 'STRA' | 'MOME' | 'DATA' | 'TEST' | 'UNIF' | 'AGEN' | 'BUIL' | 'OTHER'
 
 export function BacklogPage() {
   const [viewType, setViewType] = useState<ViewType>('table')
@@ -21,18 +21,15 @@ export function BacklogPage() {
     filterCriticality === 'all' ? undefined : filterCriticality
   )
 
-  // Filter by domain based on item_id prefix
-  const domainMap: Record<string, FilterDomain> = {
-    'A': 'architecture', 'T': 'technical', 'M': 'momentum', 'ML': 'ml',
-    'F': 'frontend', 'FUN': 'fundamental', 'FOR': 'forensic', 'INF': 'infrastructure'
+  // Extract domain code from item_id (format: SCAN-XXXX-NNN, extract XXXX)
+  const extractDomainCode = (itemId: string): string => {
+    const parts = itemId.split('-')
+    return parts.length >= 2 ? parts[1] : 'OTHER'
   }
 
   const filteredItems = filterDomain === 'all'
     ? items
-    : items.filter(item => {
-        const prefix = item.item_id.split('-')[0]
-        return domainMap[prefix] === filterDomain
-      })
+    : items.filter(item => extractDomainCode(item.item_id) === filterDomain)
   const { data: stats } = useBacklogStats()
 
   const handleItemClick = (item: BacklogItem) => {
@@ -122,14 +119,15 @@ export function BacklogPage() {
               onChange={(v) => setFilterDomain(v as FilterDomain)}
               options={[
                 { value: 'all', label: 'All Domains' },
-                { value: 'architecture', label: 'Architecture' },
-                { value: 'technical', label: 'Technical' },
-                { value: 'momentum', label: 'Momentum' },
-                { value: 'ml', label: 'ML' },
-                { value: 'frontend', label: 'Frontend' },
-                { value: 'fundamental', label: 'Fundamental' },
-                { value: 'forensic', label: 'Forensic' },
-                { value: 'infrastructure', label: 'Infrastructure' },
+                { value: 'FEAT', label: 'Features' },
+                { value: 'BACK', label: 'Backtest' },
+                { value: 'FRON', label: 'Frontend' },
+                { value: 'STRA', label: 'Strategy' },
+                { value: 'MOME', label: 'Momentum' },
+                { value: 'DATA', label: 'Data' },
+                { value: 'TEST', label: 'Testing' },
+                { value: 'AGEN', label: 'Agents' },
+                { value: 'BUIL', label: 'Build' },
               ]}
             />
           </div>

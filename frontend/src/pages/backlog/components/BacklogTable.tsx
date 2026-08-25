@@ -60,25 +60,27 @@ const PriorityCell = (props: any) => {
 const DomainCell = (props: any) => {
   const { data } = props
   const domainMap: Record<string, { label: string; color: string }> = {
-    'A': { label: 'Architecture', color: 'bg-purple-100 text-purple-900' },
-    'T': { label: 'Technical', color: 'bg-blue-100 text-blue-900' },
-    'M': { label: 'Momentum', color: 'bg-green-100 text-green-900' },
-    'ML': { label: 'ML', color: 'bg-indigo-100 text-indigo-900' },
-    'F': { label: 'Frontend', color: 'bg-pink-100 text-pink-900' },
-    'FUN': { label: 'Fundamental', color: 'bg-amber-100 text-amber-900' },
-    'FOR': { label: 'Forensic', color: 'bg-slate-100 text-slate-900' },
-    'INF': { label: 'Infrastructure', color: 'bg-gray-100 text-gray-900' },
+    'FEAT': { label: 'Features', color: 'bg-blue-100 text-blue-900' },
+    'BACK': { label: 'Backtest', color: 'bg-purple-100 text-purple-900' },
+    'FRON': { label: 'Frontend', color: 'bg-pink-100 text-pink-900' },
+    'STRA': { label: 'Strategy', color: 'bg-green-100 text-green-900' },
+    'MOME': { label: 'Momentum', color: 'bg-emerald-100 text-emerald-900' },
+    'DATA': { label: 'Data', color: 'bg-orange-100 text-orange-900' },
+    'TEST': { label: 'Testing', color: 'bg-yellow-100 text-yellow-900' },
+    'AGEN': { label: 'Agents', color: 'bg-indigo-100 text-indigo-900' },
+    'BUIL': { label: 'Build', color: 'bg-slate-100 text-slate-900' },
   }
 
-  const prefix = data.item_id.split('-')[0]
-  const domain = domainMap[prefix]
+  const parts = data.item_id.split('-')
+  const domainCode = parts.length >= 2 ? parts[1] : 'OTHER'
+  const domain = domainMap[domainCode]
 
   return domain ? (
     <span className={cn('inline-block px-2 py-1 rounded text-xs font-medium', domain.color)}>
       {domain.label}
     </span>
   ) : (
-    <span className="text-xs text-gray-500">Unknown</span>
+    <span className="text-xs text-gray-500">{domainCode}</span>
   )
 }
 
