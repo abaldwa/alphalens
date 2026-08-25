@@ -111,6 +111,10 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 
 #### 1. **momentum-strategy-audit** (High-stakes momentum strategies)
 **Scope:**
+- **External validation (NEW):**
+  - Fetch momentum strategy definitions from 2-3 independent academic/practitioner sources (e.g., Fama-French momentum factor, Jegadeesh & Titman papers, momentum books, quantitative trading forums)
+  - Compare published definitions against code implementation (lookback periods, ranking methodology, rebalance frequency)
+  - Flag any deviations from published research or missing risk controls
 - Lookback day ranges and regime compatibility (3-month, 6-month, 12-month momentum vs. market regime)
 - Version history tracking (did parameters drift across runs?)
 - Universe filtering logic (ADTV floors, market-cap bands, sector inclusion/exclusion)
@@ -118,11 +122,16 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - Regime-based position sizing gates (EMA-RSI consistency with backtest)
 
 **Invocation:** Strategy proposal for R-family momentum strategies (R1-R12)  
-**Cost:** ~12-15K tokens  
+**Cost:** ~18-22K tokens (includes internet research)  
+**Tools:** Read, Grep, Bash, WebSearch, WebFetch  
 **Parallelizes with:** technical-strategy-audit, fundamental-strategy-audit (all independent)
 
 #### 2. **technical-strategy-audit** (TA indicator strategies)
 **Scope:**
+- **External validation (NEW):**
+  - Fetch indicator definitions from 2-3 independent sources (e.g., Investopedia, Trading View docs, academic papers on RSI/MACD/Bollinger Bands, Wilder's original RSI paper)
+  - Compare published parameter ranges and trading rules against code implementation (e.g., RSI 30/70 overbought/oversold levels, MACD fast/slow EMA periods, band width calculation)
+  - Flag any non-standard parameter choices or undocumented indicator variants
 - Indicator thresholds and parameter selection (RSI 30/70, MACD crossovers, bands width)
 - Regime compatibility (does indicator stay valid across bull/bear/crash regimes?)
 - Signal logic correctness (indicator state transitions, flip-flop prevention)
@@ -130,11 +139,16 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - Liquidity assumptions matching backtest (ADTV enforcement)
 
 **Invocation:** Technical indicator strategy proposals  
-**Cost:** ~12-15K tokens  
+**Cost:** ~18-22K tokens (includes internet research)  
+**Tools:** Read, Grep, Bash, WebSearch, WebFetch  
 **Parallelizes with:** momentum-strategy-audit, fundamental-strategy-audit
 
 #### 3. **fundamental-strategy-audit** (Valuation/fundamentals strategies)
 **Scope:**
+- **External validation (NEW):**
+  - Fetch fundamental valuation strategy definitions from 2-3 independent sources (e.g., Damodaran valuation papers, Graham & Dodd classics, Greenblatt Magic Formula papers, Piotroski F-Score research)
+  - Compare published valuation metrics and ranking methodologies against code implementation (P/E, P/B, ROE thresholds, Piotroski score calculation, historical backtest periods)
+  - Flag any metric calculation deviations, missing PIT-safety checks, or non-standard benchmarks
 - PIT (point-in-time) ranking logic (announcement-date safety, fiscal-year assumptions)
 - Financial metric PIT-ness (EPS, P/E, ROE extracted at announcement, not quarter-end)
 - Forecast lag validation (no using forward guidance)
@@ -142,7 +156,8 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - Benchmark selection for value vs. growth regimes
 
 **Invocation:** Fundamental strategy proposals  
-**Cost:** ~12-15K tokens  
+**Cost:** ~18-22K tokens (includes internet research)  
+**Tools:** Read, Grep, Bash, WebSearch, WebFetch  
 **Parallelizes with:** momentum-strategy-audit, technical-strategy-audit
 
 ---
@@ -232,20 +247,20 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 
 ### Scenario A: Strategy Proposal (R10 Momentum)
 ```
-Time: 90 min total
+Time: 105 min total
 ├─ Sonnet (clarify/plan/specify): 15 min
-├─ Agents (parallel): 5 min
+├─ Agents (parallel): 15 min
 │  ├─ ml-rigor-reviewer (statistical rigor)
 │  ├─ domain-expert (market mechanics)
 │  ├─ backtest-reviewer (engine correctness)
-│  ├─ momentum-strategy-audit (NEW: lookback/regime)
+│  ├─ momentum-strategy-audit (NEW: external validation + lookback/regime verification)
 │  └─ signal-parity-agent (NEW: live-vs-backtest)
 ├─ Sonnet (synthesize): 5 min
 ├─ Haiku (implement x3 parallel tasks): 50 min
 └─ Haiku (checklist): 10 min
 
-Cost: ~120K tokens
-Time saved: ~25 min vs. serial (save agents overhead cost)
+Cost: ~135K tokens (increased due to web research in strategy audits)
+Time saved: ~20 min vs. serial (agents handle research + code validation in parallel)
 ```
 
 ### Scenario B: Backtest Completion (Auto-audit)
