@@ -1,0 +1,327 @@
+# R-Family Strategy Remediation Backlog (B-014–B-022)
+# Generated: 2026-08-25
+# Source: Multi-agent review of R10/R11/R12 implementations (Product Owner, Domain Expert, Backend Data Engineer, Backtest Reviewer, ML Rigor Reviewer)
+# Status: All 5 reviewers consensus: DO NOT SHIP — these items block paper trading readiness
+
+backlog_items:
+
+  - id: B-014
+    title: "Execute R10 validation queue and verify results in backtest_runs table"
+    area: "Backtest / R-Family"
+    status: "⏳ pending"
+    severity: "🔴 high"
+    blocked_on: "None (can run in parallel with B-015)"
+    depends_on: []
+    time_estimate: "~30 min execution + 20 min review"
+    description: |
+      R10 (Nigam-Pandey 6mo skip-1 momentum) queue config exists but has ZERO run records in
+      `backtest_runs` table (searched 3,418 total rows). Claimed results (3.3% CAGR large-cap,
+      16.4% CAGR mid-cap) are unverifiable.
+
+      **Action:**
+      1. Execute `python3 backtest/run_strategy_queue.py backtest/queues/r10_nigam_pandey_momentum_validation.json`
+      2. Verify both band 1 (large-cap) and band 9 (mid-cap) jobs land in `backtest_runs` table
+      3. Confirm DSR computed with real `n_trials` count (2 jobs, not understated)
+      4. Compare Sharpe/CAGR/DD vs R3 and M1-M2 baselines (should validate skip-month edge)
+
+      **Success criteria:**
+      - Both reversal jobs + 4 momentum baselines (3mo, 6mo, 12mo, 12-7) land with `integrity_passed=true`
+      - Reported Sharpe/CAGR match or differ <5% from the claimed numbers (if they change, investigation needed)
+      - DSR > 0.8 and n_trials correctly recorded as 2
+      - Document results in git commit message and memory
+
+    notes: |
+      - R10 is the least controversial of the three phases (replicates documented Indian anomaly, standard parameters from literature)
+      - After validation, R10 is cleared for integration into composite strategy (pending composite definition from Phase B)
+      - Do NOT gate on completion of B-015 or B-016 — R10 is independent
+
+  - id: B-015
+    title: "Execute R12 validation queue and verify results in backtest_runs table"
+    area: "Backtest / R-Family"
+    status: "⏳ pending"
+    severity: "🔴 high"
+    blocked_on: "None (can run in parallel with B-014)"
+    depends_on: []
+    time_estimate: "~40 min execution + 30 min review"
+    description: |
+      R12 (Momentum/Reversal/Liquidity) queue config exists but has ZERO run records. Claimed results
+      (16.4% CAGR / Sharpe 0.72 mid-cap reversal) are unverifiable and exist ONLY in self-authored memory.
+
+      **Action:**
+      1. Execute `python3 backtest/run_strategy_queue.py backtest/queues/r12_momentum_reversal_liquidity_validation.json`
+      2. Verify all 10 jobs land in `backtest_runs` table (2 reversal + 8 momentum baseline jobs)
+      3. Confirm DSR computed with real `n_trials` count (10 jobs, not understated)
+      4. Check integrity: both `check_08_fold_stability` and `check_09_benchmarks` status
+      5. Compare reversal (16.4% CAGR) vs momentum baselines (18.9% CAGR for 12mo)
+
+      **Success criteria:**
+      - All 10 jobs land with `integrity_passed=true` (or else integrity failures trigger B-020)
+      - DSR computed correctly with n_trials=10 (not 2)
+      - check_08/check_09 status visible in `integrity_detail` JSON
+      - Reversal metrics match or differ <5% from claimed values
+      - Sharpe 0.72 is confirmed (or else signal design is wrong)
+
+      **Gate:** If integrity checks fail, do NOT proceed to B-016/B-017/B-018 — route to B-020 instead
+
+    notes: |
+      - R12 reversal underperforms momentum on every metric (CAGR -2.5%, Sharpe -0.21, DD -12.9%)
+      - This execution is the FIRST actual measurement; claims prior to this are unverifiable
+      - Liquidity quintile analysis is NOT wired (B-016 required before claiming liquidity interaction)
+      - Signal-cadence mismatch unaddressed (1mo signal, 3mo hold) — B-017 required before deployment
+
+  - id: B-016
+    title: "Wire bucket_by_adtv_quintile() into R12 backtest flow"
+    area: "Backtest / R-Family"
+    status: "⏳ pending"
+    severity: "🟡 medium"
+    blocked_on: "B-015 (need to know R12 baseline before testing quintile filtering)"
+    depends_on: [B-015]
+    time_estimate: "~3-4 hours"
+    description: |
+      `bucket_by_adtv_quintile()` is fully implemented in `backtest/trade_filters.py:130-152` and
+      unit-tested, but has ZERO call sites outside the unit test. R12's claimed "liquidity interaction"
+      is unwired code. The quintile bucketing logic exists but is never invoked by any backtest.
+
+      **Action:**
+      1. Identify current R12 call path: `run_orchestrator_backtest.py` → `MomentumAdapter.generate_signals()` → `rank_method="trailing_reversal_1mo"`
+      2. Wire `bucket_by_adtv_quintile()` into trade execution filtering (likely `StrategyPortfolio.execute_trades()` or a pre-execution filter)
+      3. Add optional CLI flag `--liquidity-bucket-filter` (default: None, to preserve R12 baseline) and pass to orchestrator
+      4. If flag is set, apply quintile-based exclusion (e.g., bottom quintile blacklist) or report breakdowns
+      5. Re-run R12 jobs with and without the filter
+      6. Compare results: does excluding illiquid names improve Sharpe? Is the edge still there?
+
+      **Success criteria:**
+      - `bucket_by_adtv_quintile()` called at least once per rebalance in real R12 backtest flow
+      - New R12 runs WITH and WITHOUT quintile filtering land in `backtest_runs` table
+      - Comparison shows whether liquidity quintile interaction claim is real
+      - Trade-log CSV includes `liquidity_bucket` column (see B-022) for post-hoc analysis
+
+      **Decision point:** If reversal still underperforms WITH illiquid names excluded, the strategy is dead (R12 can be archived). If edge improves materially (Sharpe >0.85+), proceed to B-017/B-018.
+
+    notes: |
+      - This is the core of "R12 validated" — without this, the liquidity hypothesis is untested
+      - Do not proceed past B-016 without conclusive evidence that quintile bucketing changes R12's character
+      - If this finds the edge is in illiquid names only, question whether slippage costs are really modeled correctly (B-015's cost model audit is separate)
+
+  - id: B-017
+    title: "Add monthly (21d) rebalance variant for R12 signal-decay testing"
+    area: "Backtest / R-Family"
+    status: "⏳ pending"
+    severity: "🟡 medium"
+    blocked_on: "B-015 (need baseline to compare against)"
+    depends_on: [B-015]
+    time_estimate: "~2-3 hours"
+    description: |
+      **Critical design flaw found:** R12 is a 1-month (21-day) reversal signal held for 3 months
+      (quarterly, 63-day rebalance). By design, the signal mean-reverts and re-reverses long before
+      rebalance, leaving stale positions. This signal-cadence mismatch is unaddressed in code.
+
+      **Action:**
+      1. Create new queue variant: `r12_momentum_reversal_liquidity_monthly_rebalance.json`
+      2. Same jobs as R12 standard queue but with `rebalance_cadence_days: 21` instead of `63`
+      3. Run the monthly-rebalance variant (2 jobs, both reversal bands, same 2019-2025 window)
+      4. Compare Sharpe/CAGR/DD: monthly (21d) vs quarterly (63d) rebalance
+      5. Expected: monthly improves Sharpe (fresher signal), quarterly may show decay artifact
+
+      **Success criteria:**
+      - Monthly variant lands in `backtest_runs` table
+      - Sharpe monthly > Sharpe quarterly (signal decay hypothesis confirmed)
+      - If monthly reversal now matches 6mo momentum Sharpe (0.93+), signal-cadence mismatch was the culprit
+      - If monthly still underperforms (Sharpe <0.85), the reversal edge is weak regardless of cadence
+
+      **Gate:** If monthly improves to >0.85 Sharpe, proceed to B-018 with monthly cadence as the default. If <0.85, R12 is archived.
+
+    notes: |
+      - This is a REQUIRED test before any R12 deployment — cadence mismatch is a fundamental design error
+      - Monthly 21d cadence aligns with the 21-day signal window (1 month) so reversal is fresh every rebalance
+      - Quarterly 63d cadence was probably copy-pasted from R1/R3/R10 without thought to signal horizon
+
+  - id: B-018
+    title: "Add sub-period breakdown (2019-2022 vs 2023-2025) for reversal stability"
+    area: "Backtest / R-Family"
+    status: "⏳ pending"
+    severity: "🟡 medium"
+    blocked_on: "B-015 (need baseline to decompose)"
+    depends_on: [B-015]
+    time_estimate: "~2-3 hours"
+    description: |
+      **Reversal effects are regime-dependent** — strong post-crash, weak in trending markets. The
+      2019-2025 window is dominated by the 2020 COVID crash and recovery. No evidence that the
+      claimed mid-cap reversal edge is stable outside that one bull-market episode.
+
+      **Action:**
+      1. Post-process R12 backtest output via a new script `scripts/analyze_r12_regime_stability.py`
+      2. Split the 2019-2025 run into two independent periods: 2019-2022 and 2023-2025
+      3. Compute Sharpe/CAGR/Calmar for each sub-period independently
+      4. Measure correlation: is the edge concentrated in 2020-2021 recovery, or is it consistent?
+      5. Document results in the run's metadata (add a `regime_stability` JSON field to `backtest_runs`)
+
+      **Success criteria:**
+      - Sub-period Sharpe 2019-2022 and 2023-2025 both >0.70 (edge is consistent)
+      - If 2019-2022 is much stronger (>1.0) and 2023-2025 is weak (<0.6), reversal is a bull-market artifact
+      - Results attached to the run record (e.g., `regime_stability_2019_2022_sharpe`, `regime_stability_2023_2025_sharpe`)
+
+      **Gate:** If sub-periods differ by >0.4 Sharpe, R12 is regime-dependent and should not ship. If consistent, proceed.
+
+    notes: |
+      - This is especially important because the backtest window straddles the Fyers data seam (2019 legacy, 2020+ Fyers)
+      - A 2023-2025 post-COVID regime test is the real OOS validation — 2019-2022 is the fit window
+
+  - id: B-019
+    title: "Recompute DSR (Deflated Sharpe Ratio) with full program-wide trial count"
+    area: "Backtest / R-Family"
+    status: "⏳ pending"
+    severity: "🔴 high"
+    blocked_on: "B-015 (need run records to compute DSR)"
+    depends_on: [B-015]
+    time_estimate: "~1-2 hours"
+    description: |
+      **Selection bias severely understated.** The R-family program tested 12 phases across ~100+
+      configurations (momentum sweeps, variant selector sweeps, skip-month combinations, etc.). The
+      DSR was computed with `n_trials=2` (only the current 10-job queue) but should use the true
+      program-wide count (~100+), which dramatically increases the null-hypothesis Sharpe under random noise.
+
+      **Action:**
+      1. Audit `backtest/reports/*.json` and `backtest_runs` table to count ACTUAL strategies tested across R1-R12 program
+      2. Include all momentum grid runs, all skip-month variants, all band tests, all reversal tests
+      3. Estimate true `n_trials` (likely 200-500 considering the 42 technical-template sweep + momentum variants)
+      4. Re-run `deflated_sharpe_ratio(..., n_trials=true_count)` on R10/R12 results
+      5. Recompute post-hoc DSR and attach to run records
+
+      **Success criteria:**
+      - True n_trials measured and documented (e.g., "R-family program: 287 unique configurations tested")
+      - R12 DSR recalculated: if new DSR <0.5 (high probability of being noise), R12 should be archived
+      - R10 DSR recalculated: expected to remain >0.8 (is more robust to multiple testing)
+      - Results added to each run's metadata JSON
+
+      **Impact:** This is the evidence that R12 might be pure noise — selection bias is critical.
+
+    notes: |
+      - Bailey & López de Prado's formula for E[max Sharpe | null hypothesis] grows with n_trials^0.5
+      - Using n_trials=2 instead of 200+ is hiding a potentially 10x undercount of false-positive probability
+      - This audit may reveal that many R-family strategies are below the DSR threshold
+
+  - id: B-020
+    title: "Resolve robustness check failures (check_08, check_09)"
+    area: "Backtest / R-Family"
+    status: "⏳ pending"
+    severity: "🔴 high"
+    blocked_on: "B-015 (need to see if failures reproduce)"
+    depends_on: [B-015]
+    time_estimate: "~4-6 hours investigation + variable fix time"
+    description: |
+      **R12 reversal FAILED robustness checks.** The backtest integrity checker runs `check_08_fold_stability`
+      and `check_09_benchmarks` but both are marked non-critical by design (earlier runs failed these so the gate
+      was loosened). These are the two checks MOST relevant to overfitting and real-edge detection, and R12 failed them.
+
+      **Action:**
+      1. Run `backtest/core/post_run_checks.py::run_post_run_integrity` directly on R12 backtest output
+      2. Investigate each failure:
+         - `check_08_fold_stability`: why does reversal fail on 3-regime fold test? (crash on bull, bear, sideways regimes?)
+         - `check_09_benchmarks`: what benchmark does it compare against, and why does reversal lose?
+      3. Root-cause the failures (signal degeneration in certain regimes? data issues? statistical noise?)
+      4. Either fix the underlying issue (rebalance cadence, regime guard, universe restriction) or archive R12
+
+      **Success criteria:**
+      - Check failures understood and documented
+      - Either (a) failures are spurious and have a quick fix (e.g., regime is miscalculated), or (b) they confirm R12 is not robust
+      - If (a): fix and re-run checks. If (b): route to archive decision
+
+      **Gate:** Do NOT ship R12 until check_08/check_09 pass or a clear reason for failure is documented and addressed.
+
+    notes: |
+      - These checks were loosened because the full ML Signal Engine failed them — but that doesn't mean R12 reversal should also fail
+      - Reversal is a simple rule-based strategy; if it can't pass fold_stability, something is fundamentally wrong
+
+  - id: B-021
+    title: "Add snapshot-vs-live reconciliation check for backtest cache"
+    area: "Data Layer / Backtest"
+    status: "⏳ pending"
+    severity: "🟡 medium"
+    blocked_on: "None"
+    depends_on: []
+    time_estimate: "~2-3 hours"
+    description: |
+      **Production-safety gap found:** The backtest cache snapshot (e.g., `backtest/cache/ohlcv_snapshots/2019-01-01_2025-12-31.parquet`)
+      is generated once (2026-08-22 for R12) but is never reconciled against the live `ohlcv_adjusted` table. Known 960+ OHLCV
+      gaps exist in the codebase — if backfills happen post-snapshot, the snapshot silently goes stale.
+
+      **Action:**
+      1. Add new module `backtest/core/snapshot_reconcile.py`
+      2. Implement `verify_snapshot_integrity(snapshot_path, ohlcv_table)` function:
+         - Compare row counts (snapshot vs live)
+         - Compare date ranges (should be exact match)
+         - Compare hash/checksum of a sample of rows (detect silent corruption)
+         - Raise loud warning if divergence > threshold (e.g., 1% row count difference)
+      3. Wire into `run_orchestrator_backtest.py::main()` and `run_strategy_queue.py` before any job runs
+      4. If snapshot fails verification, either warn and fall back to live reads or fail fast
+      5. Log results to `execution_logs/` for audit
+
+      **Success criteria:**
+      - New validation runs before every queue execution
+      - 2019-2025 snapshot verified as aligned with live ohlcv_adjusted (or flagged as diverged)
+      - Future snapshots carry a `.manifest.json` with row count, date range, SHA256 checksum
+      - Backtest can recover gracefully if snapshot is stale
+
+      **Gate for paper trading:** Before live dispatch, this check must pass consistently.
+
+    notes: |
+      - This is the most straightforward infrastructure gap to close
+      - Prevents silent data corruption from becoming silent strategy corruption
+
+  - id: B-022
+    title: "Add sector/liquidity_bucket columns to trade_log CSV output"
+    area: "Data Layer / Backtest"
+    status: "⏳ pending"
+    severity: "🟡 medium"
+    blocked_on: "None (can run in parallel)"
+    depends_on: []
+    time_estimate: "~1-2 hours"
+    description: |
+      **R11 reporting layer incomplete:** The trade-level CSV output (`trade_log_{run_id}.csv`) has
+      `regime` but is missing `sector` and `liquidity_bucket` columns needed for R11's breakdowns
+      (sector cross-tabs, liquidity interaction reporting).
+
+      **Action:**
+      1. Edit `backtest/core/engine.py::_write_trade_log()` (line 1712)
+      2. Add two new columns to the CSV writer:
+         - `sector`: join `ticker` against `stock_master.sector` using PIT-safe join on `buy_date`
+         - `liquidity_bucket`: re-run `bucket_by_adtv_quintile()` over cached OHLCV on `buy_date`
+      3. Both columns should be computed per trade at write time (safe, no lookahead)
+      4. Add unit test: `tests/unit/test_trade_log_schema.py` verifying both columns exist and are non-null for sample trades
+      5. Re-run a prior R1/R12 backtest and verify CSV includes new columns
+
+      **Success criteria:**
+      - `trade_log_*.csv` files include `sector` (Banking, Pharma, IT, etc.) and `liquidity_bucket` (1-5 quintile) columns
+      - All trade rows have non-null values (no NaN in either column for valid tickers)
+      - Backend can now serve R11 reporting breakdowns via the API
+      - Frontend pivot.ts can cross-tab by sector and liquidity without post-hoc joins
+
+      **Note:** This is a pure schema-extension change, zero behavioral impact on backtest results.
+
+    notes: |
+      - Low-risk, high-value: enables R11 analysis immediately after landing
+      - Can be merged independently of R10/R12 validation (no dependencies)
+      - If `bucket_by_adtv_quintile()` is not yet wired (B-016), compute quintiles post-hoc via `rank_by_adtv()` re-run
+
+---
+
+## Priority & Sequencing
+
+### Phase 1 (Validation, parallel, ~1 hour)
+- **B-014 + B-015 (parallel):** Execute queues, verify results exist. If B-015 fails, decision point: archive R12 or debug (route to B-020).
+
+### Phase 2 (Design audits, parallel, ~4 hours)
+- **B-018 (sub-period breakdown):** Regime stability test
+- **B-019 (DSR recompute):** Selection bias audit
+- **B-020 (robustness failures):** Root-cause check_08/check_09
+- **B-021 (snapshot reconciliation):** Infrastructure hardening
+- **B-022 (trade_log schema):** Enable R11 reporting
+
+### Phase 3 (Conditional, if R12 survives)
+- **B-016 (liquidity bucketing):** Wire the claimed liquidity interaction
+- **B-017 (monthly rebalance):** Signal-decay test
+
+### Phase 4 (Gate decision)
+- If B-015 + B-018 + B-019 + B-020 all show R12 is fundamentally sound → proceed with B-016/B-017
+- If any fail → archive R12, focus on R10 composite integration

@@ -1,53 +1,26 @@
-# R-Family Momentum Remediation Plan
+# R-Family Strategy Remediation Plan
 
 **Date:** 2026-08-25  
-**Status:** CRITICAL PATH IDENTIFIED  
-**Scope:** Fix 9 critical blockers + implement missing strategies (R4, R6)  
-**Timeline:** ~3-4 weeks (serial implementation path; parallel testing)
+**Author:** Multi-Agent Review (Product Owner, Domain Expert, Backend Data Engineer, Backtest Reviewer, ML Rigor Reviewer)  
+**Status:** ❌ **BLOCKING** — paper trading deployment of R10-R12 halted pending remediation  
+**Severity:** 🔴 **CRITICAL** — all 5 independent reviewers reached consensus: **DO NOT SHIP**
 
 ---
 
 ## Executive Summary
 
-Phase 2 R-family audits discovered **9 BLOCKER issues + 9 additional items**, affecting 12/12 strategies:
+On 2026-08-25, a multi-agent code review of R-family momentum strategies (R10, R11, R12) — presented as "Phase 3 Complete" and ready for paper trading — identified **9 critical issues** spanning strategy validity, data integrity, statistical rigor, and production safety.
 
-| Category | Count | Impact |
-|----------|-------|--------|
-| **BLOCKER** | 9 | Prevent backtesting; fundamental bugs |
-| **CRITICAL** | 1 | Architecture mismatches |
-| **HIGH** | 3 | Significant functionality gaps |
-| **MEDIUM** | 2 | Quality/documentation |
-| **LOW** | 1 | Nice-to-have |
+**Most critical finding:** The headline results (16.4% CAGR, Sharpe 0.72 for R12 reversal) **exist nowhere in the system** — no runs in `backtest_runs` table, no persisted report JSONs, no traces. The validation queue configurations exist, but were never executed. Claims are unverifiable.
 
-**Critical Path:** B-003 (audit fix) → B-001/B-017/B-018/B-019/B-020 (core fixes) → B-011 (validation)
+**Collective verdict across 5 independent reviewers:**
+1. **Product Owner:** R10-R12 are scope creep; paper trading is blocked on scheduler/dispatch, not strategy quantity
+2. **Domain Expert:** R12 likely captures circuit-breaker noise, not genuine behavior; sector concentration masquerading as liquidity effect
+3. **Backend Data Engineer:** Infrastructure mostly ready; needs snapshot reconciliation + trade_log schema update
+4. **Backtest Reviewer:** R12 failed robustness checks (fold_stability, benchmarks); DSR understates selection bias (100:1 trial count)
+5. **ML Rigor:** Backtest results unverifiable; quintile bucketing unwired; signal-cadence mismatch (1mo signal, 3mo hold) unaddressed
 
-**Only Passing:** R7 (crash-aware momentum) — no critical issues.
-
----
-
-## Critical Path: Dependency Graph
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ B-003: Fix audit prompt                                         │
-│ (Prerequisite for all other decisions)                          │
-└──────────────────────────┬──────────────────────────────────────┘
-                           ├─→ B-001: Overlapping portfolios (R1-R12)
-                           ├─→ B-014: Implement R4
-                           ├─→ B-015: Fix R5 registry
-                           ├─→ B-016: Implement R6
-                           ├─→ B-017: Fix R8 cadence
-                           ├─→ B-018: R9 4-mode + regime gate
-                           ├─→ B-019: R10 sector logic
-                           ├─→ B-020: R11 ranking inversion
-                           └─→ B-021: R12 multiple issues
-                           
-    ┌──────────────────────────────┐
-    │ Once B-003 approved:         │
-    │ Run B-001 IMMEDIATELY        │
-    │ (unblocks 5+ other items)    │
-    └──────────┬───────────────────┘
-               │
+**Decision:** Archive R10/R11/R12 from paper trading roadmap until all 9 remediation items (B-014–B-022) are complete and reviewed. Estimate: 2–3 weeks if issues are fixable, longer if findings warrant architectural changes.
                ├─→ B-002: Skip-month default application
                ├─→ B-022: Wire skip-month in configs
                ├─→ B-021: R12 depends on B-001

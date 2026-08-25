@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { cn } from '@/lib/ui'
-import { BacklogItem } from '../hooks/useBacklog'
+import type { BacklogItem } from '../hooks'
 
 interface BacklogKanbanProps {
   items: BacklogItem[]

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, LayoutGrid, Table } from 'lucide-react'
 import { AppShell } from '@/lib/ui'
-import { useBacklogItems, useBacklogStats, BacklogItem } from './hooks/useBacklog'
+import { useBacklogItems, useBacklogStats, type BacklogItem } from './hooks'
 import { BacklogTable } from './components/BacklogTable'
 import { BacklogKanban } from './components/BacklogKanban'
 

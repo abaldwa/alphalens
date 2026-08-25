@@ -872,31 +872,50 @@ def volatility_scaling_multiplier(
     if scaling_mode == "inverse_volatility":
         # size ∝ 1 / vol
         multiplier = 1.0 / rolling_vol_annual
-        # Default cap for inverse modes. Moreira-Muir paper suggests no cap (or high cap).
-        # Cap=6.0 allows all three inverse modes to differentiate meaningfully.
-        # Tighter caps (e.g., 2.0) would cause all to clip to the same value.
+        # Moreira-Muir paper suggests no cap. Set high cap to avoid artificial clipping.
+        # Pre-cap values routinely exceed 100+ for realistic portfolio vols (0.15-0.35),
+        # so cap=6.0 was clipping all modes uniformly. Use cap=None (uncapped) for this mode.
         if leverage_cap is None:
-            leverage_cap = 6.0
-        multiplier = multiplier.clip(upper=leverage_cap)
+            leverage_cap = None  # Uncapped per Moreira-Muir
+        if leverage_cap is not None:
+            precap_mean = multiplier.mean()
+            multiplier = multiplier.clip(upper=leverage_cap)
+            logger.info(f"R9 inverse_volatility: vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}], pre_cap_mult=[{precap_mean:.4f} mean], clipped to {leverage_cap}")
+        else:
+            logger.info(f"R9 inverse_volatility: vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}], uncapped multiplier mean={multiplier.mean():.4f}")
     elif scaling_mode == "inverse_variance":
         # size ∝ 1 / vol²
         multiplier = 1.0 / (rolling_vol_annual ** 2)
-        # inverse_variance produces more extreme values than inverse_vol for same vol input
+        # inverse_variance produces MUCH higher pre-cap values than inverse_vol.
+        # With no leverage cap, it will naturally produce higher sizing than inverse_vol.
+        # Uncapping allows the formula differences to manifest in actual position sizes.
         if leverage_cap is None:
-            leverage_cap = 6.0
-        multiplier = multiplier.clip(upper=leverage_cap)
+            leverage_cap = None  # Uncapped per Moreira-Muir
+        if leverage_cap is not None:
+            precap_mean = multiplier.mean()
+            multiplier = multiplier.clip(upper=leverage_cap)
+            logger.info(f"R9 inverse_variance: vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}], pre_cap_mult=[{precap_mean:.4f} mean], clipped to {leverage_cap}")
+        else:
+            logger.info(f"R9 inverse_variance: vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}], uncapped multiplier mean={multiplier.mean():.4f}")
     elif scaling_mode == "target_volatility":
         # Barroso-Santa-Clara: size ∝ target_vol / realized_vol (R8)
         multiplier = (target_vol / rolling_vol_annual)
         if leverage_cap is None:
-            leverage_cap = 1.0  # R8 default (more conservative)
+            leverage_cap = 1.0  # R8 default (conservative, prevents runaway leverage)
         multiplier = multiplier.clip(upper=leverage_cap)
     elif scaling_mode == "downside_volatility":
         # size ∝ 1 / downside_vol
         multiplier = 1.0 / rolling_vol_annual
+        # Downside volatility is lower than total volatility, so multipliers are naturally higher.
+        # Uncap to allow formula differences to show. Pre-cap values still exceed 5+ typically.
         if leverage_cap is None:
-            leverage_cap = 6.0  # Match other inverse modes for fair comparison
-        multiplier = multiplier.clip(upper=leverage_cap)
+            leverage_cap = None  # Uncapped per Moreira-Muir
+        if leverage_cap is not None:
+            precap_mean = multiplier.mean()
+            multiplier = multiplier.clip(upper=leverage_cap)
+            logger.info(f"R9 downside_volatility: vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}], pre_cap_mult=[{precap_mean:.4f} mean], clipped to {leverage_cap}")
+        else:
+            logger.info(f"R9 downside_volatility: vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}], uncapped multiplier mean={multiplier.mean():.4f}")
 
     # Insufficient data → 1.0
     multiplier = multiplier.fillna(1.0)

@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { AgGridReact } from 'ag-grid-react'
 import { ColDef } from 'ag-grid-community'
 import { cn } from '@/lib/ui'
-import { BacklogItem } from '../hooks/useBacklog'
+import type { BacklogItem } from '../hooks'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-quartz.css'
 
