@@ -36,7 +36,7 @@ export interface NavSection {
 export const NAV_TIERS: { id: string; label: string; sectionIds: string[] }[] = [
   { id: 'pillars', label: 'Strategy Pillars', sectionIds: ['technical', 'fundamental', 'valuation', 'momentum', 'ml'] },
   { id: 'execution', label: 'Portfolio & Execution', sectionIds: ['backtest', 'big_investors'] },
-  { id: 'reference', label: 'Reference & Ops', sectionIds: ['explain', 'forensic', 'ops', 'macro'] },
+  { id: 'reference', label: 'Reference & Ops', sectionIds: ['explain', 'forensic', 'code-graph', 'ops', 'macro'] },
 ]
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -272,6 +272,14 @@ export const NAV_SECTIONS: NavSection[] = [
         href: '/explain/momentum.html',
         external: true,
       },
+    ],
+  },
+  {
+    id: 'code-graph',
+    label: 'Code Graph',
+    href: '/code-graph',
+    subItems: [
+      { id: 'index', label: 'Module Map', href: '/code-graph' },
     ],
   },
   {
