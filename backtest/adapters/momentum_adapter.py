@@ -699,13 +699,16 @@ class MomentumAdapter:
             # recent available multiplier (typically yesterday's).
             if date_ts in mult_series.index:
                 mult = float(mult_series.loc[date_ts])
+                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} found in mult_series, using={mult:.6f}")
             elif len(mult_series) > 0:
                 # Use last available multiplier (off-by-one: yesterday's data)
                 mult = float(mult_series.iloc[-1])
-                logger.debug(f"R9 {self.vol_scaling_mode}: {as_of_date} (ts={date_ts}) using yesterday's multiplier={mult:.6f}")
+                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} NOT in mult_series (only has {len(mult_series)} days), using iloc[-1]={mult:.6f}")
             else:
                 mult = 1.0
-            logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} multiplier={mult:.6f}")
+                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} empty mult_series, using default={mult:.6f}")
+            if len(self._equity_history) > 200 and len(self._equity_history) % 100 == 0:
+                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} multiplier={mult:.6f} (mid-backtest check)")
             return mult
         except (ValueError, KeyError, Exception) as e:
             # Insufficient data or computation error, default to no scaling

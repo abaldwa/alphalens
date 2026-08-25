@@ -13,8 +13,6 @@ export interface BacklogItem {
   assigned_to?: string
   created_at: string
   updated_at: string
-  blocks_on_count?: number
-  blocks_count?: number
 }
 
 export interface BacklogStats {
@@ -34,10 +32,7 @@ export function useBacklogItems(status?: string, criticality?: string) {
 
   return useQuery({
     queryKey: ['backlog-items', status, criticality],
-    queryFn: () =>
-      apiGet<BacklogItem[]>(
-        `/v1/backlog?${params.toString()}`
-      ),
+    queryFn: () => apiGet<BacklogItem[]>(`/v1/backlog?${params.toString()}`),
     staleTime: 30000,
   })
 }
@@ -45,7 +40,8 @@ export function useBacklogItems(status?: string, criticality?: string) {
 export function useBacklogItem(itemId: string) {
   return useQuery({
     queryKey: ['backlog-item', itemId],
-    queryFn: () => apiGet<BacklogItem & { blocks_on: any[]; blocks: any[] }>(`/v1/backlog/${itemId}`),
+    queryFn: () =>
+      apiGet<BacklogItem & { blocks_on: any[]; blocks: any[] }>(`/v1/backlog/${itemId}`),
     enabled: !!itemId,
   })
 }
