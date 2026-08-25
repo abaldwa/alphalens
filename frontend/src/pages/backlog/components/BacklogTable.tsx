@@ -1,13 +1,11 @@
 import { useMemo } from 'react'
 import { AgGridReact } from 'ag-grid-react'
-import { ModuleRegistry } from 'ag-grid-community'
-import { ClientSideRowModelModule } from 'ag-grid-community'
+import { ModuleRegistry, ClientSideRowModelModule, ValidationModule } from 'ag-grid-community'
 import { cn } from '@/lib/utils'
 import type { BacklogItem } from '../hooks'
-import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-quartz.css'
 
-ModuleRegistry.registerModules([ClientSideRowModelModule])
+ModuleRegistry.registerModules([ClientSideRowModelModule, ValidationModule])
 
 interface BacklogTableProps {
   items: BacklogItem[]
