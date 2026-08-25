@@ -1,10 +1,13 @@
 import { useMemo } from 'react'
 import { AgGridReact } from 'ag-grid-react'
-import { ColDef } from 'ag-grid-community'
-import { cn } from '@/lib/ui'
+import { ModuleRegistry } from 'ag-grid-community'
+import { ClientSideRowModelModule } from 'ag-grid-community'
+import { cn } from '@/lib/utils'
 import type { BacklogItem } from '../hooks'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-quartz.css'
+
+ModuleRegistry.registerModules([ClientSideRowModelModule])
 
 interface BacklogTableProps {
   items: BacklogItem[]
@@ -54,12 +57,37 @@ const PriorityCell = (props: any) => {
   return <span className="text-xs font-mono">{priorityLabels[value] || value}</span>
 }
 
+const DomainCell = (props: any) => {
+  const { data } = props
+  const domainMap: Record<string, { label: string; color: string }> = {
+    'A': { label: 'Architecture', color: 'bg-purple-100 text-purple-900' },
+    'T': { label: 'Technical', color: 'bg-blue-100 text-blue-900' },
+    'M': { label: 'Momentum', color: 'bg-green-100 text-green-900' },
+    'ML': { label: 'ML', color: 'bg-indigo-100 text-indigo-900' },
+    'F': { label: 'Frontend', color: 'bg-pink-100 text-pink-900' },
+    'FUN': { label: 'Fundamental', color: 'bg-amber-100 text-amber-900' },
+    'FOR': { label: 'Forensic', color: 'bg-slate-100 text-slate-900' },
+    'INF': { label: 'Infrastructure', color: 'bg-gray-100 text-gray-900' },
+  }
+
+  const prefix = data.item_id.split('-')[0]
+  const domain = domainMap[prefix]
+
+  return domain ? (
+    <span className={cn('inline-block px-2 py-1 rounded text-xs font-medium', domain.color)}>
+      {domain.label}
+    </span>
+  ) : (
+    <span className="text-xs text-gray-500">Unknown</span>
+  )
+}
+
 export function BacklogTable({ items, isLoading, onItemClick }: BacklogTableProps) {
-  const columnDefs = useMemo<ColDef<BacklogItem>[]>(
+  const columnDefs = useMemo(
     () => [
       { field: 'item_id', headerName: 'ID', width: 110, pinned: 'left' },
       { field: 'title', headerName: 'Title', flex: 1, minWidth: 250 },
-      { field: 'category', headerName: 'Category', width: 100 },
+      { headerName: 'Domain', width: 120, cellRenderer: DomainCell },
       { field: 'status', headerName: 'Status', width: 120, cellRenderer: StatusCell },
       { field: 'priority', headerName: 'Priority', width: 80, cellRenderer: PriorityCell },
       { field: 'criticality', headerName: 'Criticality', width: 110, cellRenderer: CriticalityCell },

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { cn } from '@/lib/ui'
+import { cn } from '@/lib/utils'
 import type { BacklogItem } from '../hooks'
 
 interface BacklogKanbanProps {

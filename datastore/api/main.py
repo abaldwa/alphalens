@@ -33,11 +33,13 @@ versions.
 """
 
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import duckdb
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config.settings import (
@@ -48,6 +50,7 @@ from config.settings import (
 
 from .routers import (
     alerts,
+    backlog,
     backtest_reports,
     backtest_runs,
     big_investors,
@@ -94,7 +97,7 @@ logger = logging.getLogger(__name__)
 # Same behavior, just the registration mechanism; no real resource setup/
 # teardown logic existed in either handler to preserve.
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(f"DataStore API starting up (host={DATASTORE_API_HOST}, port={DATASTORE_API_PORT})")
     # 2026-07-07: ensure the DuckDB schema is fully provisioned before the API
     # serves any request. create_schema() is idempotent (CREATE TABLE IF NOT
@@ -144,7 +147,7 @@ app.add_middleware(
 
 
 @app.exception_handler(duckdb.IOException)
-async def duckdb_lock_conflict_handler(request, exc: duckdb.IOException):
+async def duckdb_lock_conflict_handler(request: Request, exc: duckdb.IOException) -> JSONResponse:
     """
     Surface a DuckDB write-lock conflict (e.g. the ingestion scheduler
     holding the file for a long-running pipeline) as a clear, actionable
@@ -153,7 +156,6 @@ async def duckdb_lock_conflict_handler(request, exc: duckdb.IOException):
     (a UI trigger button, a script) needs to know to retry shortly rather
     than assume the request itself was malformed or the endpoint is broken.
     """
-    from fastapi.responses import JSONResponse
 
     if "Could not set lock" not in str(exc):
         raise exc

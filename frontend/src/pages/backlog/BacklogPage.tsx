@@ -8,16 +8,31 @@ import { BacklogKanban } from './components/BacklogKanban'
 type ViewType = 'table' | 'kanban'
 type FilterStatus = 'all' | 'blocked' | 'pending' | 'in-progress' | 'resolved'
 type FilterCriticality = 'all' | 'critical' | 'high' | 'medium' | 'low'
+type FilterDomain = 'all' | 'architecture' | 'technical' | 'momentum' | 'ml' | 'frontend' | 'fundamental' | 'forensic' | 'infrastructure'
 
 export function BacklogPage() {
   const [viewType, setViewType] = useState<ViewType>('table')
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all')
   const [filterCriticality, setFilterCriticality] = useState<FilterCriticality>('all')
+  const [filterDomain, setFilterDomain] = useState<FilterDomain>('all')
 
   const { data: items = [], isPending: isLoadingItems } = useBacklogItems(
     filterStatus === 'all' ? undefined : filterStatus,
     filterCriticality === 'all' ? undefined : filterCriticality
   )
+
+  // Filter by domain based on item_id prefix
+  const domainMap: Record<string, FilterDomain> = {
+    'A': 'architecture', 'T': 'technical', 'M': 'momentum', 'ML': 'ml',
+    'F': 'frontend', 'FUN': 'fundamental', 'FOR': 'forensic', 'INF': 'infrastructure'
+  }
+
+  const filteredItems = filterDomain === 'all'
+    ? items
+    : items.filter(item => {
+        const prefix = item.item_id.split('-')[0]
+        return domainMap[prefix] === filterDomain
+      })
   const { data: stats } = useBacklogStats()
 
   const handleItemClick = (item: BacklogItem) => {
@@ -100,15 +115,32 @@ export function BacklogPage() {
                 { value: 'low', label: '⚪ Low' },
               ]}
             />
+
+            <FilterSelect
+              label="Domain"
+              value={filterDomain}
+              onChange={(v) => setFilterDomain(v as FilterDomain)}
+              options={[
+                { value: 'all', label: 'All Domains' },
+                { value: 'architecture', label: 'Architecture' },
+                { value: 'technical', label: 'Technical' },
+                { value: 'momentum', label: 'Momentum' },
+                { value: 'ml', label: 'ML' },
+                { value: 'frontend', label: 'Frontend' },
+                { value: 'fundamental', label: 'Fundamental' },
+                { value: 'forensic', label: 'Forensic' },
+                { value: 'infrastructure', label: 'Infrastructure' },
+              ]}
+            />
           </div>
         </div>
 
         {/* Content */}
         <div className="bg-white rounded-lg p-4">
           {viewType === 'table' ? (
-            <BacklogTable items={items} isLoading={isLoadingItems} onItemClick={handleItemClick} />
+            <BacklogTable items={filteredItems} isLoading={isLoadingItems} onItemClick={handleItemClick} />
           ) : (
-            <BacklogKanban items={items} isLoading={isLoadingItems} onItemClick={handleItemClick} />
+            <BacklogKanban items={filteredItems} isLoading={isLoadingItems} onItemClick={handleItemClick} />
           )}
         </div>
 

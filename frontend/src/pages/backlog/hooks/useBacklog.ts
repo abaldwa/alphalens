@@ -32,7 +32,7 @@ export function useBacklogItems(status?: string, criticality?: string) {
 
   return useQuery({
     queryKey: ['backlog-items', status, criticality],
-    queryFn: () => apiGet<BacklogItem[]>(`/v1/backlog?${params.toString()}`),
+    queryFn: () => apiGet<BacklogItem[]>(`/api/v1/backlog?${params.toString()}`),
     staleTime: 30000,
   })
 }
@@ -41,7 +41,7 @@ export function useBacklogItem(itemId: string) {
   return useQuery({
     queryKey: ['backlog-item', itemId],
     queryFn: () =>
-      apiGet<BacklogItem & { blocks_on: any[]; blocks: any[] }>(`/v1/backlog/${itemId}`),
+      apiGet<BacklogItem & { blocks_on: any[]; blocks: any[] }>(`/api/v1/backlog/${itemId}`),
     enabled: !!itemId,
   })
 }
@@ -49,7 +49,7 @@ export function useBacklogItem(itemId: string) {
 export function useBacklogStats() {
   return useQuery({
     queryKey: ['backlog-stats'],
-    queryFn: () => apiGet<BacklogStats>('/v1/backlog/stats/summary'),
+    queryFn: () => apiGet<BacklogStats>('/api/v1/backlog/stats/summary'),
     staleTime: 60000,
   })
 }
