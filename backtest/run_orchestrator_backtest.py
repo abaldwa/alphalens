@@ -722,7 +722,7 @@ def _exit_policy_cadence_for(channel: str) -> Literal["daily", "rebalance"]:
     return "rebalance" if channel == "momentum" else "daily"
 
 
-def _sizing_overrides_for(channel: str, top_n: int) -> Optional[Dict[str, Any]]:
+def _sizing_overrides_for(channel: str, top_n: int, vol_scaling_mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Per-channel overrides onto the horizon bucket's HorizonSizingPolicy.
 
     [2026-08-18, explicit user decision] Momentum runs:
@@ -737,15 +737,29 @@ def _sizing_overrides_for(channel: str, top_n: int) -> Optional[Dict[str, Any]]:
         different strategy's risk model, and applying it here rejects buys
         the strategy's own rules selected.
 
+    [Phase 9, R9] Volatility scaling modes (inverse_volatility, inverse_variance,
+    target_volatility, downside_volatility) require higher max_position_pct to
+    allow weight_multiplier scaling to have an effect. Without this, the equal-weight
+    slot (1/top_n) hits the position cap immediately, and multipliers are ineffective.
+    Raising to 0.50 (50%) allows multipliers to scale up to 5x before capping.
+
     Every other channel keeps its bucket defaults -- these limits exist for
     good reasons there, and this is deliberately not a global change.
     """
     if channel != "momentum":
         return None
+
+    # For R9 volatility scaling, increase position cap to allow multiplier scaling
+    base_max_pct = 1.0 / max(int(top_n), 1)
+    if vol_scaling_mode is not None:
+        # Use 0.50 (50%) instead of base slot size to allow 5x multiplier scaling
+        base_max_pct = 0.50
+
     return {
         # 1.0 = "no cap beyond the equal-weight slot"; expressed as the slot
         # size itself so a future top_n change carries the ceiling with it.
-        "max_position_pct": 1.0 / max(int(top_n), 1),
+        # For R9, this is raised to 0.50 to allow volatility scaling multipliers.
+        "max_position_pct": base_max_pct,
         "max_sector_pct": 1.0,
     }
 
@@ -1002,7 +1016,7 @@ def _run_immediate(
             max_blackout_sessions=max_blackout_sessions,
         )
         config.exit_policy_cadence = _exit_policy_cadence_for(channel)
-        config.sizing_overrides = _sizing_overrides_for(channel, top_n)
+        config.sizing_overrides = _sizing_overrides_for(channel, top_n, vol_scaling_mode)
         # None keeps engine.py's horizon-derived default; an explicit value
         # is the only way to reach a cadence the HORIZON_SIZING table cannot
         # express (biweekly=10, bimonthly=42) -- see the CLI flag's help.
@@ -1406,7 +1420,7 @@ def _run_deferred(
     # worker starts, not inside each job. Tracked as A105.
     config.enforce_readiness = False
     config.exit_policy_cadence = _exit_policy_cadence_for(channel)
-    config.sizing_overrides = _sizing_overrides_for(channel, top_n)
+    config.sizing_overrides = _sizing_overrides_for(channel, top_n, vol_scaling_mode)
     config.rebalance_cadence_days = rebalance_cadence_days
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")

@@ -578,10 +578,14 @@ class MomentumAdapter:
                 conviction *= self.crash_reduce_sizing
             # [Phase 8/9] Compute exposure multiplier (R8 vol-target or R9 generic vol scaling)
             size_mult = self._compute_exposure_multiplier_today(as_of_date)
+            size_mult_for_signal = size_mult if size_mult != 1.0 else None
+            if size_mult != 1.0 and len(signals) == 0:
+                # Log first few tickers with non-trivial multiplier on each rebalance
+                logger.info(f"R9 {self.vol_scaling_mode}: {ticker} on {as_of_date} size_mult={size_mult:.6f} → signal.size_multiplier={size_mult_for_signal}")
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
                 conviction=conviction, adtv_cr=self._adtv_cr(ticker, as_of_date),
-                size_multiplier=size_mult if size_mult != 1.0 else None,
+                size_multiplier=size_mult_for_signal,
             ))
             new_held.add(ticker)
 

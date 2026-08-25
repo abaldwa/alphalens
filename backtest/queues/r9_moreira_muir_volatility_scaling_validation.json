@@ -19,6 +19,7 @@
       "strategy_family": "R",
       "vol_scaling_mode": "inverse_volatility",
       "vol_scaling_lookback_days": 126,
+      "vol_scaling_leverage_cap": 9999.0,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
     },
     {
@@ -32,6 +33,7 @@
       "strategy_family": "R",
       "vol_scaling_mode": "inverse_variance",
       "vol_scaling_lookback_days": 126,
+      "vol_scaling_leverage_cap": 9999.0,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
     },
     {
@@ -59,6 +61,7 @@
       "strategy_family": "R",
       "vol_scaling_mode": "downside_volatility",
       "vol_scaling_lookback_days": 126,
+      "vol_scaling_leverage_cap": 9999.0,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
     }
   ]
