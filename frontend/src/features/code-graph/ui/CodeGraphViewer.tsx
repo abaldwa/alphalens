@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import type { Node, Edge } from '@xyflow/react';
 import {
   ReactFlow,
+  ReactFlowProvider,
   Controls,
   Background,
   useNodesState,
@@ -25,7 +26,7 @@ interface CodeGraphViewerProps {
  * - Grouped by subsystem with color coding
  * - Click to drill down into call graphs
  */
-export function CodeGraphViewer({ graph, onNodeClick }: CodeGraphViewerProps) {
+function CodeGraphViewerInner({ graph, onNodeClick }: CodeGraphViewerProps) {
   const [selectedSubsystem, setSelectedSubsystem] = useState<string | null>(null);
   const { fitView } = useReactFlow();
 
@@ -183,5 +184,13 @@ export function CodeGraphViewer({ graph, onNodeClick }: CodeGraphViewerProps) {
         </ReactFlow>
       </div>
     </div>
+  );
+}
+
+export function CodeGraphViewer(props: CodeGraphViewerProps) {
+  return (
+    <ReactFlowProvider>
+      <CodeGraphViewerInner {...props} />
+    </ReactFlowProvider>
   );
 }

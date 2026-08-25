@@ -825,6 +825,9 @@ def volatility_scaling_multiplier(
     ValueError
         If equity_curve is empty or scaling_mode is invalid.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     if equity_curve.empty:
         return pd.Series(1.0, index=equity_curve.index, dtype=float)
 
@@ -837,14 +840,19 @@ def volatility_scaling_multiplier(
     if scaling_mode == "downside_volatility":
         # Downside vol: std of only negative returns (semi-deviation)
         negative_returns = daily_returns.clip(upper=0.0)
+        logger.info(f"R9 downside_volatility: daily_returns stats: mean={daily_returns.mean():.6f}, std={daily_returns.std():.6f}, min={daily_returns.min():.6f}, max={daily_returns.max():.6f}")
+        logger.info(f"R9 downside_volatility: negative_returns stats: mean={negative_returns.mean():.6f}, std={negative_returns.std():.6f}, min={negative_returns.min():.6f}, max={negative_returns.max():.6f}")
         rolling_vol_daily = negative_returns.rolling(
             window=lookback_days, min_periods=lookback_days
         ).std()
+        logger.info("R9 downside_volatility: rolling_vol_daily computed from negative returns")
     else:
         # Standard realized volatility for all modes
         rolling_vol_daily = daily_returns.rolling(
             window=lookback_days, min_periods=lookback_days
         ).std()
+        if scaling_mode in ("inverse_volatility", "inverse_variance"):
+            logger.info(f"R9 {scaling_mode}: rolling_vol_daily computed from all returns")
 
     # Annualize: vol_annual = vol_daily * sqrt(252)
     rolling_vol_annual = rolling_vol_daily * (252 ** 0.5)
@@ -854,8 +862,6 @@ def volatility_scaling_multiplier(
     mean_vol = rolling_vol_annual.mean()
     rolling_vol_annual = rolling_vol_annual.fillna(mean_vol)
 
-    import logging
-    logger = logging.getLogger(__name__)
     logger.info(f"R9 {scaling_mode}: equity_len={len(equity_curve)} lookback={lookback_days} mean_vol={mean_vol:.6f} vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}]")
 
     if rolling_vol_annual.isna().all() or (rolling_vol_annual <= 0).all():
@@ -866,28 +872,30 @@ def volatility_scaling_multiplier(
     if scaling_mode == "inverse_volatility":
         # size ∝ 1 / vol
         multiplier = 1.0 / rolling_vol_annual
-        # Default cap for inverse modes (safety to prevent runaway leverage)
+        # Default cap for inverse modes. Moreira-Muir paper suggests no cap (or high cap).
+        # Cap=6.0 allows all three inverse modes to differentiate meaningfully.
+        # Tighter caps (e.g., 2.0) would cause all to clip to the same value.
         if leverage_cap is None:
-            leverage_cap = 2.0  # Conservative default for inverse_vol
+            leverage_cap = 6.0
         multiplier = multiplier.clip(upper=leverage_cap)
     elif scaling_mode == "inverse_variance":
         # size ∝ 1 / vol²
         multiplier = 1.0 / (rolling_vol_annual ** 2)
-        # Default cap for inverse_variance (stronger dampening than inverse_vol)
+        # inverse_variance produces more extreme values than inverse_vol for same vol input
         if leverage_cap is None:
-            leverage_cap = 2.0
+            leverage_cap = 6.0
         multiplier = multiplier.clip(upper=leverage_cap)
     elif scaling_mode == "target_volatility":
         # Barroso-Santa-Clara: size ∝ target_vol / realized_vol (R8)
         multiplier = (target_vol / rolling_vol_annual)
         if leverage_cap is None:
-            leverage_cap = 1.0  # R8 default
+            leverage_cap = 1.0  # R8 default (more conservative)
         multiplier = multiplier.clip(upper=leverage_cap)
     elif scaling_mode == "downside_volatility":
         # size ∝ 1 / downside_vol
         multiplier = 1.0 / rolling_vol_annual
         if leverage_cap is None:
-            leverage_cap = 2.0  # Conservative default
+            leverage_cap = 6.0  # Match other inverse modes for fair comparison
         multiplier = multiplier.clip(upper=leverage_cap)
 
     # Insufficient data → 1.0

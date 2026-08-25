@@ -603,6 +603,7 @@ class MomentumAdapter:
         day's rebalance/update. Builds time series: {date: equity_value}.
         """
         if not (self.crash_regime_enabled or self.vol_target_enabled or self.vol_scaling_mode):
+            logger.debug(f"R9 {self.vol_scaling_mode}: update_portfolio_equity disabled (crash={self.crash_regime_enabled}, vol_target={self.vol_target_enabled}, vol_scaling={bool(self.vol_scaling_mode)})")
             return
         if self._equity_history is None:
             self._equity_history = pd.Series(dtype=float)
@@ -613,8 +614,11 @@ class MomentumAdapter:
             self._equity_history,
             pd.Series([equity], index=[date_ts])
         ])
-        if self.vol_scaling_mode and len(self._equity_history) % 50 == 0:
-            logger.info(f"R9 {self.vol_scaling_mode}: equity history accumulated {len(self._equity_history)} days")
+        if self.vol_scaling_mode:
+            if len(self._equity_history) % 50 == 0:
+                logger.info(f"R9 {self.vol_scaling_mode}: equity history accumulated {len(self._equity_history)} days")
+            elif len(self._equity_history) <= 5:
+                logger.info(f"R9 {self.vol_scaling_mode}: equity history accumulated {len(self._equity_history)} days (first few)")
 
     def _is_crash_regime_today(self, as_of_date: date_type) -> bool:
         """

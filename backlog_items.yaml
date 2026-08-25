@@ -289,23 +289,273 @@ backlog_items:
     owner: null
     status: "open"
 
+  # ============ R-FAMILY AUDITS (Phase 2 Discovery 2026-08-25) ============
+
+  B-014:
+    title: "R4 momentum variant not implemented"
+    description: |
+      R4 (Jegadeesh & Titman 1993 lookback variant) is listed in strategy registry
+      but has no code implementation.
+
+      Current state: MISSING
+
+      Fix: Implement R4 as momentum strategy variant with clearly defined lookback periods.
+      Specification in: docs/strategy-specification-registry.md (R4 section needs completion)
+
+      Affects: Backtest suite; Phase 3 momentum trials blocked if R4 promised
+
+    criticality: "BLOCKER"
+    found_by: "momentum-strategy-audit (R4 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R4"]
+
+  B-015:
+    title: "R5 strategy registry stale (George & Hwang, not J&T)"
+    description: |
+      R5 (Jegadeesh & Titman 1993 variant) is documented in registry as J&T variant,
+      but code review shows implementation uses George & Hwang (2004) 52-week-high logic.
+
+      MISMATCH: Registry says J&T, code is George & Hwang.
+
+      Fix: Either:
+      a) Update registry to correctly document R5 as George & Hwang variant (PREFERRED)
+      b) Reimplements R5 to match J&T spec (requires code refactor)
+
+      Recommendation: (a) — registry is authoritative source, so update it to reflect actual code
+
+    criticality: "CRITICAL"
+    found_by: "momentum-strategy-audit (R5 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R5"]
+    notes: "Registry mismatch creates confusion for future audits"
+
+  B-016:
+    title: "R6 momentum variant not implemented"
+    description: |
+      R6 (Jegadeesh & Titman 1993 lookback variant) has vague specification,
+      no code implementation.
+
+      Current state: MISSING (spec incomplete)
+
+      Fix: Clarify R6 specification in registry; decide on lookback periods (3/6/9/12 variant?)
+           Then implement if R6 is part of final strategy suite
+
+      Affects: Backtest suite; Phase 3 momentum trials blocked if R6 promised
+
+    criticality: "BLOCKER"
+    found_by: "momentum-strategy-audit (R6 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R6"]
+
+  B-017:
+    title: "R8 rebalance cadence wrong (252-day annual vs 21-day monthly)"
+    description: |
+      R8 (Barroso & Santa-Clara vol-scaling momentum) is specified for monthly rebalancing
+      but implementation uses 252-day (annual) rebalance frequency.
+
+      Audit finding: Code has hardcoded 252-day cadence; registry specifies monthly.
+
+      Impact: Completely changes strategy behavior.
+      - Annual rebalance: loses vol-scaling benefit (long periods of suboptimal exposure)
+      - Monthly rebalance: maintains dynamic vol-scaling (matches paper)
+
+      Fix: Change rebalance cadence from 252d to 21-30d (monthly).
+           Verify vol-scaling logic applies correctly with new cadence.
+
+      Validation: Re-backtest R8; Sharpe should improve ~0.05-0.10 towards expected 0.75-0.85 range
+
+    criticality: "BLOCKER"
+    found_by: "momentum-strategy-audit (R8 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R8"]
+    notes: "Annual vs monthly is fundamental difference; blocks R8 validation"
+
+  B-018:
+    title: "R9 4-mode vol-scaling logic missing + regime gate not implemented"
+    description: |
+      R9 (Moreira & Muir 2017 4-mode vol-scaling momentum) has TWO CRITICAL DEVIATIONS:
+
+      1. **4-mode discrete logic missing** (CRITICAL)
+         - Spec requires: discrete exposure buckets (100%/75%/50%/25% based on vol quantiles)
+         - Implementation uses: continuous scaling formulas (1/vol, 1/vol², target/vol)
+         - Fundamental mismatch: different methodology entirely
+
+      2. **Regime gate not implemented** (CRITICAL)
+         - Spec requires: EMA-RSI dynamic mode selector to switch between 4 modes
+         - Implementation: has no regime gate; 4 modes tested as 4 separate backtest runs
+         - Impact: Can't deploy as single strategy; modes are post-hoc alternatives, not adaptive
+
+      3. **Live-backtest parity impossible** (consequence)
+         - Without regime gate, can't verify signal parity between live and backtest
+
+      Fix: (A) Implement regime gate (EMA-RSI or similar state machine)
+           (B) Implement discrete 4-mode bucketing logic
+           (C) Integrate into single strategy with adaptive mode switching
+
+      Validation: Backtest with regime gate; verify Sharpe improves vs. single-mode baseline
+
+      Architecture change: R9 changes from "4 separate strategies" to "1 strategy with 4 modes"
+
+    criticality: "BLOCKER"
+    found_by: "momentum-strategy-audit (R9 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R9"]
+    notes: "Architectural mismatch; requires regime gate implementation"
+
+  B-019:
+    title: "R10 sector momentum uses individual stock ranking (wrong methodology)"
+    description: |
+      R10 (Moskowitz & Grinblatt 1999 sector-level momentum) is specified to rank sectors
+      by their returns and select top sectors.
+
+      Current implementation: Ranks INDIVIDUAL STOCKS by sector membership, not sector returns.
+      This is NOT sector momentum; it's individual momentum with sector labels.
+
+      Audit finding: Code mislabeled; does not implement published sector momentum.
+
+      Fix: Implement true sector-level momentum:
+           1. Calculate sector-level returns (aggregate sector OHLCV)
+           2. Rank sectors by momentum (3/6/9/12 month lookbacks)
+           3. Within top sectors, hold all stocks (or top N by liquidity)
+           4. Portfolio is sector-concentrated, not stock-concentrated
+
+      Impact: Completely changes portfolio construction and risk profile.
+
+      Validation: Re-backtest R10 as true sector momentum; compare to published benchmarks
+                  Expected Sharpe: 0.6-0.8 (lower than individual momentum due to concentration)
+
+    criticality: "BLOCKER"
+    found_by: "momentum-strategy-audit (R10 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R10"]
+    notes: "Fundamental implementation error; R10 is mislabeled"
+
+  B-020:
+    title: "R11 ranking direction inverted + 70% threshold missing"
+    description: |
+      R11 (George & Hwang 2004 52-week-high momentum) has TWO CRITICAL BLOCKERS:
+
+      1. **Ranking direction inverted** (CRITICAL)
+         - Spec: Buy stocks with LOWER price-to-high ratio (closer to bottom = momentum signal)
+         - Implementation: Selects HIGHEST scores (trend-following, not contrarian)
+         - This is backwards; completely inverts strategy intent
+
+      2. **70% threshold logic missing** (CRITICAL)
+         - Spec requires (George & Hwang 2004, p. 2155): Buy when price < 70% of 52-week high
+         - Implementation: No threshold; just ranks all stocks
+         - Missing the critical filtering step
+
+      Fix: (A) Invert ranking direction (select LOW price-to-high, not HIGH)
+           (B) Implement 70% threshold logic
+           (C) Verify holding period and rebalance frequency match spec
+
+      Validation: Re-backtest R11 with fixes; should show contrarian behavior
+                  Expected Sharpe: 0.6-0.8 (contrarian, not trend-following)
+
+    criticality: "BLOCKER"
+    found_by: "momentum-strategy-audit (R11 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R11"]
+    notes: "Inverted logic is fundamental bug; strategy does opposite of intended"
+
+  B-021:
+    title: "R12 Indian liquidity-aware momentum — multiple issues"
+    description: |
+      R12 (Chui et al. 2023 / Nigam & Pandey 2023 Indian momentum) has multiple issues:
+
+      1. **Overlapping portfolios missing** (inherited from B-001)
+         - Same as R1-R3: missing K-portfolio structure, using 100% replacement
+
+      2. **Skip-month not applied by default** (HIGH)
+         - Implementation exists but not wired into R12 by default
+         - Must be explicitly configured; most backtest runs miss skip-month benefit
+
+      3. **ADTV filter may bypass liquidity safety** (MEDIUM)
+         - Registry specifies: ADTV > ₹5-10Cr floor
+         - Audit finding: Filter applies but can be disabled per-backtest
+         - Risk: User may run R12 without ADTV floor, trading illiquid stocks
+
+      Fix: (A) Apply B-001 fix (overlapping portfolios) when implemented
+           (B) Wire skip-month by default for R12
+           (C) Document ADTV floor as mandatory (no bypass option)
+
+      Depends on: B-001 (overlapping portfolios), B-002 (skip-month default)
+
+    criticality: "HIGH"
+    found_by: "momentum-strategy-audit (R12 audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-001", "B-002"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R12"]
+
+  B-022:
+    title: "Skip-month default not applied to strategy configurations"
+    description: |
+      Skip-month ranking (months -K to -2) is implemented in code (trailing_momentum_skip_recent)
+      but is NOT applied by default to momentum strategy configurations.
+
+      Current state: Opt-in parameter; users must explicitly set skip_months=1
+      Result: Most backtest runs use standard ranking (-K to 0), missing skip-month benefit
+
+      Affects: R1, R3, R4, R5, R6, R8, R9, R10, R11, R12 (potentially all R-family)
+
+      Fix: Change default in strategy configurations to skip_months=True
+           Update backtest_exclusions.py to set skip-month as default for all momentum variants
+
+      Impact: Sharpe improvement ~0.05-0.10 across all affected strategies
+              Skip-month aligns implementation with published J&T specification
+
+      Validation: Re-run R1-R12 backtests with skip-month default enabled
+                  Verify Sharpe matches expected benchmarks (0.90-0.95 for R1, etc.)
+
+    criticality: "HIGH"
+    found_by: "momentum-strategy-audit (batch audit)"
+    found_in: "R-family audit batch 2026-08-25"
+    depends_on: ["B-002"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R1", "R3", "R4", "R5", "R6", "R8", "R9", "R10", "R11", "R12"]
+    notes: "Implementation exists; just needs wiring into default configs"
+
 ---
 
 backlog_dependencies:
 
   B-003:
     description: "momentum-strategy-audit prompt fix (prerequisite for reliable audits)"
-    blocks: ["B-001", "B-002", "B-004", "B-005", "B-006", "B-010"]
+    blocks: ["B-001", "B-002", "B-004", "B-005", "B-006", "B-010", "B-014", "B-015", "B-016", "B-017", "B-018", "B-019", "B-020", "B-021", "B-022"]
     blocked_by: []
 
   B-001:
     description: "overlapping portfolios implementation (affects all R-family)"
-    blocks: ["B-002", "B-011", "B-012"]
+    blocks: ["B-002", "B-011", "B-012", "B-021", "B-022"]
     blocked_by: ["B-003"]
 
   B-002:
-    description: "one-month skip implementation"
-    blocks: ["B-011"]
+    description: "one-month skip implementation + default application"
+    blocks: ["B-011", "B-022"]
     blocked_by: ["B-001", "B-003"]
 
   B-004:
@@ -331,7 +581,7 @@ backlog_dependencies:
   B-011:
     description: "verify R1-R12 Sharpe vs. published benchmarks"
     blocks: []
-    blocked_by: ["B-001", "B-002"]
+    blocked_by: ["B-001", "B-002", "B-014", "B-015", "B-016", "B-017", "B-018", "B-019", "B-020"]
 
   B-012:
     description: "optimize costs with overlapping portfolios"
@@ -342,3 +592,48 @@ backlog_dependencies:
     description: "add code comments for J&T spec"
     blocks: []
     blocked_by: ["B-001", "B-002"]
+
+  B-014:
+    description: "R4 momentum variant not implemented"
+    blocks: ["B-011"]
+    blocked_by: ["B-003"]
+
+  B-015:
+    description: "R5 registry stale (George & Hwang mismatch)"
+    blocks: ["B-011"]
+    blocked_by: ["B-003"]
+
+  B-016:
+    description: "R6 momentum variant not implemented"
+    blocks: ["B-011"]
+    blocked_by: ["B-003"]
+
+  B-017:
+    description: "R8 rebalance cadence wrong (252d annual vs 21-30d monthly)"
+    blocks: ["B-011"]
+    blocked_by: ["B-003"]
+
+  B-018:
+    description: "R9 4-mode vol-scaling logic missing + regime gate"
+    blocks: ["B-011"]
+    blocked_by: ["B-003"]
+
+  B-019:
+    description: "R10 sector momentum uses individual stock ranking"
+    blocks: ["B-011"]
+    blocked_by: ["B-003"]
+
+  B-020:
+    description: "R11 ranking direction inverted + 70% threshold missing"
+    blocks: ["B-011"]
+    blocked_by: ["B-003"]
+
+  B-021:
+    description: "R12 Indian momentum — overlapping + skip-month + ADTV issues"
+    blocks: ["B-011"]
+    blocked_by: ["B-001", "B-002", "B-003"]
+
+  B-022:
+    description: "Skip-month default not applied to strategy configs"
+    blocks: ["B-011"]
+    blocked_by: ["B-002", "B-003"]
