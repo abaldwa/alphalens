@@ -851,8 +851,15 @@ def volatility_scaling_multiplier(
 
     # Avoid division by zero
     rolling_vol_annual = rolling_vol_annual.replace(0.0, np.nan)
-    rolling_vol_annual = rolling_vol_annual.fillna(rolling_vol_annual.mean())
+    mean_vol = rolling_vol_annual.mean()
+    rolling_vol_annual = rolling_vol_annual.fillna(mean_vol)
+
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"R9 {scaling_mode}: equity_len={len(equity_curve)} lookback={lookback_days} mean_vol={mean_vol:.6f} vol_range=[{rolling_vol_annual.min():.6f}, {rolling_vol_annual.max():.6f}]")
+
     if rolling_vol_annual.isna().all() or (rolling_vol_annual <= 0).all():
+        logger.warning(f"R9 {scaling_mode}: All vol values are NaN or <= 0, returning 1.0 for all dates")
         return pd.Series(1.0, index=equity_curve.index, dtype=float)
 
     # Compute multiplier based on scaling_mode

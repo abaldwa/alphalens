@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
-import ReactFlow, {
-  Node,
-  Edge,
+import type { Node, Edge } from '@xyflow/react';
+import {
+  ReactFlow,
   Controls,
   Background,
   useNodesState,
@@ -105,7 +105,7 @@ export function CodeGraphViewer({ graph, onNodeClick }: CodeGraphViewerProps) {
   ).sort();
 
   const handleNodeClick = useCallback(
-    (event: React.MouseEvent, node: Node) => {
+    (_event: React.MouseEvent, node: Node) => {
       onNodeClick?.(node.id);
     },
     [onNodeClick],

@@ -689,7 +689,18 @@ class MomentumAdapter:
                 leverage_cap=self.vol_scaling_leverage_cap,
             )
             date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
-            mult = float(mult_series.get(date_ts, 1.0))
+
+            # Note: generate_signals() is called BEFORE update_portfolio_equity(),
+            # so equity_history doesn't include today's equity yet. Use the most
+            # recent available multiplier (typically yesterday's).
+            if date_ts in mult_series.index:
+                mult = float(mult_series.loc[date_ts])
+            elif len(mult_series) > 0:
+                # Use last available multiplier (off-by-one: yesterday's data)
+                mult = float(mult_series.iloc[-1])
+                logger.debug(f"R9 {self.vol_scaling_mode}: {as_of_date} (ts={date_ts}) using yesterday's multiplier={mult:.6f}")
+            else:
+                mult = 1.0
             logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} multiplier={mult:.6f}")
             return mult
         except (ValueError, KeyError, Exception) as e:

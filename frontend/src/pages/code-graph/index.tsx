@@ -49,7 +49,7 @@ export default function CodeGraphPage() {
   // Find nodes with no incoming edges (dead code candidates)
   const incomingEdges = new Map<string, number>();
   graph?.edges.forEach((e) => {
-    incomingEdges.set(e.target, (incomingEdges.get(e.target) || 0) + 1);
+    incomingEdges.set(e.to, (incomingEdges.get(e.to) || 0) + 1);
   });
 
   const deadCodeCandidates = graph?.nodes
@@ -61,8 +61,8 @@ export default function CodeGraphPage() {
   const keyTables = graph?.nodes
     .filter((n) => n.type === 'table')
     .map((n) => {
-      const outgoing = graph.edges.filter((e) => e.source === n.id).length;
-      const incoming = graph.edges.filter((e) => e.target === n.id).length;
+      const outgoing = graph.edges.filter((e) => e.from === n.id).length;
+      const incoming = graph.edges.filter((e) => e.to === n.id).length;
       return { id: n.id, name: n.name || n.id, outgoing, incoming };
     })
     .sort((a, b) => b.incoming + b.outgoing - (a.incoming + a.outgoing))
