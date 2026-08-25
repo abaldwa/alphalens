@@ -2238,7 +2238,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rank-method", type=str, default="trailing_return",
-        choices=["trailing_return", "pct_of_52wk_high", "risk_adjusted_composite", "industry_momentum"],
+        choices=["trailing_return", "pct_of_52wk_high", "risk_adjusted_composite", "industry_momentum", "trailing_reversal_1mo"],
         help=(
             "momentum channel only (Phase 0): ranking signal to use. 'trailing_return' (default) "
             "is the canonical momentum score. Other methods enable R-family strategies: "
