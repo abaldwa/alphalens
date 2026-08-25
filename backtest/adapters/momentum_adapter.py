@@ -597,12 +597,12 @@ class MomentumAdapter:
 
     def update_portfolio_equity(self, date: date_type, equity: float) -> None:
         """
-        Track portfolio equity value for crash-regime detection (Phase 7)
-        and volatility-target exposure scaling (Phase 8).
-        Called by BacktestOrchestrator (engine.py) after each day's rebalance/update.
-        Builds time series: {date: equity_value}.
+        Track portfolio equity value for crash-regime detection (Phase 7),
+        volatility-target exposure scaling (Phase 8), and volatility scaling
+        (Phase 9, R9). Called by BacktestOrchestrator (engine.py) after each
+        day's rebalance/update. Builds time series: {date: equity_value}.
         """
-        if not (self.crash_regime_enabled or self.vol_target_enabled):
+        if not (self.crash_regime_enabled or self.vol_target_enabled or self.vol_scaling_mode):
             return
         if self._equity_history is None:
             self._equity_history = pd.Series(dtype=float)
