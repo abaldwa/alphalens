@@ -111,25 +111,46 @@ AlphaLens is a quantitative trading system for the Indian equity market. It inge
 
 ---
 
-## Model Selection by Task Type
+## Model & Agent Selection
 
-Choose the appropriate Claude model based on task complexity. Haiku is the default for token efficiency.
+**Model routing:**
+- **Haiku (default):** Bug fixes, small features, focused implementation (~120K context)
+- **Sonnet 5:** Planning, architecture, coordination (~200K context)
+- **Opus 5:** Complex numeric (backtesting metrics), multi-subsystem design (rare)
 
-| Task | Model | Rationale |
-|------|-------|-----------|
-| **Bug fixes, small edits** | Haiku | Fast, cheap; 90% of work; use `/fast` if UI testing needed |
-| **Test writing, maintenance** | Haiku | Straightforward; code patterns are in memory |
-| **Code review, refactoring** | Haiku | Low ambiguity; review skills well-distributed |
-| **Complex backtest/metric design** | Opus 5 | Numeric reasoning, statistical rigor; verify results matter |
-| **Architecture decisions, large systems** | Opus 5 | Trade-off analysis, integration points across modules |
-| **ML model proposals, feature design** | Opus 5 | Statistical soundness, overfitting checks, domain context |
-| **Deep cross-file debugging** | Sonnet 5 | Balance: faster than Opus for exploration, smarter than Haiku for tricky inference |
-| **Routine status checks, logs** | Haiku + `/fast` | Fast output, no context cost |
+**Agent parallelization rule:** Launch `/model-review` (auto-parallelizes 4-6 agents) when:
+1. **High-stakes decision** (strategy gate, live trading, major model change), AND
+2. **Independent agents** (ml-rigor, domain-expert, backtest-reviewer don't depend on each other), AND
+3. **Time justified** (serial review >10 min; parallel saves ~7 min)
 
-### When to Escalate Models
-- If Haiku response seems shallow or incomplete for a complex task → escalate to Opus 5
-- If you're debugging numeric results that affect backtests → use Opus 5 or run /code-review (which uses multi-agent)
-- If reviewing a proposal that touches multiple subsystems → use Opus 5 or invoke skill `/model-review` (6-agent review)
+**Agent roster (15 total):**
+
+**Core validation (4 agents):**
+- `ml-rigor-reviewer` — Statistical rigor, leakage, overfitting
+- `domain-expert` — Indian equity market mechanics, sector validity
+- `backtest-reviewer` — Engine correctness, trade validation, metrics
+- `backend-data-engineer` — DuckDB schema, point-in-time, ingestion
+
+**Strategy audit (3 agents):**
+- `momentum-strategy-audit` — Parameter ranges, lookback selection, universe definition
+- `technical-strategy-audit` — Indicator thresholds, signal logic, regime compatibility
+- `fundamental-strategy-audit` — PIT ranking, financial metric PIT, forecast lag
+
+**Data & signal (3 agents):**
+- `data-audit-agent` — Auto-audit before backtest completion; sources, lineage, versioning
+- `signal-parity-agent` — Live-vs-backtested signal generation parity (side-by-side)
+- `ml-model-audit-agent` — Model training rigor, generalization, cross-validation
+
+**Infrastructure & execution (2 agents):**
+- `memory-management-agent` — Real-time OOM monitoring during backtest; 85% pressure threshold
+- `enhanced-backtesting-agent` — Orchestrate 12 integrity checks, recommend optimizations (ticker-by-ticker), decision mechanism switching
+
+**Code quality (2 agents):**
+- `code-reviewer` — Correctness bugs, simplification
+- `frontend-a11y-reviewer` — Accessibility, responsive, light/dark theme
+
+**Product & testing (1 agent):**
+- `skeptic-tester` — Failure modes, policy violations, edge cases
 
 ---
 
@@ -202,6 +223,28 @@ When asking about library/framework documentation (React, Tailwind, TanStack Que
 # Available for: React, Next.js, Tailwind, TanStack, DuckDB, ag-grid, Radix UI, Recharts, lightweight-charts, and 100+ other libraries
 # Use instead of web search for up-to-date syntax, migration guides, config, and CLI tool usage.
 ```
+
+---
+
+## Code Graph & Data Catalogue — Before Planning Features/Refactors
+
+Before designing new features or refactoring, read **[docs/codegraph/SUMMARY.md](docs/codegraph/SUMMARY.md)** for:
+- **Subsystems overview** — module organization, responsibilities, and role
+- **Data catalogue** — DuckDB tables + JSON configuration files
+- **Dead code candidates** — modules with no incoming imports (often refactor opportunities)
+
+The full graph (`docs/codegraph/module_graph.json`) includes all 4000+ nodes/edges (modules, tables, JSON files); the summary is the token-efficient default. For drill-down into specific functions/call chains, request the relevant `docs/codegraph/call_graph_<entry_point>.json` file.
+
+**Regenerate:**
+```bash
+# Full rebuild (updates all outputs, ~5-10s)
+python3 .claude/skills/code-graph/scripts/build_summary.py --full
+
+# Incremental (runs automatically via post-commit hook after each commit)
+python3 .claude/skills/code-graph/scripts/build_summary.py --incremental $(git diff --name-only HEAD~1 HEAD)
+```
+
+See `.claude/skills/code-graph/SKILL.md` for full skill documentation.
 
 ---
 

@@ -102,3 +102,218 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - Never edit source files mid-queue — jobs launch as fresh subprocesses and
   pick up the edit.
 - Never write synthetic or test rows into the real DuckDB, even temporarily.
+
+---
+
+## Agent Specifications (Phase 3 Expansion)
+
+### Strategy Audit Agents
+
+#### 1. **momentum-strategy-audit** (High-stakes momentum strategies)
+**Scope:**
+- Lookback day ranges and regime compatibility (3-month, 6-month, 12-month momentum vs. market regime)
+- Version history tracking (did parameters drift across runs?)
+- Universe filtering logic (ADTV floors, market-cap bands, sector inclusion/exclusion)
+- Signal generation rules (momentum ranking, tie-breaking, rebalance frequency)
+- Regime-based position sizing gates (EMA-RSI consistency with backtest)
+
+**Invocation:** Strategy proposal for R-family momentum strategies (R1-R12)  
+**Cost:** ~12-15K tokens  
+**Parallelizes with:** technical-strategy-audit, fundamental-strategy-audit (all independent)
+
+#### 2. **technical-strategy-audit** (TA indicator strategies)
+**Scope:**
+- Indicator thresholds and parameter selection (RSI 30/70, MACD crossovers, bands width)
+- Regime compatibility (does indicator stay valid across bull/bear/crash regimes?)
+- Signal logic correctness (indicator state transitions, flip-flop prevention)
+- Point-in-time safety (no forward-looking indicator values)
+- Liquidity assumptions matching backtest (ADTV enforcement)
+
+**Invocation:** Technical indicator strategy proposals  
+**Cost:** ~12-15K tokens  
+**Parallelizes with:** momentum-strategy-audit, fundamental-strategy-audit
+
+#### 3. **fundamental-strategy-audit** (Valuation/fundamentals strategies)
+**Scope:**
+- PIT (point-in-time) ranking logic (announcement-date safety, fiscal-year assumptions)
+- Financial metric PIT-ness (EPS, P/E, ROE extracted at announcement, not quarter-end)
+- Forecast lag validation (no using forward guidance)
+- Universe survivor bias (delisted company handling)
+- Benchmark selection for value vs. growth regimes
+
+**Invocation:** Fundamental strategy proposals  
+**Cost:** ~12-15K tokens  
+**Parallelizes with:** momentum-strategy-audit, technical-strategy-audit
+
+---
+
+### Data & Model Audit Agents
+
+#### 4. **data-audit-agent** (Auto-run before backtest completion)
+**Scope:**
+- OHLCV source parity (Fyers consistency, legacy→Fyers discontinuities < 960 known gaps)
+- Point-in-time versioning (universe snapshots dated correctly per backtest date)
+- Feature store lineage (hybrid Stage 2 partition integrity, no ticker-subset corruptions)
+- Signal metadata completeness (every trade has run_id, version, timestamp)
+- Benchmark data availability (do bench series match backtest period?)
+
+**Trigger:** Auto-audit before backtest completion (low-token, read-only)  
+**Frequency:** Full audit only before live-trading gates (not sampling per-run)  
+**Cost:** <12K tokens  
+**Parallelizes with:** Any agent (audit is non-blocking, orthogonal)
+
+#### 5. **signal-parity-agent** (Live-vs-backtested parity)
+**Scope:**
+- Live signal generation rules match backtested rules (code-level parity)
+- Universe consistency (tradeable universe identical in backtest and live)
+- Regime-based position sizing gates (EMA-RSI applies identically in live)
+- Feature computation drift (momentum, volatility computed identically)
+- Generate both live and backtested signals side-by-side (for verification)
+
+**Invocation:** Before paper-trading gate, after any signal logic changes  
+**Cost:** ~30-40K tokens (generates both signals)  
+**Parallelizes with:** Any agent (independent signal analysis)
+
+#### 6. **ml-model-audit-agent** (Model training rigor)
+**Scope:**
+- Training/validation/test set separation (no leakage across folds)
+- Feature leakage detection (no forward-looking or non-PIT features)
+- Cross-validation strategy (walk-forward validation, not random k-fold)
+- Generalization checks (model performance on held-out test set)
+- Data contamination (no information from test set in training)
+
+**Invocation:** Before retraining CatBoost/Ridge or any ML model  
+**Cost:** ~25-30K tokens  
+**Parallelizes with:** Any agent  
+**Note:** Triggered only for ML model retraining (not rule-based strategies)
+
+---
+
+### Infrastructure & Execution Agents
+
+#### 7. **memory-management-agent** (Concurrent with backtest)
+**Scope:**
+- Monitor OOM pressure in real-time (85% threshold alert)
+- Predict OOM 5 minutes early (based on memory trend)
+- Recommend dynamic optimizations:
+  - Reduce ticker count (sampling strategy)
+  - Parallel sharding (split backtest by ticker groups)
+  - Feature store snapshots (use read-only snapshots to avoid lock contention)
+- Track memory state per backtest phase (feature fetch, signal generation, portfolio sim)
+
+**Invocation:** Concurrent with long-running backtests  
+**Trigger:** Automatic when backtest starts  
+**Cost:** ~5-8K tokens (minimal, advisory only)  
+**Parallelizes with:** enhanced-backtesting-agent (coordinate recommendations)
+
+#### 8. **enhanced-backtesting-agent** (Integrity + optimization orchestration)
+**Scope:**
+- Orchestrate 12 post-run integrity checks in parallel:
+  - `check_01_walk_forward`, `check_02_pit`, `check_03_corp_actions`, `check_04_survivorship`
+  - `check_05_costs`, `check_06_liquidity`, `check_07_no_hpo_on_test`
+  - `check_08_fold_stability`, `check_09_benchmarks`, `check_10_random_feature`
+  - `check_11_sector_tier_lookahead`, `check_12_flat_equity_curve`
+- Ledger invariant audit (tax, negative cash, FY continuity, position settlement)
+- Readiness gate verification (data availability, universe definition)
+- Result persistence strategy (frequent checkpoints, cross-run deduplication)
+- Recommend fixes if checks fail (e.g., "check_04 failed: add delisted tickers to backtest_exclusions.py")
+- Decide mechanism switching:
+  - Ticker-by-ticker optimization (iterate 1 ticker per year, persist results, check previous runs)
+  - Benchmark parity verification (generate benchmark results for same duration)
+  - Data/metrics completeness (ensure all required fields captured)
+
+**Invocation:** After backtest run completes (always)  
+**Cost:** ~20-25K tokens  
+**Parallelizes with:** memory-management-agent (coordinate OOM decisions)
+
+---
+
+## Parallelization Scenarios
+
+### Scenario A: Strategy Proposal (R10 Momentum)
+```
+Time: 90 min total
+├─ Sonnet (clarify/plan/specify): 15 min
+├─ Agents (parallel): 5 min
+│  ├─ ml-rigor-reviewer (statistical rigor)
+│  ├─ domain-expert (market mechanics)
+│  ├─ backtest-reviewer (engine correctness)
+│  ├─ momentum-strategy-audit (NEW: lookback/regime)
+│  └─ signal-parity-agent (NEW: live-vs-backtest)
+├─ Sonnet (synthesize): 5 min
+├─ Haiku (implement x3 parallel tasks): 50 min
+└─ Haiku (checklist): 10 min
+
+Cost: ~120K tokens
+Time saved: ~25 min vs. serial (save agents overhead cost)
+```
+
+### Scenario B: Backtest Completion (Auto-audit)
+```
+Time: 15 min total
+├─ enhanced-backtesting-agent: 12 checks in parallel + ledger audit + recommendations
+├─ data-audit-agent: OHLCV/feature-store parity (concurrent)
+└─ Persist results, store checkpoint
+
+Cost: ~30K tokens
+Triggers: Auto (post-backtest)
+```
+
+### Scenario C: Model Retraining (CatBoost)
+```
+Time: 120 min total
+├─ Sonnet (clarify new data source): 10 min
+├─ Agents (parallel): 5 min
+│  ├─ backend-data-engineer (data ready?)
+│  ├─ ml-model-audit-agent (NEW: training rigor)
+│  └─ ml-rigor-reviewer (statistical soundness)
+├─ Haiku (retrain + cross-val): 80 min
+└─ Haiku (deploy + verify): 25 min
+
+Cost: ~85K tokens
+```
+
+### Scenario D: Live Trading Gate (Full System Audit)
+```
+Time: 150 min total
+├─ Sonnet (plan full gate): 15 min
+├─ Agents (parallel): 10 min
+│  ├─ backtest-reviewer (all strategy backtests sound?)
+│  ├─ data-audit-agent (full system audit)
+│  ├─ signal-parity-agent (live generation parity verified?)
+│  ├─ audit-compliance (registry integrity, trade traceability)
+│  └─ skeptic-tester (last look: any remaining risks?)
+├─ Haiku (fix any gate failures): 60 min
+└─ Haiku (final verification): 20 min
+
+Cost: ~140K tokens
+Time saved: ~35 min vs. serial
+```
+
+---
+
+## Configuration (.claude/settings.json)
+
+```json
+{
+  "model": "claude-haiku-4-5-20251001",
+  "default_agent_model": "claude-sonnet-5",
+  "agent_parallelization": {
+    "enabled": true,
+    "max_parallel_agents": 6,
+    "threshold_time_saved_minutes": 7,
+    "fallback_to_serial_on_error": true
+  },
+  "backtest": {
+    "auto_data_audit": true,
+    "auto_enhanced_backtesting": true,
+    "data_audit_token_limit": 12000,
+    "memory_management_enabled": true,
+    "memory_pressure_threshold_pct": 85,
+    "backtesting_agent_mechanism": "ticker_by_ticker",
+    "backtesting_agent_recommendations": true,
+    "backtesting_agent_mechanism_switching": true,
+    "result_persistence": "frequent_checkpoints"
+  }
+}
+```
