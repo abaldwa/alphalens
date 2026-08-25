@@ -1,0 +1,58 @@
+2026-08-24 06:19:11,395 INFO run_strategy_queue: launching job[0] (kind=orchestrator) — /home/amit/projects/AlphaLens/.venv/bin/python3 -m backtest.run_orchestrator_backtest --channel momentum --rank-band-id 10 --lookback-months 3 --rebalance-cadence-days 21 --top-n 10 --start-date 2019-01-01 --end-date 2025-12-31 --initial-capital 1000000 --max-tickers 800 --min-history-days 60 --capital-mode lump --exit-variant baseline --ohlcv-snapshot-dir /home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots --report-suffix 20260824_061911_job0
+2026-08-24 06:19:15,544 INFO orchestrator backtest starting: channel=momentum strategy_id=M10_301_500_allrisk_lb3mo_monthly_top10_21d run_id=orch_momentum_20260824_061915_1e5ebeed horizon_bucket=21_day
+2026-08-24 06:19:20,658 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:19:25,658 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:19:30,660 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:19:35,660 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:19:40,661 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:19:45,664 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:19:50,665 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:19:55,666 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:00,667 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:05,667 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:10,668 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:15,668 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:20,668 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:25,669 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:30,669 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:35,672 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: another backtest job is currently running — waiting for it to finish...
+2026-08-24 06:20:40,672 INFO orchestrator[orch_momentum_20260824_061915_1e5ebeed]: acquired the backtest execution lock
+2026-08-24 06:20:40,681 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-08-24 06:20:40,682 WARNING backtest OHLCV universe: EXCLUDING 19/2317 tickers by config/backtest_excluded_tickers.json — COALINDIA (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 2.2x on 2016-04-08..2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); FILATEX (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 2.1x on 2016-04-08..2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); IBULLSLTD (legacy/Fyers adjustment-basis break: 1 unexplained source-transition jump(s) up to 1.6x on 2026-08-05, no corporate action within +/-5 days (measured 2026-08-13)); IDEA (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 1.7x on 2012-08-21..2016-04-08, no corporate action within +/-5 days (measured 2026-08-13)); IMFA (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 2.3x on 2021-08-04..2021-08-05, no corporate action within +/-5 days (measured 2026-08-13)); INDOTHAI (legacy/Fyers adjustment-basis break: 4 unexplained source-transition jump(s) up to 11.2x on 2012-08-21..2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); MARINE (legacy/Fyers adjustment-basis break: 1 unexplained source-transition jump(s) up to 5.2x on 2020-12-02, no corporate action within +/-5 days (measured 2026-08-13)); MINDACORP (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 9.3x on 2013-04-08..2013-05-10, no corporate action within +/-5 days (measured 2026-08-13)); NHPC (legacy/Fyers adjustment-basis break: 1 unexplained source-transition jump(s) up to 1.5x on 2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); NTPC (legacy/Fyers adjustment-basis break: 1 unexplained source-transition jump(s) up to 1.5x on 2012-08-22, no corporate action within +/-5 days (measured 2026-08-13)); PGIL (legacy/Fyers adjustment-basis break: 4 unexplained source-transition jump(s) up to 2.3x on 2012-08-21..2016-04-12, no corporate action within +/-5 days (measured 2026-08-13)); POWERMECH (legacy/Fyers adjustment-basis break: 1 unexplained source-transition jump(s) up to 2.0x on 2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); PTC (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 1.6x on 2012-08-22..2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); SHAKTIPUMP (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 6.1x on 2024-06-06..2024-06-07, no corporate action within +/-5 days (measured 2026-08-13)); SJVN (legacy/Fyers adjustment-basis break: 1 unexplained source-transition jump(s) up to 1.5x on 2016-04-12, no corporate action within +/-5 days (measured 2026-08-13)); SSWL (legacy/Fyers adjustment-basis break: 3 unexplained source-transition jump(s) up to 2.1x on 2012-08-17..2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); STAR (legacy/Fyers adjustment-basis break: 2 unexplained source-transition jump(s) up to 2.8x on 2012-08-17..2012-08-21, no corporate action within +/-5 days (measured 2026-08-13)); SURYAROSNI (legacy/Fyers adjustment-basis break: 4 unexplained source-transition jump(s) up to 4.6x on 2012-08-21..2016-04-11, no corporate action within +/-5 days (measured 2026-08-13)); TRIVENI (legacy/Fyers adjustment-basis break: 1 unexplained source-transition jump(s) up to 1.6x on 2017-01-02, no corporate action within +/-5 days (measured 2026-08-13))
+2026-08-24 06:20:40,909 INFO ohlcv_prewarm: snapshot hit for [2019-01-01, 2025-12-31] (3160518 rows) — skipping live bulk fetch
+2026-08-24 06:20:41,336 INFO real data: 2100/2298 universe tickers had >= 60 rows
+2026-08-24 06:20:41,339 INFO shared_panels: cached OHLCV (800, 60, '2019-01-01', '2025-12-31', '/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots', 800) (2,766,372 rows); hits=0 misses=1
+2026-08-24 06:20:41,343 INFO Universe resolved: 2317/2317 stocks pass filters (tier<=6, adtv_cr>=0.0, mcap_cr>=0)
+2026-08-24 06:20:53,129 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:53,465 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:53,704 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:53,943 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:54,211 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:54,530 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:54,924 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:55,354 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:55,486 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:55,601 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:55,755 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:55,897 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:56,037 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:56,196 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:56,341 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:56,475 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:56,620 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:56,784 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:56,926 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:57,057 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:57,189 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:57,326 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:57,460 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:57,602 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:57,749 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:57,894 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:58,038 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:58,170 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:58,320 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:58,472 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:58,627 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:58,799 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers
+2026-08-24 06:20:58,961 INFO Historical universe: 2317 active + 9 delisted-only = 2326 total tickers

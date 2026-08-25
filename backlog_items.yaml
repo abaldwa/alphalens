@@ -1,0 +1,342 @@
+---
+# Backlog Items (YAML format)
+# Last updated: 2026-08-25
+
+backlog_items:
+
+  # ============ BLOCKERS (Prevent backtest/deployment) ============
+
+  B-001:
+    title: "Implement overlapping portfolios in momentum strategies (R1-R12)"
+    description: |
+      Jegadeesh & Titman (1993) use K overlapping sub-portfolios with 1/K monthly replacement.
+      AlphaLens currently uses full portfolio replacement (100% turnover) each month.
+
+      Impact:
+      - Transaction cost structure ~2-3x higher than published (no overlap smoothing)
+      - Portfolio smoothness lower (less diversification benefit from overlap)
+      - Sharpe ratio differs from J&T baseline (0.68-0.95 in R1)
+      - Results don't match published research specification
+
+      Affects: R1 (core), R2 (if exists), R3 (skip-month), R4-R12 (all variants)
+
+      Fix: Refactor strategies/momentum_identity.py to implement K-portfolio overlapping structure.
+      Validation: Re-audit R1-R12 with updated momentum-strategy-audit after fix.
+
+    criticality: "BLOCKER"
+    found_by: "momentum-strategy-audit (Phase 2 test)"
+    found_in: "R1 audit (2026-08-25)"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R1", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"]
+
+  B-003:
+    title: "Fix momentum-strategy-audit false positive (R1 APPROVED despite BLOCKER issues)"
+    description: |
+      Phase 2 R1 audit returned APPROVED despite missing overlapping portfolios + skip-month.
+      Root cause: Audit prompt lacked explicit specification checklist and forced deviation inventory.
+
+      7 prevention mechanisms needed:
+      1. Specification-as-code: formal J&T definition with 15+ checklist items
+      2. Forced deviation inventory: enumerate ALL deviations (not just notable ones)
+      3. Citation requirements: specific pages/equations from papers (not paraphrasing)
+      4. Adversarial verification: "what if overlapping portfolios missing? Does cost match J&T?"
+      5. Multi-pass review: reconsider verdict after adversarial checks
+      6. Human expert gate: user spot-check 2-3 code sections before backtest
+      7. False positive QA tests: test agent with deliberate J&T violations; verify returns BLOCKED
+
+      Current prompt has none of these. Needs full rewrite with specification-as-code.
+
+      Fix: Update momentum-strategy-audit prompt in docs/agents/strategy-audit-prompts.md
+      - Add formal J&T specification with 15+ checklist items (overlapping portfolios, skip-month, etc.)
+      - Force enumeration of ALL deviations (not just surprising ones)
+      - Require citations for every claim
+      - Add adversarial verification section
+      - Change verdict logic: "APPROVED WITH CRITICAL NOTES" if BLOCKER/CRITICAL deviations found
+
+      This fix BLOCKS B-001 re-audit until completed.
+
+    criticality: "CRITICAL"
+    found_by: "user-manual-review (post-Phase-2)"
+    found_in: "R1 audit discovery (2026-08-25)"
+    depends_on: []
+    owner: null
+    status: "open"
+    blocks: ["B-001", "B-002", "B-004", "B-005", "B-006"]
+
+  # ============ CRITICAL (Major functionality broken) ============
+
+  B-002:
+    title: "Implement one-month skip variant for momentum ranking (R1 + variants)"
+    description: |
+      Jegadeesh & Titman (1993) rank on returns from month -K to month -2 (skip month -1).
+      AlphaLens ranks all K months (month -K to month 0), including month -1.
+
+      Skip-month prevents bid-ask bounce effect; Fama-French data shows ~0.05-0.10 Sharpe improvement.
+
+      Current impact: R1 Sharpe ~0.85; with skip-month should be ~0.90-0.95.
+      Lost performance: ~0.05-0.10 Sharpe (significant for momentum)
+
+      Affects: R1 (core), R3 (already has skip-month variant), R4-R12 (need variant)
+
+      Fix: Create R1-skip variant or update R3 implementation for reuse.
+      Validation: Backtest R1-skip variant, compare Sharpe to R1 base.
+
+    criticality: "HIGH"
+    found_by: "momentum-strategy-audit (Phase 2 test)"
+    found_in: "R1 audit (2026-08-25)"
+    depends_on: ["B-003", "B-001"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R1", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"]
+
+  B-004:
+    title: "Verify R1 lookback periods match Jegadeesh & Titman (1993)"
+    description: |
+      J&T use 3, 6, 9, 12-month lookbacks exclusively.
+      AlphaLens R1 uses: 3, 6, 9, 12 months ✓ (VERIFIED)
+
+      Current state: This is CORRECT and matches published research.
+      But verification audit was not formally documented.
+
+      Fix: Add formal verification to R1 audit notes.
+      Status: Can be marked APPROVED once B-003 (audit prompt fix) is done.
+
+    criticality: "HIGH"
+    found_by: "momentum-strategy-audit (Phase 2 test)"
+    found_in: "R1 audit (2026-08-25)"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    note: "Currently correct; needs formal verification only"
+
+  B-005:
+    title: "Verify R1 universe filtering (ADTV floors, market-cap bands) matches J&T"
+    description: |
+      J&T paper doesn't specify ADTV or market-cap filters; uses broad NYSE universe.
+      AlphaLens R1 uses ADTV floors (configurable) and optional market-cap bands.
+
+      Current state: This is a DESIGN CHOICE (reasonable), not a deviation.
+      But choice is not documented as intentional.
+
+      Fix: Document why ADTV/market-cap filtering is applied (e.g., liquidity, execution constraints).
+      Add to R1 strategy registry or backtest_exclusions.py.
+
+      Impact: Medium — affects tradeable universe but results still comparable to J&T on broader set.
+
+    criticality: "MEDIUM"
+    found_by: "momentum-strategy-audit (Phase 2 test)"
+    found_in: "R1 audit (2026-08-25)"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+
+  B-006:
+    title: "Verify R1 rebalance frequency matches published research"
+    description: |
+      J&T use monthly rebalancing exclusively.
+      AlphaLens R1 uses: monthly ✓ (VERIFIED)
+
+      But R7 (crash-aware) uses 21-day cadence (intentional change for risk management).
+      R3/R10/others may have different cadences.
+
+      Fix: Audit all R-family strategies for intentional vs. accidental rebalance cadence changes.
+      Document each choice as design decision or deviation.
+
+      Impact: HIGH for strategies claiming J&T adherence; MEDIUM for variants.
+
+    criticality: "HIGH"
+    found_by: "momentum-strategy-audit (Phase 2 test)"
+    found_in: "R1 audit (2026-08-25)"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+    affects_strategies: ["R1", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"]
+
+  # ============ MEDIUM (Should fix within 2 weeks) ============
+
+  B-007:
+    title: "Fix fundamentals.announcement_date type (VARCHAR → DATE)"
+    description: |
+      Current: announcement_date is VARCHAR in DuckDB schema
+      Should be: DATE type for proper PIT-safety extraction
+
+      Impact: Makes it hard to extract metrics at announcement date (string parsing).
+      Affects: Fundamental strategies (not directly momentum, but blocks B-015 in Phase 3).
+
+      This is a data infrastructure issue, not momentum-specific.
+      Documented here for completeness.
+
+    criticality: "MEDIUM"
+    found_by: "backend-data-engineer (prior audit)"
+    found_in: "Fundamentals schema review"
+    depends_on: []
+    owner: null
+    status: "open"
+
+  B-008:
+    title: "Document regime-based position sizing gate in R9 + variants"
+    description: |
+      R9 (Moreira-Muir vol-scaling default) uses EMA-RSI regime gate to adjust exposure.
+      Decision to use 4-mode vol-scaling (instead of 2-mode) is not documented.
+
+      Fix: Add justification to R9 strategy notes or backtest_exclusions.py.
+      Also verify regime gate applies identically in live + backtest (signal parity check).
+
+      Impact: MEDIUM — good design choice but needs documentation for future maintainers.
+
+    criticality: "MEDIUM"
+    found_by: "momentum-strategy-audit"
+    found_in: "R9 audit notes"
+    depends_on: []
+    owner: null
+    status: "open"
+
+  B-009:
+    title: "Document R7 crash-aware rebalance cadence (21d vs. 30d monthly)"
+    description: |
+      R7 uses 21-day rebalancing (intentionally shorter than 30d) to catch market crashes faster.
+      Cadence choice is not documented in code or strategy registry.
+
+      Fix: Add R7-specific docs explaining 21d cadence rationale.
+      Also verify Phase 7 crash cadence testing results (B-009 depends on them).
+
+      Current testing: monthly (21d) misses 82.7% crashes; weekly (7d) catches 55.5%.
+      Need to finalize cadence choice and document.
+
+      Impact: MEDIUM — affects R7 portfolio transition timing but documented rationale missing.
+
+    criticality: "MEDIUM"
+    found_by: "momentum-strategy-audit"
+    found_in: "R7 audit (2026-08-25)"
+    depends_on: []
+    owner: null
+    status: "open"
+    note: "Waiting for Phase 7 cadence testing to complete (queue running)"
+
+  B-010:
+    title: "Audit R3 skip-month implementation against J&T spec"
+    description: |
+      R3 is skip-month variant; should rank months -K to -2 (skip month -1).
+      Validation: Verify R3 code correctly implements skip logic (no month -1 included).
+
+      Impact: R3 already implemented; just needs verification audit.
+      Dependency: Needs B-003 (audit prompt fix) to give reliable verdict.
+
+    criticality: "MEDIUM"
+    found_by: "momentum-strategy-audit"
+    found_in: "Phase 2 planning (2026-08-25)"
+    depends_on: ["B-003"]
+    owner: null
+    status: "open"
+
+  B-011:
+    title: "Verify R1-R12 Sharpe ratios vs. published benchmarks"
+    description: |
+      Once overlapping portfolios (B-001) and skip-month (B-002) implemented,
+      re-run R1-R12 backtests and compare Sharpe ratios to published research.
+
+      Expected baseline (if implementation matches):
+      - R1 (base): 0.68-0.95 Sharpe (Fama-French)
+      - R3 (skip-month): 0.91+ Sharpe (published mid-cap)
+      - R7 (crash-aware): ~0.80 Sharpe (reduced drawdown -27%→-21%)
+      - R8/R9 (vol-scaling): 0.75-0.85 Sharpe (improved Sharpe-to-volatility ratio)
+
+      Fix: Run full R-family backtest suite after B-001 + B-002 fixes.
+      Validate: Compare results to expected benchmarks; flag if >5% deviation.
+
+    criticality: "MEDIUM"
+    found_by: "momentum-strategy-audit"
+    found_in: "R-family validation planning"
+    depends_on: ["B-001", "B-002"]
+    owner: null
+    status: "open"
+    validation_gate: "Phase 4"
+
+  # ============ LOW (Nice-to-have) ============
+
+  B-012:
+    title: "Optimize R1 rebalance costs with overlapping portfolios"
+    description: |
+      Once overlapping portfolios implemented (B-001), transaction costs should drop.
+      Could save ~2-3% annually through smoother turnover.
+
+      This is an optimization, not a requirement.
+      Current full-replacement approach works; just suboptimal on costs.
+
+    criticality: "LOW"
+    found_by: "momentum-strategy-audit"
+    found_in: "B-001 discussion"
+    depends_on: ["B-001"]
+    owner: null
+    status: "open"
+
+  B-013:
+    title: "Add code comments documenting J&T specification in R1-R12"
+    description: |
+      Would help future maintainers understand design choices.
+      Example: "Overlapping portfolios: 1/K replaced monthly (Jegadeesh & Titman, 1993)"
+
+      Nice-to-have; code already correct (once B-001 + B-002 fixed).
+
+    criticality: "LOW"
+    found_by: "code-reviewer"
+    found_in: "Code quality audit"
+    depends_on: ["B-001", "B-002"]
+    owner: null
+    status: "open"
+
+---
+
+backlog_dependencies:
+
+  B-003:
+    description: "momentum-strategy-audit prompt fix (prerequisite for reliable audits)"
+    blocks: ["B-001", "B-002", "B-004", "B-005", "B-006", "B-010"]
+    blocked_by: []
+
+  B-001:
+    description: "overlapping portfolios implementation (affects all R-family)"
+    blocks: ["B-002", "B-011", "B-012"]
+    blocked_by: ["B-003"]
+
+  B-002:
+    description: "one-month skip implementation"
+    blocks: ["B-011"]
+    blocked_by: ["B-001", "B-003"]
+
+  B-004:
+    description: "verify R1 lookback periods"
+    blocks: []
+    blocked_by: ["B-003"]
+
+  B-005:
+    description: "verify R1 universe filtering"
+    blocks: []
+    blocked_by: ["B-003"]
+
+  B-006:
+    description: "verify R1 rebalance frequency + R-family cadence"
+    blocks: []
+    blocked_by: ["B-003"]
+
+  B-010:
+    description: "audit R3 skip-month implementation"
+    blocks: []
+    blocked_by: ["B-003"]
+
+  B-011:
+    description: "verify R1-R12 Sharpe vs. published benchmarks"
+    blocks: []
+    blocked_by: ["B-001", "B-002"]
+
+  B-012:
+    description: "optimize costs with overlapping portfolios"
+    blocks: []
+    blocked_by: ["B-001"]
+
+  B-013:
+    description: "add code comments for J&T spec"
+    blocks: []
+    blocked_by: ["B-001", "B-002"]

@@ -606,11 +606,15 @@ class MomentumAdapter:
             return
         if self._equity_history is None:
             self._equity_history = pd.Series(dtype=float)
+            if self.vol_scaling_mode:
+                logger.info(f"R9 {self.vol_scaling_mode}: initializing equity history")
         date_ts = pd.Timestamp(date) if not isinstance(date, pd.Timestamp) else date
         self._equity_history = pd.concat([
             self._equity_history,
             pd.Series([equity], index=[date_ts])
         ])
+        if self.vol_scaling_mode and len(self._equity_history) % 50 == 0:
+            logger.info(f"R9 {self.vol_scaling_mode}: equity history accumulated {len(self._equity_history)} days")
 
     def _is_crash_regime_today(self, as_of_date: date_type) -> bool:
         """
@@ -686,10 +690,11 @@ class MomentumAdapter:
             )
             date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
             mult = float(mult_series.get(date_ts, 1.0))
-            if mult != 1.0:
-                logger.debug(f"R9 {self.vol_scaling_mode}: {as_of_date} multiplier={mult:.4f}")
+            logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} multiplier={mult:.6f}")
             return mult
         except (ValueError, KeyError, Exception) as e:
             # Insufficient data or computation error, default to no scaling
             logger.warning(f"R9 {self.vol_scaling_mode}: computation error on {as_of_date}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return 1.0

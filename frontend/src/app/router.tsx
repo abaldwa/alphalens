@@ -107,11 +107,14 @@ export const router = createBrowserRouter([
   { path: '/backtest-report/strategy/:key', lazy: async () => ({ Component: (await import('@/pages/backtest-report/strategy-detail')).BacktestStrategyDetailPage }) },
 
   { path: '/backtest', lazy: async () => ({ Component: (await import('@/pages/backtest/BacktestPage')).BacktestPage }) },
+  { path: '/backlog', lazy: async () => ({ Component: (await import('@/pages/backlog')).BacklogPage }) },
   { path: '/backtest-experiments', lazy: async () => ({ Component: (await import('@/pages/backtest/ExperimentsPage')).ExperimentsPage }) },
   { path: '/backtest-regimes', lazy: async () => ({ Component: (await import('@/pages/backtest/RegimesPage')).RegimesPage }) },
 
   { path: '/ops', lazy: async () => ({ Component: (await import('@/pages/ops/OpsPage')).OpsPage }) },
   { path: '/macro', lazy: async () => ({ Component: (await import('@/pages/macro/MacroPage')).MacroPage }) },
+
+  { path: '/code-graph', lazy: async () => ({ Component: (await import('@/pages/code-graph/index')).default }) },
 
   { path: '/charts', lazy: async () => ({ Component: (await import('@/pages/symbol/SymbolOverviewPage')).SymbolOverviewPage }) },
 ])

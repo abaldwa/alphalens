@@ -111,6 +111,7 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 
 #### 1. **momentum-strategy-audit** (High-stakes momentum strategies)
 **Scope:**
+- **Backlog context (NEW):** Query open backlog items that might block or affect audit (e.g., B-003 "Fix momentum-strategy-audit prompt"); flag BLOCKER/CRITICAL items upfront
 - **External validation (NEW):**
   - Fetch momentum strategy definitions from 2-3 independent academic/practitioner sources (e.g., Fama-French momentum factor, Jegadeesh & Titman papers, momentum books, quantitative trading forums)
   - Compare published definitions against code implementation (lookback periods, ranking methodology, rebalance frequency)
@@ -120,14 +121,16 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - Universe filtering logic (ADTV floors, market-cap bands, sector inclusion/exclusion)
 - Signal generation rules (momentum ranking, tie-breaking, rebalance frequency)
 - Regime-based position sizing gates (EMA-RSI consistency with backtest)
+- **Incomplete items audit (NEW):** Propose backlog entries for discovered issues; link to existing items if duplicates
 
 **Invocation:** Strategy proposal for R-family momentum strategies (R1-R12)  
-**Cost:** ~18-22K tokens (includes internet research)  
+**Cost:** ~22-26K tokens (includes internet research + backlog check)  
 **Tools:** Read, Grep, Bash, WebSearch, WebFetch  
 **Parallelizes with:** technical-strategy-audit, fundamental-strategy-audit (all independent)
 
 #### 2. **technical-strategy-audit** (TA indicator strategies)
 **Scope:**
+- **Backlog context (NEW):** Query open backlog items affecting technical strategies (e.g., PIT violations, MACD parameter drifts); flag BLOCKER/CRITICAL items upfront
 - **External validation (NEW):**
   - Fetch indicator definitions from 2-3 independent sources (e.g., Investopedia, Trading View docs, academic papers on RSI/MACD/Bollinger Bands, Wilder's original RSI paper)
   - Compare published parameter ranges and trading rules against code implementation (e.g., RSI 30/70 overbought/oversold levels, MACD fast/slow EMA periods, band width calculation)
@@ -137,14 +140,16 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - Signal logic correctness (indicator state transitions, flip-flop prevention)
 - Point-in-time safety (no forward-looking indicator values)
 - Liquidity assumptions matching backtest (ADTV enforcement)
+- **Incomplete items audit (NEW):** Propose backlog entries for calculation mismatches, undocumented parameters, untested regime changes; link to existing items
 
 **Invocation:** Technical indicator strategy proposals  
-**Cost:** ~18-22K tokens (includes internet research)  
+**Cost:** ~22-26K tokens (includes internet research + backlog check)  
 **Tools:** Read, Grep, Bash, WebSearch, WebFetch  
 **Parallelizes with:** momentum-strategy-audit, fundamental-strategy-audit
 
 #### 3. **fundamental-strategy-audit** (Valuation/fundamentals strategies)
 **Scope:**
+- **Backlog context (NEW):** Query open backlog items affecting fundamental strategies (e.g., PIT violations, announcement_date type issues, delisting handling); flag BLOCKER/CRITICAL items upfront
 - **External validation (NEW):**
   - Fetch fundamental valuation strategy definitions from 2-3 independent sources (e.g., Damodaran valuation papers, Graham & Dodd classics, Greenblatt Magic Formula papers, Piotroski F-Score research)
   - Compare published valuation metrics and ranking methodologies against code implementation (P/E, P/B, ROE thresholds, Piotroski score calculation, historical backtest periods)
@@ -154,9 +159,10 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 - Forecast lag validation (no using forward guidance)
 - Universe survivor bias (delisted company handling)
 - Benchmark selection for value vs. growth regimes
+- **Incomplete items audit (NEW):** Propose backlog entries for PIT violations, metric deviations, missing survivor bias tests; link to existing items
 
 **Invocation:** Fundamental strategy proposals  
-**Cost:** ~18-22K tokens (includes internet research)  
+**Cost:** ~22-26K tokens (includes internet research + backlog check)  
 **Tools:** Read, Grep, Bash, WebSearch, WebFetch  
 **Parallelizes with:** momentum-strategy-audit, technical-strategy-audit
 
@@ -166,15 +172,17 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 
 #### 4. **data-audit-agent** (Auto-run before backtest completion)
 **Scope:**
+- **Backlog context (NEW):** Query open data-related backlog items (OHLCV discontinuities, feature store corruptions, benchmark gaps); flag CRITICAL items that block audit
 - OHLCV source parity (Fyers consistency, legacy→Fyers discontinuities < 960 known gaps)
 - Point-in-time versioning (universe snapshots dated correctly per backtest date)
 - Feature store lineage (hybrid Stage 2 partition integrity, no ticker-subset corruptions)
 - Signal metadata completeness (every trade has run_id, version, timestamp)
 - Benchmark data availability (do bench series match backtest period?)
+- **Incomplete items audit (NEW):** Propose backlog entries for discovered data gaps, versioning issues, partition corruptions; link to existing items
 
 **Trigger:** Auto-audit before backtest completion (low-token, read-only)  
 **Frequency:** Full audit only before live-trading gates (not sampling per-run)  
-**Cost:** <12K tokens  
+**Cost:** <15K tokens (includes backlog check)  
 **Parallelizes with:** Any agent (audit is non-blocking, orthogonal)
 
 #### 5. **signal-parity-agent** (Live-vs-backtested parity)
@@ -223,6 +231,7 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
 
 #### 8. **enhanced-backtesting-agent** (Integrity + optimization orchestration)
 **Scope:**
+- **Backlog context (NEW):** Query open backlog items that relate to integrity checks (PIT violations, survivorship bias, costs, liquidity); flag any that match failing checks
 - Orchestrate 12 post-run integrity checks in parallel:
   - `check_01_walk_forward`, `check_02_pit`, `check_03_corp_actions`, `check_04_survivorship`
   - `check_05_costs`, `check_06_liquidity`, `check_07_no_hpo_on_test`
@@ -236,9 +245,10 @@ that were wrong. Numbers that look reasonable are not evidence of correctness.
   - Ticker-by-ticker optimization (iterate 1 ticker per year, persist results, check previous runs)
   - Benchmark parity verification (generate benchmark results for same duration)
   - Data/metrics completeness (ensure all required fields captured)
+- **Incomplete items audit (NEW):** For each failing check, propose backlog entry with criticality (CRITICAL for PIT/survivorship, HIGH for costs/liquidity); link to existing related items; block backtest if BLOCKER/CRITICAL found
 
 **Invocation:** After backtest run completes (always)  
-**Cost:** ~20-25K tokens  
+**Cost:** ~25-30K tokens (includes backlog linking + integrity checks)  
 **Parallelizes with:** memory-management-agent (coordinate OOM decisions)
 
 ---

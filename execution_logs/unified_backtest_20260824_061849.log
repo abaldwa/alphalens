@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/home/amit/projects/AlphaLens/backtest/run_strategy_queue.py", line 753, in <module>
+    main()
+  File "/home/amit/projects/AlphaLens/backtest/run_strategy_queue.py", line 743, in main
+    summary = run_queue(
+              ^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_strategy_queue.py", line 617, in run_queue
+    result = _run_job(job, i, suffix)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_strategy_queue.py", line 174, in _run_job
+    cmd = _job_to_cmd(job, job_index, report_suffix)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/amit/projects/AlphaLens/backtest/run_strategy_queue.py", line 144, in _job_to_cmd
+    raise ValueError(f"job[{job_index}] (kind={kind}): unknown field(s) {sorted(unknown)} — allowed: {sorted(allowed)}")
+ValueError: job[0] (kind=orchestrator): unknown field(s) ['_description', '_stage'] — allowed: ['annual_reset_ltcg_exemption', 'annual_reset_ltcg_rate', 'annual_reset_no_top_up', 'annual_reset_regime_label', 'bear_drawdown_pct', 'capital_mode', 'channel', 'circuit_band_pct', 'combo_templates', 'crash_disable_buys', 'crash_drawdown_threshold', 'crash_reduce_sizing', 'crash_regime_enabled', 'crash_vol_lookback_days', 'crash_vol_percentile_threshold', 'defer_db_writes', 'disable_buys_in_regime', 'downtrend_filter_pct', 'end_date', 'exit_variant', 'horizon_bucket', 'initial_capital', 'lookback_months', 'max_hold_days', 'max_tickers', 'min_adtv_cr', 'min_dsr_threshold', 'min_history_days', 'ohlcv_snapshot_dir', 'precomputed_matches_dir', 'prefetch_feature_parquets', 'preset', 'quality_gate_max_m_score', 'quality_gate_min_f_score', 'rank_band_id', 'rank_method', 'rebalance_cadence_days', 'regime_method', 'regime_type', 'sip_amount', 'skip_months', 'start_date', 'strategy_family', 'strategy_id', 'template_name', 'top_n', 'top_sectors', 'universe_spec', 'vol_scaling_leverage_cap', 'vol_scaling_lookback_days', 'vol_scaling_mode', 'vol_target_enabled', 'vol_target_leverage_cap', 'vol_target_lookback_days', 'vol_target_pct', 'volatility_measure']

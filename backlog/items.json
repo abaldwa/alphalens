@@ -1,0 +1,178 @@
+[
+  {
+    "item_id": "ARCH-001",
+    "title": "Clarify StrategyAdapter protocol: actual vs. spec mismatch",
+    "category": "blocker",
+    "status": "blocked",
+    "priority": 1,
+    "criticality": "critical",
+    "reason_critical": "Spec describes 3-method interface (generate_signals, generate_portfolio, execute_trades) but actual protocol only has 2 methods (generate_signals, feature_vector). Implementation will fail at step 1.",
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "ARCH-002",
+    "title": "Reconcile existing ml_adapter.py: is it a StrategyAdapter or result translator?",
+    "category": "blocker",
+    "status": "blocked",
+    "priority": 1,
+    "criticality": "critical",
+    "reason_critical": "ml_adapter.py already exists but serves a different purpose (result-schema translation). Risk of duplication or architectural conflict.",
+    "blocks_on": ["ARCH-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "ARCH-003",
+    "title": "Verify BacktestEngine architecture decision: 'wrap, don't refactor' still valid?",
+    "category": "blocker",
+    "status": "blocked",
+    "priority": 1,
+    "criticality": "critical",
+    "reason_critical": "2026-07-20 decision in BacktestUmbrellaPlan.md may conflict with spec. Need clarity on refactor scope.",
+    "blocks_on": ["ARCH-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "SPEC-001",
+    "title": "Run /speckit-clarify: answer 3 architectural questions",
+    "category": "research",
+    "status": "pending",
+    "priority": 1,
+    "criticality": "high",
+    "reason_critical": "Unblocks all implementation. Required by Spec-Kit workflow. Answers: (1) Adapt 2-method protocol or different interface? (2) Extend or replace ml_adapter.py? (3) Allow BacktestEngine refactor?",
+    "blocks_on": ["ARCH-001", "ARCH-002", "ARCH-003"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "SPEC-002",
+    "title": "Update spec.md: correct StrategyAdapter interface (2 methods, not 3)",
+    "category": "defect",
+    "status": "pending",
+    "priority": 2,
+    "criticality": "high",
+    "reason_critical": "Spec must match codebase before implementation. Wrong interface specification blocks all implementation tasks.",
+    "blocks_on": ["SPEC-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "SPEC-003",
+    "title": "Update data-model.md: remove non-existent methods (generate_portfolio, execute_trades)",
+    "category": "defect",
+    "status": "pending",
+    "priority": 2,
+    "criticality": "high",
+    "reason_critical": "Spec contracts must be accurate. Implementation targets wrong interface if not fixed.",
+    "blocks_on": ["SPEC-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "SPEC-004",
+    "title": "Update quickstart.md: validation tests reference non-existent methods",
+    "category": "defect",
+    "status": "pending",
+    "priority": 2,
+    "criticality": "high",
+    "reason_critical": "Quickstart tests must be runnable. Tests will fail immediately if methods don't exist.",
+    "blocks_on": ["SPEC-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "SPEC-005",
+    "title": "Update research.md: verify all design decisions against actual codebase",
+    "category": "defect",
+    "status": "pending",
+    "priority": 3,
+    "criticality": "medium",
+    "reason_critical": "Design phase assumed wrong architecture. Need re-validation to avoid implementation violating principles.",
+    "blocks_on": ["SPEC-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "IMPL-001",
+    "title": "Generate /speckit-tasks: create ordered implementation task list",
+    "category": "feature",
+    "status": "pending",
+    "priority": 1,
+    "criticality": "high",
+    "reason_critical": "Spec-Kit workflow gate. No implementation begins until tasks generated.",
+    "blocks_on": ["SPEC-002", "SPEC-003"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "IMPL-002",
+    "title": "Implement MLStrategyAdapter: generate_signals() method",
+    "category": "feature",
+    "status": "pending",
+    "priority": 1,
+    "criticality": "high",
+    "reason_critical": "Core signal generation. Blocks all other adapter methods and backtest functionality.",
+    "blocks_on": ["IMPL-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "IMPL-003",
+    "title": "Implement MLStrategyAdapter: feature_vector() method",
+    "category": "feature",
+    "status": "pending",
+    "priority": 1,
+    "criticality": "high",
+    "reason_critical": "Required by StrategyAdapter protocol. Adapter incomplete without it.",
+    "blocks_on": ["IMPL-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "IMPL-004",
+    "title": "Add ML adapter tests: unit + integration + parity with Technical/Momentum",
+    "category": "feature",
+    "status": "pending",
+    "priority": 2,
+    "criticality": "high",
+    "reason_critical": "Validates correctness before production use. No validation = production risk.",
+    "blocks_on": ["IMPL-002", "IMPL-003"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "IMPL-005",
+    "title": "Register ML strategies in strategy_registry with metadata",
+    "category": "feature",
+    "status": "pending",
+    "priority": 2,
+    "criticality": "medium",
+    "reason_critical": "Enables backtest orchestrator to find strategies. Without it, strategies not discoverable.",
+    "blocks_on": ["IMPL-002", "IMPL-003"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "BACKLOG-001",
+    "title": "Create backlog UI in React frontend",
+    "category": "feature",
+    "status": "in-progress",
+    "priority": 2,
+    "criticality": "medium",
+    "reason_critical": "Visibility + ease of tracking. Currently only tracked in memory/markdown.",
+    "assigned_to": "claude",
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "BACKLOG-002",
+    "title": "Create menu item 'Backlog' in main navigation",
+    "category": "feature",
+    "status": "in-progress",
+    "priority": 2,
+    "criticality": "medium",
+    "reason_critical": "UX discovery. Users can't find backlog if not in menu. Backlog hidden = never used.",
+    "assigned_to": "claude",
+    "blocks_on": ["BACKLOG-001"],
+    "created_at": "2026-08-25"
+  },
+  {
+    "item_id": "BACKLOG-003",
+    "title": "Document backlog workflows: add items, allocate, unblock",
+    "category": "feature",
+    "status": "pending",
+    "priority": 3,
+    "criticality": "medium",
+    "reason_critical": "Process clarity. Team knows how to manage backlog.",
+    "blocks_on": ["BACKLOG-001", "BACKLOG-002"],
+    "created_at": "2026-08-25"
+  }
+]

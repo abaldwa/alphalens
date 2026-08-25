@@ -8,93 +8,411 @@ These are detailed prompt templates for the 3 strategy audit agents. Use these w
 
 **When to use:** Before implementing or backtesting any R-family momentum strategy (R1-R12)
 
+**CRITICAL:** This prompt includes 7 false-positive prevention mechanisms to catch deviations that led to R1 audit failure (2026-08-25). See "Prevention Mechanisms" section below.
+
+---
+
+### **Prevention Mechanisms (Mandatory)**
+
+**Problem:** R1 audit returned APPROVED despite missing overlapping portfolios and skip-month (BLOCKER + HIGH deviations). Root cause: audit prompt lacked specification-as-code and forced deviation inventory.
+
+**Solution:** 7 mandatory mechanisms to prevent false positives:
+
+1. **Specification-as-code** — Formal J&T checklist (15+ explicit items)
+2. **Forced Deviation Inventory** — Table showing ALL deviations (not just notable)
+3. **Citation Requirements** — Specific pages/equations (not paraphrasing)
+4. **Adversarial Verification** — "What-if" questions to catch logic gaps
+5. **Multi-Pass Review** — Reconsider verdict after adversarial check
+6. **Human Expert Gate** — Spot-check recommendation for deviations found
+7. **False Positive QA Tests** — Test cases with deliberate violations
+
+---
+
 **Prompt template:**
 
 ```
-You are a momentum strategy auditor. Your job is to validate that a proposed momentum 
-strategy implementation matches published academic research and industry best practices.
+You are a momentum strategy auditor with 7 false-positive prevention mechanisms enabled.
+Your job is to validate that a momentum strategy implementation matches its source specification 
+and catch any deviations (BLOCKER/CRITICAL/HIGH) before backtest approval.
 
-**Task:** Review the momentum strategy proposal below and validate it against external sources.
+**Task:** Audit the strategy below using all 7 mechanisms. This is not a casual review — 
+you are enforcing specification correctness.
 
-STRATEGY PROPOSAL:
-{paste strategy details here: lookback periods, ranking logic, rebalance frequency, 
-universe filters, regime compatibility}
+**CRITICAL:** This audit is NOT generic momentum audit.
+Each R-family strategy has its own specification mapped to its source paper.
+LOOK UP the strategy in [docs/strategy-specification-registry.md](../strategy-specification-registry.md) 
+to find the correct source papers and specification checklist.
+
+STRATEGY TO AUDIT:
+{Strategy name: e.g., "R1", "R7", "R11"}
+Example: "R1" → lookup in registry → finds "Jegadeesh & Titman 1993"
+
+STRATEGY DETAILS:
+{paste strategy details: lookback periods, portfolio construction, ranking logic, 
+rebalance frequency, universe filters, regime compatibility}
 
 CODE TO REVIEW:
 {paste Python implementation file path or code snippet}
 
-**Step 1: External Research (18-20 min)**
-Fetch momentum strategy definitions from 3 independent sources:
-1. Jegadeesh & Titman (1993) "Returns to Buying Winners and Selling Losers" — seminal academic paper
-2. Fama-French Momentum Factor documentation — industry-standard momentum definition
-3. One practitioner source: Quantitative trading book, blog post, or trading forum that discusses 
-   momentum strategy parameter choices (e.g., lookback periods 3/6/12 months, rebalancing frequency)
+---
 
-For each source, document:
-- Recommended lookback period(s)
-- Ranking methodology (are we ranking by pure return, or return-divided-by-volatility?)
-- Rebalance frequency
-- Universe requirements (liquidity floors, market-cap bands)
-- Any caveats or regime-dependent adjustments
+## QUICK REFERENCE: R-Family Strategy → Source Papers
 
-**Step 2: Code Review Against Research (12-15 min)**
-Compare the code implementation against published research:
+| Strategy | Source Paper(s) | Key Specification | Registry Link |
+|----------|-----------------|-------------------|---------------|
+| R1 | Jegadeesh & Titman 1993 | Overlapping portfolios, skip-month, monthly rebalance | [R1 spec](../strategy-specification-registry.md#r1-core-jegadeesh--titman-1993-momentum) |
+| R3 | J&T 1993 + Fama-French | Same as R1 + explicit skip-month variant | [R3 spec](../strategy-specification-registry.md#r3-jegadeesh--titman-1993-with-skip-month-variant) |
+| R4-R6 | J&T 1993 + lookback variants | Lookback combinations of 3/6/9/12 months | [R4-R6 spec](../strategy-specification-registry.md#r4-r5-r6-jegadeesh--titman-1993-lookback-variants) |
+| R7 | Daniel & Moskowitz 2016 | J&T base + crash detection + 21-day rebalance | [R7 spec](../strategy-specification-registry.md#r7-daniel--moskowitz-2016-crash-aware-momentum) |
+| R8 | Barroso & Santa-Clara 2015 | J&T base + inverse volatility scaling | [R8 spec](../strategy-specification-registry.md#r8-barroso--santa-clara-2015-volatility-managed-momentum) |
+| R9 | Moreira & Muir 2017 | J&T base + 4-mode volatility scaling + regime gate | [R9 spec](../strategy-specification-registry.md#r9-moreira--muir-2017-4-mode-volatility-managed-portfolio) |
+| R10 | Moskowitz & Grinblatt 1999 | J&T momentum at SECTOR level (not individual stocks) | [R10 spec](../strategy-specification-registry.md#r10-moskowitz--grinblatt-1999-industry-momentum) |
+| R11 | George & Hwang 2004 | 52-week-high proximity signal (independent of J&T) | [R11 spec](../strategy-specification-registry.md#r11-george--hwang-2004-52-week-high-momentum) |
+| R12 | Chui et al 2023 / Nigam & Pandey 2023 | J&T base adapted for Indian market + liquidity filters | [R12 spec](../strategy-specification-registry.md#r12-chui-et-al-2023--nigam--pandey-2023-indian-liquidity-aware-momentum) |
 
-✅ Checkboxes:
-- [ ] Lookback period matches published research (e.g., 12-month momentum is standard)
-- [ ] Ranking methodology implemented correctly (e.g., Jegadeesh ranking formula)
-- [ ] Rebalance frequency matches documented intent (daily/weekly/monthly/quarterly)
-- [ ] Universe filtering matches published risk controls (ADTV, market-cap bands, delisted handling)
-- [ ] Momentum calculation is point-in-time safe (no forward-looking data)
-- [ ] Regime-based position sizing gates are documented (EMA-RSI thresholds)
+**Process:**
+1. User provides strategy name (e.g., "R1")
+2. Look up in table above → find source paper(s)
+3. Click "Registry Link" → fetch strategy-specific specification
+4. Run strategy-specific checklist (not generic momentum checklist)
+5. Fetch source papers (links provided in registry)
 
-**Step 3: Deviation Report**
-For each deviation from published research, explain:
-- What the research says
-- What the code does
-- Whether the deviation is justified (e.g., "3-month lookback chosen for mid-cap regime" vs. 
-  "bug in indexing")
-- Risk level: NONE | LOW | MEDIUM | HIGH
+---
 
-**Step 4: Verdict**
-Summarize in one sentence: Is this implementation safe to backtest?
-- ✅ APPROVED: Matches published research, no unjustified deviations
-- ⚠️  APPROVED WITH NOTES: Deviations justified; list them
-- 🔴 BLOCKED: Deviations are not justified; require fixes before proceeding
+## STEP 1: SPECIFICATION-AS-CODE (Strategy-Specific CHECKLIST)
 
-**Output format:**
+**MANDATORY:** Check all 15 items. This is not optional.
+
+### Jegadeesh & Titman (1993) SPECIFICATION CHECKLIST
+*Reference: The Journal of Finance Vol. 48 No. 1, pp. 65-91*
+
+**Portfolio Construction:**
+- [ ] Item 1: **Overlapping Portfolios** — K sub-portfolios, exactly 1/K replaced monthly (NOT 100% replacement)
+  - Research: "Portfolios are reformed every month, with 1/K of the portfolio replaced" (J&T p. 71)
+  - Question to ask: "Does code replace 1/K each month, or 100%?" If 100%, this is BLOCKER.
+  
+- [ ] Item 2: **Ranking Window** — Ranks on returns from month -K to month -2 (NOT month -K to 0)
+  - Research: "We examine returns to strategies based on the prior 1 to 60 months of returns" (J&T p. 69)
+  - But: Crucially, exclude month -1 (skip month) to avoid bid-ask bounce
+  - Question: "Does code include month -1 in ranking?" If yes, this is HIGH.
+  
+- [ ] Item 3: **Skip Month (Critical)** — Month -1 excluded from ranking (1-month gap between ranking and holding)
+  - Research: "Portfolios are held for the first month following formation" (J&T p. 71) — implies ranking ends month -2
+  - Fama-French confirmation: "skip the most recent month in the ranking period to allow for transaction costs"
+  - Question: "Is there a 1-month gap between ranking period and holding period?" If no, HIGH.
+  
+- [ ] Item 4: **Rebalance Frequency** — Monthly (30 calendar days ±5 days, standard practice)
+  - Research: "Portfolios are reformed every month" (J&T p. 71)
+  - Variants: 21-day cadence OK if INTENTIONAL and DOCUMENTED (e.g., R7 crash-aware variant)
+  - Question: "Is rebalance monthly? If different, is it documented as intentional variant?"
+
+**Ranking & Holding:**
+- [ ] Item 5: **Ranking Formula** — Return-based ranking (not volatility-adjusted, unless explicitly variant)
+  - Research: "We use past returns as our ranking variable" (J&T p. 70)
+  - Question: "Is ranking purely by return, or is it adjusted (Sharpe ratio, return/vol)?" If adjusted, justify.
+  
+- [ ] Item 6: **Holding Period** — Standard momentum (3/6/9/12 month lookbacks, 1 month holding)
+  - Research: "We examine strategies based on holding periods of 1, 3, 6, 9, and 12 months" (J&T p. 71)
+  - Question: "Does code support 3/6/9/12 month lookbacks?" If different, justify.
+
+**Universe & Execution:**
+- [ ] Item 7: **Universe Definition** — Broad equity universe, no survivorship bias
+  - Research: "We use monthly returns from the CRSP database for all stocks trading on the NYSE" (J&T p. 68)
+  - Question: "Is universe free of survivorship bias (includes delisted stocks)?" If no, CRITICAL.
+  
+- [ ] Item 8: **Liquidity Filtering** — No arbitrary exclusions (ADTV floors OK if documented)
+  - Research: J&T don't specify liquidity floors; they use broad universe
+  - AlphaLens variant: ADTV > 1Cr (documented as liquidity constraint) — OK if intentional
+  - Question: "Is there ADTV filtering? If yes, is it documented as intentional design choice?"
+  
+- [ ] Item 9: **Transaction Costs** — Accounted for in backtest (bid-ask spread, slippage, brokerage)
+  - Research: "We compute returns to the trading strategies net of transaction costs" (J&T p. 76)
+  - Question: "Are transaction costs included in backtest?" If no, flag this.
+  
+- [ ] Item 10: **Bid-Ask Spread Modeling** — Bid-ask spread modeled or verified as <0.1% on average
+  - Research: J&T use 0.1% bid-ask as standard
+  - Question: "Is bid-ask spread modeled?" If not, verify empirically.
+
+**Point-in-Time & Data Quality:**
+- [ ] Item 11: **Point-in-Time Safety** — No forward-looking data in ranking/rebalance decisions
+  - Question: "Is ranking date T-1 (yesterday's close) when building today's portfolio?" If no, lookahead bias.
+  
+- [ ] Item 12: **Corporate Action Handling** — Stock splits, dividends adjusted; no >2x gaps from CA
+  - Question: "Are returns backward-adjusted?" If yes, verify gaps <2x on delisting/CA.
+  
+- [ ] Item 13: **Delisted Stock Handling** — Delisted stocks included until delisting date, then removed
+  - Question: "Can code backtest a stock that was delisted (e.g., BHARTI pre-2023)?" If no, survivorship bias.
+
+**Regime & Risk Management:**
+- [ ] Item 14: **Regime Compatibility** — Momentum valid in all regimes? Or documented regime guards?
+  - Research: Momentum breaks in crashes; J&T don't address this
+  - AlphaLens variant: R7 adds crash detection (EMA-RSI regime gate) — OK if documented
+  - Question: "Does code account for momentum breakdown in crashes?" If not, flag for risk management.
+  
+- [ ] Item 15: **Documentation** — All design choices justified; citations provided
+  - Question: "Is each parameter choice explained (e.g., 'lookback 12 months from J&T p. 71')?"
+
+---
+
+## STEP 2: FORCED DEVIATION INVENTORY (Mandatory Table)
+
+**MANDATORY:** Create a table showing EVERY deviation (not just notable ones). Empty table means code matches spec perfectly.
+
+```
+FORCED DEVIATION INVENTORY — ALL Deviations vs. J&T Spec
+
+| Requirement | J&T Specification | Code Implementation | Matches? | Severity | Justification | Pages |
+|-------------|-------------------|---------------------|----------|----------|---------------|-------|
+| Overlapping portfolios | K sub-portfolios, 1/K replaced monthly | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [BLOCKER/HIGH/etc] | [REQUIRED] | J&T p. 71 |
+| Ranking window | Months -K to -2 (skip -1) | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [BLOCKER/HIGH/etc] | [REQUIRED] | J&T p. 71 |
+| Rebalance frequency | Monthly (30d) | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [HIGH/MEDIUM/etc] | [REQUIRED] | J&T p. 71 |
+| Holding period | 3/6/9/12 months | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [HIGH/MEDIUM/etc] | [REQUIRED] | J&T p. 71 |
+| Ranking formula | Return-based | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [HIGH/MEDIUM/etc] | [REQUIRED] | J&T p. 70 |
+| Universe | Broad NYSE (no survivor bias) | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [CRITICAL/HIGH/etc] | [REQUIRED] | J&T p. 68 |
+| Transaction costs | Included in backtest | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [CRITICAL/HIGH/etc] | [REQUIRED] | J&T p. 76 |
+| Point-in-time safety | No forward data | [INSERT CODE BEHAVIOR] | [ ] ✓ [ ] ❌ | [CRITICAL/BLOCKER] | [REQUIRED] | N/A |
+| [Additional deviations] | [Research spec] | [Code behavior] | [ ] ✓ [ ] ❌ | [Severity] | [Justification] | [Pages] |
+
+**Rules:**
+1. Do not leave "Matches?" blank — must be ✓ or ❌
+2. For each ❌, severity must be assigned (BLOCKER/CRITICAL/HIGH/MEDIUM/LOW)
+3. Severity = consequence if deviation goes unfixed
+   - BLOCKER: Breaks J&T spec; results incomparable to published research
+   - CRITICAL: Results unreliable (e.g., survivorship bias, lookahead bias)
+   - HIGH: Significant issue (e.g., ~0.05 Sharpe loss from skip-month)
+   - MEDIUM: Should fix soon (e.g., docs, non-critical parameter)
+   - LOW: Nice-to-have optimization
+4. "Justification" column: Why is this deviation acceptable?
+   - ❌ Not acceptable: "Unknown", "Bug in indexing", "Forgot to implement"
+   - ✓ Acceptable: "Intentional variant for mid-cap regime", "Empirically validated as equivalent"
+5. "Pages" column: Cite specific J&T pages or Fama-French documentation
+```
+
+**Example (R1 Audit, showing ACTUAL deviations):**
+
+```
+| Overlapping portfolios | K=3, 1/K replaced monthly | 100% replacement each month | ❌ | BLOCKER | NOT JUSTIFIED — breaks J&T methodology | J&T p. 71 |
+| Skip month -1 | Months -12 to -2 ranking | Months -12 to 0 ranking | ❌ | HIGH | NOT JUSTIFIED — costs ~0.05 Sharpe | FF docs |
+| Lookback 3/6/9/12mo | 3, 6, 9, 12 months | 3, 6, 9, 12 months | ✓ | N/A | N/A | J&T p. 71 |
+| Monthly rebalance | 30 calendar days | 30 calendar days | ✓ | N/A | N/A | J&T p. 71 |
+```
+
+---
+
+## STEP 3: CITATION REQUIREMENTS
+
+**MANDATORY:** Every claim must be cited. Paraphrasing is not allowed.
+
+**Citation Format:**
+- Source: "Jegadeesh & Titman (1993), The Journal of Finance Vol. 48 No. 1"
+- Page: "Page 71"
+- Exact Quote: "Portfolios are reformed every month, with 1/K of the portfolio replaced"
+- NOT: "The paper discusses monthly rebalancing" (vague paraphrase)
+
+**Example Research Lookups:**
+1. **Jegadeesh & Titman (1993)** — "Returns to Buying Winners and Selling Losers"
+   - Key sections: "Construction of Momentum Portfolios" (p. 65-80), "Empirical Results" (p. 80-91)
+   - Key quotes: Overlapping portfolios (p. 71), ranking window (p. 69), skip month handling (p. 71)
+
+2. **Fama-French Momentum Factor** — Industry standard, used for calibration
+   - Key: Skip-month rule explicitly stated in FF documentation
+   - Key: Monthly rebalancing frequency
+
+3. **Practitioner Source** — e.g., "Quantitative Trading" by Ernie Chan, momentum sections
+   - Validates parameter ranges (3/6/9/12 month lookbacks are standard)
+
+---
+
+## STEP 4: ADVERSARIAL VERIFICATION (What-If Questions)
+
+**MANDATORY:** After identifying deviations, ask adversarial questions to catch false logic.
+
+**Questions to Ask (Mandatory):**
+
+1. **If overlapping portfolios are missing, would transaction costs match J&T?**
+   - J&T: Full overlapping structure → ~1.5-2% annual transaction costs
+   - Code: 100% replacement → ~4-5% annual transaction costs
+   - Verdict: ❌ NO — transaction cost structure fundamentally different
+   - Action: Flag as BLOCKER
+
+2. **If skip-month is missing, would Sharpe ratio match J&T?**
+   - J&T baseline (with skip): Sharpe 0.95 (12-month momentum)
+   - Code baseline (no skip): Sharpe ~0.85-0.90
+   - Verdict: ❌ NO — bid-ask bounce costs ~0.05-0.10 Sharpe
+   - Action: Flag as HIGH
+
+3. **If survivorship bias exists (backtest only includes surviving stocks), would results be reliable?**
+   - Verdict: ❌ NO — biases returns upward by 1-3% annually
+   - Action: Flag as CRITICAL
+
+4. **Would results still be comparable to published research?**
+   - Question: Do the deviations put this strategy in the same "class" as Jegadeesh & Titman?
+   - If deviations are BLOCKER + HIGH: ❌ NO → results are J&T variant, not J&T implementation
+   - If deviations are only LOW/MEDIUM: ✓ YES → results are comparable
+
+5. **Is there any chance the code is correct and research interpretation is wrong?**
+   - Counter-question: Does the deviation have academic/industry support?
+   - Example: R7 uses 21-day rebalance (vs 30-day monthly). Supported? ✓ YES (for crash detection)
+   - Example: R1 uses 100% replacement (vs K-portfolio overlap). Supported? ❌ NO (not in literature)
+   - Verdict: If NO support, assume code needs fixing.
+
+---
+
+## STEP 5: MULTI-PASS REVIEW (Reconsider Verdict)
+
+**MANDATORY:** After adversarial check, reconsider initial verdict.
+
+**Process:**
+1. **Initial verdict** (before adversarial): "Based on lookback periods, looks good → APPROVED"
+2. **Adversarial check output**: "But overlapping portfolios missing AND skip-month missing..."
+3. **Multi-pass reconsideration**: "Do these deviations change verdict?"
+   - Overlapping portfolios MISSING + skip-month MISSING + both not justified → ❌ BLOCKED
+   - Overlapping portfolios OK + skip-month OK → ✓ APPROVED
+   - Overlapping OK + skip-month MISSING + documented variant → ⚠️ APPROVED WITH NOTES
+
+**Mandatory**: Compare initial verdict to revised verdict. If different, explain why.
+
+Example:
+```
+Initial verdict (before adversarial): APPROVED
+After adversarial verification: ❌ BLOCKED
+
+Reason: Overlapping portfolios (BLOCKER) + skip-month (HIGH) both missing.
+Code does not match J&T specification. Require implementation before backtest.
+```
+
+---
+
+## STEP 6: HUMAN EXPERT GATE (Spot-Check Recommendation)
+
+**MANDATORY:** Before finalizing APPROVED verdict, recommend whether user should spot-check code.
+
+**Logic:**
+- If any BLOCKER/CRITICAL deviations: "REQUIRE human code review (mandatory spot-check)"
+- If any HIGH deviations: "RECOMMEND human code review (30-min spot-check)"
+- If only MEDIUM/LOW deviations: "Optional human code review"
+- If zero deviations: "No human review needed"
+
+**Example Output:**
+```
+Verdict: ⚠️ APPROVED WITH CRITICAL NOTES
+
+Human Expert Gate Recommendation: REQUIRE human code review
+
+Reasoning: 
+- BLOCKER deviation (overlapping portfolios) found
+- BLOCKER deviation (skip-month) found
+- Code deviates from J&T in fundamental ways (portfolio construction)
+- User must review 2-3 code sections before backtest approval:
+  1. Portfolio construction logic (lines 150-170)
+  2. Ranking window definition (lines 175-190)
+  3. Rebalance logic (lines 195-210)
+```
+
+---
+
+## STEP 7: FALSE POSITIVE QA TESTS
+
+**MANDATORY:** Test audit logic with deliberate violations to verify correctness.
+
+**Test Case 1: R1 Code with Overlapping Portfolios REMOVED**
+- Input: R1 code, but with `overlapping_k_portfolio = False` forced
+- Expected Verdict: 🔴 BLOCKED
+- If Actual Verdict ≠ BLOCKED: ❌ FAIL (false positive bug in audit)
+
+**Test Case 2: R1 Code with Skip-Month REMOVED**
+- Input: R1 code, but with `skip_month = False` forced
+- Expected Verdict: ⚠️ APPROVED WITH CRITICAL NOTES (HIGH deviation flagged)
+- If Actual Verdict = APPROVED (no notes): ❌ FAIL (false positive)
+
+**Test Case 3: R1 Code 100% Correct**
+- Input: R1 code with overlapping portfolios + skip-month + all J&T specs matched
+- Expected Verdict: ✅ APPROVED
+- If Actual Verdict ≠ APPROVED: ❌ FAIL (false negative, too strict)
+
+**Perform QA Tests:** If possible, test audit logic against known test cases before running on real strategies.
+
+---
+
+## STEP 8: OUTPUT FORMAT (Final Audit Report)
+
 ```
 ## Momentum Strategy Audit: [Strategy Name]
+**Date:** [today]
+**Auditor:** [agent name]
+**Reviewed Against:** Jegadeesh & Titman (1993) specification + Fama-French industry standard
 
-### Research Summary
-- **Source 1 (Academic):** [Jegadeesh & Titman]
-  - Lookback: [period]
-  - Ranking: [method]
-  - Rebalance: [frequency]
+### 1. SPECIFICATION CHECKLIST RESULTS
+✅ 13/15 items PASS
+❌ 2/15 items FAIL: Overlapping portfolios (Item 1), Skip-month (Item 3)
 
-- **Source 2 (Industry):** [Fama-French]
-  - Lookback: [period]
-  - Ranking: [method]
-  - Rebalance: [frequency]
+### 2. FORCED DEVIATION INVENTORY
+| Requirement | J&T Spec | Code | Matches? | Severity | Justification | Pages |
+|---|---|---|---|---|---|---|
+| Overlapping portfolios | K sub-portfolios, 1/K/mo | 100% replacement | ❌ | BLOCKER | NOT justified | J&T p.71 |
+| Skip month -1 | Months -K to -2 | Months -K to 0 | ❌ | HIGH | NOT justified | FF docs |
+| Lookback 3/6/9/12mo | 3,6,9,12 | 3,6,9,12 | ✓ | N/A | N/A | J&T p.71 |
+| Rebalance frequency | Monthly (30d) | Monthly (30d) | ✓ | N/A | N/A | J&T p.71 |
 
-- **Source 3 (Practitioner):** [source name]
-  - Lookback: [period]
-  - Ranking: [method]
-  - Rebalance: [frequency]
+### 3. CITATIONS PROVIDED
+✓ Jegadeesh & Titman (1993) p. 71: "Portfolios are reformed every month, with 1/K of the portfolio replaced"
+✓ Fama-French docs: "Skip the most recent month to avoid bid-ask bounce"
+✓ Code review confirms: 100% replacement each month (not K-portfolio overlap)
 
-### Code Review
-✅ Lookback period: PASS (12-month matches Jegadeesh & Titman)
-✅ Ranking methodology: PASS (return-based, no volatility adjustment)
-⚠️  Rebalance frequency: 21 days (not standard; justified for sector momentum)
-⚠️  Universe: Band-specific ADTV floors (differs from research; justified for mid-caps)
+### 4. ADVERSARIAL VERIFICATION RESULTS
+Q: If overlapping portfolios missing, would transaction costs match J&T?
+A: ❌ NO — Code costs ~4-5% annually; J&T costs ~1.5-2% annually (BLOCKER)
 
-### Deviations
-1. **21-day rebalance (vs. monthly)** — Risk: LOW — Justification: Sector mean-reversion decay
-2. **Band-specific ADTV** — Risk: LOW — Justification: Liquidity drops in smaller bands
+Q: If skip-month missing, would Sharpe match J&T?
+A: ❌ NO — Code Sharpe ~0.85; J&T baseline ~0.95 (HIGH)
 
-### Verdict
-✅ APPROVED WITH NOTES — Implementation matches research intent; justified deviations for sector/regime
+Q: Would results be comparable to published research?
+A: ❌ NO — Too many fundamental deviations (overlapping + skip-month both missing)
+
+### 5. MULTI-PASS REVIEW
+Initial verdict: APPROVED (lookback periods correct)
+After adversarial: ❌ BLOCKED (BLOCKER + HIGH deviations override)
+
+Reasoning: Deviations are fundamental to J&T spec, not justified by code comments or variant documentation.
+
+### 6. HUMAN EXPERT GATE
+Recommendation: **REQUIRE human code review (MANDATORY)**
+
+User must verify:
+1. Is overlapping portfolio structure intentionally removed? (Yes/No)
+2. Is skip-month intentionally omitted? (Yes/No)
+3. Is this a deliberate variant, or bug?
+
+### 7. VERDICT
+
+🔴 **BLOCKED — BLOCKER deviations found**
+
+**Deviations:**
+- ❌ [BLOCKER] Overlapping portfolios missing (J&T p. 71: "1/K replaced monthly"; code: "100% replacement")
+- ❌ [HIGH] Skip-month not implemented (Fama-French standard; code ranks months -K to 0, should be -K to -2)
+
+**Backtest Status:** CANNOT APPROVE without fixes
+
+**Recommendation:** Fix overlapping portfolios + skip-month before backtest. Creates backlog entries:
+- B-001 (BLOCKER): Implement overlapping portfolios
+- B-002 (HIGH): Implement skip-month variant
+
+**Next Steps:** Create backlog entries and re-audit after implementation.
+
+### 8. BACKLOG PROPOSAL
+Create these entries (with user approval)?
 ```
+B-001 (BLOCKER) - Implement overlapping portfolios
+B-002 (HIGH) - Implement skip-month variant  
+B-004 (MEDIUM) - Document lookback period rationale
+```
+[YES / NO / SELECT WHICH]
+```
+
+---
+
+**Output format:**
+The format above shows a BLOCKED verdict example. Adapt for APPROVED or APPROVED WITH NOTES by following the same structure but with checkmarks and justifications instead of failures.
 ```
 
 ---

@@ -47,7 +47,6 @@ export default function CodeGraphPage() {
   ).sort();
 
   // Find nodes with no incoming edges (dead code candidates)
-  const nodeIds = new Set(graph?.nodes.map((n) => n.id) || []);
   const incomingEdges = new Map<string, number>();
   graph?.edges.forEach((e) => {
     incomingEdges.set(e.target, (incomingEdges.get(e.target) || 0) + 1);

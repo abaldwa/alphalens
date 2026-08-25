@@ -1018,6 +1018,34 @@ _CREATE_MARKET_REGIMES = """
     )
 """
 
+_CREATE_BACKLOG_ITEMS = """
+    CREATE TABLE IF NOT EXISTS backlog_items (
+        item_id VARCHAR NOT NULL PRIMARY KEY,
+        title VARCHAR NOT NULL,
+        description TEXT,
+        category VARCHAR NOT NULL,
+        status VARCHAR NOT NULL DEFAULT 'pending',
+        priority INTEGER NOT NULL DEFAULT 3,
+        criticality VARCHAR NOT NULL DEFAULT 'medium',
+        reason_critical TEXT,
+        assigned_to VARCHAR,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
+_CREATE_BACKLOG_DEPENDENCIES = """
+    CREATE TABLE IF NOT EXISTS backlog_dependencies (
+        dependent_id VARCHAR NOT NULL,
+        blocks_on_id VARCHAR NOT NULL,
+        reason TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        PRIMARY KEY (dependent_id, blocks_on_id),
+        FOREIGN KEY (dependent_id) REFERENCES backlog_items(item_id),
+        FOREIGN KEY (blocks_on_id) REFERENCES backlog_items(item_id)
+    )
+"""
+
 _ALL_TABLES = {
     "market_regimes": _CREATE_MARKET_REGIMES,
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
@@ -1057,6 +1085,8 @@ _ALL_TABLES = {
     "momentum_rebalance_suggestions": _CREATE_MOMENTUM_REBALANCE_SUGGESTIONS,
     "momentum_rebalance_state": _CREATE_MOMENTUM_REBALANCE_STATE,
     "momentum_strategy_configs": _CREATE_MOMENTUM_STRATEGY_CONFIGS,
+    "backlog_items": _CREATE_BACKLOG_ITEMS,
+    "backlog_dependencies": _CREATE_BACKLOG_DEPENDENCIES,
 }
 
 # [AS BUILT, P2.1] This project has no formal migration system — `CREATE
