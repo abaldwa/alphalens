@@ -25,6 +25,10 @@ catboost_info/
 .pytest_cache/
 .coverage
 
+# Code graph + data catalogue (generated, regenerated via post-commit hook)
+docs/codegraph/
+frontend/public/code-graph/
+
 # Claude Code local tool settings/lock files (machine-specific, not project source)
 .claude/
 
