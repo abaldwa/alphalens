@@ -664,6 +664,8 @@ class MomentumAdapter:
         Note: R8 takes precedence if both are set (backward-compat).
         """
         if self._equity_history is None or self._equity_history.empty:
+            if self.vol_scaling_mode is not None:
+                logger.warning(f"R9 {self.vol_scaling_mode}: no equity history yet (as_of={as_of_date}), returning 1.0")
             return 1.0
 
         # R8 takes precedence over R9 if both are set (backward-compat)
@@ -683,7 +685,11 @@ class MomentumAdapter:
                 leverage_cap=self.vol_scaling_leverage_cap,
             )
             date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
-            return float(mult_series.get(date_ts, 1.0))
-        except (ValueError, KeyError, Exception):
+            mult = float(mult_series.get(date_ts, 1.0))
+            if mult != 1.0:
+                logger.debug(f"R9 {self.vol_scaling_mode}: {as_of_date} multiplier={mult:.4f}")
+            return mult
+        except (ValueError, KeyError, Exception) as e:
             # Insufficient data or computation error, default to no scaling
+            logger.warning(f"R9 {self.vol_scaling_mode}: computation error on {as_of_date}: {e}")
             return 1.0
