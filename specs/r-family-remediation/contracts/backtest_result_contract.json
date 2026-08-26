@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BacktestRunResult Contract",
+  "description": "Schema for backtest execution results stored in DuckDB backtest_runs table. Used by Phase 1 (B-014, B-015) queue execution validation.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "strategy_id",
+    "symbol",
+    "start_date",
+    "end_date",
+    "sharpe",
+    "calmar",
+    "max_drawdown",
+    "total_return",
+    "num_trades",
+    "created_at"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this backtest run"
+    },
+    "strategy_id": {
+      "type": "string",
+      "enum": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"],
+      "description": "Which R-family strategy was tested"
+    },
+    "symbol": {
+      "type": "string",
+      "description": "Stock ticker, or 'COMPOSITE' for multi-symbol backtest"
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Backtest start date (YYYY-MM-DD)"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Backtest end date (YYYY-MM-DD)"
+    },
+    "sharpe": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 3.0,
+      "description": "Annual Sharpe ratio (risk-adjusted return); valid range -1 to 3"
+    },
+    "calmar": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Calmar ratio (annual return / max drawdown); range 0-1"
+    },
+    "max_drawdown": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 0.0,
+      "description": "Maximum drawdown as decimal; e.g., -0.273 means -27.3%"
+    },
+    "total_return": {
+      "type": "number",
+      "description": "Total cumulative return as decimal; e.g., 1.25 means +125%"
+    },
+    "num_trades": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total number of trades executed in backtest"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when backtest completed"
+    },
+    "fold_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional: walk-forward fold index (0-9 for 10-fold validation)"
+    },
+    "robustness_check_status": {
+      "type": "string",
+      "enum": ["pass", "fail", "na"],
+      "description": "Did this run pass robustness checks (fold_stability, benchmarks)?"
+    },
+    "robustness_check_failure_reason": {
+      "type": "string",
+      "description": "If robustness_check_status='fail', reason why (e.g., 'fold_stability < 0.5')"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "run_id": "a1b2c3d4-e5f6-4a8b-9c0d-1e2f3a4b5c6d",
+      "strategy_id": "R12",
+      "symbol": "COMPOSITE",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "sharpe": 0.72,
+      "calmar": 0.45,
+      "max_drawdown": -0.273,
+      "total_return": 3.87,
+      "num_trades": 312,
+      "created_at": "2026-08-28T10:30:00Z",
+      "fold_id": null,
+      "robustness_check_status": "fail",
+      "robustness_check_failure_reason": "fold_stability=0.42 < 0.5"
+    }
+  ]
+}

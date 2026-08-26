@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RemediationItem Contract",
+  "description": "Schema for remediation backlog items (B-001 through B-029). Used to track remediation work across all 4 phases.",
+  "type": "object",
+  "required": [
+    "item_id",
+    "title",
+    "category",
+    "severity",
+    "phase",
+    "status",
+    "estimate_hours"
+  ],
+  "properties": {
+    "item_id": {
+      "type": "string",
+      "pattern": "^B-\\d{3}$",
+      "description": "Unique identifier (B-001 through B-029)"
+    },
+    "title": {
+      "type": "string",
+      "description": "Short title of the remediation task"
+    },
+    "description": {
+      "type": "string",
+      "description": "Detailed problem statement and context"
+    },
+    "category": {
+      "type": "string",
+      "enum": ["audit", "strategy_fix", "strategy_implementation", "infrastructure", "validation"],
+      "description": "Type of remediation work"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+      "description": "Impact severity if not addressed"
+    },
+    "phase": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4,
+      "description": "Which phase executes this item (0=Foundation, 1=Validation, 2=Robustness, 3=Fine-tuning, 4=Decision)"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["blocked", "pending", "in_progress", "complete", "deferred", "archived"],
+      "description": "Current state of the item"
+    },
+    "estimate_hours": {
+      "type": "number",
+      "minimum": 0.5,
+      "description": "Estimated effort in hours"
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^B-\\d{3}$"
+      },
+      "description": "List of item IDs this item depends on (items that must complete first)"
+    },
+    "gate_condition": {
+      "type": "string",
+      "description": "Criterion for item success (e.g., 'Sharpe unchanged or improved', 'DSR > 0.5')"
+    },
+    "gate_result": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "PENDING"],
+      "description": "Result of gate evaluation after execution"
+    },
+    "decision_rationale": {
+      "type": "string",
+      "description": "Why item passed, failed, or was deferred"
+    },
+    "remediated_strategy": {
+      "type": "string",
+      "enum": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", null],
+      "description": "Which strategy this item remediates (null if infrastructure/audit)"
+    },
+    "issue_type": {
+      "type": "string",
+      "enum": ["missing_implementation", "specification_violation", "audit_unreliability", "robustness_failure", "infrastructure_bug", null],
+      "description": "Category of issue being fixed"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "item_id": "B-003",
+      "title": "Fix momentum-strategy-audit prompt",
+      "description": "Rewrite audit prompt to use specification-as-code pattern with citation requirements; false positives currently prevent reliable verification",
+      "category": "audit",
+      "severity": "CRITICAL",
+      "phase": 0,
+      "status": "pending",
+      "estimate_hours": 2.5,
+      "depends_on": [],
+      "gate_condition": "Audit agent correctly identifies J&T deviations; test with deliberate violations",
+      "gate_result": "PENDING",
+      "decision_rationale": null,
+      "remediated_strategy": null,
+      "issue_type": "audit_unreliability"
+    },
+    {
+      "item_id": "B-026",
+      "title": "Fix R8 rebalance cadence (252d → 21d)",
+      "description": "Change R8 rebalance from annual (252d) to monthly (21d) per Barroso & Santa-Clara (2012) spec; annual defeats vol-scaling purpose",
+      "category": "strategy_fix",
+      "severity": "HIGH",
+      "phase": 0,
+      "status": "pending",
+      "estimate_hours": 1.5,
+      "depends_on": ["B-003"],
+      "gate_condition": "Sharpe unchanged or improved post-fix; vol-control metrics validated",
+      "gate_result": "PENDING",
+      "decision_rationale": null,
+      "remediated_strategy": "R8",
+      "issue_type": "specification_violation"
+    }
+  ]
+}
