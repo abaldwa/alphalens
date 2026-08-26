@@ -22,7 +22,7 @@ All inputs are OHLCV prices (PITRule.NONE — always same-day knowable).
 """
 
 import logging
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -44,14 +44,14 @@ PATTERN_FEATURES: List[str] = [
 # ── Geometric helpers ─────────────────────────────────────────────────────────
 
 
-def _peak_valley_idx(prices: np.ndarray, order: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+def _peak_valley_idx(prices: np.ndarray[Any, Any], order: int = 3) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
     """Return indices of local peaks and valleys within order-bars window."""
     peaks = argrelextrema(prices, np.greater_equal, order=order)[0]
     valleys = argrelextrema(prices, np.less_equal, order=order)[0]
     return peaks, valleys
 
 
-def _head_shoulders_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> float:
+def _head_shoulders_score(highs: np.ndarray[Any, Any], lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any]) -> float:
     """
     Head-and-shoulders: three peaks where middle peak (head) > the two shoulders,
     shoulders are roughly equal, and neckline is horizontal.
@@ -87,7 +87,7 @@ def _head_shoulders_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarra
         return 0.0
 
 
-def _double_bottom_score(lows: np.ndarray, closes: np.ndarray) -> float:
+def _double_bottom_score(lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any]) -> float:
     """
     Double bottom: two roughly equal troughs separated by a peak, with price
     recovering from the second trough.
@@ -117,7 +117,7 @@ def _double_bottom_score(lows: np.ndarray, closes: np.ndarray) -> float:
         return 0.0
 
 
-def _cup_handle_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> float:
+def _cup_handle_score(highs: np.ndarray[Any, Any], lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any]) -> float:
     """
     Cup-and-handle: U-shaped consolidation followed by brief pullback handle near
     prior high.
@@ -139,7 +139,7 @@ def _cup_handle_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -
         if p[0] <= 0:  # concave up (bowl shape) required
             return 0.0
         fit = np.polyval(p, x)
-        ss_res = np.sum((cup - fit) ** 2)
+        ss_res: float = np.sum((cup - fit) ** 2)
         ss_tot = np.sum((cup - cup.mean()) ** 2) + 1e-10
         r2_cup = max(0.0, 1 - ss_res / ss_tot)
 
@@ -158,8 +158,8 @@ def _cup_handle_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -
         return 0.0
 
 
-def _flag_pattern_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
-                        volumes: np.ndarray) -> float:
+def _flag_pattern_score(highs: np.ndarray[Any, Any], lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any],
+                        volumes: np.ndarray[Any, Any]) -> float:
     """
     Bull flag: sharp upward pole + consolidation channel with declining volume.
 
@@ -197,7 +197,7 @@ def _flag_pattern_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
         return 0.0
 
 
-def _wedge_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> float:
+def _wedge_score(highs: np.ndarray[Any, Any], lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any]) -> float:
     """
     Rising or falling wedge: converging trendlines (high slope ≠ low slope,
     lines converging toward each other).
@@ -230,8 +230,8 @@ def _wedge_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> flo
         return 0.0
 
 
-def _base_breakout_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
-                         volumes: np.ndarray) -> float:
+def _base_breakout_score(highs: np.ndarray[Any, Any], lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any],
+                         volumes: np.ndarray[Any, Any]) -> float:
     """
     Base breakout: extended consolidation base followed by volume-expansion breakout.
 
@@ -273,7 +273,7 @@ def _base_breakout_score(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray
 
 
 def _compute_row_pattern_scores(
-    op: np.ndarray, hi: np.ndarray, lo: np.ndarray, cl: np.ndarray, vol: np.ndarray, end: int,
+    op: np.ndarray[Any, Any], hi: np.ndarray[Any, Any], lo: np.ndarray[Any, Any], cl: np.ndarray[Any, Any], vol: np.ndarray[Any, Any], end: int,
 ) -> Dict[str, float]:
     """
     Compute the 6 pattern scores "as of" bar index `end - 1`, using only

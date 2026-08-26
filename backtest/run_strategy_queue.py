@@ -119,6 +119,8 @@ _ORCHESTRATOR_FLAGS = {
     "vol_target_enabled", "vol_target_pct", "vol_target_lookback_days", "vol_target_leverage_cap",
     # Phase 9 (R9): factor volatility scaling (Moreira-Muir)
     "vol_scaling_mode", "vol_scaling_lookback_days", "vol_scaling_leverage_cap",
+    # Phase R0: per-ticker volatility weighting (basket re-weighting)
+    "weight_method", "weight_lookback_days",
 } | _QUEUE_ONLY_ORCHESTRATOR_FIELDS
 _ITERATIVE_RETRAIN_FLAGS = {
     "horizon_days", "seed", "max_real_tickers", "min_history_days", "max_iterations", "plateau_patience",

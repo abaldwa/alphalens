@@ -149,7 +149,7 @@ Cluster E.2 follow-up (2026-07-07)
 import logging
 import math
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -213,12 +213,12 @@ DEEP_FORENSIC_FEATURES: List[str] = GROUP_D_FEATURES + GROUP_E_FEATURES + GROUP_
 # ── Benford's Law helper ──────────────────────────────────────────────────────
 
 
-def _benford_expected() -> np.ndarray:
+def _benford_expected() -> np.ndarray[Any, Any]:
     """Expected first-digit frequencies per Benford's Law (digits 1–9)."""
-    return np.array([math.log10(1 + 1 / d) for d in range(1, 10)])
+    return cast(np.ndarray[Any, Any], np.array([math.log10(1 + 1 / d) for d in range(1, 10)]))
 
 
-def _benford_mad(values: np.ndarray) -> float:
+def _benford_mad(values: np.ndarray[Any, Any]) -> float:
     """
     Mean Absolute Deviation from Benford's Law for leading digit distribution.
 
@@ -303,7 +303,7 @@ def _altman_z(
 # ── Peer outlier score ────────────────────────────────────────────────────────
 
 
-def _peer_outlier_z(value: float, peer_values: np.ndarray) -> float:
+def _peer_outlier_z(value: float, peer_values: np.ndarray[Any, Any]) -> float:
     """Z-score of a value within its peer group. Returns NaN if < 3 peers."""
     valid = peer_values[~np.isnan(peer_values)]
     if len(valid) < 3:

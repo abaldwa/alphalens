@@ -28,7 +28,7 @@ No fundamental or quarterly data consumed here.
 """
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -86,7 +86,7 @@ ADVANCED_TECHNICAL_FEATURES: List[str] = (
 # ── Wavelet helpers ───────────────────────────────────────────────────────────
 
 
-def _wavelet_features_series(prices: np.ndarray) -> Tuple[float, float, float, float]:
+def _wavelet_features_series(prices: np.ndarray[Any, Any]) -> Tuple[float, float, float, float]:
     """
     Decompose price series with db4 wavelet; return scalar features for the latest bar.
 
@@ -102,7 +102,7 @@ def _wavelet_features_series(prices: np.ndarray) -> Tuple[float, float, float, f
         approx = coeffs[0]  # low-frequency: trend
         details = coeffs[1:]  # high-frequency: noise layers
 
-        trend_energy = np.sum(approx ** 2)
+        trend_energy: float = np.sum(approx ** 2)
         noise_energy = sum(np.sum(d ** 2) for d in details)
         total_energy = trend_energy + noise_energy + 1e-10
 
@@ -134,7 +134,7 @@ def _wavelet_features_series(prices: np.ndarray) -> Tuple[float, float, float, f
 # ── Hurst exponent ────────────────────────────────────────────────────────────
 
 
-def _hurst_rs(x: np.ndarray) -> float:
+def _hurst_rs(x: np.ndarray[Any, Any]) -> float:
     """
     Hurst exponent via R/S (rescaled range) analysis.
 
@@ -183,7 +183,7 @@ def _hurst_rs(x: np.ndarray) -> float:
 # ── Entropy helpers ───────────────────────────────────────────────────────────
 
 
-def _approx_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> float:
+def _approx_entropy(series: np.ndarray[Any, Any], m: int = 2, r_factor: float = 0.2) -> float:
     """Approximate entropy (ApEn) for regularity/predictability."""
     n = len(series)
     if n < m + 2:
@@ -205,7 +205,7 @@ def _approx_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> fl
         return _NAN
 
 
-def _sample_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> float:
+def _sample_entropy(series: np.ndarray[Any, Any], m: int = 2, r_factor: float = 0.2) -> float:
     """Sample entropy — less biased than ApEn for short series."""
     n = len(series)
     if n < m + 2:
@@ -230,7 +230,7 @@ def _sample_entropy(series: np.ndarray, m: int = 2, r_factor: float = 0.2) -> fl
         return _NAN
 
 
-def _permutation_entropy(series: np.ndarray, order: int = 3, delay: int = 1) -> float:
+def _permutation_entropy(series: np.ndarray[Any, Any], order: int = 3, delay: int = 1) -> float:
     """Permutation entropy — captures ordinal patterns in the series."""
     n = len(series)
     if n < (order - 1) * delay + 1:
@@ -248,7 +248,7 @@ def _permutation_entropy(series: np.ndarray, order: int = 3, delay: int = 1) -> 
         counts = Counter(perms)
         n_perms = len(perms)
         probs = np.array(list(counts.values())) / n_perms
-        entropy = -np.sum(probs * np.log2(probs + 1e-10))
+        entropy: float = -np.sum(probs * np.log2(probs + 1e-10))
         # Normalise by max possible entropy = log2(order!)
         max_entropy = np.log2(factorial(order))
         return float(entropy / max_entropy) if max_entropy > 0 else np.nan
@@ -256,7 +256,7 @@ def _permutation_entropy(series: np.ndarray, order: int = 3, delay: int = 1) -> 
         return _NAN
 
 
-def _spectral_entropy(series: np.ndarray) -> float:
+def _spectral_entropy(series: np.ndarray[Any, Any]) -> float:
     """Spectral entropy from power spectral density."""
     n = len(series)
     if n < 8:
@@ -265,14 +265,14 @@ def _spectral_entropy(series: np.ndarray) -> float:
         freqs, psd = scipy.signal.periodogram(series)
         psd = psd[1:]  # drop DC component
         psd_norm = psd / (psd.sum() + 1e-10)
-        entropy = -np.sum(psd_norm * np.log2(psd_norm + 1e-10))
+        entropy: float = -np.sum(psd_norm * np.log2(psd_norm + 1e-10))
         max_ent = np.log2(len(psd_norm))
         return float(entropy / max_ent) if max_ent > 0 else np.nan
     except Exception:
         return _NAN
 
 
-def _fractal_dimension(series: np.ndarray) -> float:
+def _fractal_dimension(series: np.ndarray[Any, Any]) -> float:
     """
     Higuchi fractal dimension — measures irregularity.
 
@@ -310,7 +310,7 @@ def _fractal_dimension(series: np.ndarray) -> float:
 # ── Fractional differentiation ────────────────────────────────────────────────
 
 
-def _fracdiff_weights(d: float, size: int) -> np.ndarray:
+def _fracdiff_weights(d: float, size: int) -> np.ndarray[Any, Any]:
     """
     Compute fractional differentiation weights for order d.
 
@@ -323,10 +323,10 @@ def _fracdiff_weights(d: float, size: int) -> np.ndarray:
         if abs(w_k) < 1e-5:
             break
         w.append(w_k)
-    return np.array(w[::-1])  # oldest weight first
+    return cast(np.ndarray[Any, Any], np.array(w[::-1]))  # oldest weight first
 
 
-def _apply_fracdiff(series: np.ndarray, d: float) -> np.ndarray:
+def _apply_fracdiff(series: np.ndarray[Any, Any], d: float) -> np.ndarray[Any, Any]:
     """Apply fractional differencing of order d; returns same-length array with leading NaNs.
 
     [PERF 2026-08-09, A82] The per-position `np.dot` loop is replaced by a
@@ -340,13 +340,13 @@ def _apply_fracdiff(series: np.ndarray, d: float) -> np.ndarray:
     n = len(series)
     weights = _fracdiff_weights(d, n)
     w_len = len(weights)
-    result = np.full(n, np.nan)
+    result: np.ndarray[Any, Any] = np.full(n, np.nan)
     if w_len <= n:
         result[w_len - 1:] = np.correlate(series, weights, mode="valid")
     return result
 
 
-def _optimal_fracdiff_d(log_prices: np.ndarray, target_adf_threshold: float = -3.5) -> float:
+def _optimal_fracdiff_d(log_prices: np.ndarray[Any, Any], target_adf_threshold: float = -3.5) -> float:
     """
     Find minimum d such that the fracdiff series is stationary, via a real
     Augmented Dickey-Fuller test (statsmodels.tsa.stattools.adfuller) on
@@ -418,7 +418,7 @@ def _optimal_fracdiff_d(log_prices: np.ndarray, target_adf_threshold: float = -3
 # ── Complexity helpers ────────────────────────────────────────────────────────
 
 
-def _lyapunov_proxy(series: np.ndarray, lag: int = 1) -> float:
+def _lyapunov_proxy(series: np.ndarray[Any, Any], lag: int = 1) -> float:
     """
     Proxy for the largest Lyapunov exponent using average log-divergence.
 
@@ -445,7 +445,7 @@ def _lyapunov_proxy(series: np.ndarray, lag: int = 1) -> float:
         return _NAN
 
 
-def _rqa_recurrence_rate(series: np.ndarray, threshold_pct: float = 0.20) -> float:
+def _rqa_recurrence_rate(series: np.ndarray[Any, Any], threshold_pct: float = 0.20) -> float:
     """
     Recurrence Quantification Analysis: recurrence rate.
 
@@ -466,7 +466,7 @@ def _rqa_recurrence_rate(series: np.ndarray, threshold_pct: float = 0.20) -> flo
         return _NAN
 
 
-def _time_series_complexity(series: np.ndarray) -> float:
+def _time_series_complexity(series: np.ndarray[Any, Any]) -> float:
     """
     Lempel-Ziv-like complexity proxy via number of turning points normalised by n.
 
@@ -476,12 +476,12 @@ def _time_series_complexity(series: np.ndarray) -> float:
     if n < 3:
         return _NAN
     diffs = np.diff(series)
-    sign_changes = np.sum(np.diff(np.sign(diffs)) != 0)
+    sign_changes: int = np.sum(np.diff(np.sign(diffs)) != 0)
     max_possible = n - 2
     return float(sign_changes / max_possible) if max_possible > 0 else np.nan
 
 
-def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
+def _nonlinear_trend_strength(prices: np.ndarray[Any, Any], n_regimes: int = 3) -> float:
     """
     Ratio of variance explained by a piecewise-linear fit vs a linear fit.
 
@@ -510,7 +510,7 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
         if not residuals_pw:
             return _NAN
 
-        ss_res_pw = np.sum(np.array(residuals_pw) ** 2)
+        ss_res_pw: float = np.sum(np.array(residuals_pw) ** 2)
         ss_tot = np.sum((prices - prices.mean()) ** 2) + 1e-10
         r2_pw = 1 - ss_res_pw / ss_tot
 
@@ -524,7 +524,7 @@ def _nonlinear_trend_strength(prices: np.ndarray, n_regimes: int = 3) -> float:
 
 
 def _compute_row_features(
-    prices: np.ndarray, volumes: np.ndarray, log_prices: np.ndarray, end: int, used_only: bool = False,
+    prices: np.ndarray[Any, Any], volumes: np.ndarray[Any, Any], log_prices: np.ndarray[Any, Any], end: int, used_only: bool = False,
     skip_fracdiff: bool = False,
 ) -> Dict[str, Any]:
     """

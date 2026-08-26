@@ -39,7 +39,7 @@ not a PIT violation.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -347,14 +347,14 @@ def compute_governance_features_panel_vectorized(
 
     latest = df.groupby("ticker", sort=False).tail(1).set_index("ticker")
 
-    def _chg(col: str) -> np.ndarray:
+    def _chg(col: str) -> np.ndarray[Any, Any]:
         # Coerce for the same reason as fii/dii/mf below: these raw/shifted
         # columns can be object-dtype with real `None`, and `cur - prior`
         # is evaluated over the whole array before `both_present` masks it.
         cur = pd.to_numeric(latest[col], errors="coerce")
         prior = pd.to_numeric(latest[f"_prior_{col}"], errors="coerce")
         both_present = cur.notna() & prior.notna()
-        return np.where(both_present, cur - prior, np.nan)
+        return cast(np.ndarray[Any, Any], np.where(both_present, cur - prior, np.nan))
 
     result = pd.DataFrame(index=latest.index)
     for col in ["promoter_pct", "promoter_pledge", "fii_pct", "dii_pct", "mf_pct"]:

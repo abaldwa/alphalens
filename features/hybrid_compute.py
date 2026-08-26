@@ -33,7 +33,7 @@ Everything else is per-ticker and computed in Stage 1.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -51,6 +51,10 @@ from features.fundamental import (
     compute_fundamental_features,
 )
 from features.governance import GOVERNANCE_FEATURES, compute_governance_features
+from features.volatility_weighting_features import (
+    VOLATILITY_WEIGHTING_FEATURES,
+    compute_volatility_weighting_features,
+)
 from features.intraday import INTRADAY_FEATURES, compute_intraday_features
 from features.macro_features import MACRO_FEATURES, compute_macro_features
 from features.mf_holdings import MF_HOLDINGS_FEATURES, compute_mf_holdings_features
@@ -83,6 +87,7 @@ _STAGE1_FEATURE_COLS = (
     + CORPORATE_ACTION_FEATURES
     + FNO_FEATURES
     + DEEP_FORENSIC_FEATURES
+    + VOLATILITY_WEIGHTING_FEATURES
 )
 
 
@@ -120,7 +125,7 @@ def _merge_ohlcv_features(
     """
     spine = pd.DataFrame({"date": all_dates, "ticker": ticker})
 
-    def _safe(fn, cols, *args, **kwargs):
+    def _safe(fn: Callable[..., pd.DataFrame], cols: List[str], *args: Any, **kwargs: Any) -> pd.DataFrame:
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
@@ -144,6 +149,7 @@ def _merge_ohlcv_features(
         all_rows=True, skip_fracdiff=skip_fracdiff,
     )
     patterns = _safe(compute_pattern_scores, PATTERN_FEATURES, ohlcv, all_rows=True)
+    vol_weighting = _safe(compute_volatility_weighting_features, VOLATILITY_WEIGHTING_FEATURES, ohlcv)
     if compute_hmm:
         # n_restarts=1, n_iter=50: ~10× faster than defaults (5×200) for backfill.
         # Regime labels are stable with 1 restart on long history (4785 days);
@@ -155,7 +161,7 @@ def _merge_ohlcv_features(
 
     # Left-join each feature set onto the date spine so every date appears
     # (dates without OHLCV get NaN for OHLCV-based features).
-    for fdf in [technical, intraday, pnd, adv_tech, patterns, hmm]:
+    for fdf in [technical, intraday, pnd, adv_tech, patterns, vol_weighting, hmm]:
         if fdf.empty:
             continue
         fdf = fdf.drop(columns=["ticker"], errors="ignore")
@@ -180,6 +186,7 @@ def _merge_ohlcv_features(
         + PND_FEATURES
         + ADVANCED_TECHNICAL_FEATURES
         + PATTERN_FEATURES
+        + VOLATILITY_WEIGHTING_FEATURES
     ):
         if col not in spine.columns:
             spine[col] = np.nan
@@ -198,7 +205,7 @@ def compute_per_ticker(
     fno_df: pd.DataFrame,
     benchmark_wide: Optional[pd.DataFrame],
     all_dates: List[pd.Timestamp],
-    cache,
+    cache: Any,
     mf_for_ticker: pd.DataFrame,
     listing_date: Optional[datetime],
     compute_hmm: bool = True,
@@ -265,7 +272,7 @@ def compute_per_ticker(
         fund_df["announcement_date"] = pd.to_datetime(fund_df["announcement_date"])
         fund_df = fund_df.sort_values("announcement_date").reset_index(drop=True)
         _fund_date_arr = fund_df["announcement_date"].values
-        _fund_records: List[Dict] = fund_df.to_dict("records")
+        _fund_records: List[Dict[str, Any]] = fund_df.to_dict("records")
     else:
         fund_df = pd.DataFrame()
         _fund_date_arr = np.array([], dtype="datetime64[ns]")
@@ -276,7 +283,7 @@ def compute_per_ticker(
         share_df["filing_date"] = pd.to_datetime(share_df["filing_date"])
         share_df = share_df.sort_values("filing_date").reset_index(drop=True)
         _share_date_arr = share_df["filing_date"].values
-        _share_records: List[Dict] = share_df.to_dict("records")
+        _share_records: List[Dict[str, Any]] = share_df.to_dict("records")
     else:
         share_df = pd.DataFrame()
         _share_date_arr = np.array([], dtype="datetime64[ns]")
@@ -302,20 +309,20 @@ def compute_per_ticker(
     # Uses np.searchsorted on pre-sorted date arrays — O(log n) per iteration
     # instead of O(n) boolean masks. Key speedup for tickers with large F&O
     # histories (e.g. 679k rows × 4785 dates = ~3B comparisons avoided).
-    fund_rows: List[Dict] = []
-    gov_rows: List[Dict] = []
-    corp_rows: List[Dict] = []
-    forensic_rows: List[Dict] = []
-    fno_rows: List[Dict] = []
-    mf_rows: List[Dict] = []
+    fund_rows: List[Dict[str, Any]] = []
+    gov_rows: List[Dict[str, Any]] = []
+    corp_rows: List[Dict[str, Any]] = []
+    forensic_rows: List[Dict[str, Any]] = []
+    fno_rows: List[Dict[str, Any]] = []
+    mf_rows: List[Dict[str, Any]] = []
 
     for date_ts in all_dates:
         date_np = date_ts.to_datetime64()
         as_of_dt = date_ts.to_pydatetime()
 
         # Binary-search PIT slices — O(log n) per date
-        pit_fund: List[Dict] = _fund_records[:int(np.searchsorted(_fund_date_arr, date_np, side="right"))]
-        pit_share: List[Dict] = _share_records[:int(np.searchsorted(_share_date_arr, date_np, side="right"))]
+        pit_fund: List[Dict[str, Any]] = _fund_records[:int(np.searchsorted(_fund_date_arr, date_np, side="right"))]
+        pit_share: List[Dict[str, Any]] = _share_records[:int(np.searchsorted(_share_date_arr, date_np, side="right"))]
         hi_mf = int(np.searchsorted(_mf_date_arr, date_np, side="right"))
         pit_mf = mf_for_ticker.iloc[:hi_mf] if hi_mf > 0 else pd.DataFrame()
 
@@ -399,7 +406,7 @@ def compute_per_ticker(
         mf_rows.append(mf)
 
     # Build per-date DataFrames and merge onto spine
-    def _to_df(rows: List[Dict], cols: List[str]) -> pd.DataFrame:
+    def _to_df(rows: List[Dict[str, Any]], cols: List[str]) -> pd.DataFrame:
         df = pd.DataFrame(rows)
         for col in cols:
             if col not in df.columns:
@@ -470,7 +477,7 @@ def assemble_date(
     macro_all: pd.DataFrame,
     tickers: List[str],
     universe_ohlcv_panel: Optional[pd.DataFrame] = None,
-    mb_precomputed: Optional[Dict] = None,
+    mb_precomputed: Optional[Dict[str, Any]] = None,
     real_eco_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
@@ -623,7 +630,7 @@ def assemble_date(
         try:
             from features.real_economy_macro import REAL_ECONOMY_MACRO_FEATURES as _RE_FEATS
             avail = real_eco_df[real_eco_df["availability_date"] <= date]
-            values: Dict = {}
+            values: Dict[str, Any] = {}
             for feat in _RE_FEATS:
                 rows_f = avail[avail["feature_name"] == feat]
                 if rows_f.empty:

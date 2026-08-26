@@ -39,7 +39,7 @@ position state must compute it downstream.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -282,8 +282,8 @@ def _category_4_oscillators(df: pd.DataFrame) -> pd.DataFrame:
 
 # ===== Category 5: Trend Strength =====
 def _supertrend(
-    high: np.ndarray, low: np.ndarray, close: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
+    high: np.ndarray[Any, Any], low: np.ndarray[Any, Any], close: np.ndarray[Any, Any]
+) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
     """
     Standard ATR Supertrend(10, 3). Sequential recurrence per TA convention
     (each bar's final bands depend on the prior bar's), computed once per

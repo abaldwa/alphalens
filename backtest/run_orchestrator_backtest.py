@@ -597,6 +597,8 @@ def _momentum_descriptor(
     vol_scaling_mode: Optional[str] = None,
     vol_scaling_lookback_days: int = 126,
     vol_scaling_leverage_cap: Optional[float] = None,
+    weight_method: Optional[str] = None,
+    weight_lookback_days: int = 126,
 ) -> str:
     """Momentum's identity string, covering every parameter that changes the
     signals it emits.
@@ -694,6 +696,13 @@ def _momentum_descriptor(
         if vol_scaling_leverage_cap is not None:
             vol_key += f"_cap{vol_scaling_leverage_cap:g}"
         parts.append(vol_key)
+    # Phase R0: per-ticker volatility weighting (basket re-weighting, orthogonal
+    # to vol_scaling_mode above which scales the whole portfolio).
+    if weight_method is not None:
+        weight_key = f"weight_{weight_method}"
+        if weight_lookback_days != 126:
+            weight_key += f"_ld{weight_lookback_days}"
+        parts.append(weight_key)
     # The exit policy changes which sells are emitted, so two runs differing
     # only in it are genuinely different strategies.
     if exit_policy_variant and exit_policy_variant != "risk_managed":
@@ -722,7 +731,9 @@ def _exit_policy_cadence_for(channel: str) -> Literal["daily", "rebalance"]:
     return "rebalance" if channel == "momentum" else "daily"
 
 
-def _sizing_overrides_for(channel: str, top_n: int, vol_scaling_mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _sizing_overrides_for(
+    channel: str, top_n: int, vol_scaling_mode: Optional[str] = None, weight_method: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Per-channel overrides onto the horizon bucket's HorizonSizingPolicy.
 
     [2026-08-18, explicit user decision] Momentum runs:
@@ -749,9 +760,10 @@ def _sizing_overrides_for(channel: str, top_n: int, vol_scaling_mode: Optional[s
     if channel != "momentum":
         return None
 
-    # For R9 volatility scaling, increase position cap to allow multiplier scaling
+    # For R9 volatility scaling (portfolio-level) OR R0 per-ticker weighting
+    # (basket-level), increase position cap to allow multiplier scaling.
     base_max_pct = 1.0 / max(int(top_n), 1)
-    if vol_scaling_mode is not None:
+    if vol_scaling_mode is not None or weight_method is not None:
         # Use 0.50 (50%) instead of base slot size to allow 5x multiplier scaling
         base_max_pct = 0.50
 
@@ -988,6 +1000,7 @@ def _run_immediate(
     vol_target_lookback_days: int = 126, vol_target_leverage_cap: float = 1.0,
     vol_scaling_mode: Optional[str] = None, vol_scaling_lookback_days: int = 126,
     vol_scaling_leverage_cap: Optional[float] = None,
+    weight_method: Optional[str] = None, weight_lookback_days: int = 126,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
@@ -1017,7 +1030,7 @@ def _run_immediate(
             max_blackout_sessions=max_blackout_sessions,
         )
         config.exit_policy_cadence = _exit_policy_cadence_for(channel)
-        config.sizing_overrides = _sizing_overrides_for(channel, top_n, vol_scaling_mode)
+        config.sizing_overrides = _sizing_overrides_for(channel, top_n, vol_scaling_mode, weight_method)
         # None keeps engine.py's horizon-derived default; an explicit value
         # is the only way to reach a cadence the HORIZON_SIZING table cannot
         # express (biweekly=10, bimonthly=42) -- see the CLI flag's help.
@@ -1195,6 +1208,9 @@ def _run_immediate(
                 vol_scaling_mode=vol_scaling_mode,
                 vol_scaling_lookback_days=vol_scaling_lookback_days,
                 vol_scaling_leverage_cap=vol_scaling_leverage_cap,
+                # Phase R0: per-ticker volatility weighting (all default-off).
+                weight_method=weight_method,
+                weight_lookback_days=weight_lookback_days,
                 # regime_conn wired post-construction below, same deferred
                 # pattern as the technical branch (the connection doesn't
                 # exist yet at this point in the function).
@@ -1235,6 +1251,8 @@ def _run_immediate(
                 "vol_scaling_mode": vol_scaling_mode,
                 "vol_scaling_lookback_days": vol_scaling_lookback_days,
                 "vol_scaling_leverage_cap": vol_scaling_leverage_cap,
+                "weight_method": weight_method,
+                "weight_lookback_days": weight_lookback_days,
                 # The cadence the engine ACTUALLY slices on (core/engine.py:1007),
                 # not the override -- which is None whenever the horizon default
                 # was taken. Recorded because until 2026-08-19 cadence survived
@@ -1385,6 +1403,7 @@ def _run_deferred(
     vol_target_lookback_days: int = 126, vol_target_leverage_cap: float = 1.0,
     vol_scaling_mode: Optional[str] = None, vol_scaling_lookback_days: int = 126,
     vol_scaling_leverage_cap: Optional[float] = None,
+    weight_method: Optional[str] = None, weight_lookback_days: int = 126,
     # Point-in-time top-N-by-ADTV universe. Keyword-only and defaulting to
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
@@ -1426,7 +1445,7 @@ def _run_deferred(
     # worker starts, not inside each job. Tracked as A105.
     config.enforce_readiness = False
     config.exit_policy_cadence = _exit_policy_cadence_for(channel)
-    config.sizing_overrides = _sizing_overrides_for(channel, top_n, vol_scaling_mode)
+    config.sizing_overrides = _sizing_overrides_for(channel, top_n, vol_scaling_mode, weight_method)
     config.rebalance_cadence_days = rebalance_cadence_days
     config.skip_signal_generation = skip_signal_generation
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
@@ -1552,6 +1571,9 @@ def _run_deferred(
             vol_scaling_mode=vol_scaling_mode,
             vol_scaling_lookback_days=vol_scaling_lookback_days,
             vol_scaling_leverage_cap=vol_scaling_leverage_cap,
+            # Phase R0: per-ticker volatility weighting (all default-off).
+            weight_method=weight_method,
+            weight_lookback_days=weight_lookback_days,
         )
     else:
         raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
@@ -1588,6 +1610,8 @@ def _run_deferred(
             "vol_scaling_mode": vol_scaling_mode,
             "vol_scaling_lookback_days": vol_scaling_lookback_days,
             "vol_scaling_leverage_cap": vol_scaling_leverage_cap,
+            "weight_method": weight_method,
+            "weight_lookback_days": weight_lookback_days,
             # The cadence the engine ACTUALLY slices on (core/engine.py:1007),
             # not the override -- which is None whenever the horizon default
             # was taken. Recorded because until 2026-08-19 cadence survived
@@ -1726,6 +1750,8 @@ def run_orchestrator_backtest(
     vol_scaling_mode: Optional[str] = None,
     vol_scaling_lookback_days: int = 126,
     vol_scaling_leverage_cap: Optional[float] = None,
+    weight_method: Optional[str] = None,
+    weight_lookback_days: int = 126,
     run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
     # A98: separate from regime_index_name. None means "compare against the
@@ -1904,6 +1930,9 @@ def run_orchestrator_backtest(
             vol_scaling_mode=vol_scaling_mode,
             vol_scaling_lookback_days=vol_scaling_lookback_days,
             vol_scaling_leverage_cap=vol_scaling_leverage_cap,
+            # Phase R0: per-ticker volatility weighting params for identity string.
+            weight_method=weight_method,
+            weight_lookback_days=weight_lookback_days,
         ),
     }[channel]
     if descriptor is None:
@@ -1968,6 +1997,7 @@ def run_orchestrator_backtest(
         vol_target_lookback_days=vol_target_lookback_days, vol_target_leverage_cap=vol_target_leverage_cap,
         vol_scaling_mode=vol_scaling_mode, vol_scaling_lookback_days=vol_scaling_lookback_days,
         vol_scaling_leverage_cap=vol_scaling_leverage_cap,
+        weight_method=weight_method, weight_lookback_days=weight_lookback_days,
         rebalance_cadence_days=rebalance_cadence_days,
         defer_feature_log=defer_feature_log,
         annual_reset_spec=annual_reset_spec, pit_adtv_top_n=pit_adtv_top_n,
@@ -2400,6 +2430,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--weight-method", type=str, default=None,
+        choices=["baseline", "inverse_volatility", "inverse_variance", "target_volatility", "downside_volatility"],
+        help=(
+            "momentum channel only (Phase R0): per-ticker basket re-weighting, replacing equal-weight "
+            "sizing within the top_n basket. Orthogonal to --vol-scaling-mode, which scales the WHOLE "
+            "portfolio rather than redistributing within it. Options: baseline (plain equal-weight, "
+            "same as omitting this flag), inverse_volatility, inverse_variance, target_volatility, "
+            "downside_volatility — see features/volatility_scaling.py's WEIGHT_DISPATCH. "
+            "Default (omit) = plain equal-weight."
+        ),
+    )
+    parser.add_argument(
+        "--weight-lookback-days", type=int, default=126,
+        help=(
+            "momentum channel only (Phase R0): rolling window for the per-ticker volatility computation "
+            "feeding --weight-method (e.g., 126 = ~6 months). Used only if --weight-method is set. Default 126."
+        ),
+    )
+    parser.add_argument(
         "--rank-band-id", type=int, default=None, choices=[b[0] for b in RANK_BANDS],
         help=(
             "momentum channel only (2026-08-05): select from one of features/momentum_universe.py's "
@@ -2471,6 +2520,8 @@ def main() -> None:
         vol_scaling_mode=args.vol_scaling_mode,
         vol_scaling_lookback_days=args.vol_scaling_lookback_days,
         vol_scaling_leverage_cap=args.vol_scaling_leverage_cap,
+        weight_method=args.weight_method,
+        weight_lookback_days=args.weight_lookback_days,
         run_id=args.run_id,
         report_suffix=args.report_suffix, regime_index_name=args.regime_index or None,
         benchmark_index_name=args.benchmark_index or None,

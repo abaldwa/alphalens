@@ -183,7 +183,7 @@ def _implied_volatility(
         return _NAN
 
 
-def _max_pain(strikes: np.ndarray, call_oi: np.ndarray, put_oi: np.ndarray) -> float:
+def _max_pain(strikes: np.ndarray[Any, Any], call_oi: np.ndarray[Any, Any], put_oi: np.ndarray[Any, Any]) -> float:
     """
     Standard max-pain algorithm: the strike at which option WRITERS'
     total payout obligation (= buyers' aggregate intrinsic-value payout)
@@ -191,8 +191,8 @@ def _max_pain(strikes: np.ndarray, call_oi: np.ndarray, put_oi: np.ndarray) -> f
     """
     best_strike, best_payout = np.nan, np.inf
     for k in strikes:
-        call_payout = np.sum(np.maximum(0.0, k - strikes) * call_oi)
-        put_payout = np.sum(np.maximum(0.0, strikes - k) * put_oi)
+        call_payout: float = np.sum(np.maximum(0.0, k - strikes) * call_oi)
+        put_payout: float = np.sum(np.maximum(0.0, strikes - k) * put_oi)
         total = call_payout + put_payout
         if total < best_payout:
             best_payout, best_strike = total, k
@@ -396,7 +396,7 @@ def compute_fno_features_panel(
     records = []
     for ticker in tickers:
         if fno_eligible_tickers is not None and ticker not in fno_eligible_tickers:
-            feats = {f: np.nan for f in FNO_FEATURES}
+            feats: Dict[str, Any] = {f: np.nan for f in FNO_FEATURES}
             feats["ticker"] = ticker
             records.append(feats)
             continue

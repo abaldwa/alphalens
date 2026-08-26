@@ -120,6 +120,11 @@ class MomentumAdapter:
         vol_scaling_mode: Optional[str] = None,
         vol_scaling_lookback_days: int = 126,
         vol_scaling_leverage_cap: Optional[float] = None,
+        # Phase R0: per-ticker volatility weighting (all default-off; replaces
+        # equal-weight sizing with a within-basket re-weighting — orthogonal
+        # to vol_scaling_mode above, which scales the WHOLE portfolio).
+        weight_method: Optional[str] = None,
+        weight_lookback_days: int = 126,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -236,6 +241,20 @@ class MomentumAdapter:
             - "inverse_volatility" / "inverse_variance" / "downside_volatility" → 2.0
             - "target_volatility" → 1.0
 
+        Phase R0: per-ticker volatility weighting (replaces equal-weight
+        sizing within the basket; orthogonal to vol_scaling_mode above,
+        which scales total portfolio exposure rather than re-weighting
+        within it):
+        weight_method : Optional[str]
+            One of ("baseline", "inverse_volatility", "inverse_variance",
+            "target_volatility", "downside_volatility") — see
+            features/volatility_scaling.py's WEIGHT_DISPATCH. None
+            (default) = plain equal-weight (same as "baseline"). Computed
+            fresh at each rebalance date from the basket's own price
+            history — never precomputed for the whole backtest range.
+        weight_lookback_days : int
+            Rolling window for the per-ticker volatility computation
+            (default 126 = ~6 months). Ignored if weight_method is None.
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -296,6 +315,9 @@ class MomentumAdapter:
         self.vol_scaling_mode = vol_scaling_mode
         self.vol_scaling_lookback_days = vol_scaling_lookback_days
         self.vol_scaling_leverage_cap = vol_scaling_leverage_cap
+        # Phase R0: per-ticker volatility weighting (all default-off).
+        self.weight_method = weight_method
+        self.weight_lookback_days = weight_lookback_days
         # Shared equity history cache used by crash-aware, vol-target, and vol-scaling overlays
         self._equity_history: Optional[pd.Series] = None
         # Build rank_fn from rank_method if not explicitly provided
@@ -567,6 +589,22 @@ class MomentumAdapter:
             ))
 
         new_entrants = [] if buys_disabled else sorted(target - self._held)
+        # [Phase R0] Per-ticker volatility weighting: computed once per
+        # rebalance over the FULL basket (target, not just new_entrants), so
+        # a new entrant's weight reflects its volatility relative to the
+        # whole basket being held this period — not just the other new
+        # buys. Already-held survivors keep whatever size they entered at
+        # (this adapter, like the R8/R9 overlays above, only sizes fresh
+        # buy signals; it never re-weights a position it isn't re-issuing a
+        # signal for).
+        weight_mults: Optional[pd.Series] = None
+        if new_entrants and self.weight_method is not None:
+            from features.volatility_scaling import WEIGHT_DISPATCH
+            weight_fn = WEIGHT_DISPATCH[self.weight_method]
+            kwargs: Dict[str, Any] = {"lookback_days": self.weight_lookback_days}
+            if self.weight_method == "target_volatility":
+                kwargs["target_vol"] = self.vol_target_pct
+            weight_mults = weight_fn(self.price_panel, sorted(target), as_of_date, **kwargs)
         for ticker in new_entrants:
             if self._is_circuit_locked(as_of_date, ticker):
                 # Skipped this rebalance only; target is recomputed fresh each
@@ -578,10 +616,16 @@ class MomentumAdapter:
                 conviction *= self.crash_reduce_sizing
             # [Phase 8/9] Compute exposure multiplier (R8 vol-target or R9 generic vol scaling)
             size_mult = self._compute_exposure_multiplier_today(as_of_date)
+            # [Phase R0] Fold in the per-ticker basket re-weighting (orthogonal
+            # to the portfolio-level R8/R9 multiplier above — this one
+            # redistributes the same capital budget across the basket rather
+            # than scaling the whole book up or down).
+            if weight_mults is not None:
+                size_mult *= float(weight_mults.get(ticker, 1.0))
             size_mult_for_signal = size_mult if size_mult != 1.0 else None
             if size_mult != 1.0 and len(signals) == 0:
                 # Log first few tickers with non-trivial multiplier on each rebalance
-                logger.info(f"R9 {self.vol_scaling_mode}: {ticker} on {as_of_date} size_mult={size_mult:.6f} → signal.size_multiplier={size_mult_for_signal}")
+                logger.info(f"R0/R9 {self.weight_method}/{self.vol_scaling_mode}: {ticker} on {as_of_date} size_mult={size_mult:.6f} → signal.size_multiplier={size_mult_for_signal}")
             signals.append(Signal(
                 ticker=ticker, action="buy", sector=self._sector_lookup.get(ticker, "Unknown"),
                 conviction=conviction, adtv_cr=self._adtv_cr(ticker, as_of_date),
@@ -688,14 +732,12 @@ class MomentumAdapter:
             return 1.0
 
         try:
-            from features.momentum_signal import volatility_scaling_multiplier
-            mult_series = volatility_scaling_multiplier(
-                self._equity_history,
-                scaling_mode=self.vol_scaling_mode,
-                target_vol=self.vol_target_pct,
-                lookback_days=self.vol_scaling_lookback_days,
-                leverage_cap=self.vol_scaling_leverage_cap,
-            )
+            from features.volatility_scaling import VOL_SCALING_DISPATCH
+            scaling_fn = VOL_SCALING_DISPATCH[self.vol_scaling_mode]
+            kwargs = {"lookback_days": self.vol_scaling_lookback_days, "leverage_cap": self.vol_scaling_leverage_cap}
+            if self.vol_scaling_mode == "target_volatility":
+                kwargs["target_vol"] = self.vol_target_pct
+            mult_series = scaling_fn(self._equity_history, **kwargs)
             date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
 
             # Note: generate_signals() is called BEFORE update_portfolio_equity(),
