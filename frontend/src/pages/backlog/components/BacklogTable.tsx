@@ -82,6 +82,28 @@ const DomainCell = (props: any) => {
   )
 }
 
+const DocumentReferenceCell = (props: any) => {
+  const { value } = props
+  if (!value) return <span className="text-xs text-gray-400">—</span>
+
+  const isUrl = value.startsWith('http://') || value.startsWith('https://')
+  return isUrl ? (
+    <a
+      href={value}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-xs text-blue-600 hover:text-blue-800 underline truncate max-w-xs block"
+      title={value}
+    >
+      {value}
+    </a>
+  ) : (
+    <span className="text-xs text-gray-700 truncate max-w-xs block" title={value}>
+      {value}
+    </span>
+  )
+}
+
 export function BacklogTable({ items, isLoading, onItemClick }: BacklogTableProps) {
   const columnDefs = useMemo(
     () => [
@@ -91,6 +113,7 @@ export function BacklogTable({ items, isLoading, onItemClick }: BacklogTableProp
       { field: 'status', headerName: 'Status', width: 120, cellRenderer: StatusCell },
       { field: 'priority', headerName: 'Priority', width: 80, cellRenderer: PriorityCell },
       { field: 'criticality', headerName: 'Criticality', width: 110, cellRenderer: CriticalityCell },
+      { field: 'document_reference', headerName: 'Reference', width: 200, cellRenderer: DocumentReferenceCell },
       { field: 'assigned_to', headerName: 'Assigned To', width: 120 },
       { field: 'blocks_on_count', headerName: 'Blocked By', width: 80, type: 'numericColumn' },
       { field: 'blocks_count', headerName: 'Blocks', width: 80, type: 'numericColumn' },

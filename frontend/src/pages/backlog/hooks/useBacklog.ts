@@ -10,6 +10,7 @@ export interface BacklogItem {
   priority: number
   criticality: 'critical' | 'high' | 'medium' | 'low'
   reason_critical?: string
+  document_reference?: string
   assigned_to?: string
   created_at: string
   updated_at: string

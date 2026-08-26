@@ -23,6 +23,6 @@ repos:
         # alone, and only inside the hook, never in a local mypy run. The two
         # environments have to agree about what is importable or the hook
         # reports errors nobody can reproduce.
-        additional_dependencies: ["types-requests", "types-python-dateutil", "fastapi"]
+        additional_dependencies: ["types-requests", "types-python-dateutil", "types-PyYAML", "fastapi"]
         stages: [pre-commit]
         verbose: true

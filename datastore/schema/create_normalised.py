@@ -1028,6 +1028,7 @@ _CREATE_BACKLOG_ITEMS = """
         priority INTEGER NOT NULL DEFAULT 3,
         criticality VARCHAR NOT NULL DEFAULT 'medium',
         reason_critical TEXT,
+        document_reference VARCHAR,
         assigned_to VARCHAR,
         created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
         updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
@@ -1190,6 +1191,9 @@ _MIGRATE_ADDED_COLUMNS = {
         # A21 creation — see _CREATE_JOB_RUN_LOG's comment for rationale.
         "ALTER TABLE job_run_log ADD COLUMN IF NOT EXISTS duration_seconds DOUBLE",
         "ALTER TABLE job_run_log ADD COLUMN IF NOT EXISTS peak_rss_mb DOUBLE",
+    ],
+    "backlog_items": [
+        "ALTER TABLE backlog_items ADD COLUMN IF NOT EXISTS document_reference VARCHAR",
     ],
 }
 

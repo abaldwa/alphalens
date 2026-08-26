@@ -62,14 +62,20 @@ export const MOMENTUM_CATEGORY_LABELS: Record<string, string> = {
   balanced: 'Balanced',
   risk_managed: 'Risk-Managed',
   max_defensive: 'Max Defensive',
+  R0_all_risk_baseline: 'R0 All Risk (Baseline)',
+  R0_balanced_baseline: 'R0 Balanced (Baseline)',
+  R0_risk_managed_baseline: 'R0 Risk-Managed (Baseline)',
+  R0_max_defensive_baseline: 'R0 Max Defensive (Baseline)',
 }
 
 /** Momentum variant ids look like
- * `balanced_b1_1-50_lb6mo_monthly_top15`. The report builds this string
- * inline, and strategies/migrations/momentum.py reproduces it verbatim so
- * registry rows and report rows join without a translation table. */
+ * `balanced_b1_1-50_lb6mo_monthly_top15` (legacy) or
+ * `R0_all_risk_baseline_b1_1-50_lb6mo_monthly_top15` (R0 baseline).
+ * The report builds this string inline, and strategies/migrations/momentum.py
+ * reproduces it verbatim so registry rows and report rows join without a
+ * translation table. */
 const MOMENTUM_VARIANT_RE =
-  /^(?<category>[a-z_]+)_b(?<band>\d+)_(?<rankStart>\d+)-(?<rankEnd>\d+)_lb(?<lookback>\d+)mo_(?<rebalance>[a-z]+)_top(?<topN>\d+)$/
+  /^(?<category>[a-zA-Z0-9_]+)_b(?<band>\d+)_(?<rankStart>\d+)-(?<rankEnd>\d+)_lb(?<lookback>\d+)mo_(?<rebalance>[a-z]+)_top(?<topN>\d+)$/
 
 export interface MomentumVariantParts {
   category: string
