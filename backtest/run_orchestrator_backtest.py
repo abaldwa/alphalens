@@ -992,6 +992,7 @@ def _run_immediate(
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
     defer_feature_log: bool = False,
+    skip_signal_generation: bool = False,
     annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
     block_circuit_fills: bool = False,
     max_blackout_sessions: Optional[int] = None,
@@ -1021,6 +1022,9 @@ def _run_immediate(
         # is the only way to reach a cadence the HORIZON_SIZING table cannot
         # express (biweekly=10, bimonthly=42) -- see the CLI flag's help.
         config.rebalance_cadence_days = rebalance_cadence_days
+        # Signal-first architecture (Phase 9+): when True, read cached signals
+        # from strategy_signals instead of regenerating.
+        config.skip_signal_generation = skip_signal_generation
         # [BUG FIX, 4th fundamental-strategies review, item 2] real wide
         # price/volume panels from the same ohlcv pull momentum's branch
         # below already uses — passed to Technical/Fundamental too so their
@@ -1241,6 +1245,7 @@ def _run_immediate(
                     config.rebalance_cadence_days
                     or sizing_for(horizon).default_rebalance_cadence_days
                 ),
+                "rank_band_id": rank_band_id,  # For signal-first architecture
             },
         )
 
@@ -1384,6 +1389,7 @@ def _run_deferred(
     # None so every existing caller is byte-identical until it opts in.
     *, rebalance_cadence_days: Optional[int] = None,
     defer_feature_log: bool = False,
+    skip_signal_generation: bool = False,
     annual_reset_spec: Optional[Dict[str, Any]] = None, pit_adtv_top_n: Optional[int] = None,
     block_circuit_fills: bool = False,
     max_blackout_sessions: Optional[int] = None,
@@ -1422,6 +1428,7 @@ def _run_deferred(
     config.exit_policy_cadence = _exit_policy_cadence_for(channel)
     config.sizing_overrides = _sizing_overrides_for(channel, top_n, vol_scaling_mode)
     config.rebalance_cadence_days = rebalance_cadence_days
+    config.skip_signal_generation = skip_signal_generation
     _price_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="close")
     _volume_panel_for_adtv = ohlcv.pivot(index="date", columns="ticker", values="volume")
     # Hoisted out of the technical branch — see the matching note in
@@ -1744,6 +1751,7 @@ def run_orchestrator_backtest(
     defer_feature_log: bool = False,
     ohlcv_snapshot_dir: Optional[str] = None,
     temp_results_dir: Optional[str] = None,
+    skip_signal_generation: bool = False,
     # capital_mode="annual_reset" only — the LTCG regime is a run-level input
     # because it changes the FY withdrawal and therefore the trades taken.
     annual_reset_ltcg_rate: Optional[float] = None,
@@ -1892,6 +1900,10 @@ def run_orchestrator_backtest(
             vol_target_pct=vol_target_pct,
             vol_target_lookback_days=vol_target_lookback_days,
             vol_target_leverage_cap=vol_target_leverage_cap,
+            # Phase 9: factor volatility scaling (Moreira-Muir) params for identity string.
+            vol_scaling_mode=vol_scaling_mode,
+            vol_scaling_lookback_days=vol_scaling_lookback_days,
+            vol_scaling_leverage_cap=vol_scaling_leverage_cap,
         ),
     }[channel]
     if descriptor is None:
@@ -1962,6 +1974,7 @@ def run_orchestrator_backtest(
         block_circuit_fills=block_circuit_fills, max_blackout_sessions=max_blackout_sessions,
         benchmark_index_name=benchmark_index_name,
         temp_results_dir=temp_results_dir,
+        skip_signal_generation=skip_signal_generation,
     )
 
     runtime_seconds = time.monotonic() - run_started
@@ -2252,12 +2265,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rank-method", type=str, default="trailing_return",
-        choices=["trailing_return", "pct_of_52wk_high", "risk_adjusted_composite", "industry_momentum", "trailing_reversal_1mo"],
+        choices=["trailing_return", "pct_of_52wk_high", "risk_adjusted_composite", "industry_momentum", "trailing_reversal_1mo", "equal_weight", "jt_momentum"],
         help=(
-            "momentum channel only (Phase 0): ranking signal to use. 'trailing_return' (default) "
+            "momentum channel only: ranking signal to use. 'trailing_return' (default) "
             "is the canonical momentum score. Other methods enable R-family strategies: "
-            "'pct_of_52wk_high' for 52-week-high momentum (7.5), 'risk_adjusted_composite' for the "
-            "volatility-adjusted composite (section 8), 'industry_momentum' for sector momentum (7.4)."
+            "'pct_of_52wk_high' for 52-week-high momentum, 'risk_adjusted_composite' for the "
+            "volatility-adjusted composite, 'industry_momentum' for sector momentum, 'equal_weight' for "
+            "equal-weight baseline, 'jt_momentum' for jittered momentum signal (R1)."
         ),
     )
     parser.add_argument(
@@ -2416,6 +2430,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Default (omit) uses immediate DuckDB writes."
         ),
     )
+    parser.add_argument(
+        "--skip-signal-generation", action="store_true", default=False,
+        help=(
+            "2026-08-26 (signal-first architecture Phase 9+): when set, check signal_generation_ledger "
+            "for pre-generated signals and read from strategy_signals table instead of regenerating. "
+            "Requires signals to be pre-generated via backtest/jobs/generate_signals.py. "
+            "Default (omit) regenerates signals per backtest (backward compatible)."
+        ),
+    )
     return parser
 
 
@@ -2475,6 +2498,7 @@ def main() -> None:
         rank_band_id=args.rank_band_id,
         rebalance_cadence_days=args.rebalance_cadence_days,
         ohlcv_snapshot_dir=args.ohlcv_snapshot_dir,
+        skip_signal_generation=args.skip_signal_generation,
     )
 
 

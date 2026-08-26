@@ -727,6 +727,10 @@ class OrchestratorConfig:
     # diversification — its risk control is the universe itself, the top 800
     # names by ADTV. See run_orchestrator_backtest.py::_sizing_overrides_for.
     sizing_overrides: Optional[Dict[str, Any]] = None
+    # Signal-first architecture (Phase 9+): when True, check signal_generation_ledger
+    # for pre-generated signals and read from strategy_signals table instead of
+    # regenerating. Reduces 6000+ daily signal computations to ~250 rebalance-date reads.
+    skip_signal_generation: bool = False
 
 
 class BacktestOrchestrator:
@@ -867,6 +871,106 @@ class BacktestOrchestrator:
             logger.info(f"Loaded {len(self._regime_data)} regime records for {self._regime_type}")
         except Exception as e:
             logger.error(f"Failed to load regime data: {e}", exc_info=True)
+
+    def _build_strategy_key_for_ledger(self, run: "BacktestRun") -> Optional[str]:
+        """Build strategy_key for signal ledger lookup from run config.
+
+        Returns strategy_key like "jt_momentum_M12_top5_21d_inverse_volatility" or None if not enough info.
+        """
+        if not run.config:
+            return None
+
+        # Momentum-only strategy_key construction
+        rank_method = run.config.get("rank_method")
+        band_id = run.config.get("rank_band_id")
+        top_n = run.config.get("top_n")
+        rebalance_cadence = run.config.get("rebalance_cadence_days")
+        vol_scaling_mode = run.config.get("vol_scaling_mode")
+
+        if rank_method and band_id and top_n and rebalance_cadence:
+            strategy_key = f"{rank_method}_M{band_id}_top{top_n}_{rebalance_cadence}d"
+            if vol_scaling_mode:
+                strategy_key += f"_{vol_scaling_mode}"
+            return strategy_key
+
+        return None
+
+    def _check_signal_ledger(
+        self, run: "BacktestRun", strategy_key: str, band_id: Optional[int], rebalance_cadence_days: int
+    ) -> bool:
+        """Check if signals are pre-generated in signal_generation_ledger (status=completed).
+
+        Args:
+            run: BacktestRun for logging
+            strategy_key: e.g. "jt_momentum_M12_top5_21d_inverse_volatility"
+            band_id: band ID (M1-M12), None for non-banded strategies
+            rebalance_cadence_days: 21 (monthly) or 63 (quarterly)
+
+        Returns:
+            True if signals are ready, False otherwise or on error.
+        """
+        try:
+            from config.settings import BACKTEST_DUCKDB_PATH
+            from datastore.api.db import get_duckdb_connection
+
+            with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=True) as conn:
+                result = conn.execute(
+                    "SELECT 1 FROM signal_generation_ledger "
+                    "WHERE strategy_key = ? AND band_id = ? AND rebalance_cadence_days = ? "
+                    "AND status = 'completed' LIMIT 1",
+                    [strategy_key, band_id, rebalance_cadence_days]
+                ).fetchall()
+                return len(result) > 0
+        except Exception as e:
+            logger.warning(f"Failed to check signal ledger for {strategy_key}: {e}")
+            return False
+
+    def _read_cached_signals(
+        self, strategy_key: str, signal_date: date_type
+    ) -> Optional[List["Signal"]]:
+        """Read pre-generated signals from strategy_signals table instead of regenerating.
+
+        Args:
+            strategy_key: e.g. "jt_momentum_M12_top5_21d_inverse_volatility"
+            signal_date: the rebalance date to fetch signals for
+
+        Returns:
+            List of Signal objects, or None if not found.
+        """
+        try:
+            import json
+            from config.settings import BACKTEST_DUCKDB_PATH
+            from datastore.api.db import get_duckdb_connection
+            from backtest.core.run_context import Signal
+
+            with get_duckdb_connection(BACKTEST_DUCKDB_PATH, read_only=True) as conn:
+                rows = conn.execute(
+                    "SELECT ticker, action, conviction, rank, size_multiplier, context_json "
+                    "FROM strategy_signals "
+                    "WHERE strategy_key = ? AND signal_date = ? AND source = 'backtest' "
+                    "ORDER BY ticker",
+                    [strategy_key, signal_date]
+                ).fetchall()
+
+                if not rows:
+                    return None
+
+                signals = []
+                for ticker, action, conviction, rank, size_mult, context_json in rows:
+                    context = json.loads(context_json) if context_json else {}
+                    signal = Signal(
+                        ticker=ticker,
+                        action=action,
+                        conviction=conviction,
+                        rank=rank,
+                        size_multiplier=size_mult or 1.0,
+                        context=context,
+                    )
+                    signals.append(signal)
+                return signals
+        except Exception as e:
+            logger.warning(f"Failed to read cached signals for {strategy_key}/{signal_date}: {e}")
+            return None
 
     def get_regime_for_date(self, as_of_date: date_type) -> Optional[Any]:
         """Lookup regime for a specific date. Returns None if no regime_type is configured or date not found."""
@@ -1309,7 +1413,25 @@ class BacktestOrchestrator:
             with timer.phase("universe"):
                 universe = config.universe_provider(as_of)
             with timer.phase("signals"):
-                signals = adapter.generate_signals(universe, as_of, run.horizon_bucket)
+                # Signal-first architecture (Phase 9+): attempt cached signal reading
+                # when skip_signal_generation=True. Falls back to regeneration if not found.
+                signals = None
+                if config.skip_signal_generation and as_of in rebalance_date_set:
+                    # Build strategy_key for cache lookup from run config
+                    strategy_key = self._build_strategy_key_for_ledger(run)
+                    band_id = run.config.get("rank_band_id") if run.config else None
+                    rebalance_cadence = run.config.get("rebalance_cadence_days") if run.config else cadence
+
+                    # Check ledger and read cached signals if available
+                    if strategy_key and self._check_signal_ledger(run, strategy_key, band_id, rebalance_cadence or cadence):
+                        signals = self._read_cached_signals(strategy_key, as_of)
+                        if signals:
+                            logger.info(f"Read {len(signals)} cached signals for {strategy_key} on {as_of}")
+
+                # Fallback: regenerate signals if cache miss or skip_signal_generation=False
+                if signals is None:
+                    signals = adapter.generate_signals(universe, as_of, run.horizon_bucket)
+
                 # Apply regime exposure if configured
                 signals = self.apply_regime_to_signals(signals, as_of)
 
