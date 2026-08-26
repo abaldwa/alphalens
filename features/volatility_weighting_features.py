@@ -86,8 +86,19 @@ def compute_volatility_weighting_features(
     df["_log_return"] = log_return
     df["_neg_return"] = df["_log_return"].clip(upper=0.0)
 
-    realized_vol_daily = grouped_rolling(df, "_log_return", lookback_days, "std")
-    downside_vol_daily = grouped_rolling(df, "_neg_return", lookback_days, "std")
+    # [Bug found 2026-08-27] grouped_rolling's default min_periods=window
+    # requires EVERY value in the trailing window to be non-null — a single
+    # missing/holiday close anywhere in the 126-day lookback therefore
+    # blanks the entire window's output for ~126 subsequent trading days.
+    # features/momentum_signal.py::_daily_return_volatility (the backtest-
+    # time equivalent this module is meant to match) has no such cliff:
+    # it slices a plain window and calls .std(ddof=1), which pandas
+    # computes over whatever non-null values are present. min_periods is
+    # relaxed to 80% of the window here for the same tolerance, rather
+    # than requiring a mathematically-unnecessary full window.
+    min_periods = max(int(lookback_days * 0.8), 2)
+    realized_vol_daily = grouped_rolling(df, "_log_return", lookback_days, "std", min_periods=min_periods)
+    downside_vol_daily = grouped_rolling(df, "_neg_return", lookback_days, "std", min_periods=min_periods)
 
     realized_vol = realized_vol_daily * (TRADING_DAYS_PER_YEAR ** 0.5)
     downside_vol = downside_vol_daily * (TRADING_DAYS_PER_YEAR ** 0.5)
