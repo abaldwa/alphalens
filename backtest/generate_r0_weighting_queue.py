@@ -4,8 +4,8 @@ backtest/generate_r0_weighting_queue.py
 Phase: R0 (traditional momentum + volatility-scaled position weighting)
 Owner: Platform / Backtest
 
-Generates the queue for the R0 sweep: 5 rank bands (Nifty-benchmark
-proxies) x 2 top_n x 4 per-ticker weighting modes, monthly (21d)
+Generates the queue for the R0 sweep: 6 rank bands (Nifty-benchmark
+proxies) x 4 top_n x 4 per-ticker weighting modes, monthly (21d)
 rebalance, 2009-01-01 through today. Uses the corrected weight_method
 mechanism in backtest/adapters/momentum_adapter.py (basket-relative
 per-ticker re-weighting via Signal.size_multiplier) — NOT the abandoned
@@ -19,15 +19,21 @@ Band -> Nifty-benchmark mapping (features/momentum_universe.py RANK_BANDS):
     M4  (rank  76-160) ~ Nifty Midcap 150
     M7  (rank 161-275) ~ Nifty Midcap 250
     M9  (rank 276-550) ~ Nifty Smallcap 250
+    M10 (rank 301-500) ~ Nifty Smallcap 250 (narrower cut; the band the
+                        historical "amazing" R9 leverage runs used)
     M12 (rank 551-800) ~ Nifty Microcap
+
+exit_variant is "risk_managed" here (not "baseline" as in the earlier,
+superseded version of this generator) to match the CLI default and the
+historical runs being compared against.
 """
 
 import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-BANDS = [2, 4, 7, 9, 12]  # rank_band_id
-TOP_NS = [5, 7]
+BANDS = [2, 4, 7, 9, 10, 12]  # rank_band_id
+TOP_NS = [5, 7, 10, 20]
 WEIGHT_METHODS = ["inverse_volatility", "inverse_variance", "target_volatility", "downside_volatility"]
 
 START_DATE = "2009-01-01"
@@ -62,8 +68,8 @@ def build_jobs() -> List[Dict[str, Any]]:
                     "initial_capital": 1_000_000,
                     "max_tickers": 800,
                     "min_history_days": 60,
-                    "exit_variant": "baseline",
-                    "defer_db_writes": True,
+                    "exit_variant": "risk_managed",
+                    "defer_db_writes": False,
                     "ohlcv_snapshot_dir": OHLCV_SNAPSHOT_DIR,
                 })
     return jobs
@@ -75,7 +81,8 @@ def main() -> None:
         "_description": (
             "R0: traditional momentum (top_n rank rotation) with per-ticker "
             "volatility-scaled position weighting, replacing equal-weight. "
-            "5 bands x 2 top_n x 4 weight modes, monthly rebalance, 2009-2026."
+            "6 bands x 4 top_n x 4 weight modes, monthly rebalance, "
+            "exit_variant=risk_managed, 2009-2026."
         ),
         "jobs": jobs,
     }
