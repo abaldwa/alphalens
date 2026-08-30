@@ -29,7 +29,7 @@
       "capital_mode": "lump",
       "exit_variant": "baseline",
       "strategy_family": "R",
-      "rank_method": "trailing_return"
+      "rank_method": "industry_momentum"
     },
     {
       "kind": "orchestrator",
@@ -47,7 +47,7 @@
       "capital_mode": "lump",
       "exit_variant": "baseline",
       "strategy_family": "R",
-      "rank_method": "trailing_return"
+      "rank_method": "industry_momentum"
     }
   ]
 }
