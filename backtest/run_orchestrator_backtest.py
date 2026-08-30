@@ -1222,6 +1222,9 @@ def _run_immediate(
                 # Phase R0: per-ticker volatility weighting (all default-off).
                 weight_method=weight_method,
                 weight_lookback_days=weight_lookback_days,
+                # B-027: Regime switching for vol-scaling strategies.
+                regime_switching_enabled=regime_switching_enabled,
+                rank_band_id=rank_band_id,
                 # regime_conn wired post-construction below, same deferred
                 # pattern as the technical branch (the connection doesn't
                 # exist yet at this point in the function).
@@ -1585,6 +1588,9 @@ def _run_deferred(
             # Phase R0: per-ticker volatility weighting (all default-off).
             weight_method=weight_method,
             weight_lookback_days=weight_lookback_days,
+            # B-027: Regime switching for vol-scaling strategies.
+            regime_switching_enabled=regime_switching_enabled,
+            rank_band_id=rank_band_id,
         )
     else:
         raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
@@ -1623,6 +1629,7 @@ def _run_deferred(
             "vol_scaling_leverage_cap": vol_scaling_leverage_cap,
             "weight_method": weight_method,
             "weight_lookback_days": weight_lookback_days,
+            "regime_switching_enabled": regime_switching_enabled,
             # The cadence the engine ACTUALLY slices on (core/engine.py:1007),
             # not the override -- which is None whenever the horizon default
             # was taken. Recorded because until 2026-08-19 cadence survived
@@ -1763,6 +1770,7 @@ def run_orchestrator_backtest(
     vol_scaling_leverage_cap: Optional[float] = None,
     weight_method: Optional[str] = None,
     weight_lookback_days: int = 126,
+    regime_switching_enabled: bool = False,
     run_id: Optional[str] = None, report_suffix: Optional[str] = None,
     regime_index_name: Optional[str] = "Nifty 500",
     # A98: separate from regime_index_name. None means "compare against the

@@ -125,6 +125,9 @@ class MomentumAdapter:
         # to vol_scaling_mode above, which scales the WHOLE portfolio).
         weight_method: Optional[str] = None,
         weight_lookback_days: int = 126,
+        # B-027: Regime-switching for vol-scaling strategies
+        regime_switching_enabled: bool = False,
+        rank_band_id: Optional[int] = None,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -255,6 +258,17 @@ class MomentumAdapter:
         weight_lookback_days : int
             Rolling window for the per-ticker volatility computation
             (default 126 = ~6 months). Ignored if weight_method is None.
+
+        B-027: Regime-switching for vol-scaling strategies (Moreira-Muir adaptive):
+        regime_switching_enabled : bool
+            When True, select vol_scaling_mode dynamically based on market regime.
+            Bull → inverse_volatility (aggressive), Bear → downside_volatility
+            (conservative), Choppy → target_volatility (balanced).
+            Only active if vol_scaling_mode is set (default False).
+        rank_band_id : Optional[int]
+            Market-cap band identifier (1-5 corresponding to Nifty 50, Next 50,
+            Nifty 150, Smallcap 250, Microcap) used to select market-cap-specific
+            regime detector. Required if regime_switching_enabled=True.
         """
         if top_n <= 0:
             raise ValueError("top_n must be positive")
@@ -318,6 +332,13 @@ class MomentumAdapter:
         # Phase R0: per-ticker volatility weighting (all default-off).
         self.weight_method = weight_method
         self.weight_lookback_days = weight_lookback_days
+        # B-027: Regime-switching for vol-scaling strategies (all default-off).
+        self.regime_switching_enabled = regime_switching_enabled
+        self.rank_band_id = rank_band_id
+        self._regime_detector: Optional[EnsembleRegimeDetector] = None
+        self._regime_cache: Dict[date_type, str] = {}  # Cache detected regimes
+        if regime_switching_enabled and rank_band_id is not None:
+            self._init_regime_detector()
         # Shared equity history cache used by crash-aware, vol-target, and vol-scaling overlays
         self._equity_history: Optional[pd.Series] = None
         # Build rank_fn from rank_method if not explicitly provided
@@ -710,12 +731,71 @@ class MomentumAdapter:
             # Insufficient data or computation error, default to no scaling
             return 1.0
 
+    def _init_regime_detector(self) -> None:
+        """Initialize ensemble regime detector for this market cap band."""
+        if not self.regime_switching_enabled or self.rank_band_id is None:
+            return
+        try:
+            market_cap_band = self._get_market_cap_band_name()
+            if market_cap_band is None:
+                logger.warning(f"B-027: Unknown rank_band_id {self.rank_band_id}, regime switching disabled")
+                self.regime_switching_enabled = False
+                return
+            self._regime_detector = EnsembleRegimeDetector(market_cap_band)
+            logger.info(f"B-027: Initialized ensemble regime detector for {market_cap_band} (band {self.rank_band_id})")
+        except Exception as e:
+            logger.error(f"B-027: Failed to initialize regime detector: {e}")
+            self.regime_switching_enabled = False
+
+    def _get_market_cap_band_name(self) -> Optional[str]:
+        """Map rank_band_id to market cap band name."""
+        band_mapping = {
+            1: "nifty_50",
+            2: "nifty_next_50",
+            3: "nifty_150",
+            4: "nifty_smallcap_250",
+            5: "nifty_microcap",
+        }
+        return band_mapping.get(self.rank_band_id)
+
+    def _detect_regime(self, as_of_date: date_type) -> str:
+        """Detect market regime for given date (cached)."""
+        if not self.regime_switching_enabled or self._regime_detector is None:
+            return "Choppy"  # Default to neutral regime if disabled
+        if as_of_date in self._regime_cache:
+            return self._regime_cache[as_of_date]
+        try:
+            ohlcv_df = self._regime_detector.load_index_ohlcv(as_of_date - pd.Timedelta(days=500), as_of_date)
+            if ohlcv_df.empty:
+                regime = "Choppy"
+            else:
+                regime_df = self._regime_detector.detect(ohlcv_df)
+                regime = regime_df.loc[as_of_date, 'regime'] if as_of_date in regime_df.index else "Choppy"
+            self._regime_cache[as_of_date] = regime
+            logger.debug(f"B-027: Detected regime on {as_of_date}: {regime}")
+            return regime
+        except Exception as e:
+            logger.warning(f"B-027: Regime detection failed on {as_of_date}: {e}")
+            return "Choppy"
+
+    def _select_vol_scaling_mode(self, regime: str) -> Optional[str]:
+        """Select vol-scaling mode based on market regime."""
+        if not self.regime_switching_enabled or regime == "Choppy":
+            return self.vol_scaling_mode  # Use configured mode, or None
+        if regime == "Bull":
+            return "inverse_volatility"  # Aggressive
+        elif regime == "Bear":
+            return "downside_volatility"  # Conservative
+        else:
+            return self.vol_scaling_mode  # Fallback
+
     def _compute_exposure_multiplier_today(self, as_of_date: date_type) -> float:
         """
-        Compute exposure multiplier for today (Phase 8/9).
+        Compute exposure multiplier for today (Phase 8/9/B-027).
         Dispatches between:
         - R8 (vol_target_enabled): Barroso-Santa-Clara vol-target scaling
         - R9 (vol_scaling_mode): Moreira-Muir generalized volatility scaling
+        - B-027 (regime_switching_enabled): Regime-aware mode selection for R9
         Returns 1.0 if disabled or insufficient data.
         Note: R8 takes precedence if both are set (backward-compat).
         """
@@ -731,11 +811,21 @@ class MomentumAdapter:
         if self.vol_scaling_mode is None:
             return 1.0
 
+        # B-027: Determine vol_scaling_mode based on regime if enabled
+        active_mode = self.vol_scaling_mode
+        regime = "Choppy"
+        if self.regime_switching_enabled:
+            regime = self._detect_regime(as_of_date)
+            active_mode = self._select_vol_scaling_mode(regime)
+            if active_mode is None:
+                return 1.0
+            logger.info(f"B-027: {as_of_date} regime={regime} → mode={active_mode}")
+
         try:
             from features.volatility_scaling import VOL_SCALING_DISPATCH
-            scaling_fn = VOL_SCALING_DISPATCH[self.vol_scaling_mode]
+            scaling_fn = VOL_SCALING_DISPATCH[active_mode]
             kwargs = {"lookback_days": self.vol_scaling_lookback_days, "leverage_cap": self.vol_scaling_leverage_cap}
-            if self.vol_scaling_mode == "target_volatility":
+            if active_mode == "target_volatility":
                 kwargs["target_vol"] = self.vol_target_pct
             mult_series = scaling_fn(self._equity_history, **kwargs)
             date_ts = pd.Timestamp(as_of_date) if not isinstance(as_of_date, pd.Timestamp) else as_of_date
@@ -745,20 +835,20 @@ class MomentumAdapter:
             # recent available multiplier (typically yesterday's).
             if date_ts in mult_series.index:
                 mult = float(mult_series.loc[date_ts])
-                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} found in mult_series, using={mult:.6f}")
+                logger.info(f"R9 {active_mode}: {as_of_date} found in mult_series, using={mult:.6f}")
             elif len(mult_series) > 0:
                 # Use last available multiplier (off-by-one: yesterday's data)
                 mult = float(mult_series.iloc[-1])
-                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} NOT in mult_series (only has {len(mult_series)} days), using iloc[-1]={mult:.6f}")
+                logger.info(f"R9 {active_mode}: {as_of_date} NOT in mult_series (only has {len(mult_series)} days), using iloc[-1]={mult:.6f}")
             else:
                 mult = 1.0
-                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} empty mult_series, using default={mult:.6f}")
+                logger.info(f"R9 {active_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} empty mult_series, using default={mult:.6f}")
             if len(self._equity_history) > 200 and len(self._equity_history) % 100 == 0:
-                logger.info(f"R9 {self.vol_scaling_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} multiplier={mult:.6f} (mid-backtest check)")
+                logger.info(f"R9 {active_mode}: {as_of_date} equity_hist_len={len(self._equity_history)} multiplier={mult:.6f} (mid-backtest check)")
             return mult
         except (ValueError, KeyError, Exception) as e:
             # Insufficient data or computation error, default to no scaling
-            logger.warning(f"R9 {self.vol_scaling_mode}: computation error on {as_of_date}: {e}")
+            logger.warning(f"R9 {active_mode}: computation error on {as_of_date}: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return 1.0
