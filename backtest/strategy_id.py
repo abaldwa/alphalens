@@ -216,13 +216,31 @@ def default_horizon_for_fundamental(preset: str) -> HorizonBucket:
     return FUNDAMENTAL_PRESET_DEFAULT_HORIZON[preset]
 
 
-def default_horizon_for_momentum(lookback_months: int) -> HorizonBucket:
+def default_horizon_for_momentum(
+    lookback_months: int,
+    vol_target_enabled: bool = False,
+    vol_scaling_mode: Optional[str] = None,
+    weight_method: Optional[str] = None,
+) -> HorizonBucket:
     """A momentum rotation's natural holding period scales with its own
     lookback — a 1-3 month trailing-return signal decays over weeks
     (21-day), a 4-9 month signal over a quarter-ish (63-day), anything
     longer is a genuine annual-rebalance thesis (1-year). Our own
     reasoned default (the Explainer doesn't cover Momentum), not a
-    republished figure."""
+    republished figure.
+
+    EXCEPTION (B-026 fix): Volatility-scaled strategies (Barroso-Santa-Clara
+    vol-target, Moreira-Muir vol-scaling, per-ticker weighting) require
+    MONTHLY (21-day) rebalancing to recalculate vol multipliers and adapt
+    to market conditions. Annual rebalancing leaves positions over-leveraged
+    during volatility spikes (e.g., COVID crash) because the multiplier can't
+    update for 11 months. Monthly rebalancing ensures the portfolio
+    automatically reduces exposure when volatility rises."""
+    # Vol-scaling strategies need monthly multiplier recalculation
+    if vol_target_enabled or vol_scaling_mode is not None or weight_method is not None:
+        return HorizonBucket.D21
+
+    # Pure momentum uses lookback-based horizon
     if lookback_months <= 3:
         return HorizonBucket.D21
     if lookback_months <= 9:

@@ -834,7 +834,8 @@ def build_technical_feature_lookup(engine: Optional[Any] = None) -> TechnicalFea
 
 def _resolve_horizon_bucket(
     channel: str, horizon_bucket: Optional[str], template_name: Optional[str], preset: Optional[str],
-    lookback_months: int,
+    lookback_months: int, vol_target_enabled: bool = False, vol_scaling_mode: Optional[str] = None,
+    weight_method: Optional[str] = None,
 ) -> HorizonBucket:
     """Resolves the run's HorizonBucket: an explicit --horizon-bucket wins
     (full HorizonBucket value or a strategy_id short code, e.g. "21d");
@@ -849,6 +850,11 @@ def _resolve_horizon_bucket(
     run_orchestrator_backtest's combo branch) — same registry lookup, just
     resolved off one representative template rather than requiring an explicit
     --horizon-bucket for every combo.
+
+    For momentum vol-scaling strategies (B-026 fix), vol parameters are passed
+    to default_horizon_for_momentum to enforce monthly rebalancing instead of
+    the lookback-based annual default, ensuring vol multipliers adapt to market
+    conditions (Barroso-Santa-Clara, Moreira-Muir, per-ticker weighting).
     """
     if horizon_bucket:
         if horizon_bucket in HORIZON_BUCKET_MAP:
@@ -880,7 +886,12 @@ def _resolve_horizon_bucket(
             raise ValueError("cannot default horizon_bucket: --preset is required for channel=fundamental")
         return default_horizon_for_fundamental(preset)
     if channel == "momentum":
-        return default_horizon_for_momentum(lookback_months)
+        return default_horizon_for_momentum(
+            lookback_months,
+            vol_target_enabled=vol_target_enabled,
+            vol_scaling_mode=vol_scaling_mode,
+            weight_method=weight_method,
+        )
     raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
 
 
@@ -1855,6 +1866,9 @@ def run_orchestrator_backtest(
         raise ValueError("combo_templates needs at least 2 templates — use --template-name for a single one")
     horizon = _resolve_horizon_bucket(
         channel, horizon_bucket, combo_templates[0] if combo_templates else template_name, preset, lookback_months,
+        vol_target_enabled=vol_target_enabled,
+        vol_scaling_mode=vol_scaling_mode,
+        weight_method=weight_method,
     )
 
     run_started = time.monotonic()
