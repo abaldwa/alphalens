@@ -672,10 +672,13 @@ def build_historical_universe_from_delisted(
                 )
 
     combined = sorted(active_tickers | delisted_tickers)
-    logger.info(
-        "Historical universe: %d active + %d delisted-only = %d total tickers",
-        len(active_tickers), len(delisted_tickers - active_tickers), len(combined),
-    )
+    # NOTE: Disabled verbose logging here (2026-08-31) — when called in a tight loop
+    # (as triggered by certain weight_method values), this log statement creates
+    # massive I/O overhead that kills jobs. Root cause of the loop is TBD.
+    # logger.info(
+    #     "Historical universe: %d active + %d delisted-only = %d total tickers",
+    #     len(active_tickers), len(delisted_tickers - active_tickers), len(combined),
+    # )
     return combined
 
 
