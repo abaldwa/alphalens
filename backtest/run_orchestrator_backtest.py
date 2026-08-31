@@ -51,7 +51,7 @@ import time
 import uuid
 from datetime import date as date_type
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -452,12 +452,15 @@ def _build_config_artifacts(
     that is the property that makes sharing safe.
     """
     trading_days = pd.DatetimeIndex(sorted(ohlcv["date"].unique()))
-    price_map = {(row.ticker, row.date.date()): row.close for row in ohlcv.itertuples(index=False)}
+    price_map = {
+        (row.ticker, cast(Any, row.date).date() if hasattr(row.date, "date") else row.date): row.close
+        for row in ohlcv.itertuples(index=False)
+    }
 
     # Each ticker's real trading dates as sorted int64 day-ordinals — a
     # fast per-(ticker, as_of) presence check via binary search.
     ticker_dates: Dict[str, "np.ndarray[Any, Any]"] = {
-        ticker: np.sort(group["date"].to_numpy().astype("datetime64[D]").astype(np.int64))
+        cast(str, ticker): np.sort(group["date"].to_numpy().astype("datetime64[D]").astype(np.int64))
         for ticker, group in ohlcv.groupby("ticker")
     }
 
@@ -826,7 +829,7 @@ def build_technical_feature_lookup(engine: Optional[Any] = None) -> TechnicalFea
         row = df.loc[df["ticker"] == ticker]
         if row.empty:
             return {}
-        values: Dict[str, float] = row.iloc[0].to_dict()
+        values: Dict[str, float] = cast(Dict[str, float], row.iloc[0].to_dict())
         return values
 
     return lookup
@@ -927,7 +930,10 @@ def _build_drawdown_regime_labels(
         )
     prices = pd.Series([r[1] for r in rows], index=pd.to_datetime([r[0] for r in rows]), dtype=float)
     labels = bear_by_running_peak_drawdown(prices, threshold_pct=bear_drawdown_pct)
-    return {ts.date(): label for ts, label in labels.items()}
+    return {
+        cast(date_type, cast(Any, ts).date() if hasattr(ts, "date") else ts): label
+        for ts, label in labels.items()
+    }
 
 
 def _persist_run_result(
@@ -1135,13 +1141,13 @@ def _run_immediate(
                 # top_n) since the COMBO applies the real top_n cut after
                 # pooling — an individual sub-adapter must not silently
                 # truncate a candidate away before pooling gets to see it.
-                sub_kwargs = {**_shared_adapter_kwargs, "top_n": top_n * 5}
+                sub_kwargs = {**cast(Dict[str, Any], _shared_adapter_kwargs), "top_n": top_n * 5}
                 sub_adapters = [
-                    TechnicalAdapter(template_name=name, **sub_kwargs) for name in combo_templates
+                    TechnicalAdapter(template_name=name, **cast(Dict[str, Any], sub_kwargs)) for name in combo_templates
                 ]
-                adapter = TechnicalComboAdapter(sub_adapters, top_n=top_n)
+                adapter: Any = TechnicalComboAdapter(sub_adapters, top_n=top_n)
             else:
-                adapter = TechnicalAdapter(template_name=template_name, **_shared_adapter_kwargs)
+                adapter = TechnicalAdapter(template_name=cast(str, template_name), **cast(Dict[str, Any], _shared_adapter_kwargs))
         elif channel == "fundamental":
             if not preset:
                 raise ValueError("channel=fundamental requires --preset")
@@ -1236,9 +1242,9 @@ def _run_immediate(
             raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
 
         run = BacktestRun(
-            run_id=run_id, channel=channel, strategy_id=strategy_id, horizon_bucket=horizon,
+            run_id=run_id, channel=cast(Literal["technical", "fundamental", "ml", "momentum"], channel), strategy_id=strategy_id, horizon_bucket=horizon,
             mode="backtest", universe_spec=universe_spec, start_date=start_date, end_date=end_date,
-            capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
+            capital_mode=cast(Literal["lump", "sip", "annual_reset"], capital_mode), initial_capital=initial_capital, sip_amount=sip_amount,
             annual_reset_ltcg_rate=(annual_reset_spec or {}).get("ltcg_rate"),
             annual_reset_ltcg_exemption=(annual_reset_spec or {}).get("ltcg_exemption"),
             annual_reset_regime_label=(annual_reset_spec or {}).get("regime_label"),
@@ -1332,7 +1338,10 @@ def _run_immediate(
                 # every underlying sub-adapter needs this wired individually
                 # (TechnicalComboAdapter itself has no screener/regime state
                 # of its own — it only pools its sub-adapters' output).
-                _technical_sub_adapters = adapter.adapters if combo_templates else [adapter]
+                if isinstance(adapter, TechnicalComboAdapter):
+                    _technical_sub_adapters = adapter.adapters
+                else:
+                    _technical_sub_adapters = [adapter]
                 for _sub in _technical_sub_adapters:
                     _sub._screener_cache_conn = conn
                     # Same deferred-wiring reason as _screener_cache_conn
@@ -1344,10 +1353,12 @@ def _run_immediate(
                 # Same deferred-wiring pattern as the technical branch above —
                 # MomentumAdapter self-fetches regime segments through this
                 # connection when disable_buys_in_regime was requested.
-                adapter._regime_conn = regime_conn
+                if isinstance(adapter, MomentumAdapter):
+                    adapter._regime_conn = regime_conn
             elif channel == "fundamental" and preset in BESPOKE_PRESETS:
                 # Same deferred-wiring pattern as the technical branch above.
-                adapter._db_conn = fundamentals_conn
+                if isinstance(adapter, FundamentalAdapter):
+                    adapter._db_conn = fundamentals_conn
             feature_log_writer = FeatureLogWriter(conn)
             exit_model = build_exit_model_for_variant(
                 exit_policy_variant, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500",
@@ -1525,11 +1536,11 @@ def _run_deferred(
             precomputed_matches_dir=precomputed_matches_dir,
         )
         if combo_templates:
-            sub_kwargs = {**_shared_adapter_kwargs, "top_n": top_n * 5}
-            sub_adapters = [TechnicalAdapter(template_name=name, **sub_kwargs) for name in combo_templates]
-            adapter = TechnicalComboAdapter(sub_adapters, top_n=top_n)
+            sub_kwargs = {**cast(Dict[str, Any], _shared_adapter_kwargs), "top_n": top_n * 5}
+            sub_adapters = [TechnicalAdapter(template_name=name, **cast(Dict[str, Any], sub_kwargs)) for name in combo_templates]
+            adapter: Any = TechnicalComboAdapter(sub_adapters, top_n=top_n)
         else:
-            adapter = TechnicalAdapter(template_name=template_name, **_shared_adapter_kwargs)
+            adapter = TechnicalAdapter(template_name=cast(str, template_name), **cast(Dict[str, Any], _shared_adapter_kwargs))
     elif channel == "fundamental":
         if not preset:
             raise ValueError("channel=fundamental requires --preset")
@@ -1602,9 +1613,9 @@ def _run_deferred(
         raise ValueError(f"unsupported channel {channel!r} — must be technical, fundamental, or momentum")
 
     run = BacktestRun(
-        run_id=run_id, channel=channel, strategy_id=strategy_id, horizon_bucket=horizon,
+        run_id=run_id, channel=cast(Literal["technical", "fundamental", "ml", "momentum"], channel), strategy_id=strategy_id, horizon_bucket=horizon,
         mode="backtest", universe_spec=universe_spec, start_date=start_date, end_date=end_date,
-        capital_mode=capital_mode, initial_capital=initial_capital, sip_amount=sip_amount,
+        capital_mode=cast(Literal["lump", "sip", "annual_reset"], capital_mode), initial_capital=initial_capital, sip_amount=sip_amount,
         annual_reset_ltcg_rate=(annual_reset_spec or {}).get("ltcg_rate"),
         annual_reset_ltcg_exemption=(annual_reset_spec or {}).get("ltcg_exemption"),
         annual_reset_regime_label=(annual_reset_spec or {}).get("regime_label"),
@@ -1675,12 +1686,17 @@ def _run_deferred(
             # phase, so each parallel job re-screens live via ScreenerEngine
             # instead of sharing the cross-exit-variant cache. regime_conn
             # (read-only) is still wired since disable_buys_in_regime needs it.
-            for _sub in (adapter.adapters if combo_templates else [adapter]):
-                _sub._regime_conn = regime_conn
+            if isinstance(adapter, TechnicalComboAdapter):
+                for _sub in adapter.adapters:
+                    _sub._regime_conn = regime_conn
+            elif isinstance(adapter, TechnicalAdapter):
+                adapter._regime_conn = regime_conn
         elif channel == "momentum":
-            adapter._regime_conn = regime_conn
+            if isinstance(adapter, MomentumAdapter):
+                adapter._regime_conn = regime_conn
         elif channel == "fundamental" and preset in BESPOKE_PRESETS:
-            adapter._db_conn = fundamentals_conn
+            if isinstance(adapter, FundamentalAdapter):
+                adapter._db_conn = fundamentals_conn
 
         exit_model = build_exit_model_for_variant(
             exit_policy_variant, regime_conn=regime_conn, regime_index_name=regime_index_name or "Nifty 500",

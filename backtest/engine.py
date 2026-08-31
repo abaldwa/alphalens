@@ -31,7 +31,7 @@ not a silent omission.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -191,7 +191,7 @@ def _cagr_sharpe_from_equity(equity: np.ndarray, initial_capital: float) -> tupl
 def compute_fold_metrics(
     equity_curve: pd.DataFrame, trades_df: pd.DataFrame, initial_capital: float,
     benchmark_equity_curve: Optional[pd.DataFrame] = None,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     """
     Parameters
     ----------
@@ -456,7 +456,7 @@ class BacktestEngine:
         present = [k for k in keys if k in self._pnd_features.index]
         if not present:
             return pd.Series(0.0, index=tickers)
-        rows = self._pnd_features.loc[present, PND_FEATURES]
+        rows = self._pnd_features.loc[cast(Any, present), PND_FEATURES]
         scores = self.pnd_detector.predict_full(rows)["pnd_score"]
         scores.index = [k[1] for k in present]
         return scores.reindex(tickers).fillna(0.0)
@@ -466,7 +466,7 @@ class BacktestEngine:
         present = [k for k in keys if k in self._pnd_features.index]
         if not present:
             return pd.Series(False, index=tickers)
-        rows = self._pnd_features.loc[present, PND_FEATURES]
+        rows = self._pnd_features.loc[cast(Any, present), PND_FEATURES]
         blocked = self.pnd_detector.predict_full(rows)["pnd_block"]
         blocked.index = [k[1] for k in present]
         return blocked.reindex(tickers).fillna(False)
@@ -547,7 +547,7 @@ class BacktestEngine:
         for t in held:
             pos = portfolio.positions[t]
             price = prices_today[t]
-            days_held = max((pd.Timestamp(d) - pd.Timestamp(pos.entry_date)).days, 0)
+            days_held = max((pd.Timestamp(d) - pd.Timestamp(cast(Any, pos.entry_date))).days, 0)
             momentum = self._momentum.get((d, t), 0.0)
             rows.append(
                 {
@@ -581,7 +581,7 @@ class BacktestEngine:
             trade = portfolio.apply_exit_signal(t, urgency, prices_today[t], d, adtv_cr=adtv_cr)
             decision = "sold" if trade is not None else "held"
             self._log_feature(
-                t, d, exit_ctx.loc[t].to_dict(), decision, signal_output=f"exit_urgency={urgency:.4f}",
+                t, d, cast(Dict[str, Any], exit_ctx.loc[t].to_dict()), decision, signal_output=f"exit_urgency={urgency:.4f}",
             )
 
     def _apply_entries(
@@ -705,10 +705,10 @@ class BacktestEngine:
         real ADTV data.
         """
         real_adtv_cr_values = [
-            t.adtv_cr for t in portfolio.trades if getattr(t, "adtv_cr", None) is not None
+            cast(float, t.adtv_cr) for t in portfolio.trades if getattr(t, "adtv_cr", None) is not None
         ]
         if real_adtv_cr_values:
-            return min(real_adtv_cr_values) * 1e7  # crore -> INR
+            return cast(float, min(real_adtv_cr_values)) * 1e7  # crore -> INR
         return float(MIN_ADT_INR)
 
     def _run_integrity_check(
@@ -961,7 +961,7 @@ class BacktestEngine:
             },
         }
 
-        aggregate = {
+        aggregate: Dict[str, Any] = {
             "cagr_mean": float(np.mean([f.cagr for f in fold_results])),
             "sharpe_mean": float(np.mean([f.sharpe for f in fold_results])),
             "sortino_mean": float(np.mean([f.sortino for f in fold_results])),
@@ -1072,7 +1072,7 @@ class BacktestEngine:
         return BacktestResults(
             model_name=model_name, from_date=from_date, to_date=to_date,
             fold_results=fold_results, aggregate=aggregate,
-            integrity_passed=integrity["passed"], integrity_detail=integrity["detail"],
+            integrity_passed=cast(bool, integrity["passed"]), integrity_detail=cast(Dict[str, Any], integrity["detail"]),
             oof_df=oof_df, fold_returns=fold_returns,
             fold_models=fold_models if collect_fold_models else None,
         )

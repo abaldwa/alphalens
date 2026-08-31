@@ -610,7 +610,7 @@ async def get_family_positions(
             params,
         ).fetchall()
 
-    data = [_position_row_to_dict(r) for r in rows]
+    data = [_position_row_to_dict(r, r[8], None, False) for r in rows]
     return {"ticker": ticker, "data": data, "record_count": len(data)}
 
 
