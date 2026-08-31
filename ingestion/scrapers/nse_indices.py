@@ -264,7 +264,8 @@ def download_index_ohlcv(date: str) -> pd.DataFrame:
     raw = raw[canonical.notna()].reset_index(drop=True)
     raw["Index Name"] = canonical[canonical.notna()].reset_index(drop=True)
 
-    volume = raw["Volume"].replace("-", pd.NA) if "Volume" in raw.columns else pd.NA
+    volume = raw["Volume"].replace("-", pd.NA) if "Volume" in raw.columns else None
+    volume_numeric = pd.to_numeric(volume, errors="coerce") if volume is not None else None
     df = pd.DataFrame(
         {
             "date": trade_date.date().isoformat(),
@@ -273,7 +274,7 @@ def download_index_ohlcv(date: str) -> pd.DataFrame:
             "high": pd.to_numeric(raw["High Index Value"], errors="coerce"),
             "low": pd.to_numeric(raw["Low Index Value"], errors="coerce"),
             "close": pd.to_numeric(raw["Closing Index Value"], errors="coerce"),
-            "volume": pd.to_numeric(volume, errors="coerce"),
+            "volume": volume_numeric,
         }
     )
 

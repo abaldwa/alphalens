@@ -310,6 +310,7 @@ class ScreenerScraper:
         if self._session is None:
             self.login()
 
+        assert self._session is not None, "session should not be None after login()"
         url = f"{BASE_URL}/company/{ticker}/consolidated/"
         response = _retry(lambda: self._session.get(url, timeout=30))
         if response.status_code != 200:
@@ -359,7 +360,10 @@ class ScreenerScraper:
 
         fundamentals_row = _build_fundamentals_row(ticker, quarters, balance_sheet, header)
         shareholding_row = _build_shareholding_row(ticker, shareholding)
-        return {"fundamentals": fundamentals_row, "shareholding": shareholding_row}
+        return {
+            "fundamentals": fundamentals_row if fundamentals_row is not None else {},
+            "shareholding": shareholding_row if shareholding_row is not None else {},
+        }
 
     def export_equity_history(self, ticker: str, html: Optional[str] = None) -> Dict[int, Dict[str, float]]:
         """
@@ -525,7 +529,7 @@ def _parse_number(text: str) -> Optional[float]:
 
 def _parse_section_table(
     soup: BeautifulSoup, section_id: Optional[str], field_map: Dict[str, str], header_stats: bool = False
-) -> Dict[str, float]:
+) -> Dict[str, Optional[float]]:
     """
     Find the most recent (rightmost) column's value for each labeled row
     inside a `<section id="...">`, or the page header's labeled ratio
@@ -536,7 +540,7 @@ def _parse_section_table(
     dict
         internal_field_name -> latest value (None if the row/section was not found).
     """
-    result: Dict[str, float] = {field: None for field in field_map.values()}
+    result: Dict[str, Optional[float]] = {field: None for field in field_map.values()}
 
     if header_stats:
         # Header stats render as label/value pairs (commonly <li> "name"/"value" spans)
@@ -685,7 +689,7 @@ def _indian_fiscal_year_quarter(quarter_end: date) -> "tuple[int, int]":
 
 
 def _build_fundamentals_row(
-    ticker: str, quarters: Dict[str, float], balance_sheet: Dict[str, float], header: Dict[str, float]
+    ticker: str, quarters: Dict[str, Optional[float]], balance_sheet: Dict[str, Optional[float]], header: Dict[str, Optional[float]]
 ) -> Optional[Dict[str, Any]]:
     """Assemble one FundamentalsWrite-shaped dict from parsed page sections, or None if no quarterly data found."""
     if quarters.get("revenue") is None:
@@ -744,13 +748,13 @@ def _build_fundamentals_row(
         "roe": header.get("roe"),
         "roce": header.get("roce"),
         "debt_to_equity": (
-            balance_sheet.get("total_debt") / equity_cr
+            balance_sheet.get("total_debt") / equity_cr  # type: ignore[operator]
             if balance_sheet.get("total_debt") is not None and equity_cr else None
         ),
         "interest_coverage": interest_coverage,
         "ebit": operating_profit,  # [2026-08-05] operating_profit IS ebit for Indian GAAP reporting
         "debt_to_ebitda": (
-            balance_sheet.get("total_debt") / ebitda
+            balance_sheet.get("total_debt") / ebitda  # type: ignore[operator]
             if balance_sheet.get("total_debt") is not None and ebitda is not None and ebitda != 0 else None
         ),
         "net_debt": None,  # [AS BUILT] Cash not on free-tier balance sheet; derived from XBRL in recompute step
@@ -775,7 +779,7 @@ def _build_fundamentals_row(
     }
 
 
-def _build_shareholding_row(ticker: str, shareholding: Dict[str, float]) -> Optional[Dict[str, Any]]:
+def _build_shareholding_row(ticker: str, shareholding: Dict[str, Optional[float]]) -> Optional[Dict[str, Any]]:
     """Assemble one ShareholdingWrite-shaped dict from the parsed #shareholding section, or None if absent."""
     if shareholding.get("promoter_pct") is None:
         return None

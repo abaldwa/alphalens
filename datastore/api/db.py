@@ -53,7 +53,7 @@ from config.settings import DUCKDB_LOCK_RETRY_ATTEMPTS, DUCKDB_LOCK_RETRY_BASE_D
 try:
     import duckdb
 except ImportError:
-    duckdb = None
+    duckdb = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

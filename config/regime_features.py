@@ -92,18 +92,18 @@ def get_regime_for_date(regime_df: pd.DataFrame, as_of_date: date_type) -> Optio
     Returns:
         RegimeData if date found, None otherwise
     """
-    row = regime_df[regime_df['date'] == as_of_date]
-    if row.empty:
+    matching_rows = regime_df[regime_df['date'] == as_of_date]
+    if matching_rows.empty:
         return None
 
-    row = row.iloc[0]
+    row = matching_rows.iloc[0]
     return RegimeData(
-        regime=row['regime'],
-        exposure=row['exposure'],
-        ema_5=row['ema_5'],
-        ema_10=row['ema_10'],
-        rsi_14=row['rsi_14'],
-        date=row['date'],
+        regime=str(row['regime']),
+        exposure=float(row['exposure']),
+        ema_5=float(row['ema_5']),
+        ema_10=float(row['ema_10']),
+        rsi_14=float(row['rsi_14']),
+        date=row['date'] if hasattr(row['date'], 'date') else row['date'].date(),
     )
 
 

@@ -26,7 +26,7 @@ precedent this mirrors.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict
 
 import requests
@@ -51,7 +51,7 @@ def _nse_session() -> requests.Session:
     return session
 
 
-def download_past_issues() -> Dict[str, "datetime.date"]:
+def download_past_issues() -> Dict[str, date]:
     """
     Fetch NSE's full historical past-issues (IPO) list and return a
     {ticker: listing_date} dict for every real, already-listed issue.
@@ -79,7 +79,7 @@ def download_past_issues() -> Dict[str, "datetime.date"]:
             resp = session.get(NSE_PAST_ISSUES_URL, timeout=_TIMEOUT_S)
             resp.raise_for_status()
             rows = resp.json()
-            result: Dict[str, "datetime.date"] = {}
+            result: Dict[str, date] = {}
             for row in rows:
                 ticker = row.get("symbol")
                 listing_date_str = row.get("listingDate")

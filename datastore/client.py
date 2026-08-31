@@ -53,7 +53,7 @@ _RETRY_BASE_DELAY_S = 2.0
 _BULK_CACHE: Dict[str, Any] = {"from": None, "to": None, "df": None}
 
 
-def enable_bulk_ohlcv_cache(from_date: datetime, to_date: datetime, client: "DataStoreClient" = None) -> int:
+def enable_bulk_ohlcv_cache(from_date: datetime, to_date: datetime, client: "DataStoreClient | None" = None) -> int:
     """Fetch [from_date, to_date] ONCE; serve any enclosed sub-range from memory.
 
     Call before a loop that will request many overlapping windows inside this
@@ -113,6 +113,7 @@ def _get_with_retry(client: httpx.Client, url: str, params: Optional[Dict[str, A
             f"— retrying in {delay:.1f}s"
         )
         time.sleep(delay)
+    assert last_response is not None, "last_response should not be None after retry loop"
     return last_response  # exhausted retries — caller's raise_for_status() surfaces it
 
 

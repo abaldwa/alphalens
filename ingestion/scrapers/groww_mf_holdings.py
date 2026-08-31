@@ -121,11 +121,11 @@ def _list_scheme_ids(fund_house: str) -> List[str]:
         "doc_type": "scheme",
         "fund_house": fund_house,
         "index": "false",
-        "page": 0,
+        "page": "0",
         "plan_type": "Direct",
         "scheme_type": "Growth",
-        "size": 500,
-        "sort_by": 3,
+        "size": "500",
+        "sort_by": "3",
     }
     response = requests.get(SEARCH_API, params=params, timeout=30, headers={"User-Agent": DEFAULT_USER_AGENT})
     response.raise_for_status()
@@ -172,7 +172,7 @@ def _build_company_name_to_ticker_isin_map() -> Dict[str, tuple]:
     still get a real ISIN via this ticker-keyed cross-reference.
     """
     df = load_universe_raw()
-    return {_normalize_company_name(row.company_name): (row.ticker, row.isin) for row in df.itertuples()}
+    return {_normalize_company_name(str(row.company_name) if row.company_name else None): (row.ticker, row.isin) for row in df.itertuples()}
 
 
 def make_amc_fetcher(fund_house: str) -> Callable[[int, int], bytes]:

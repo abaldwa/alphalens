@@ -25,7 +25,7 @@ To populate with Nifty 500 only (phase_1), run:
 
 import logging
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import pandas as pd
 
@@ -269,7 +269,7 @@ def get_market_cap_rank_map() -> Dict[str, int]:
     """
     df = load_universe().sort_values("market_cap_cr", ascending=False).reset_index(drop=True)
     return {
-        row["ticker"]: idx + 1
+        row["ticker"]: cast(int, idx) + 1
         for idx, row in df.iterrows()
         if row["market_cap_cr"] > 0
     }
@@ -370,12 +370,16 @@ def get_market_cap_rank_map_as_of(
             # snapshot, sorted by announcement_date ascending — take the LAST
             # row per ticker (the most recent quarter known as of as_of_date),
             # same "latest known" semantics as the function's own docstring.
-            fetched = (
-                fundamentals.dropna(subset=["shares_outstanding"])
-                .groupby("ticker", as_index=True)
-                .last()["shares_outstanding"]
-                .to_dict()
-            )
+            fetched = {
+                str(k): v
+                for k, v in (
+                    fundamentals.dropna(subset=["shares_outstanding"])
+                    .groupby("ticker", as_index=True)
+                    .last()["shares_outstanding"]
+                    .to_dict()
+                    .items()
+                )
+            }
         shares_by_ticker.update(fetched)
         if shares_cache is not None:
             for t in to_fetch:

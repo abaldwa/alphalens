@@ -82,7 +82,7 @@ def _parse_nse_date(value: Optional[str]):
         return None
 
 
-def _parse_number(value):
+def _parse_number(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
     try:

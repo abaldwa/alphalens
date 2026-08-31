@@ -100,21 +100,21 @@ def find_discontinuities(
 
     found: List[Discontinuity] = []
     for row in frame.itertuples():
-        if pd.isna(row.prev_close) or row.prev_close <= 0 or row.close <= 0:
+        if pd.isna(row.prev_close) or row.prev_close <= 0 or row.close <= 0:  # type: ignore[operator]
             continue
-        if row.date.date() in known or row.date in known:
+        if row.date.date() in known or row.date in known:  # type: ignore[union-attr]
             continue
         # A circuit-locked bar opened and closed at the band: the move is
         # real and the exchange enforced it.
-        if row.high == row.low and row.volume > 0:
+        if row.high == row.low and row.volume > 0:  # type: ignore[operator]
             continue
-        if abs(row.close / row.prev_close - 1.0) > threshold:
+        if abs(row.close / row.prev_close - 1.0) > threshold:  # type: ignore[operator]
             found.append(
                 Discontinuity(
                     ticker=getattr(row, "ticker", ""),
-                    date=row.date,
-                    prev_close=float(row.prev_close),
-                    close=float(row.close),
+                    date=row.date,  # type: ignore[arg-type]
+                    prev_close=float(row.prev_close),  # type: ignore[arg-type]
+                    close=float(row.close),  # type: ignore[arg-type]
                 )
             )
     return found

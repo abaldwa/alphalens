@@ -641,6 +641,7 @@ class FYERSBackfill:
                 continue
             break
 
+        assert isinstance(response, dict), f"response must be dict but got {type(response)}"
         status = response.get("s")
         if status == "no_data":
             logger.info(f"{symbol}: no FYERS data for {window_start}..{window_end}")

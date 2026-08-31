@@ -684,7 +684,7 @@ def validate_feature_registry() -> List[str]:
     return errors
 
 
-def export_feature_catalog(output_path: Optional[Path] = None) -> Dict[str, dict]:
+def export_feature_catalog(output_path: Optional[Path] = None) -> Dict[str, object]:
     """
     Export registry to JSON for external discovery (SPEC-FEAT-001).
 
@@ -696,15 +696,16 @@ def export_feature_catalog(output_path: Optional[Path] = None) -> Dict[str, dict
     Returns:
         Dict suitable for JSON serialization
     """
-    catalog = {
+    features_dict: Dict[str, dict] = {}
+    for name, defn in FEATURE_REGISTRY.items():
+        features_dict[name] = asdict(defn)
+
+    catalog: Dict[str, object] = {
         "version": "0.1",
         "generated_at": None,  # Will be filled by ingestion layer
         "total_features": len(FEATURE_REGISTRY),
-        "features": {},
+        "features": features_dict,
     }
-
-    for name, defn in FEATURE_REGISTRY.items():
-        catalog["features"][name] = asdict(defn)
 
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -34,7 +34,7 @@ installed once with the same env var set:
 import logging
 import os
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Dict, Iterator, Optional
 
 os.environ.setdefault("PLAYWRIGHT_HOST_PLATFORM_OVERRIDE", "ubuntu24.04-x64")
 
@@ -52,7 +52,7 @@ DEFAULT_VIEWPORT = {"width": 1366, "height": 768}
 @contextmanager
 def browser_page(
     user_agent: str = DEFAULT_USER_AGENT,
-    viewport: Optional[dict] = None,
+    viewport: Optional[Dict[str, int]] = None,
     headless: bool = True,
 ) -> Iterator[Page]:
     """

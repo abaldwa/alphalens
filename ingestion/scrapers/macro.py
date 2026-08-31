@@ -731,7 +731,7 @@ def download_bond_yields(date: str, db_path: Optional[Path] = None, in_memory: b
     def _latest_as_of(series_url: str, label: str) -> float:
         def _fetch() -> float:
             series = _fetch_fred_series(series_url, label)
-            eligible = series[series.index.date <= trade_date]
+            eligible = series[series.index.date <= trade_date]  # type: ignore[union-attr]
             if eligible.empty:
                 raise requests.RequestException(f"No FRED observation <= {date} for {label}")
             return float(eligible.iloc[-1])

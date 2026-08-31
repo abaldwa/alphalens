@@ -265,6 +265,7 @@ class TijoriScraper:
         if self._session is None:
             self.login()
 
+        assert self._session is not None, "session should not be None after login()"
         url = f"{BASE_URL}/company/{ticker}/operating-metrics/"
         response = _retry(lambda: self._session.get(url, timeout=30))
         if response.status_code != 200:

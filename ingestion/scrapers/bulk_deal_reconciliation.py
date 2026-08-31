@@ -34,7 +34,7 @@ instead of auto-added to investor_family).
 
 import logging
 from datetime import date as date_type
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 RECONCILIATION_TOLERANCE_PCT = 0.10
 
 
-def _estimate_shares_outstanding(conn, ticker: str, as_of: date_type) -> Optional[float]:
+def _estimate_shares_outstanding(conn: Any, ticker: str, as_of: date_type) -> Optional[float]:
     row = conn.execute(
         "SELECT market_cap_cr FROM stock_master WHERE ticker = ?", [ticker]
     ).fetchone()
@@ -67,12 +67,12 @@ def _estimate_shares_outstanding(conn, ticker: str, as_of: date_type) -> Optiona
     return (market_cap_cr * 1e7) / close
 
 
-def _next_id(conn) -> int:
+def _next_id(conn: Any) -> int:
     row = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM bulk_deal_reconciliation_log").fetchone()
     return row[0]
 
 
-def reconcile_family_ticker_quarter(conn, family_id: str, ticker: str, quarter_end_date: date_type) -> dict:
+def reconcile_family_ticker_quarter(conn: Any, family_id: str, ticker: str, quarter_end_date: date_type) -> dict:
     """
     Reconcile one (family_id, ticker) pair for one quarter.
 
@@ -202,7 +202,7 @@ def reconcile_family_ticker_quarter(conn, family_id: str, ticker: str, quarter_e
     }
 
 
-def reconcile_quarter(conn, quarter_end_date: date_type) -> list:
+def reconcile_quarter(conn: Any, quarter_end_date: date_type) -> list:
     """
     Reconcile every (family_id, ticker) pair with public_shareholders data
     for quarter_end_date. Skips rows with no family_id (unmatched holder

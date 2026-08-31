@@ -779,7 +779,7 @@ def build_momentum_universe_provider(
     except Exception:  # noqa: BLE001 -- a connection that cannot name itself
         # gets a private cache rather than sharing an ambiguous one.
         _db = f"__unidentified_{id(normalised_conn)}__"
-    snapshots: Dict[str, pd.DataFrame] = {}
+    snapshots: Dict[Any, List[str]] = {}
     for refresh_date in universe_refresh_dates(trading_days):
         as_of = str(refresh_date.date())
         key = (_db, as_of, top_n_by_adtv, bool(include_delisted))
@@ -800,7 +800,7 @@ def build_momentum_universe_provider(
         snapshot_date = universe_snapshot_date(trading_days, as_of)
         if snapshot_date is None:
             return []
-        return list(snapshots.get(snapshot_date, []))
+        return snapshots.get(snapshot_date, [])
 
     return universe_provider
 

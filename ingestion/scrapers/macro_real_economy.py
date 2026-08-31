@@ -276,7 +276,7 @@ def download_core_industries_index(date: str) -> pd.DataFrame:
     raise ConnectionError(f"Failed to download ICI index after {_MAX_RETRIES} attempts: {last_exc}")
 
 
-def fetch_cement_and_power_growth(date: str) -> Dict[str, Dict]:
+def fetch_cement_and_power_growth(date: str) -> Dict[str, Optional[Dict]]:
     """
     Fetch the latest real cement/electricity(power-proxy) YoY growth
     reading as of `date` and shape it for macro_real_economy.parquet's
