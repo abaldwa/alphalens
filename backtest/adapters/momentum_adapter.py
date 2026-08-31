@@ -355,6 +355,14 @@ class MomentumAdapter:
                 # Reversal uses fixed 21-day lookback (1 month), ignoring the passed lookback_days
                 return trailing_reversal_1mo(price_panel, universe, date_str, lookback_days=21)
             rank_fn = _rank_fn_reversal
+        elif rank_fn is None and rank_method == "bollinger_mean_reversion":
+            from features.momentum_signal import bollinger_mean_reversion
+
+            def _rank_fn_bollinger(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
+                date_str = date if isinstance(date, str) else date.isoformat()
+                # Bollinger Band uses 20-day default lookback, ignoring passed lookback_days for BB window
+                return bollinger_mean_reversion(price_panel, universe, date_str, lookback_days=20)
+            rank_fn = _rank_fn_bollinger
         elif rank_fn is None and rank_method == "risk_adjusted_composite":
             from features.momentum_signal import risk_adjusted_momentum_score
 

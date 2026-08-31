@@ -922,3 +922,77 @@ def volatility_scaling_multiplier(
     multiplier = multiplier.clip(lower=0.0)
 
     return multiplier.astype(float)
+
+
+def bollinger_mean_reversion(
+    price_panel: pd.DataFrame,
+    universe: list[str],
+    as_of_date: Union[str, _date, pd.Timestamp],
+    lookback_days: int = 20,
+) -> pd.Series:
+    """
+    Bollinger Band mean-reversion signal: ranks by proximity to lower band.
+
+    Selects stocks near their lower Bollinger Band (oversold condition),
+    which tend to revert upward. Score: normalized position within band
+    (0 = at lower band, 1 = at upper band). Return ascending (lowest = best),
+    so top_n selection picks stocks closest to lower band.
+
+    Per spec 7.13 (R13), this is a pure contrarian/mean-reversion strategy
+    that expects oversold stocks (near lower band) to outperform.
+
+    Args:
+        price_panel: OHLC prices indexed (date, ticker)
+        universe: List of tickers to rank
+        as_of_date: Backtest/live date (returns scores as-of this date)
+        lookback_days: Bollinger Band window (default 20, standard for BB)
+
+    Returns:
+        pd.Series: Bollinger Band position (0-1) for each ticker in universe,
+                   indexed by ticker, to be sorted ascending (low = oversold = buy).
+    """
+    from features._vector_utils import grouped_talib_multi
+    import talib
+
+    as_of_date_str = pd.Timestamp(as_of_date).strftime("%Y-%m-%d")
+
+    # Get recent close prices for the universe
+    try:
+        close = price_panel.loc[:as_of_date_str, universe]["close"]
+    except (KeyError, IndexError):
+        return pd.Series(0.5, index=universe, dtype=float)
+
+    # Must have enough history (at least lookback_days of data)
+    if len(close) < lookback_days:
+        return pd.Series(0.5, index=universe, dtype=float)
+
+    # Compute Bollinger Bands per ticker using TA-Lib
+    bb_results = grouped_talib_multi(
+        close.to_frame("close"),
+        ["close"],
+        talib.BBANDS,
+        ["bb_upper", "bb_middle", "bb_lower"],
+        timeperiod=lookback_days,
+        nbdevup=2,
+        nbdevdn=2,
+        matype=0,
+    )
+
+    # Get most recent (as-of-date) BB values
+    bb_upper = bb_results["bb_upper"].iloc[-1]
+    bb_middle = bb_results["bb_middle"].iloc[-1]
+    bb_lower = bb_results["bb_lower"].iloc[-1]
+
+    # Normalize position: (close - lower) / (upper - lower)
+    # Result: 0 = at lower band (oversold), 1 = at upper band (overbought)
+    bb_range = bb_upper - bb_lower
+    bb_range = bb_range.clip(lower=1e-6)  # Avoid division by zero
+
+    close_most_recent = close.iloc[-1]
+    bb_position = (close_most_recent - bb_lower) / bb_range
+    bb_position = bb_position.clip(0, 1)
+
+    # Fill NaNs with neutral position (0.5)
+    bb_position = bb_position.fillna(0.5)
+
+    return bb_position.astype(float)

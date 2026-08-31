@@ -1,0 +1,51 @@
+{
+  "_description": "R13 validation (2019-2025, fast): Bollinger Band mean-reversion with defer_db_writes for concurrent execution.",
+  "_metadata": {
+    "phase": "Phase 13",
+    "strategy": "R13",
+    "bands": [1, 2],
+    "rank_method": "bollinger_mean_reversion",
+    "lookback_days": 20,
+    "backtest_period": "2019-01-01:2025-12-31",
+    "created_at": "2026-08-31",
+    "note": "Validation with defer_db_writes for 2-way parallel execution."
+  },
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 1,
+      "top_n": 15,
+      "lookback_days": 20,
+      "rebalance_cadence_days": 21,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "bollinger_mean_reversion",
+      "defer_db_writes": true
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 2,
+      "top_n": 15,
+      "lookback_days": 20,
+      "rebalance_cadence_days": 21,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "bollinger_mean_reversion",
+      "defer_db_writes": true
+    }
+  ]
+}
