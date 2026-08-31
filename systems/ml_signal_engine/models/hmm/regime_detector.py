@@ -27,7 +27,7 @@ loop (compute_hmm_regime_features below), not a vectorized-feature-arithmetic lo
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -177,7 +177,7 @@ class HMMRegimeDetector(IRegimeModel):
         real_means = best_model.means_[:, daily_return_idx] * sigma[daily_return_idx] + mu[daily_return_idx]
         self._state_order = np.argsort(real_means)
 
-    def predict_regime(self, X: pd.DataFrame) -> Tuple[pd.Series, Optional[pd.DataFrame]]:
+    def predict_regime(self, X: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame]:
         """
         Decode the most likely regime rank and per-day state probabilities.
 
@@ -382,7 +382,7 @@ def compute_hmm_regime_features(
 
     if n_workers <= 1 or len(groups) <= 1:
         parts = [
-            _fit_and_decode_one_ticker(ticker, g, n_restarts, n_iter)
+            _fit_and_decode_one_ticker(cast(str, ticker), g, n_restarts, n_iter)
             for ticker, g in groups
         ]
     else:
@@ -414,7 +414,7 @@ def compute_hmm_regime_features(
             for var in _blas_env_vars:
                 os.environ[var] = "1"
 
-            worker_args = [(ticker, g, n_restarts, n_iter) for ticker, g in groups]
+            worker_args = [(cast(str, ticker), g, n_restarts, n_iter) for ticker, g in groups]
             ctx = multiprocessing.get_context("spawn")
             with ctx.Pool(processes=n_workers) as pool:
                 parts = list(pool.imap(_fit_and_decode_one_ticker_star, worker_args))
