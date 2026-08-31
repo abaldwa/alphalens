@@ -4,14 +4,15 @@ strategies/migrations/r11_52wk_high_momentum.py
 Owner: Platform / Architecture (R11 Phase)
 Run: PYTHONPATH=$PWD .venv/bin/python -m strategies.migrations.r11_52wk_high_momentum [--dry-run]
 
-Registers R11 (52-week-high momentum) as a trend-following momentum variant.
+Registers R11 (52-week-high momentum) as a reversal/contrarian (mean-reversion) strategy.
 Per spec 7.11, R11 tests the 52-week-high effect (George & Hwang 2004) on the
-Indian equity market across market-cap bands.
+Indian equity market across market-cap bands. B-029 FIX: R11 is REVERSAL (buy oversold),
+not trend-following (buy winners).
 
 R11 is config-driven: reuses MomentumAdapter with fixed category/rebalance/top_n
 but uses rank_method="pct_of_52wk_high" to rank on proximity to 52-week highs
-(trend-following, selecting highest scores). Initial validation on bands 1-2,
-expandable to all 12 bands post-validation.
+(reversal/contrarian, selecting LOWEST scores: stocks far from highs, oversold).
+Initial validation on bands 1-2, expandable to all 12 bands post-validation.
 
 This migration is append-only and idempotent, matching the discipline of R1/R10/R12.
 """
@@ -90,8 +91,8 @@ def build_rows(
             "config_hash": None,
             "status": "active",
             "notes": (
-                f"R11 52-week-high momentum on band {band_id} (ranks {rank_start}-{rank_end}). "
-                "Trend-following: selects stocks near their 52-week highs."
+                f"R11 52-week-high reversal on band {band_id} (ranks {rank_start}-{rank_end}). "
+                "Reversal/contrarian: selects stocks FAR from their 52-week highs (oversold, mean-reversion)."
             ),
         }
         rows.append(row)

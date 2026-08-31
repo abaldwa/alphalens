@@ -97,6 +97,7 @@ def get_sort_order_for_rank_method(rank_method: str) -> bool:
     """
     reversal_methods = {
         "trailing_reversal_1mo",
+        "pct_of_52wk_high",  # B-029: R11 mean-reversion: select stocks FAR from 52wk highs (lowest scores)
     }
 
     is_reversal = rank_method in reversal_methods

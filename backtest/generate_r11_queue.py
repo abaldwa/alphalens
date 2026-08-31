@@ -1,15 +1,16 @@
 """
 backtest/generate_r11_queue.py
 
-Phase: R11 (52-week-high momentum)
+Phase: R11 (52-week-high reversal)
 Owner: Platform / Backtest
 
-R11 strategy: trend-following momentum based on proximity to 52-week highs (George & Hwang 2004).
+R11 strategy: reversal/contrarian (mean-reversion) based on proximity to 52-week highs (George & Hwang 2004).
+B-029 FIX: R11 selects LOWEST pct_of_52wk_high scores (stocks FAR from highs, oversold), not highest (winners).
 Full-period backtest across M2/M4/M7/M9/M10/M12 bands, 2009-2026.
 
 Cadence: monthly (21d for portfolio rebalance).
 Lookback: 252 trading days (1 year for 52-week high calculation).
-Ranking: pct_of_52wk_high (trend-following, highest = best).
+Ranking: pct_of_52wk_high (reversal/contrarian, LOWEST = best, i.e., most oversold).
 No leverage caps (baseline momentum channel).
 """
 
@@ -55,9 +56,9 @@ def main() -> None:
     jobs = build_jobs()
     payload = {
         "_description": (
-            "R11 (52-week-high momentum): trend-following strategy ranking on proximity "
-            "to 52-week highs (George & Hwang 2004), across M2/M4/M7/M9/M10/M12 bands, "
-            "2009-2026, monthly (21d) rebalance. 6 bands x 1 config = 6 jobs."
+            "R11 (52-week-high reversal): reversal/contrarian strategy selecting LOWEST proximity-to-52wk-high scores "
+            "(stocks far from highs, oversold) across M2/M4/M7/M9/M10/M12 bands, "
+            "2009-2026, monthly (21d) rebalance (George & Hwang 2004). 6 bands x 1 config = 6 jobs."
         ),
         "_metadata": {
             "strategy": "R11",
