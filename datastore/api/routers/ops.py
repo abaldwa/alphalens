@@ -29,7 +29,7 @@ from datetime import date as date_type
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -74,7 +74,7 @@ router = APIRouter(prefix="/api/v1/ops", tags=["Ops"])
 
 
 @router.get("/trading-calendar/holidays")
-async def get_trading_calendar_holidays() -> dict:
+async def get_trading_calendar_holidays() -> dict[str, list[str]]:
     """NSE trading holidays (ALL_NSE_HOLIDAYS, config/nse_holidays.py) as
     ISO date strings — used by dashboard/static/js/calendar_picker.js to
     flag non-trading dates on date inputs client-side. Reuses the single
@@ -84,7 +84,7 @@ async def get_trading_calendar_holidays() -> dict:
 
 
 @router.get("/heartbeats", response_model=list[SchedulerJobHeartbeat])
-async def get_ops_heartbeats() -> list:
+async def get_ops_heartbeats() -> list[SchedulerJobHeartbeat]:
     """Every recurring APScheduler job tracked in datastore/api/utils/
     scheduler_status.py's HEARTBEAT_STALE_AFTER — currently daily_pipeline,
     morning_catchup, mf_holdings_ingestion, model_training, and the two
@@ -92,7 +92,7 @@ async def get_ops_heartbeats() -> list:
     #5 backlog item). Same data /health already surfaces, factored into
     scheduler_status.py so neither endpoint duplicates the staleness
     thresholds or next-run-time computation."""
-    return get_scheduler_heartbeats()
+    return get_scheduler_heartbeats()  # type: ignore[no-any-return]
 
 
 # #4: DataStore API Console (freshness rollup) — table -> (db_path, date_col).
@@ -133,7 +133,7 @@ async def get_ops_freshness() -> OpsFreshnessResponse:
 
     import config.settings as _settings
 
-    rows: List[OpsFreshnessRow] = []
+    rows: list[OpsFreshnessRow] = []
 
     for source, db_path_attr, date_col in _FRESHNESS_DUCKDB_SOURCES:
         db_path = getattr(_settings, db_path_attr)
@@ -439,13 +439,13 @@ async def force_run_step(
 
 async def _force_run_step_locked(
     step_name: str,
-    run_dates: list,
-    step_names: list,
+    run_dates: list[date_type],
+    step_names: list[str],
     step_index: int,
     today: date_type,
     cascade: bool,
     checkpoint_manager: CheckpointManager,
-    results: list,
+    results: list[OpsForceStepResult],
 ) -> OpsForceStepResponse:
     # 2026-07-09 (A21): the actual STEPS-walking/dependency-respecting
     # logic now lives in ingestion/scheduler/force_run.py::force_run_date_sync
@@ -678,15 +678,15 @@ async def get_integrity_findings(
     findings = [
         OpsIntegrityFinding(
             id=int(row.id),
-            check_name=row.check_name,
-            ticker=row.ticker,
+            check_name=str(row.check_name),
+            ticker=str(row.ticker) if row.ticker is not None else None,
             finding_date=str(row.finding_date),
-            severity=row.severity,
-            description=row.description,
-            evidence_json=row.evidence_json,
-            proposed_fix_sql=row.proposed_fix_sql,
-            status=row.status,
-            reviewed_by=row.reviewed_by,
+            severity=str(row.severity),
+            description=str(row.description),
+            evidence_json=str(row.evidence_json) if row.evidence_json is not None else None,
+            proposed_fix_sql=str(row.proposed_fix_sql) if row.proposed_fix_sql is not None else None,
+            status=str(row.status),
+            reviewed_by=str(row.reviewed_by) if row.reviewed_by is not None else None,
             reviewed_at=str(row.reviewed_at) if row.reviewed_at is not None else None,
             created_at=str(row.created_at) if row.created_at is not None else None,
         )
@@ -749,14 +749,14 @@ async def get_missed_job_findings(
     findings = [
         OpsMissedJobFinding(
             id=int(row.id),
-            job_id=row.job_id,
+            job_id=str(row.job_id),
             missed_date=str(row.missed_date),
-            severity=row.severity,
-            description=row.description,
-            proposed_catchup_action=row.proposed_catchup_action,
-            proposed_catchup_params_json=row.proposed_catchup_params_json,
-            status=row.status,
-            reviewed_by=row.reviewed_by,
+            severity=str(row.severity),
+            description=str(row.description),
+            proposed_catchup_action=str(row.proposed_catchup_action) if row.proposed_catchup_action is not None else None,
+            proposed_catchup_params_json=str(row.proposed_catchup_params_json) if row.proposed_catchup_params_json is not None else None,
+            status=str(row.status),
+            reviewed_by=str(row.reviewed_by) if row.reviewed_by is not None else None,
             reviewed_at=str(row.reviewed_at) if row.reviewed_at is not None else None,
             created_at=str(row.created_at) if row.created_at is not None else None,
         )
@@ -790,22 +790,23 @@ async def approve_missed_job_finding(
     from datastore.health.catchup import run_catchup
     from datastore.health.findings import begin_approve, complete_approve
 
-    def _begin():
+    def _begin() -> tuple[str, str, str | None, dict[str, Any]]:
         with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
-            return begin_approve(conn, finding_id)
+            return begin_approve(conn, finding_id)  # type: ignore[no-any-return]
 
     try:
-        job_id, missed_date, action, params = await asyncio.to_thread(_begin)
+        job_id, missed_date_str, action, params = await asyncio.to_thread(_begin)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     if action:
-        await asyncio.to_thread(run_catchup, action, job_id, missed_date, params)
+        missed_date_obj = date_type.fromisoformat(missed_date_str)
+        await asyncio.to_thread(run_catchup, action, job_id, missed_date_obj, params)
         new_status = "applied"
     else:
         new_status = "approved"
 
-    def _complete():
+    def _complete() -> None:
         with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
             complete_approve(conn, finding_id, new_status, reviewed_by)
 

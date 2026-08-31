@@ -72,10 +72,10 @@ logger = logging.getLogger(__name__)
 def _registry_key(band_id: int, rank_start: int, rank_end: int) -> str:
     from strategies.migrations.momentum import variant_name
 
-    return "momentum:" + variant_name(
+    return "momentum:" + str(variant_name(
         "all_risk", band_id, rank_start, rank_end,
         _LIVE_LOOKBACK_MONTHS, _LIVE_REBALANCE, _LIVE_TOP_N,
-    )
+    ))
 
 # The parameter set the live path runs, as DECLARED by the registry row above.
 # Kept as the shape of a definition_json rather than loose constants so that

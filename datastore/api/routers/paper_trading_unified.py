@@ -29,7 +29,7 @@ the way the ML-only router's singular portfolio_state.json assumes.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -65,7 +65,7 @@ class PendingActionsListResponse(BaseModel):
     channel: str
     strategy_id: str
     as_of_date: str
-    actions: List[PendingActionResponse]
+    actions: list[PendingActionResponse]
 
 
 class GateStatusResponse(BaseModel):
@@ -89,7 +89,7 @@ class StateSummaryResponse(BaseModel):
 class AcceptActionRequest(BaseModel):
     as_of_date: str
     price: float
-    prices: Dict[str, float] = {}
+    prices: dict[str, float] = {}
     # Only required the FIRST time this (channel, strategy_id) accepts an
     # action, before any portfolio state file exists for it — ignored (the
     # persisted state wins) on every subsequent call. See
@@ -116,7 +116,7 @@ class ProposeResponse(BaseModel):
     strategy_id: str
     as_of_date: str
     universe_size: int
-    actions: List[PendingActionResponse]
+    actions: list[PendingActionResponse]
 
 
 @router.get("/{channel}/{strategy_id}/pending", response_model=PendingActionsListResponse)
@@ -130,10 +130,12 @@ async def list_pending_actions(channel: str, strategy_id: str, as_of_date: str) 
 
 @router.post("/{channel}/{strategy_id}/pending/{action_id}/accept", response_model=PendingActionResponse)
 async def accept_pending_action(channel: str, strategy_id: str, action_id: str, body: AcceptActionRequest) -> PendingActionResponse:
+    from datetime import date as date_type
+
     horizon_bucket = HorizonBucket(body.horizon_bucket) if body.horizon_bucket else None
     runner = PaperTradingRunner(channel, strategy_id, horizon_bucket=horizon_bucket, initial_capital=body.initial_capital)
     try:
-        decided = runner.accept(action_id, body.as_of_date, body.price, body.prices)
+        decided = runner.accept(action_id, date_type.fromisoformat(body.as_of_date), body.price, body.prices)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return PendingActionResponse(**decided.__dict__)
@@ -141,11 +143,13 @@ async def accept_pending_action(channel: str, strategy_id: str, action_id: str, 
 
 @router.post("/{channel}/{strategy_id}/pending/{action_id}/reject", response_model=PendingActionResponse)
 async def reject_pending_action(channel: str, strategy_id: str, action_id: str, body: RejectActionRequest) -> PendingActionResponse:
+    from datetime import date as date_type
+
     # reject() never touches portfolio state (see live_runner.py), so no
     # horizon_bucket/initial_capital is ever needed here.
     runner = PaperTradingRunner(channel, strategy_id)
     try:
-        decided = runner.reject(action_id, body.as_of_date)
+        decided = runner.reject(action_id, date_type.fromisoformat(body.as_of_date))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return PendingActionResponse(**decided.__dict__)
