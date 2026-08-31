@@ -104,7 +104,7 @@ _FIELD_ALIASES = {
 }
 
 #: Queue-only fields the CLI consumes without forwarding them by name.
-_QUEUE_ONLY = {"annual_reset_no_top_up", "min_dsr_threshold"}
+_QUEUE_ONLY = {"annual_reset_no_top_up", "min_dsr_threshold", "lookback_days"}
 
 #: Channel order: momentum first, per the operator's stated priority.
 CHANNEL_PRIORITY = {"momentum": 0, "technical": 1, "fundamental": 2}
