@@ -1141,13 +1141,13 @@ def _run_immediate(
                 # top_n) since the COMBO applies the real top_n cut after
                 # pooling — an individual sub-adapter must not silently
                 # truncate a candidate away before pooling gets to see it.
-                sub_kwargs = {**cast(Dict[str, Any], _shared_adapter_kwargs), "top_n": top_n * 5}
+                sub_kwargs = {**_shared_adapter_kwargs, "top_n": top_n * 5}
                 sub_adapters = [
-                    TechnicalAdapter(template_name=name, **cast(Dict[str, Any], sub_kwargs)) for name in combo_templates
+                    TechnicalAdapter(template_name=name, **sub_kwargs) for name in combo_templates
                 ]
                 adapter: Any = TechnicalComboAdapter(sub_adapters, top_n=top_n)
             else:
-                adapter = TechnicalAdapter(template_name=cast(str, template_name), **cast(Dict[str, Any], _shared_adapter_kwargs))
+                adapter = TechnicalAdapter(template_name=cast(str, template_name), **_shared_adapter_kwargs)
         elif channel == "fundamental":
             if not preset:
                 raise ValueError("channel=fundamental requires --preset")
@@ -1536,11 +1536,11 @@ def _run_deferred(
             precomputed_matches_dir=precomputed_matches_dir,
         )
         if combo_templates:
-            sub_kwargs = {**cast(Dict[str, Any], _shared_adapter_kwargs), "top_n": top_n * 5}
-            sub_adapters = [TechnicalAdapter(template_name=name, **cast(Dict[str, Any], sub_kwargs)) for name in combo_templates]
+            sub_kwargs = {**_shared_adapter_kwargs, "top_n": top_n * 5}
+            sub_adapters = [TechnicalAdapter(template_name=name, **sub_kwargs) for name in combo_templates]
             adapter: Any = TechnicalComboAdapter(sub_adapters, top_n=top_n)
         else:
-            adapter = TechnicalAdapter(template_name=cast(str, template_name), **cast(Dict[str, Any], _shared_adapter_kwargs))
+            adapter = TechnicalAdapter(template_name=cast(str, template_name), **_shared_adapter_kwargs)
     elif channel == "fundamental":
         if not preset:
             raise ValueError("channel=fundamental requires --preset")
