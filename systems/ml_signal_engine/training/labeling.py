@@ -24,7 +24,7 @@ report.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -156,7 +156,7 @@ def compute_triple_barrier_labels(
         block_vals = pnd_block.to_numpy(dtype=bool)[:n_valid]
         out[(out == 1.0) & block_vals] = 0.0
 
-    labels.iloc[:n_valid] = out
+    labels.iloc[:n_valid] = pd.Series(out, index=labels.index[:n_valid])
     return labels
 
 
@@ -307,7 +307,8 @@ class TripleBarrierLabeler:
             return {}
 
         counts = non_nan.value_counts()
-        pcts = (counts / counts.sum() * 100).to_dict()
+        pcts_series = (counts / counts.sum() * 100)
+        pcts: Dict[float, float] = {cast(float, k): float(v) for k, v in pcts_series.items()}
 
         if print_report:
             total = int(counts.sum())

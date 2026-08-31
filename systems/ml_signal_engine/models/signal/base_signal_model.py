@@ -59,7 +59,7 @@ interface contract.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import catboost
 import joblib
@@ -134,22 +134,22 @@ class BaseSignalModel(IClassificationModel):
             "n_estimators": 200, "max_depth": 5, "learning_rate": 0.05,
             "random_state": random_state, "verbose": -1, "n_jobs": 2,
         }
-        self._lgbm = None
-        self._catboost = None
-        self._xgboost = None
+        self._lgbm: Any = None
+        self._catboost: Any = None
+        self._xgboost: Any = None
         self._present_classes: Optional[List[int]] = None
         self._meta: Optional[LogisticRegression] = None
-        self._q10_model = None
-        self._q50_model = None
-        self._q90_model = None
+        self._q10_model: Any = None
+        self._q50_model: Any = None
+        self._q90_model: Any = None
         self._thresholds: Dict[int, float] = {c: 1.0 / len(CLASS_ORDER) for c in CLASS_ORDER}
         self._best_lgbm_params: Optional[Dict[str, Any]] = None
-        self._trained_at = None
+        self._trained_at: Optional[pd.Timestamp] = None
         self._training_samples: Optional[int] = None
         self._class_distribution: Optional[Dict[str, float]] = None
 
     # ===== Stacking ensemble internals =====
-    def _make_base_models(self, params: Optional[Dict[str, Any]] = None) -> tuple:
+    def _make_base_models(self, params: Optional[Dict[str, Any]] = None) -> tuple[Any, Any, Any]:
         lgbm_params = {**self._lgbm_params, **(params or {})}
         lgbm = lgb.LGBMClassifier(**lgbm_params)
         cat = catboost.CatBoostClassifier(
@@ -163,7 +163,7 @@ class BaseSignalModel(IClassificationModel):
         return lgbm, cat, xgboost_model
 
     def _oof_stacked_features(
-        self, X: pd.DataFrame, y_encoded: np.ndarray, lgbm_params: Optional[Dict] = None
+        self, X: pd.DataFrame, y_encoded: np.ndarray, lgbm_params: Optional[Dict[str, Any]] = None
     ) -> np.ndarray:
         """Out-of-fold probabilities from each base learner, stacked (n, 3*n_present_classes)."""
         lgbm, cat, xgboost_model = self._make_base_models(lgbm_params)
@@ -177,7 +177,7 @@ class BaseSignalModel(IClassificationModel):
             oof.append(proba)
         return np.hstack(oof)
 
-    def _fit_base_and_meta(self, X: pd.DataFrame, y: pd.Series, lgbm_params: Optional[Dict] = None) -> None:
+    def _fit_base_and_meta(self, X: pd.DataFrame, y: pd.Series, lgbm_params: Optional[Dict[str, Any]] = None) -> None:
         # [2026-07-12 defect fix] dense (0-based, contiguous) encoding of only the
         # CLASS_ORDER values actually PRESENT in this fold — XGBoost's sklearn
         # wrapper hard-requires 0-based contiguous labels at fit time (verified:
@@ -205,6 +205,9 @@ class BaseSignalModel(IClassificationModel):
         self._meta.fit(stacked, y_encoded)
 
         self._lgbm, self._catboost, self._xgboost = self._make_base_models(lgbm_params)
+        assert self._lgbm is not None
+        assert self._catboost is not None
+        assert self._xgboost is not None
         self._lgbm.fit(X, y_encoded)
         self._catboost.fit(X, y_encoded)
         self._xgboost.fit(X, y_encoded)
@@ -213,6 +216,7 @@ class BaseSignalModel(IClassificationModel):
         if self._lgbm is None:
             raise RuntimeError("predict called before train()/train_full()")
         X_imputed = self._impute_transform(X)
+        assert self._catboost is not None and self._xgboost is not None
         probs = [m.predict_proba(X_imputed) for m in (self._lgbm, self._catboost, self._xgboost)]
         return np.hstack(probs)
 
@@ -278,6 +282,8 @@ class BaseSignalModel(IClassificationModel):
             Columns 'sell', 'hold', 'buy' (CLASS_NAMES values, in
             CLASS_ORDER) — meta-learner's calibrated probabilities.
         """
+        if self._feature_names is None or self._meta is None:
+            raise RuntimeError("predict_proba called before train()/train_full()")
         stacked = self._base_stacked_proba(X[self._feature_names])
         proba_narrow = self._meta.predict_proba(stacked)
         # Expand from "only the classes present at fit time" back to the fixed
@@ -456,7 +462,7 @@ class BaseSignalModel(IClassificationModel):
     @staticmethod
     def _resample(
         X: pd.DataFrame, y: pd.Series, random_state: int = 42, max_sampling_ratio: Optional[float] = None,
-    ) -> tuple:
+    ) -> tuple[pd.DataFrame, Any]:
         """SPEC-MODEL-004: SMOTETomek on training data only.
 
         max_sampling_ratio (ML21, 2026-07-10): when set, caps each minority
@@ -477,19 +483,22 @@ class BaseSignalModel(IClassificationModel):
         if max_sampling_ratio is not None and max_sampling_ratio <= 0:
             logger.info("max_sampling_ratio<=0 — skipping SMOTETomek, training on true class prior")
             return X, y
-        sampling_strategy = "auto"
+        sampling_strategy: Any = "auto"
         if max_sampling_ratio is not None:
             majority_count = int(counts.max())
             target = max(int(majority_count * max_sampling_ratio), int(counts.min()))
-            sampling_strategy = {
+            strategy_dict = {
                 cls: max(target, int(cnt)) for cls, cnt in counts.items() if cnt < majority_count
             }
-            if not sampling_strategy:
+            if strategy_dict:
+                sampling_strategy = strategy_dict
+            else:
                 sampling_strategy = "auto"
         smote_tomek = SMOTETomek(random_state=random_state, sampling_strategy=sampling_strategy)
-        return smote_tomek.fit_resample(X, y)
+        X_res, y_res = smote_tomek.fit_resample(X, y)
+        return cast(pd.DataFrame, X_res), y_res
 
-    def _optuna_search(self, X_train: pd.DataFrame, y_train, X_val: pd.DataFrame, y_val: pd.Series) -> Dict[str, Any]:
+    def _optuna_search(self, X_train: pd.DataFrame, y_train: Any, X_val: pd.DataFrame, y_val: pd.Series) -> Dict[str, Any]:
         """
         SPEC-MODEL-003: Optuna HPO tunes the primary (LightGBM) learner
         only — CatBoost/XGBoost stay at fixed reasonable defaults (full
@@ -500,7 +509,7 @@ class BaseSignalModel(IClassificationModel):
         y_val_encoded = y_val.map({c: i for i, c in enumerate(CLASS_ORDER)}).to_numpy()
 
         def objective(trial: optuna.Trial) -> float:
-            params = {
+            params: Dict[str, Any] = {
                 "n_estimators": trial.suggest_int("n_estimators", 50, 300),
                 "max_depth": trial.suggest_int("max_depth", 3, 8),
                 "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
@@ -512,7 +521,7 @@ class BaseSignalModel(IClassificationModel):
             model = lgb.LGBMClassifier(**params)
             model.fit(X_train, y_train_encoded)
             preds = model.predict(X_val)
-            return f1_score(y_val_encoded, preds, average="macro", zero_division=0)
+            return float(f1_score(y_val_encoded, preds, average="macro", zero_division=0))
 
         study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=self.random_state))
         study.optimize(objective, n_trials=self.optuna_trials, show_progress_bar=False)
@@ -567,7 +576,9 @@ class BaseSignalModel(IClassificationModel):
 
         quantile_attrs = ("_q10_model", "_q50_model", "_q90_model")
         has_quantile_models = any(getattr(self, attr) is not None for attr in quantile_attrs)
-        X_imputed = self._impute_transform(X[self._feature_names]) if has_quantile_models else None
+        if self._feature_names is None:
+            raise RuntimeError("predict_signals called before train()/train_full()")
+        X_imputed = self._impute_transform(cast(pd.DataFrame, X[self._feature_names])) if has_quantile_models else None
         quantile_columns = ("signal_q10", "signal_q50", "signal_q90")
         for attr, col in zip(quantile_attrs, quantile_columns):
             model = getattr(self, attr)
@@ -596,7 +607,7 @@ def _apply_thresholds(proba: pd.DataFrame, thresholds: Dict[int, float]) -> pd.S
     return result
 
 
-def _optimize_thresholds(proba: pd.DataFrame, y_val: pd.Series) -> tuple:
+def _optimize_thresholds(proba: pd.DataFrame, y_val: pd.Series) -> tuple[Dict[int, float], Dict[str, float]]:
     """
     SPEC-MODEL-004: per-class threshold maximizing one-vs-rest F1 on the
     validation fold, scanned over a fine grid — never the 0.5 default.

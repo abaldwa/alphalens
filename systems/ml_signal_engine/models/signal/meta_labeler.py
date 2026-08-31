@@ -37,7 +37,7 @@ tune_threshold time.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import joblib
 import lightgbm as lgb
@@ -91,7 +91,7 @@ class MetaLabeler(IClassificationModel):
         self._feature_names: Optional[List[str]] = None
         self._imputer: Optional[SimpleImputer] = None
         self._threshold: float = 0.5
-        self._trained_at = None
+        self._trained_at: Optional[pd.Timestamp] = None
         self._training_samples: Optional[int] = None
 
     @staticmethod
@@ -138,9 +138,10 @@ class MetaLabeler(IClassificationModel):
             )
 
         net_return = direction * forward_return_pct
-        label = pd.Series(np.nan, index=direction.index, dtype="float64")
+        label: pd.Series = pd.Series(np.nan, index=direction.index, dtype="float64")
         acted = direction != 0
-        label.loc[acted] = (net_return.loc[acted] > roundtrip_cost_pct).astype(float)
+        profitable = (net_return.loc[acted] > roundtrip_cost_pct).astype(float)
+        label.loc[acted] = profitable
         return label
 
     def train(self, X: pd.DataFrame, y: pd.Series, sample_weight: Optional[pd.Series] = None) -> None:
@@ -192,10 +193,10 @@ class MetaLabeler(IClassificationModel):
         float
             The tuned threshold (also stored on the instance).
         """
-        if self._lgbm is None:
+        if self._lgbm is None or self._feature_names is None:
             raise RuntimeError("tune_threshold called before train()")
         valid = y_val.notna()
-        X_imputed = self._impute_transform(X_val.loc[valid, self._feature_names])
+        X_imputed = self._impute_transform(cast(pd.DataFrame, X_val.loc[valid, self._feature_names]))
         y_clean = y_val.loc[valid].astype(int)
         proba = self._lgbm.predict_proba(X_imputed)[:, 1]
         self._threshold = _optimize_precision_threshold(proba, y_clean)
@@ -215,9 +216,9 @@ class MetaLabeler(IClassificationModel):
         return pd.DataFrame(imputed, columns=X.columns, index=X.index)
 
     def predict_proba(self, X: pd.DataFrame) -> pd.DataFrame:
-        if self._lgbm is None:
+        if self._lgbm is None or self._feature_names is None:
             raise RuntimeError("predict_proba called before train()")
-        X_imputed = self._impute_transform(X[self._feature_names])
+        X_imputed = self._impute_transform(cast(pd.DataFrame, X[self._feature_names]))
         proba = self._lgbm.predict_proba(X_imputed)
         return pd.DataFrame({"dont_act": proba[:, 0], "act": proba[:, 1]}, index=X.index)
 

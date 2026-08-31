@@ -25,7 +25,7 @@ grouping.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, cast
 
 import lightgbm as lgb
 import pandas as pd
@@ -48,10 +48,10 @@ class SignalRankerModel:
         self.n_estimators = n_estimators
 
         self._ranker: Optional[lgb.LGBMRanker] = None
-        self._calibrator = None
+        self._calibrator: Optional[Union[DummyClassifier, LogisticRegression]] = None
         self._imputer: Optional[SimpleImputer] = None
         self._feature_names: Optional[List[str]] = None
-        self._trained_at = None
+        self._trained_at: Optional[pd.Timestamp] = None
         self._training_samples: Optional[int] = None
 
     def _impute_fit(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -92,6 +92,7 @@ class SignalRankerModel:
             self._calibrator = DummyClassifier(strategy="constant", constant=y_sorted.iloc[0])
         else:
             self._calibrator = LogisticRegression(random_state=self.random_state)
+        assert self._calibrator is not None
         self._calibrator.fit(raw_scores, y_sorted)
 
         self._trained_at = pd.Timestamp.now()
@@ -99,9 +100,9 @@ class SignalRankerModel:
         return {"training_samples": self._training_samples, "positive_rate": float(y_sorted.mean())}
 
     def predict_proba(self, X: pd.DataFrame) -> pd.Series:
-        if self._ranker is None:
+        if self._ranker is None or self._calibrator is None or self._feature_names is None:
             raise RuntimeError("predict called before train()")
-        X_imputed = self._impute_transform(X[self._feature_names])
+        X_imputed = self._impute_transform(cast(pd.DataFrame, X[self._feature_names]))
         raw_scores = self._ranker.predict(X_imputed).reshape(-1, 1)
         proba_matrix = self._calibrator.predict_proba(raw_scores)
         if proba_matrix.shape[1] < 2:

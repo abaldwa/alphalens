@@ -312,7 +312,7 @@ def _compute_tabnet_importance(
         }
         logger.info(
             "TabNet trained. Top-5 features: %s",
-            sorted(importances, key=importances.get, reverse=True)[:5],
+            sorted(importances, key=importances.get, reverse=True)[:5],  # type: ignore[arg-type]
         )
         return importances, True
     except Exception as exc:
@@ -383,7 +383,7 @@ def _compute_shap_importance(
         importances = {f: float(mean_abs[i]) for i, f in enumerate(feature_names)}
         logger.info(
             "SHAP computed. Top-5 features: %s",
-            sorted(importances, key=importances.get, reverse=True)[:5],
+            sorted(importances, key=importances.get, reverse=True)[:5],  # type: ignore[arg-type]
         )
         return importances
     except Exception as exc:
