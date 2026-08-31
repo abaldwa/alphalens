@@ -50,6 +50,7 @@ follow_imports = "normal"
 [[tool.mypy.overrides]]
 module = [
     "tests.*",
+    "scripts.*",
 ]
 ignore_errors = true
 

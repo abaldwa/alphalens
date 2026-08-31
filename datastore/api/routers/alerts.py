@@ -17,6 +17,7 @@ sync, so an alert can never silently fall out of date with its source row.
 """
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter
 
@@ -33,14 +34,15 @@ router = APIRouter(prefix="/api/v1/alerts", tags=["Alerts"])
 @router.get("/today", response_model=AlertsResponse)
 async def get_alerts_today() -> AlertsResponse:
     """All alerts for today's IST date: P&D blocks/flags, urgent exits, drift halts/warnings."""
-    today = now_ist().date()
+    today_date = now_ist().date()
+    today = datetime.combine(today_date, datetime.min.time())
     alerts = []
 
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         pnd_rows = conn.execute(
             "SELECT ticker, pnd_score, pnd_phase, pnd_block FROM ml_signals "
             "WHERE date = ? AND model_name = 'pnd_detector' AND pnd_score IS NOT NULL AND pnd_score > 40",
-            [today],
+            [today_date],
         ).fetchall()
         for ticker, score, phase, blocked in pnd_rows:
             alerts.append(
@@ -55,7 +57,7 @@ async def get_alerts_today() -> AlertsResponse:
         exit_rows = conn.execute(
             "SELECT ticker, exit_urgency, exit_type FROM ml_signals "
             "WHERE date = ? AND model_name = 'exit_signal' AND exit_urgency IS NOT NULL AND exit_urgency > ?",
-            [today, EXIT_URGENT_THRESHOLD],
+            [today_date, EXIT_URGENT_THRESHOLD],
         ).fetchall()
         for ticker, urgency, exit_type in exit_rows:
             alerts.append(
@@ -70,7 +72,7 @@ async def get_alerts_today() -> AlertsResponse:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT worst_feature, worst_psi, worst_status FROM pipeline_drift_log WHERE date = ?",
-                [today.isoformat()],
+                [today_date.isoformat()],
             )
             drift_row = cursor.fetchone()
             if drift_row is not None and drift_row[2] != "ok":

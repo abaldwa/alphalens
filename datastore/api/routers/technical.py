@@ -465,9 +465,11 @@ def _describe_condition(cond: Dict[str, Any], key_values: Dict[str, Optional[flo
     if op == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
         return f"{label} {actual_str} (in {value[0]}-{value[1]})"
     if op == "top_pct":
-        return f"{label} {actual_str} (top {float(value) * 100:.0f}% of universe)"
+        pct = float(value) * 100 if value is not None else 0
+        return f"{label} {actual_str} (top {pct:.0f}% of universe)"
     if op == "bottom_pct":
-        return f"{label} {actual_str} (bottom {float(value) * 100:.0f}% of universe)"
+        pct = float(value) * 100 if value is not None else 0
+        return f"{label} {actual_str} (bottom {pct:.0f}% of universe)"
     symbol = {"lt": "<", "gt": ">", "lte": "<=", "gte": ">=", "eq": "="}.get(op, op)
     return f"{label} {actual_str} ({symbol} {value})"
 
@@ -487,9 +489,11 @@ def _describe_rule(cond: Dict[str, Any]) -> str:
     if op == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
         return f"{label} in {value[0]}-{value[1]}"
     if op == "top_pct":
-        return f"{label} in top {float(value) * 100:.0f}% of universe"
+        pct = float(value) * 100 if value is not None else 0
+        return f"{label} in top {pct:.0f}% of universe"
     if op == "bottom_pct":
-        return f"{label} in bottom {float(value) * 100:.0f}% of universe"
+        pct = float(value) * 100 if value is not None else 0
+        return f"{label} in bottom {pct:.0f}% of universe"
     symbol = {"lt": "<", "gt": ">", "lte": "<=", "gte": ">=", "eq": "="}.get(op, op)
     return f"{label} {symbol} {value}"
 
@@ -956,7 +960,7 @@ async def get_ta_strategy_recent_outcomes(
             if not tables:
                 return {"rows": [], "count": 0}
 
-            where_col, where_val = ("strategy_id", template) if template else ("ticker", ticker.upper())
+            where_col, where_val = ("strategy_id", template) if template else ("ticker", ticker.upper())  # type: ignore[union-attr]
             df = conn.execute(
                 f"""
                 SELECT date, ticker, strategy_id, entry_price, exit_price, outcome, outcome_date, net_return_pct
@@ -1019,7 +1023,7 @@ async def get_ta_pillar_summary() -> Dict[str, Any]:
     best_row = None
     for rows in win_rates.styles.values():
         for r in rows:
-            if r.win_rate is not None and (best_row is None or r.win_rate > best_row.win_rate):
+            if r.win_rate is not None and (best_row is None or best_row.win_rate is None or r.win_rate > best_row.win_rate):
                 best_row = r
 
     return {
@@ -1069,13 +1073,15 @@ async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
         # anything else is a genuine bug and must propagate to a 500, not hide.
         logger.warning("ta/strategies/win_rates query failed: %s", exc)
 
-    styles: Dict[str, List[TAStrategyWinRateRow]] = {s: [] for s in STRATEGY_STYLES}
+    styles: Dict[str, List[TAStrategyWinRateRow]] = {st: [] for st in STRATEGY_STYLES}
     for name, tmpl in TEMPLATE_MAP.items():
         s = summaries.get(name)
         tier = str(s["tier"]) if s is not None else strategy_confidence.TIER_INSUFFICIENT
         if tier == strategy_confidence.TIER_INSUFFICIENT:
             continue  # don't show a number until it's earned one
 
+        # After the continue above, s is guaranteed non-None
+        assert s is not None
         style = TEMPLATE_STYLE.get(name, "Momentum")
         styles.setdefault(style, []).append(TAStrategyWinRateRow(
             template_name=name,
@@ -1102,8 +1108,8 @@ async def get_ta_strategy_win_rates() -> TAStrategyWinRateResponse:
     # has actually earned the VALIDATED tier (sample size, multi-regime, DSR,
     # baseline checks). win_rate desc is only the tie-break within a tier.
     _tier_rank = {strategy_confidence.TIER_VALIDATED: 0, strategy_confidence.TIER_PRELIMINARY: 1}
-    for s in styles:
-        styles[s].sort(
+    for style_key in styles:
+        styles[style_key].sort(
             key=lambda r: (_tier_rank.get(r.tier, 2), r.win_rate is None, -(r.win_rate or 0))
         )
 
@@ -1463,17 +1469,20 @@ async def get_ta_summary(
     sma_50 = _last_or_none(close.rolling(50).mean())
     sma_100 = _last_or_none(close.rolling(100).mean())
     sma_200 = _last_or_none(close.rolling(200).mean())
-    ema_9 = _last_or_none(pd.Series(talib.EMA(close.values, timeperiod=9)))
-    ema_21 = _last_or_none(pd.Series(talib.EMA(close.values, timeperiod=21)))
-    rsi_14 = _last_or_none(pd.Series(talib.RSI(close.values, timeperiod=14)))
+    close_arr = close.to_numpy()
+    high_arr = high.to_numpy()
+    low_arr = low.to_numpy()
+    ema_9 = _last_or_none(pd.Series(talib.EMA(close_arr, timeperiod=9)))
+    ema_21 = _last_or_none(pd.Series(talib.EMA(close_arr, timeperiod=21)))
+    rsi_14 = _last_or_none(pd.Series(talib.RSI(close_arr, timeperiod=14)))
 
-    st_dir, _st_signal = _supertrend(high.values, low.values, close.values)
+    st_dir, _st_signal = _supertrend(high_arr, low_arr, close_arr)
     supertrend_dir = _last_or_none(pd.Series(st_dir))
     hl2 = (high + low) / 2
-    atr = pd.Series(talib.ATR(high.values, low.values, close.values, timeperiod=10))
+    atr = pd.Series(talib.ATR(high_arr, low_arr, close_arr, timeperiod=10))
     supertrend_value = _last_or_none(hl2 - (supertrend_dir or 0) * 3 * atr) if supertrend_dir is not None else None
 
-    macd_line, macd_signal_line, macd_hist = talib.MACD(close.values, fastperiod=12, slowperiod=26, signalperiod=9)
+    macd_line, macd_signal_line, macd_hist = talib.MACD(close_arr, fastperiod=12, slowperiod=26, signalperiod=9)
     macd = _last_or_none(pd.Series(macd_line))
     macd_signal = _last_or_none(pd.Series(macd_signal_line))
     macd_hist_val = _last_or_none(pd.Series(macd_hist))
@@ -1538,7 +1547,7 @@ async def get_ta_compare(
                 alpha_21d=None if "alpha_21d" not in row or pd.isna(row["alpha_21d"]) else float(row["alpha_21d"]),
             ))
 
-    correlation: Dict[str, Dict[str, float]] = {}
+    correlation: Dict[str, Dict[str, float | None]] = {}
     if len(ticker_list) >= 2:
         with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
             placeholders = ",".join("?" * len(ticker_list))

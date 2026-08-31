@@ -607,7 +607,7 @@ async def get_fundamentals_bulk(
                     # bulk request — see shareholding.py's bulk endpoint for
                     # the full rationale (same blast-radius argument).
                     logger.warning(f"fundamentals.bulk: skipping invalid row for {ticker}: {exc}")
-            data[ticker] = rows_for_ticker
+            data[str(ticker)] = rows_for_ticker
 
     record_count = sum(len(v) for v in data.values())
     return FundamentalsBulkResponse(as_of=pit_reference, data=data, record_count=record_count)

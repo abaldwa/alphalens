@@ -22,7 +22,6 @@
       "vol_scaling_mode": "inverse_volatility",
       "vol_scaling_lookback_days": 126,
       "vol_scaling_leverage_cap": 1.0,
-      "regime_switching_enabled": true,
       "defer_db_writes": true
     },
     {
@@ -37,7 +36,6 @@
       "vol_scaling_mode": "inverse_volatility",
       "vol_scaling_lookback_days": 126,
       "vol_scaling_leverage_cap": 1.0,
-      "regime_switching_enabled": true,
       "defer_db_writes": true
     }
   ]

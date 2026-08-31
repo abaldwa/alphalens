@@ -186,7 +186,7 @@ async def get_daily_watchlist(
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         for model_name, horizon_label, horizon_days in _HORIZON_MODELS:
             if date:
-                query_date = date
+                query_date: Optional[str] = date
             else:
                 latest = conn.execute(
                     "SELECT MAX(date) FROM ml_signals WHERE model_name = ? AND buy_prob IS NOT NULL",

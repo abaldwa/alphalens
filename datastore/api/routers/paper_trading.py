@@ -251,6 +251,7 @@ async def sell_position(ticker: str) -> PositionSellResponse:
             raise HTTPException(status_code=404, detail=f"{ticker} is not an open position")
 
         trade = portfolio.sell(ticker, price, today, reason="manual_sell")
+        assert trade is not None, f"Failed to close {ticker} position"
         tracker = PaperTradingTracker(logs_dir=str(EXECUTIONS_DIR))
         tracker.log_trade(
             date=str(trade.entry_date), ticker=ticker, signal_type="BUY",

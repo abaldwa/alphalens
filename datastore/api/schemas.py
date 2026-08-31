@@ -1079,8 +1079,8 @@ class TACompareResponse(BaseModel):
 
     date: Optional[str] = None
     rows: List[TACompareTickerRow] = Field(default_factory=list)
-    correlation: Dict[str, Dict[str, float]] = Field(
-        default_factory=dict, description="Pairwise close-to-close return correlation, computed from real OHLCV"
+    correlation: Dict[str, Dict[str, Optional[float]]] = Field(
+        default_factory=dict, description="Pairwise close-to-close return correlation, computed from real OHLCV (None if NaN)"
     )
 
 

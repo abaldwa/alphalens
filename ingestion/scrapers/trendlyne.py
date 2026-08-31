@@ -410,6 +410,7 @@ class TrendlyneScraper:
         if self._session is None:
             self.login()
 
+        assert self._session is not None, "Session not established after login"
         url = f"{BASE_URL}{path}"
         response = _retry(lambda: self._session.get(url, timeout=30))
         if response.status_code != 200:
@@ -1084,7 +1085,7 @@ def _normalize_company_name(name: Optional[str]) -> str:
 def _build_company_name_to_ticker_map() -> Dict[str, str]:
     """Normalized company_name -> ticker, from the real universe (config.universe.load_universe_raw)."""
     df = load_universe_raw()
-    return {_normalize_company_name(row.company_name): row.ticker for row in df.itertuples()}
+    return {_normalize_company_name(str(row.company_name)): str(row.ticker) for row in df.itertuples()}
 
 
 def _current_quarter_end(today: Optional[date] = None) -> date:

@@ -738,7 +738,7 @@ def reconstruct_pre_tax_curve(
     payments = [
         (pd.Timestamp(row.get("fy_end")), float(row.get("paid") or 0.0))
         for row in tax_ledger
-        if row.get("paid")
+        if row.get("paid") and row.get("fy_end")
     ]
     if not payments:
         return None
@@ -774,7 +774,7 @@ def apply_tax_to_curve(
     payments = [
         (pd.Timestamp(row.get("fy_end")), float(row.get("paid") or 0.0))
         for row in tax_ledger
-        if row.get("paid")
+        if row.get("paid") and row.get("fy_end")
     ]
     if not payments:
         return None
