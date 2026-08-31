@@ -17,7 +17,8 @@ own independent ranking — never blended into one composite score.
 """
 
 import logging
-from typing import Any, List, Optional
+from datetime import date
+from typing import Any, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -927,7 +928,7 @@ def volatility_scaling_multiplier(
 def bollinger_mean_reversion(
     price_panel: pd.DataFrame,
     universe: list[str],
-    as_of_date: Union[str, _date, pd.Timestamp],
+    as_of_date: Union[str, date, pd.Timestamp],
     lookback_days: int = 20,
 ) -> pd.Series:
     """
@@ -980,7 +981,6 @@ def bollinger_mean_reversion(
 
     # Get most recent (as-of-date) BB values
     bb_upper = bb_results["bb_upper"].iloc[-1]
-    bb_middle = bb_results["bb_middle"].iloc[-1]
     bb_lower = bb_results["bb_lower"].iloc[-1]
 
     # Normalize position: (close - lower) / (upper - lower)
