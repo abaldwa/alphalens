@@ -1,0 +1,53 @@
+{
+  "_description": "R10 validation (2019-2025, fast): Nigam-Pandey industry momentum with defer_db_writes for concurrent execution.",
+  "_metadata": {
+    "phase": "Phase 10",
+    "strategy": "R10",
+    "bands": [1, 2],
+    "lookback_months": 6,
+    "skip_months": 1,
+    "rebalance_cadence_days": 63,
+    "backtest_period": "2019-01-01:2025-12-31",
+    "created_at": "2026-08-31"
+  },
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 1,
+      "lookback_months": 6,
+      "skip_months": 1,
+      "rebalance_cadence_days": 63,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "industry_momentum",
+      "defer_db_writes": true
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "rank_band_id": 2,
+      "lookback_months": 6,
+      "skip_months": 1,
+      "rebalance_cadence_days": 63,
+      "top_n": 15,
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "initial_capital": 1000000,
+      "max_tickers": 800,
+      "min_history_days": 60,
+      "capital_mode": "lump",
+      "exit_variant": "baseline",
+      "strategy_family": "R",
+      "rank_method": "industry_momentum",
+      "defer_db_writes": true
+    }
+  ]
+}

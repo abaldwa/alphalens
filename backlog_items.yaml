@@ -702,6 +702,32 @@ backlog_items:
     affects_strategies: ["R10", "R12"]
     notes: "Finding 8: Reporting schema incomplete (missing sector/liquidity for analysis)"
 
+  B-030:
+    title: "Implement R11 reversal-ranking-direction fix (B-029) and author its queue file"
+    description: |
+      R11 (momentum reversal + liquidity interaction) is spec-only — no implementation exists.
+      B-029 from remediation spec outlines the code fix needed (ranking direction correction).
+
+      Current state: No code, no queue file, no backtest_runs rows.
+
+      Fix:
+      1. Implement reversal ranking direction correction per B-029 specification
+      2. Author generate_r11_queue.py following generate_r0_isolation_queue.py pattern
+      3. Generate queue for bands M2/M4/M7/M9/M10/M12, 2009-2026
+      4. Run validation + full backtest campaign alongside R1/R8/R9/R10/R12
+
+      Impact: MEDIUM-HIGH — R11 is spec'd but entirely unimplemented; blocks full R-family validation.
+      Effort: Estimate 2-3 hours (code implementation + queue generation + testing).
+
+    criticality: "HIGH"
+    found_by: "user-manual-review (fix-the-issues campaign)"
+    found_in: "R-family issue triage 2026-08-31"
+    depends_on: []
+    owner: null
+    status: "open"
+    affects_strategies: ["R11"]
+    notes: "Deferred from current R1/R8/R9/R10/R12 campaign; placeholder backlog entry for future work"
+
 ---
 
 backlog_dependencies:
@@ -837,5 +863,10 @@ backlog_dependencies:
 
   B-022:
     description: "Add sector/liquidity_bucket to trade_log CSV"
+    blocks: []
+    blocked_by: []
+
+  B-030:
+    description: "Implement R11 reversal-ranking + author queue file"
     blocks: []
     blocked_by: []

@@ -1,0 +1,71 @@
+{
+  "_description": "R8 validation (2019-2025, fast): vol-target overlay with corrected leverage cap (1.0) and defer_db_writes for concurrent execution.",
+  "_metadata": {
+    "phase": "Phase 8",
+    "strategy": "R8",
+    "bands": [1, 2],
+    "backtest_period": "2019-01-01:2025-12-31",
+    "created_at": "2026-08-31",
+    "note": "Validation with vol_target_leverage_cap=1.0 (corrected from prior issues) and defer_db_writes."
+  },
+  "jobs": [
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 1,
+      "lookback_months": 12,
+      "skip_months": 0,
+      "top_n": 10,
+      "vol_target_enabled": false,
+      "strategy_family": "R",
+      "defer_db_writes": true
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 1,
+      "lookback_months": 12,
+      "skip_months": 0,
+      "top_n": 10,
+      "vol_target_enabled": true,
+      "vol_target_pct": 0.15,
+      "vol_target_lookback_days": 63,
+      "vol_target_leverage_cap": 1.0,
+      "strategy_family": "R",
+      "defer_db_writes": true
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 2,
+      "lookback_months": 12,
+      "skip_months": 0,
+      "top_n": 10,
+      "vol_target_enabled": false,
+      "strategy_family": "R",
+      "defer_db_writes": true
+    },
+    {
+      "kind": "orchestrator",
+      "channel": "momentum",
+      "start_date": "2019-01-01",
+      "end_date": "2025-12-31",
+      "rank_band_id": 2,
+      "lookback_months": 12,
+      "skip_months": 0,
+      "top_n": 10,
+      "vol_target_enabled": true,
+      "vol_target_pct": 0.15,
+      "vol_target_lookback_days": 63,
+      "vol_target_leverage_cap": 1.0,
+      "strategy_family": "R",
+      "defer_db_writes": true
+    }
+  ]
+}
