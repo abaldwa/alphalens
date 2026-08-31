@@ -42,7 +42,7 @@ than blocks: the two ranges very nearly touch.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import pandas as pd
 
@@ -79,7 +79,7 @@ class Discontinuity:
 
 def find_discontinuities(
     prices: pd.DataFrame,
-    known_action_dates: Optional[set] = None,
+    known_action_dates: Optional[set[Any]] = None,
     threshold: float = MAX_LEGACY_DAILY_MOVE,
 ) -> List[Discontinuity]:
     """Impossible close-to-close moves in a single ticker's bars.
@@ -100,21 +100,24 @@ def find_discontinuities(
 
     found: List[Discontinuity] = []
     for row in frame.itertuples():
-        if pd.isna(row.prev_close) or row.prev_close <= 0 or row.close <= 0:  # type: ignore[operator]
+        prev_close_val: float = float(row.prev_close) if not pd.isna(row.prev_close) else float('nan')
+        close_val: float = float(row.close)
+
+        if pd.isna(prev_close_val) or prev_close_val <= 0 or close_val <= 0:
             continue
-        if row.date.date() in known or row.date in known:  # type: ignore[union-attr]
+        if row.date.date() in known or row.date in known:
             continue
         # A circuit-locked bar opened and closed at the band: the move is
         # real and the exchange enforced it.
-        if row.high == row.low and row.volume > 0:  # type: ignore[operator]
+        if float(row.high) == float(row.low) and float(row.volume) > 0:
             continue
-        if abs(row.close / row.prev_close - 1.0) > threshold:  # type: ignore[operator]
+        if abs(close_val / prev_close_val - 1.0) > threshold:
             found.append(
                 Discontinuity(
                     ticker=getattr(row, "ticker", ""),
-                    date=row.date,  # type: ignore[arg-type]
-                    prev_close=float(row.prev_close),  # type: ignore[arg-type]
-                    close=float(row.close),  # type: ignore[arg-type]
+                    date=row.date,
+                    prev_close=prev_close_val,
+                    close=close_val,
                 )
             )
     return found

@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -180,7 +180,7 @@ def compute_forward_net_return(
 def _build_ticker_index(ohlcv_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     df = ohlcv_df.copy()
     df["date"] = pd.to_datetime(df["date"])
-    return {t: g.sort_values("date").reset_index(drop=True) for t, g in df.groupby("ticker")}
+    return {str(t): g.sort_values("date").reset_index(drop=True) for t, g in df.groupby("ticker")}
 
 
 def _regime_series(regime_df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
@@ -221,7 +221,7 @@ def _evaluate_one(
     quantity: int,
     costs: IndianTransactionCosts,
     adtv_lookup: Optional[Dict[str, float]],
-) -> Optional[dict]:
+) -> Optional[dict[str, Any]]:
     """Entry = next trading day's open after sig_date; exit = close
     `horizon_days` trading days after entry. Returns None if this ticker
     has no OHLCV history at all (can't evaluate, not the same as pending)."""
@@ -436,18 +436,19 @@ def build_confidence_results(
         return results
 
     for strategy_id, sdf in detail_df.groupby("strategy_id"):
+        strategy_id_str = str(strategy_id)
         pooled = _build_confidence_result(
-            strategy_id, REGIME_ALL, sdf, baseline_win_rate, integrity_ok,
+            strategy_id_str, REGIME_ALL, sdf, baseline_win_rate, integrity_ok,
             n_strategies_compared, regime_date_counts=_regime_date_counts(sdf),
         )
         pooled.per_regime = {
-            regime: _build_confidence_result(
-                strategy_id, regime, rdf, baseline_win_rate, integrity_ok,
+            str(regime): _build_confidence_result(
+                strategy_id_str, str(regime), rdf, baseline_win_rate, integrity_ok,
                 n_strategies_compared, regime_date_counts=_regime_date_counts(sdf),
             )
             for regime, rdf in sdf.groupby("regime")
         }
-        results[strategy_id] = pooled
+        results[strategy_id_str] = pooled
 
     return results
 
@@ -455,7 +456,7 @@ def build_confidence_results(
 def _compute_detail_rows(
     signals: List[SignalEvent],
     hist_by_ticker: Dict[str, pd.DataFrame],
-    regime_idx: pd.DataFrame,
+    regime_idx: Optional[pd.DataFrame],
     horizon_days: int,
     win_threshold_pct: float,
     quantity: int,
@@ -464,8 +465,8 @@ def _compute_detail_rows(
 ) -> pd.DataFrame:
     """Per-signal entry/exit/outcome evaluation, cached by (ticker, date,
     direction) since multiple strategies commonly share the same signal-day."""
-    eval_cache: Dict[tuple, Optional[dict]] = {}
-    detail_rows: List[dict] = []
+    eval_cache: Dict[tuple[Any, ...], Optional[dict[str, Any]]] = {}
+    detail_rows: List[dict[str, Any]] = []
 
     for sig in signals:
         sig_date = pd.Timestamp(sig.date)
@@ -490,7 +491,7 @@ def _compute_detail_rows(
 def evaluate_signals_chunked(
     signals: List[SignalEvent],
     ohlcv_df: pd.DataFrame,
-    conn,
+    conn: Any,
     *,
     regime_df: Optional[pd.DataFrame] = None,
     horizon_days: int = 5,
@@ -501,7 +502,7 @@ def evaluate_signals_chunked(
     applied_min_adt_inr: Optional[float] = None,
     baseline_sample_size: int = 200,
     chunk_size_dates: int = 20,
-    on_chunk_persisted=None,
+    on_chunk_persisted: Optional[Any] = None,
 ) -> Dict[str, ConfidenceResult]:
     """Same evaluation as evaluate_signals_with_detail, but persists detail
     rows to `strategy_confidence_outcomes` chunk-by-chunk (grouped by
@@ -624,25 +625,26 @@ def build_confidence_results_from_agg(
         return results
 
     for strategy_id, sdf in agg_df.groupby("strategy_id"):
+        strategy_id_str = str(strategy_id)
         pooled = _build_confidence_result_from_agg(
-            strategy_id, REGIME_ALL, sdf, baseline_win_rate, integrity_ok,
+            strategy_id_str, REGIME_ALL, sdf, baseline_win_rate, integrity_ok,
             n_strategies_compared, regime_date_counts=_regime_date_counts_agg(sdf),
         )
         pooled.per_regime = {
-            regime: _build_confidence_result_from_agg(
-                strategy_id, regime, rdf, baseline_win_rate, integrity_ok,
+            str(regime): _build_confidence_result_from_agg(
+                strategy_id_str, str(regime), rdf, baseline_win_rate, integrity_ok,
                 n_strategies_compared, regime_date_counts=_regime_date_counts_agg(sdf),
             )
             for regime, rdf in sdf.groupby("regime")
         }
-        results[strategy_id] = pooled
+        results[strategy_id_str] = pooled
 
     return results
 
 
 def _regime_date_counts_agg(sdf: pd.DataFrame) -> Dict[str, int]:
     decided = sdf[(sdf["wins"] + sdf["losses"]) > 0]
-    return decided.groupby("regime").size().to_dict()  # one row per date already
+    return {str(k): v for k, v in decided.groupby("regime").size().to_dict().items()}  # one row per date already
 
 
 def _build_confidence_result_from_agg(
@@ -691,7 +693,7 @@ def _build_confidence_result_from_agg(
 
 def _regime_date_counts(sdf: pd.DataFrame) -> Dict[str, int]:
     decided = sdf[sdf["outcome"].isin(["win", "loss"])]
-    return decided.groupby("regime")["date"].nunique().to_dict()
+    return {str(k): v for k, v in decided.groupby("regime")["date"].nunique().to_dict().items()}
 
 
 def _build_confidence_result(
@@ -739,7 +741,7 @@ def _build_confidence_result(
     )
 
 
-def create_outcomes_table(conn) -> None:
+def create_outcomes_table(conn: Any) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS strategy_confidence_outcomes (
@@ -763,7 +765,7 @@ def create_outcomes_table(conn) -> None:
     )
 
 
-def create_summary_table(conn) -> None:
+def create_summary_table(conn: Any) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS strategy_confidence_summary (
@@ -796,7 +798,7 @@ def create_summary_table(conn) -> None:
     conn.execute("ALTER TABLE strategy_confidence_summary ADD COLUMN IF NOT EXISTS calmar DOUBLE")
 
 
-def persist_detail(conn, detail_df: pd.DataFrame) -> int:
+def persist_detail(conn: Any, detail_df: pd.DataFrame) -> int:
     """Bulk upsert via a registered DataFrame + INSERT...SELECT...ON CONFLICT,
     NOT conn.executemany() with one parameterized statement per row — the
     same ~250x-slower-per-row pattern measured in
@@ -834,7 +836,7 @@ def persist_detail(conn, detail_df: pd.DataFrame) -> int:
     return len(batch_df)
 
 
-def persist_summary(conn, results: Dict[str, ConfidenceResult]) -> int:
+def persist_summary(conn: Any, results: Dict[str, ConfidenceResult]) -> int:
     """Row count here is small (strategies x regimes, low hundreds at
     most) so executemany's per-row overhead doesn't matter — kept as-is
     for readability, unlike persist_detail's bulk rewrite.

@@ -582,11 +582,10 @@ class StackingEnsemble(StackingMetaLearner):
     use `StackingMetaLearner` directly.
     """
 
-    def fit_meta(  # type: ignore[override]
-        self,
-        oof_predictions: Dict[str, np.ndarray],
-        y_oof: np.ndarray,
-    ) -> None:
+    def fit_meta(self,
+                 oof_predictions: Dict[str, np.ndarray],
+                 y_oof: np.ndarray,
+                 ) -> None:
         super().fit_meta(oof_predictions, y_oof)
 
     # predict_proba_from_base → predict_ensemble

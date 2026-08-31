@@ -370,7 +370,7 @@ def step_download_fyers_daily(run_date: date_type, db_path: Optional[Path] = Non
 
     window_df = pd.concat(window_chunks, ignore_index=True)
 
-    def _valid_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    def _valid_ohlc(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         mask = (
             df["open"].notna() & df["high"].notna() & df["low"].notna() & df["close"].notna()
             & (df["high"] >= df["low"]) & (df["low"] >= 0)
