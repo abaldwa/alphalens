@@ -47,7 +47,7 @@ is responsible for supplying only already-PIT-eligible inputs (SPEC-PIPE-003).
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 from scipy.stats import chisquare
@@ -79,16 +79,16 @@ _COMPOSITE_WEIGHTS = {name: 1.0 / len(CLASSICAL_SCORE_NAMES) for name in CLASSIC
 def _safe_div(numerator: Optional[float], denominator: Optional[float]) -> float:
     """NaN (not inf/ZeroDivisionError) on 0/0, x/0, or a missing operand."""
     if numerator is None or denominator is None:
-        return np.nan
+        return float(np.nan)
     try:
         if denominator == 0 or np.isnan(denominator) or np.isnan(numerator):
-            return np.nan
+            return float(np.nan)
         return float(numerator) / float(denominator)
     except (TypeError, ValueError):
-        return np.nan
+        return float(np.nan)
 
 
-def _safe_ratio_of_ratios(num_t: float, den_t: float, num_prev: float, den_prev: float) -> float:
+def _safe_ratio_of_ratios(num_t: Optional[float], den_t: Optional[float], num_prev: Optional[float], den_prev: Optional[float]) -> float:
     """(num_t/den_t) / (num_prev/den_prev) — the shape of every Beneish index."""
     ratio_t = _safe_div(num_t, den_t)
     ratio_prev = _safe_div(num_prev, den_prev)
@@ -96,7 +96,7 @@ def _safe_ratio_of_ratios(num_t: float, den_t: float, num_prev: float, den_prev:
 
 
 # ===== Group A: Beneish M-Score (8 components + composite) =====
-def beneish_m_score(financials: Dict[str, float]) -> Dict[str, float]:
+def beneish_m_score(financials: Dict[str, float]) -> Dict[str, Any]:
     """
     Compute all 8 Beneish M-Score components plus the composite.
 
@@ -172,7 +172,7 @@ def beneish_m_score(financials: Dict[str, float]) -> Dict[str, float]:
 
 
 # ===== Altman Z-Score =====
-def altman_z_score(financials: Dict[str, float]) -> Dict[str, float]:
+def altman_z_score(financials: Dict[str, float]) -> Dict[str, Any]:
     """
     Z = 1.2*(WC/TA) + 1.4*(RE/TA) + 3.3*(EBIT/TA) + 0.6*(MktCap/TL) + 1.0*(Sales/TA)
 
@@ -232,14 +232,14 @@ def piotroski_f_score(financials: Dict[str, float]) -> Dict[str, Any]:
     """
     f = financials
 
-    def _gt(a, b):
+    def _gt(a: Any, b: Any) -> float:
         if a is None or b is None or (isinstance(a, float) and np.isnan(a)) or (isinstance(b, float) and np.isnan(b)):
-            return np.nan
+            return float(np.nan)
         return float(a > b)
 
-    def _gt_zero(a):
+    def _gt_zero(a: Any) -> float:
         if a is None or (isinstance(a, float) and np.isnan(a)):
-            return np.nan
+            return float(np.nan)
         return float(a > 0)
 
     components = {
@@ -274,7 +274,7 @@ def piotroski_f_score(financials: Dict[str, float]) -> Dict[str, Any]:
 
 
 # ===== Ohlson O-Score =====
-def ohlson_o_score(financials: Dict[str, float]) -> Dict[str, float]:
+def ohlson_o_score(financials: Dict[str, float]) -> Dict[str, Any]:
     """
     O = -1.32 - 0.407*log(TA) + 6.03*(TL/TA) - 1.43*(WC/TA) + 0.0757*(CL/CA)
         - 1.72*X - 2.37*(NI/TA) - 1.83*(FFO/TL) + 0.285*Y - 0.521*Z
@@ -332,7 +332,7 @@ def ohlson_o_score(financials: Dict[str, float]) -> Dict[str, float]:
 
 
 # ===== Dechow F-Score =====
-def dechow_f_score(financials: Dict[str, float]) -> Dict[str, float]:
+def dechow_f_score(financials: Dict[str, float]) -> Dict[str, Any]:
     """
     F = -7.893 + 0.790*rsst_accruals + 2.518*change_receivables
         + 1.191*change_inventory + 1.979*pct_soft_assets
@@ -367,19 +367,20 @@ def dechow_f_score(financials: Dict[str, float]) -> Dict[str, float]:
     if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in vals.values()):
         return {"f_score": np.nan, "misstatement_prob": np.nan}
 
+    vals_casted: Dict[str, float] = cast(Dict[str, float], vals)
     f_score = (
-        -7.893 + 0.790 * vals["rsst_accruals"] + 2.518 * vals["change_receivables"]
-        + 1.191 * vals["change_inventory"] + 1.979 * vals["pct_soft_assets"]
-        + 0.171 * vals["change_cash_sales"] - 0.932 * vals["change_roa"]
-        + 1.029 * vals["issuance"] + 0.255 * vals["book_to_market"]
-        - 0.189 * vals["abnormal_change_employees"]
+        -7.893 + 0.790 * vals_casted["rsst_accruals"] + 2.518 * vals_casted["change_receivables"]
+        + 1.191 * vals_casted["change_inventory"] + 1.979 * vals_casted["pct_soft_assets"]
+        + 0.171 * vals_casted["change_cash_sales"] - 0.932 * vals_casted["change_roa"]
+        + 1.029 * vals_casted["issuance"] + 0.255 * vals_casted["book_to_market"]
+        - 0.189 * vals_casted["abnormal_change_employees"]
     )
     misstatement_prob = float(np.exp(f_score) / (1 + np.exp(f_score)))
     return {"f_score": float(f_score), "misstatement_prob": misstatement_prob}
 
 
 # ===== Sloan Accrual =====
-def sloan_accrual(financials: Dict[str, float]) -> Dict[str, float]:
+def sloan_accrual(financials: Dict[str, float]) -> Dict[str, Any]:
     """
     sloan_accrual = (NI - CFO) / Total_Assets.
     balance_sheet_accrual = (dCA - dCash - dCL + dSTD + dTP - Depreciation) / Avg_TA.
@@ -415,7 +416,9 @@ def sloan_accrual(financials: Dict[str, float]) -> Dict[str, float]:
     if any(t is None or (isinstance(t, float) and np.isnan(t)) for t in bs_terms):
         bs_accrual = np.nan
     else:
-        bs_accrual = (d_ca - d_cash - d_cl + d_std + d_tp - depreciation) / avg_ta
+        # All variables guaranteed non-None and non-NaN by check above
+        bs_accrual_vals = cast(list[float], bs_terms)
+        bs_accrual = (bs_accrual_vals[0] - bs_accrual_vals[1] - bs_accrual_vals[2] + bs_accrual_vals[3] + bs_accrual_vals[4] - bs_accrual_vals[5]) / bs_accrual_vals[6]
 
     return {
         "sloan_accrual": core,
@@ -427,18 +430,18 @@ def sloan_accrual(financials: Dict[str, float]) -> Dict[str, float]:
 def _delta(f: Dict[str, float], key: str) -> float:
     cur, prev = f.get(key), f.get(f"{key}_yoy")
     if cur is None or prev is None or np.isnan(cur) or np.isnan(prev):
-        return np.nan
+        return float(np.nan)
     return float(cur - prev)
 
 
 def _avg(a: Optional[float], b: Optional[float]) -> float:
     if a is None or b is None or np.isnan(a) or np.isnan(b):
-        return np.nan
+        return float(np.nan)
     return float((a + b) / 2.0)
 
 
 # ===== Benford's Law =====
-def benford_analysis(series_dict: Dict[str, List[float]]) -> Dict[str, float]:
+def benford_analysis(series_dict: Dict[str, List[float]]) -> Dict[str, Any]:
     """
     Chi-squared test + Mean Absolute Deviation of first-digit distribution
     against Benford's Law expected frequencies, per financial line item,

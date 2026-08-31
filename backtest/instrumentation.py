@@ -61,7 +61,7 @@ from __future__ import annotations
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional
 
 # The phases named above. Fixed rather than free-form so a typo produces a
 # missing phase at import time instead of a silently separate bucket that
@@ -97,7 +97,7 @@ class PhaseTimings:
         self.seconds[phase] += elapsed
         self.calls[phase] += 1
 
-    def as_dict(self) -> Dict[str, object]:
+    def as_dict(self) -> Dict[str, Any]:
         """Serialisable form for BacktestRunResult, including the share of
         total each phase took — the share is what makes two runs of different
         length comparable, and computing it here stops every reader
@@ -128,7 +128,7 @@ class PhaseTimings:
 
     def slowest(self) -> Optional[str]:
         measured = {p: s for p, s in self.seconds.items() if s > 0}
-        return max(measured, key=measured.get) if measured else None
+        return max(measured, key=lambda p: measured[p]) if measured else None
 
 
 class RunTimer:
@@ -184,15 +184,15 @@ def format_timings(timings: PhaseTimings) -> str:
         f"(measured {d['measured_seconds']}s, unattributed {d['unattributed_seconds']}s)"
     ]
     ranked = sorted(
-        d["phases"].items(), key=lambda kv: kv[1]["seconds"], reverse=True  # type: ignore[index]
+        d["phases"].items(), key=lambda kv: kv[1]["seconds"], reverse=True
     )
     for phase, stats in ranked:
-        if stats["calls"] == 0:  # type: ignore[index]
+        if stats["calls"] == 0:
             continue
         lines.append(
-            f"  {phase:<13} {stats['seconds']:>9.3f}s  "  # type: ignore[index]
-            f"{stats['pct_of_measured']:>6.2f}%  "  # type: ignore[index]
-            f"{stats['calls']:>7} calls  "  # type: ignore[index]
-            f"{stats['ms_per_call']:>8.3f} ms/call"  # type: ignore[index]
+            f"  {phase:<13} {stats['seconds']:>9.3f}s  "
+            f"{stats['pct_of_measured']:>6.2f}%  "
+            f"{stats['calls']:>7} calls  "
+            f"{stats['ms_per_call']:>8.3f} ms/call"
         )
     return "\n".join(lines)

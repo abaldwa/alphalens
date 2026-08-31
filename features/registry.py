@@ -16,7 +16,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class FeatureCategory(str, Enum):
@@ -78,7 +78,7 @@ class FeatureDefinition:
     source_store: DataSource
     pit_rule: PITRule
     description: str = ""  # Human-readable explanation
-    range: tuple = (0.0, 100.0)  # Expected min/max for sanity checks
+    range: Tuple[float, float] = (0.0, 100.0)  # Expected min/max for sanity checks
     consumers: List[str] = field(default_factory=list)  # Systems that use this feature
     lookback_days: Optional[int] = None  # Historical depth needed
     computation_depends_on: List[str] = field(default_factory=list)  # Feature dependencies
@@ -684,7 +684,7 @@ def validate_feature_registry() -> List[str]:
     return errors
 
 
-def export_feature_catalog(output_path: Optional[Path] = None) -> Dict[str, dict]:
+def export_feature_catalog(output_path: Optional[Path] = None) -> Dict[str, Any]:
     """
     Export registry to JSON for external discovery (SPEC-FEAT-001).
 
@@ -696,7 +696,7 @@ def export_feature_catalog(output_path: Optional[Path] = None) -> Dict[str, dict
     Returns:
         Dict suitable for JSON serialization
     """
-    catalog = {
+    catalog: Dict[str, Any] = {
         "version": "0.1",
         "generated_at": None,  # Will be filled by ingestion layer
         "total_features": len(FEATURE_REGISTRY),
