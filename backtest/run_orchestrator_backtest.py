@@ -1182,6 +1182,9 @@ def _run_immediate(
                 downtrend_filter_pct=downtrend_filter_pct,
             )
         elif channel == "momentum":
+            # B-027: regime_switching_enabled defaults to False (regime-based mode
+            # selection disabled by default for vol-scaling strategies).
+            regime_switching_enabled = False
             adapter = MomentumAdapter(
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
                 top_n=top_n, lookback_months=lookback_months,
@@ -1549,6 +1552,9 @@ def _run_deferred(
             downtrend_filter_pct=downtrend_filter_pct,
         )
     elif channel == "momentum":
+        # B-027: regime_switching_enabled defaults to False (regime-based mode
+        # selection disabled by default for vol-scaling strategies).
+        regime_switching_enabled = False
         adapter = MomentumAdapter(
             price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
             top_n=top_n, lookback_months=lookback_months,
