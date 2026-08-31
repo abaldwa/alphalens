@@ -67,7 +67,9 @@ class TestR10RegistrationDefinition:
         # Common params
         assert definition["category"] == CATEGORY
         assert definition["top_n"] == TOP_N
-        assert definition["rank_method"] == "trailing_return"
+        # B-028: Sector-level ranking
+        assert definition["rank_method"] == "industry_momentum"
+        assert definition["top_sectors"] == 5
 
     def test_row_definition_band_captured(self):
         """Band_id and rank range are stored in definition."""
@@ -131,7 +133,9 @@ class TestR10RegistryIntegration:
             assert strategy["definition"]["lookback_months"] == 6
             assert strategy["definition"]["skip_months"] == 1
             assert strategy["definition"]["rebalance_cadence_days"] == 63
-            assert strategy["definition"]["rank_method"] == "trailing_return"
+            # B-028: Sector-level ranking
+            assert strategy["definition"]["rank_method"] == "industry_momentum"
+            assert strategy["definition"]["top_sectors"] == 5
             assert strategy["status"] == "active"
 
 

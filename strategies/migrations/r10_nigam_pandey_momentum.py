@@ -10,8 +10,18 @@ from the M-family (M1-M12). Per spec 7.10, R10 tests a single config combination
 - skip_recent_months=1
 - rebalance_frequency=quarterly (63 trading days)
 
+B-028 (2026-08-29): Sector-level ranking fix
+- Changed from individual-stock ranking to sector-level aggregation
+- Ranks sectors by MEDIAN/MEAN momentum of constituents
+- Selects top N sectors (e.g., top 5)
+- Within top sectors, selects top K stocks proportionally (e.g., top 15)
+- This prevents concentration in a single sector and provides balanced exposure
+
 R10 is config-driven (no new adapter code): it reuses MomentumAdapter with
-rebalance_cadence_days=63 and skip_months=1 parameters already available.
+rank_method="industry_momentum" and top_sectors=5. The adapter applies the
+two-stage ranking (sector aggregation → constituent selection) automatically
+when these parameters are set.
+
 Initial registration focuses on M1 (band 1) and M2 (band 2) to compare against
 M-family and R1/R3 baselines, then broadens to all 12 bands if validation passes.
 
@@ -39,11 +49,14 @@ SOURCE_REF = "Phase 10: R10 Nigam-Pandey Indian long-only momentum (spec 7.10)"
 
 # R10 uses balanced category (default risk management) with fixed 6-month lookback,
 # 1-month skip, and quarterly rebalance (per spec 7.10)
+# B-028: Sector-level ranking — ranks sectors by aggregate momentum, then
+# selects top N stocks within top sectors (not global top N)
 CATEGORY = "balanced"
 LOOKBACK_MONTHS = 6
 SKIP_MONTHS = 1
 REBALANCE_CADENCE_DAYS = 63  # 21 trading days/month * 3 months
 TOP_N = 15
+TOP_SECTORS = 5  # Number of top sectors to select from
 
 # Initial validation is against M1 and M2 (bands 1-2)
 # Once validated, can expand to all bands 1-12
@@ -124,8 +137,10 @@ def _row(
         "description": (
             f"R10: Nigam-Pandey Indian long-only momentum, market-cap rank band "
             f"{rank_start}-{rank_end} ({CATEGORY} filters), 6-month lookback, "
-            f"skip 1 recent month, quarterly rebalance (63 trading days), top {TOP_N} holdings. "
-            f"Distinct from M-family to isolate Nigam-Pandey effect with skip-month variant."
+            f"skip 1 recent month, quarterly rebalance (63 trading days). "
+            f"B-028: Sector-level ranking — ranks sectors by aggregate momentum, "
+            f"selects top {TOP_SECTORS} sectors, then top {TOP_N} holdings within them. "
+            f"Distinct from M-family to isolate Nigam-Pandey effect with skip-month variant and sector aggregation."
         ),
         "category": CATEGORY,
         "definition": {
@@ -137,8 +152,9 @@ def _row(
             "skip_months": SKIP_MONTHS,
             "rebalance_cadence_days": REBALANCE_CADENCE_DAYS,
             "top_n": TOP_N,
-            # Phase 0 params
-            "rank_method": "trailing_return",  # Default; no custom rank function
+            # B-028: Sector-level ranking
+            "rank_method": "industry_momentum",  # Rank sectors, then constituents within top sectors
+            "top_sectors": TOP_SECTORS,  # Number of top sectors to select from
         },
         # R10 has no entry predicates: ranks the band's universe by
         # 6-month momentum (with 1-month skip) and buys the top N.

@@ -19,6 +19,7 @@
       "skip_months": 0,
       "top_n": 10,
       "vol_target_enabled": false,
+      "rebalance_cadence_days": 21,
       "strategy_family": "R",
       "defer_db_writes": true
     },
@@ -35,6 +36,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
+      "rebalance_cadence_days": 21,
       "strategy_family": "R",
       "defer_db_writes": true
     },
@@ -48,6 +50,7 @@
       "skip_months": 0,
       "top_n": 10,
       "vol_target_enabled": false,
+      "rebalance_cadence_days": 21,
       "strategy_family": "R",
       "defer_db_writes": true
     },
@@ -64,6 +67,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
+      "rebalance_cadence_days": 21,
       "strategy_family": "R",
       "defer_db_writes": true
     }
