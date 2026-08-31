@@ -77,7 +77,7 @@ EXPLICITLY_EXCLUDED_SECTORS: List[str] = [
 ]
 
 
-def get_index_for_sector(sector: str) -> str:
+def get_index_for_sector(sector: str) -> str | None:
     """
     Real tracked NSE index name for a sector, or None if this sector has
     no matching index (see EXPLICITLY_EXCLUDED_SECTORS / module docstring).

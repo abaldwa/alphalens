@@ -22,7 +22,7 @@ Lifecycle stages (SPEC-VAL-001):
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 
 class LifecycleStage(str, Enum):
@@ -94,7 +94,7 @@ class LifecycleClassifier:
     _DECLINING_MAX_CAGR: float = 0.02
     _DECLINING_SECTOR_MARGIN_RATIO: float = 0.50  # < 50 % of sector median
 
-    def classify(self, fundamentals: Dict) -> LifecycleStage:
+    def classify(self, fundamentals: Dict[str, Any]) -> LifecycleStage:
         """
         Classify a stock into its Damodaran lifecycle stage.
 

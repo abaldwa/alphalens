@@ -535,18 +535,18 @@ _CREATE_INGESTED_FILINGS_TABLE = """
 """
 
 
-def ensure_ingested_filings_table(conn) -> None:
+def ensure_ingested_filings_table(conn: Any) -> None:
     """Idempotently create the SQLite state table tracking which real NSE seq_ids have been ingested."""
     conn.execute(_CREATE_INGESTED_FILINGS_TABLE)
     conn.commit()
 
 
-def get_ingested_seq_ids(conn) -> "set":
+def get_ingested_seq_ids(conn: Any) -> set[int]:
     """Real seq_ids already ingested in a prior run — these are skipped entirely (no re-download, no re-parse)."""
     return {row[0] for row in conn.execute("SELECT seq_id FROM nse_xbrl_ingested_filings").fetchall()}
 
 
-def mark_filings_ingested(conn, records: List[Dict[str, Any]]) -> None:
+def mark_filings_ingested(conn: Any, records: List[Dict[str, Any]]) -> None:
     """
     Record newly-ingested filings so future runs skip them.
 

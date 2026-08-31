@@ -27,6 +27,7 @@ SPLIT-direction note.
 
 import json
 import logging
+from typing import Any
 
 from config.settings import OBSERVABILITY_ENABLED, OBSERVABILITY_LEVEL, OBSERVABILITY_LOG_PATH
 from config.timezone import now_ist
@@ -119,7 +120,7 @@ class NoOpObservability:
     branching on is_enabled() at every call site.
     """
 
-    def log_event(self, event_type: str, level: str = "info", **fields) -> None:
+    def log_event(self, event_type: str, level: str = "info", **fields: Any) -> None:
         return None
 
 
@@ -133,7 +134,7 @@ class JSONLObservability:
     there, not here — this file is a single rolling stream).
     """
 
-    def log_event(self, event_type: str, level: str = "info", **fields) -> None:
+    def log_event(self, event_type: str, level: str = "info", **fields: Any) -> None:
         """
         Append one JSON-line event, if should_log(level) permits it.
 
@@ -164,7 +165,7 @@ class JSONLObservability:
             f.write(json.dumps(event, default=str) + "\n")
 
 
-def get_observability():
+def get_observability() -> NoOpObservability | JSONLObservability:
     """
     Factory: returns NoOpObservability when the master switch is off
     (SPEC-OBS-001: zero overhead when disabled), otherwise a

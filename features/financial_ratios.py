@@ -41,7 +41,7 @@ here).
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 
 def _safe_div(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
@@ -142,7 +142,7 @@ def compute_capex_intensity(capex: Optional[float], revenue: Optional[float]) ->
     return _safe_div(capex, revenue)
 
 
-def derive_all_ratios(row: dict) -> dict:
+def derive_all_ratios(row: dict[str, Any]) -> dict[str, Any]:
     """
     Compute every derivable ratio for one fundamentals row (dict of raw
     column values, e.g. a DuckDB row as a dict). Returns a dict of only the

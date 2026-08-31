@@ -20,7 +20,7 @@ convention as bhavcopy.py's datastore/raw/bhavcopy/.
 import json
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional, cast
 
 import requests
 
@@ -52,7 +52,7 @@ def _nse_session() -> requests.Session:
     return session
 
 
-def _save_raw(trade_date: datetime, payload: dict) -> None:
+def _save_raw(trade_date: datetime, payload: dict[str, Any]) -> None:
     """Persist the unmodified raw JSON response to datastore/raw/etf_list/ (audit trail)."""
     raw_dir = RAW_DIR / "etf_list"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -103,13 +103,13 @@ def download_etf_list(date: str) -> set[str]:
         return tickers
 
     try:
-        return retry_call(
+        return cast(set[str], retry_call(
             _fetch,
             retries=MAX_RETRIES,
             label=f"ETF list fetch for {date}",
             wait_seconds=RETRY_DELAY_SECONDS,
             exceptions=(requests.RequestException, ValueError, KeyError),
-        )
+        ))
     except ConnectionError as exc:
         raise ConnectionError(
             f"Failed to download ETF list for {date} after {MAX_RETRIES} attempts: {exc}"

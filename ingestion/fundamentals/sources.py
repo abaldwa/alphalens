@@ -47,7 +47,7 @@ def merge_fundamental_rows(
     preferred_source_order = preferred_source_order or ["official", "alternate"]
     preferred_rank = {source: i for i, source in enumerate(preferred_source_order)}
 
-    grouped: Dict[tuple, Dict[str, Any]] = {}
+    grouped: Dict[tuple[Any, Any, Any], Dict[str, Any]] = {}
     for row in rows:
         key = (row.get("ticker"), row.get("metric"), row.get("as_of_date"))
         existing = grouped.get(key)

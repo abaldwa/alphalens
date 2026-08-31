@@ -50,7 +50,7 @@ def _estimate_shares_outstanding(conn: Any, ticker: str, as_of: date_type) -> Op
     ).fetchone()
     if not row or row[0] is None:
         return None
-    market_cap_cr = row[0]
+    market_cap_cr = float(row[0])
 
     price_row = conn.execute(
         """
@@ -62,17 +62,17 @@ def _estimate_shares_outstanding(conn: Any, ticker: str, as_of: date_type) -> Op
     ).fetchone()
     if not price_row or not price_row[0]:
         return None
-    close = price_row[0]
+    close = float(price_row[0])
 
     return (market_cap_cr * 1e7) / close
 
 
 def _next_id(conn: Any) -> int:
     row = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM bulk_deal_reconciliation_log").fetchone()
-    return row[0]
+    return int(row[0])
 
 
-def reconcile_family_ticker_quarter(conn: Any, family_id: str, ticker: str, quarter_end_date: date_type) -> dict:
+def reconcile_family_ticker_quarter(conn: Any, family_id: str, ticker: str, quarter_end_date: date_type) -> dict[str, Any]:
     """
     Reconcile one (family_id, ticker) pair for one quarter.
 
@@ -202,7 +202,7 @@ def reconcile_family_ticker_quarter(conn: Any, family_id: str, ticker: str, quar
     }
 
 
-def reconcile_quarter(conn: Any, quarter_end_date: date_type) -> list:
+def reconcile_quarter(conn: Any, quarter_end_date: date_type) -> list[dict[str, Any]]:
     """
     Reconcile every (family_id, ticker) pair with public_shareholders data
     for quarter_end_date. Skips rows with no family_id (unmatched holder

@@ -1323,17 +1323,17 @@ assert len(TEMPLATES) == 63, (
 # below is currently absolute. Add an entry only with the reason a genuine
 # duplicate must stay registered — an exemption is a permanent extra backtest
 # run per grid point, not a formality.
-_KNOWN_DUPLICATE_GROUPS: set = set()
+_KNOWN_DUPLICATE_GROUPS: set[frozenset[tuple[str, str, str]]] = set()
 
 
-def _condition_signature(template: ScreenerTemplate) -> frozenset:
+def _condition_signature(template: ScreenerTemplate) -> frozenset[tuple[str, str, str]]:
     return frozenset(
         (c["feature"], c["op"], repr(c.get("value"))) for c in template.conditions
     )
 
 
-def _find_duplicate_screens() -> Dict[frozenset, List[str]]:
-    by_signature: Dict[frozenset, List[str]] = {}
+def _find_duplicate_screens() -> Dict[frozenset[tuple[str, str, str]], List[str]]:
+    by_signature: Dict[frozenset[tuple[str, str, str]], List[str]] = {}
     for t in TEMPLATES:
         by_signature.setdefault(_condition_signature(t), []).append(t.name)
     return {sig: names for sig, names in by_signature.items() if len(names) > 1}
@@ -1342,7 +1342,7 @@ def _find_duplicate_screens() -> Dict[frozenset, List[str]]:
 _unexpected_duplicates = {
     sig: names
     for sig, names in _find_duplicate_screens().items()
-    if frozenset(names) not in _KNOWN_DUPLICATE_GROUPS
+    if sig not in _KNOWN_DUPLICATE_GROUPS
 }
 assert not _unexpected_duplicates, (
     "Templates with identical condition sets are the same screen and must not "

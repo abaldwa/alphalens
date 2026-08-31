@@ -79,7 +79,7 @@ class FeatureLogWriter:
     """
 
     def __init__(
-        self, conn=None, flush_batch_size: int = DEFAULT_FLUSH_BATCH_SIZE,
+        self, conn: Any = None, flush_batch_size: int = DEFAULT_FLUSH_BATCH_SIZE,
         spill_path: Optional[Union[str, Path]] = None,
     ) -> None:
         if (conn is None) == (spill_path is None):
@@ -100,7 +100,7 @@ class FeatureLogWriter:
         if len(self._buffer) >= self._flush_batch_size:
             self.flush()
 
-    def _serialize_row(self, r: FeatureLogRow) -> tuple:
+    def _serialize_row(self, r: FeatureLogRow) -> tuple[str, str, Any, str, str, Any, str]:
         return (
             r.run_id, r.ticker, r.as_of_date, r.horizon_bucket.value,
             json.dumps(r.feature_vector, default=str), r.signal_output, r.decision_taken,
@@ -119,6 +119,7 @@ class FeatureLogWriter:
             self._conn.executemany(_INSERT_SQL, rows)
             logger.debug(f"Flushed {n} backtest_feature_log rows")
         else:
+            assert self._spill_path is not None
             self._spill_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._spill_path, "a") as fh:
                 for row in rows:
@@ -132,7 +133,7 @@ class FeatureLogWriter:
         return len(self._buffer)
 
 
-def load_spill_file(conn, spill_path: Union[str, Path], delete_after: bool = True) -> int:
+def load_spill_file(conn: Any, spill_path: Union[str, Path], delete_after: bool = True) -> int:
     """Reads a FeatureLogWriter spill file (JSONL, one serialized row tuple
     per line) and bulk-inserts it into backtest_feature_log via `conn` —
     the deferred write half of the spill-mode split above, run once per
@@ -155,7 +156,7 @@ def load_spill_file(conn, spill_path: Union[str, Path], delete_after: bool = Tru
     return len(rows)
 
 
-def query_feature_log(conn, run_id: str) -> List[Dict[str, Any]]:
+def query_feature_log(conn: Any, run_id: str) -> List[Dict[str, Any]]:
     """Read back every logged decision for a run, feature_vector_json parsed
     into a plain dict — the read side of the feedback loop (a researcher
     querying backtest_feature_log for a specific run's losing trades)."""

@@ -29,7 +29,7 @@ import os
 import shutil
 from datetime import date as date_type
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def _find_previous_snapshot_dir(snapshot_dir: Path, before: str) -> Optional[Pat
     return candidates[0] if candidates else None
 
 
-def take_snapshot(conn, tables: List[str], snapshot_dir: Path, snapshot_date: Optional[str] = None) -> Path:
+def take_snapshot(conn: Any, tables: List[str], snapshot_dir: Path, snapshot_date: Optional[str] = None) -> Path:
     """
     Export each of `tables` from `conn` to
     snapshot_dir/<snapshot_date>/<table>.parquet. If a table's content is
@@ -74,6 +74,7 @@ def take_snapshot(conn, tables: List[str], snapshot_dir: Path, snapshot_date: Op
 
         prev_path = prev_dir / f"{table_name}.parquet" if prev_dir else None
         if prev_path and prev_path.exists() and _sha256_of_file(tmp_path) == _sha256_of_file(prev_path):
+            assert prev_dir is not None
             tmp_path.unlink()
             os.link(prev_path, final_path)
             logger.info("take_snapshot: %s unchanged since %s, hard-linked", table_name, prev_dir.name)
@@ -107,7 +108,7 @@ def list_snapshot_dates(snapshot_dir: Path) -> List[str]:
 
 
 def restore_snapshot(
-    conn,
+    conn: Any,
     snapshot_dir: Path,
     snapshot_date: str,
     tables: Optional[List[str]] = None,

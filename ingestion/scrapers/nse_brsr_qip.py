@@ -31,8 +31,8 @@ matches corporate_actions.py's established convention.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, cast
 
 import requests
 
@@ -65,14 +65,14 @@ def _get_json(url: str, ticker: str) -> List[Dict[str, Any]]:
             resp = session.get(url, params={"symbol": ticker}, timeout=_TIMEOUT_S)
             resp.raise_for_status()
             payload = resp.json()
-            return payload.get("data", [])
+            return cast(List[Dict[str, Any]], payload.get("data", []))
         except (requests.RequestException, ValueError) as exc:
             last_exc = exc
             logger.warning(f"{url} ({ticker}) attempt {attempt + 1}/{_MAX_RETRIES} failed: {exc}")
     raise ConnectionError(f"Failed to fetch {url} for {ticker} after {_MAX_RETRIES} attempts: {last_exc}")
 
 
-def _parse_nse_date(value: Optional[str]):
+def _parse_nse_date(value: Optional[str]) -> date | None:
     """NSE dates render as '09-OCT-2023' — returns a date, or None if blank/unparseable."""
     if not value:
         return None

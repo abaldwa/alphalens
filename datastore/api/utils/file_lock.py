@@ -19,12 +19,13 @@ import fcntl
 import logging
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def locked_file(target_path: Path):
+def locked_file(target_path: Path) -> Iterator[None]:
     """
     Hold an exclusive flock on `target_path.with_suffix(target_path.suffix + '.lock')`
     for the duration of the `with` block. Blocks (does not raise) if another

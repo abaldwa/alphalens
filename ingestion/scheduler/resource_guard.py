@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def current_rss_mb() -> float:
     """
     if _HAS_PSUTIL:
         try:
-            return psutil.Process().memory_info().rss / (1024 * 1024)
+            return float(psutil.Process().memory_info().rss / (1024 * 1024))
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"resource_guard: psutil RSS read failed ({exc}), falling back to /proc")
 
@@ -145,7 +145,7 @@ def adaptive_chunk_size(
     return configured_size
 
 
-def poll_process_resources(pid: int) -> dict:
+def poll_process_resources(pid: int) -> dict[str, Any]:
     """
     Read a single live snapshot of an arbitrary PID's RSS/CPU via psutil.
 

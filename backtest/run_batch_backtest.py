@@ -58,7 +58,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from backtest.batch_common import wait_for_headroom
 from ingestion.scheduler.resource_guard import current_rss_mb
@@ -90,7 +90,7 @@ _PHASE_ARG_MAP = {
 }
 
 
-def _run_phase(phase: str, common_args: Dict[str, Optional[int]], extra_args: List[str]) -> Dict:
+def _run_phase(phase: str, common_args: Dict[str, Optional[int]], extra_args: List[str]) -> Dict[str, str | int | float]:
     module = _PHASE_MODULES[phase]
     flag_names = _PHASE_ARG_MAP[phase]
     cmd = [sys.executable, "-m", module]
@@ -124,7 +124,7 @@ def run_batch(
     min_history: Optional[int] = None,
     min_free_mb: float = 2048.0,
     wait_timeout_s: float = 600.0,
-) -> Dict:
+) -> Dict[str, Any]:
     unknown = [p for p in phases if p not in _PHASE_MODULES]
     if unknown:
         raise ValueError(f"unknown phase(s): {unknown} — valid phases are {sorted(_PHASE_MODULES)}")

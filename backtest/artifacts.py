@@ -39,7 +39,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +249,7 @@ class RunScratch:
         self.path.mkdir(parents=True, exist_ok=True)
         return self.path
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
         if exc_type is not None and self._keep_on_error:
             logger.warning("artifacts: keeping scratch %s for diagnosis after %s", self.path, exc_type.__name__)
             return False

@@ -23,6 +23,7 @@ only requires editing HORIZON_SIZING here.
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class HorizonBucket(str, Enum):
@@ -69,7 +70,7 @@ HORIZON_SIZING = {
 }
 
 
-def sizing_for(horizon_bucket: HorizonBucket, overrides: "dict | None" = None) -> HorizonSizingPolicy:
+def sizing_for(horizon_bucket: HorizonBucket, overrides: dict[str, Any] | None = None) -> HorizonSizingPolicy:
     """
     Look up the sizing policy for a bucket, with optional per-run overrides
     (e.g. a strategy operator tightening max_position_pct for a specific
