@@ -190,11 +190,14 @@ class StrategyPortfolio:
         annual_reset: Optional["AnnualResetConfig"] = None,
         adtv_cap_fraction: float = DEFAULT_ADTV_CAP_FRACTION,
         deduct_tax_annually: bool = True,
+        overlapping_k_portfolio: Optional[int] = None,
     ) -> None:
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
         if n_target_positions <= 0:
             raise ValueError("n_target_positions must be positive")
+        if overlapping_k_portfolio is not None and overlapping_k_portfolio <= 0:
+            raise ValueError("overlapping_k_portfolio must be positive if set")
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.horizon_bucket = horizon_bucket
@@ -203,6 +206,9 @@ class StrategyPortfolio:
         self.costs = costs or IndianTransactionCosts()
         self.sip = sip
         self.adtv_cap_fraction = adtv_cap_fraction
+        # B-001: J&T overlapping K-portfolio support
+        self.overlapping_k_portfolio = overlapping_k_portfolio
+        self.current_cohort_number = 0  # Incremented each rebalance
 
         self.positions: Dict[str, Position] = {}
         self.trades: List[Trade] = []
@@ -635,6 +641,7 @@ class StrategyPortfolio:
             entry_atr_pct=entry_atr_pct, template=template, pillar=pillar,
             entry_market_cap_rank=market_cap_rank, entry_adtv_cr=adtv_cr,
             entry_feature_vector=entry_feature_vector,
+            cohort_number=self.current_cohort_number if self.overlapping_k_portfolio else None,
         )
         self.positions[ticker] = position
         return position
@@ -764,3 +771,26 @@ class StrategyPortfolio:
                 buy_price=t.entry_price, sell_price=t.exit_price, quantity=t.quantity,
             ))
         return out
+
+    # ===== B-001: J&T overlapping K-portfolio support =====
+    def get_positions_due_for_rotation(self, rebalance_index: int) -> List[str]:
+        """B-001: Return tickers from cohorts that are due for rotation.
+
+        When overlapping_k_portfolio is set to K, positions from cohort
+        (rebalance_index - K) are due for rotation (should be sold).
+
+        The due cohort is computed as: (rebalance_index - K) % K, but only
+        when rebalance_index >= K (before that, no cohort is due yet).
+
+        Args:
+            rebalance_index: 0-based rebalance counter
+
+        Returns list of tickers from the due cohort; empty if none due or
+        overlapping_k_portfolio is disabled.
+        """
+        if self.overlapping_k_portfolio is None:
+            return []
+        if rebalance_index < self.overlapping_k_portfolio:
+            return []  # Not enough rebalances yet; no cohort is due
+        due_cohort = (rebalance_index - self.overlapping_k_portfolio) % self.overlapping_k_portfolio
+        return [ticker for ticker, pos in self.positions.items() if pos.cohort_number == due_cohort]

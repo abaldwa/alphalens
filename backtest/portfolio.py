@@ -40,7 +40,7 @@ class Position:
     entry_date: object
     entry_price: float
     quantity: int
-    peak_price: float = field(default=None)
+    peak_price: Optional[float] = field(default=None)
     # ATR/entry_price at entry time (e.g. atr_14_pct/100 from
     # features/technical.py), captured once at buy() and never recomputed —
     # feeds RuleBasedExitPolicy's ATR-scaled target/stop (FutureDevelopment.md
@@ -75,6 +75,11 @@ class Position:
     # close so a losing trade can be inspected against what its entry
     # signal actually looked like ("did the buy signal fail, and why").
     entry_feature_vector: Optional[Dict[str, Any]] = None
+    # B-001: J&T overlapping K-portfolio support. Tracks which cohort (rebalance
+    # cycle) this position entered. 0 for first rebalance, 1 for second, etc.
+    # Used to enforce 1/K monthly replacement: positions from cohort
+    # (current_cohort - K) are due for rotation. None = disabled/legacy.
+    cohort_number: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.peak_price is None:
@@ -131,7 +136,7 @@ class PortfolioSimulator:
         self.costs = costs or IndianTransactionCosts()
         self.positions: Dict[str, Position] = {}
         self.trades: List[Trade] = []
-        self._equity_curve: List[Dict] = []
+        self._equity_curve: List[Dict[str, Any]] = []
 
     # ===== Position sizing (SPEC-BT-002) =====
     def position_size(self, price: float, portfolio_value: float, atr: Optional[float] = None) -> int:
@@ -206,7 +211,7 @@ class PortfolioSimulator:
         return True
 
     def buy(
-        self, ticker: str, sector: str, price: float, date, prices: Dict[str, float], atr: Optional[float] = None,
+        self, ticker: str, sector: str, price: float, date: object, prices: Dict[str, float], atr: Optional[float] = None,
         entry_atr_pct: Optional[float] = None, template: Optional[str] = None, pillar: Optional[str] = None,
         adtv_cr: Optional[float] = None,
     ) -> Optional[Position]:
@@ -260,10 +265,13 @@ class PortfolioSimulator:
         """Track the highest price seen since entry (drawdown_from_peak input for ExitSignalModel)."""
         position = self.positions.get(ticker)
         if position is not None:
-            position.peak_price = max(position.peak_price, current_price)
+            if position.peak_price is not None:
+                position.peak_price = max(position.peak_price, current_price)
+            else:
+                position.peak_price = current_price
 
     def sell(
-        self, ticker: str, price: float, date, reason: str = "signal", adtv_cr: Optional[float] = None
+        self, ticker: str, price: float, date: object, reason: str = "signal", adtv_cr: Optional[float] = None
     ) -> Optional[Trade]:
         """Fully close a position. Returns None if the ticker isn't held."""
         position = self.positions.pop(ticker, None)
@@ -272,7 +280,7 @@ class PortfolioSimulator:
         return self._close(position, position.quantity, price, date, reason, adtv_cr)
 
     def reduce_position(
-        self, ticker: str, price: float, date, fraction: float = REDUCE_FRACTION,
+        self, ticker: str, price: float, date: object, fraction: float = REDUCE_FRACTION,
         reason: str = "exit_model_reduce", adtv_cr: Optional[float] = None,
     ) -> Optional[Trade]:
         """Partially close a position (urgency 60-80: "reduce 50%" per 02_models.md M-07)."""
@@ -290,7 +298,7 @@ class PortfolioSimulator:
         return trade
 
     def _close(
-        self, position: Position, qty: int, price: float, date, reason: str, adtv_cr, partial: bool = False
+        self, position: Position, qty: int, price: float, date: object, reason: str, adtv_cr: Optional[float], partial: bool = False
     ) -> Trade:
         cost = self.costs.compute_roundtrip_cost(position.entry_price, qty, adtv_cr)
         proceeds = price * qty - cost
@@ -328,7 +336,7 @@ class PortfolioSimulator:
         return "hold"
 
     def apply_exit_signal(
-        self, ticker: str, urgency: float, price: float, date, adtv_cr: Optional[float] = None
+        self, ticker: str, urgency: float, price: float, date: object, adtv_cr: Optional[float] = None
     ) -> Optional[Trade]:
         """Maps an ExitSignalModel urgency score to a portfolio action and executes it."""
         action = self.exit_action_for_urgency(urgency)
@@ -343,7 +351,7 @@ class PortfolioSimulator:
         positions_value = sum(pos.quantity * prices.get(t, pos.entry_price) for t, pos in self.positions.items())
         return self.cash + positions_value
 
-    def record_equity(self, date, prices: Dict[str, float]) -> None:
+    def record_equity(self, date: object, prices: Dict[str, float]) -> None:
         self._equity_curve.append({"date": date, "equity": self.total_equity(prices)})
 
     @property

@@ -53,17 +53,12 @@ from backtest.core.portfolio import (
     SipConfig,
     StrategyPortfolio,
 )
-from backtest.portfolio import (
-    EXIT_REDUCE_THRESHOLD,
-    EXIT_URGENT_THRESHOLD,
-    MONITOR_THRESHOLD,
-    Position,
-)
+from backtest.portfolio import Position, MONITOR_THRESHOLD
 from backtest.core.regime_breakdown import compute_regime_breakdown
 from backtest.core.run_context import BacktestRun, BacktestRunResult
 from backtest.core.signal_ledger import SignalLedgerRecorder
 from backtest.core.tax import fy_tax_cash_flows
-from config.settings import MIN_ADT_INR
+from config.settings import MIN_ADT_INR, EXIT_REDUCE_THRESHOLD, EXIT_URGENT_THRESHOLD
 
 if TYPE_CHECKING:  # import-graph hygiene: runtime imports stay local (see below)
     from backtest.core.feature_log import FeatureLogWriter
@@ -731,6 +726,13 @@ class OrchestratorConfig:
     # for pre-generated signals and read from strategy_signals table instead of
     # regenerating. Reduces 6000+ daily signal computations to ~250 rebalance-date reads.
     skip_signal_generation: bool = False
+    # B-001: J&T overlapping K-portfolio support. When set to an integer K, the
+    # portfolio maintains K overlapping cohorts, each rotated on a 1/K basis per
+    # rebalance. Example: K=5 with monthly (21d) rebalancing means 1 position
+    # replaced per month; all positions rotated every 5 months (~105 days).
+    # Expected impact: turnover reduction from ~4-5% annually to ~1.5-2%.
+    # None (default) disables the feature; all positions replaced each rebalance.
+    overlapping_k_portfolio: Optional[int] = None
 
 
 class BacktestOrchestrator:
@@ -1271,6 +1273,7 @@ class BacktestOrchestrator:
             annual_reset=annual_reset,
             sizing_overrides=config.sizing_overrides,
             n_target_positions=int(n_target),
+            overlapping_k_portfolio=config.overlapping_k_portfolio,
         )
         portfolio.prime_sip_schedule(config.trading_days)
         portfolio.prime_annual_reset_schedule(config.trading_days)
@@ -1354,6 +1357,9 @@ class BacktestOrchestrator:
                 self._load_regime_data(start_date, end_date)
                 self._populate_regime_cache()
 
+        # B-001: J&T overlapping K-portfolio tracking
+        rebalance_index = 0
+
         for as_of_date in config.trading_days:
             as_of = as_of_date.date() if hasattr(as_of_date, "date") else as_of_date
             is_rebalance_date = as_of_date in rebalance_date_set
@@ -1391,6 +1397,12 @@ class BacktestOrchestrator:
                 if hasattr(adapter, "update_portfolio_equity"):
                     adapter.update_portfolio_equity(as_of, portfolio.equity_curve.iloc[-1])
                 continue
+
+            # B-001: J&T overlapping K-portfolio rebalancing
+            # Compute the active cohort for this rebalance.
+            # Cohorts are assigned modulo K, so each cohort becomes active every K rebalances.
+            if config.overlapping_k_portfolio is not None:
+                portfolio.current_cohort_number = rebalance_index % config.overlapping_k_portfolio
 
             # Walk-Forward retraining (Phase 2.5, BacktestUmbrellaPlan.md "Walk-Forward
             # Module"): only called for adapters that implement an optional refit()
@@ -1526,6 +1538,23 @@ class BacktestOrchestrator:
 
             # sells before buys, so freed cash is available for the same rebalance's buys
             for signal in sorted((s for s in signals if s.action == "sell"), key=lambda s: -s.conviction):
+                # B-001: Check K-portfolio cohort eligibility for sell
+                if config.overlapping_k_portfolio is not None:
+                    position = portfolio.positions.get(signal.ticker)
+                    if position and position.cohort_number is not None:
+                        # Position is part of K-portfolio system
+                        # Determine which cohort is due for rotation this rebalance
+                        active_cohort = rebalance_index % config.overlapping_k_portfolio
+                        if position.cohort_number != active_cohort:
+                            # Position's cohort is not due yet; defer the sell
+                            data_gaps.append(
+                                DataGap(
+                                    signal.ticker, execution_date,
+                                    f"cohort_rotation_deferred_position_cohort={position.cohort_number}_active_cohort={active_cohort}"
+                                )
+                            )
+                            continue
+
                 if signal.ticker not in fill_prices:
                     data_gaps.append(DataGap(signal.ticker, execution_date, "no_price_for_sell_signal"))
                     continue
@@ -1542,6 +1571,25 @@ class BacktestOrchestrator:
                 )
 
             for signal in sorted((s for s in signals if s.action == "buy"), key=lambda s: -s.conviction):
+                # B-001: Check K-portfolio cohort eligibility for buy
+                if config.overlapping_k_portfolio is not None:
+                    current_cohort = rebalance_index % config.overlapping_k_portfolio
+                    # Count positions already in this cohort
+                    cohort_positions = [
+                        pos for pos in portfolio.positions.values()
+                        if pos.cohort_number == current_cohort
+                    ]
+                    slots_per_cohort = portfolio.n_target_positions // config.overlapping_k_portfolio
+                    if len(cohort_positions) >= slots_per_cohort:
+                        # Cohort slot is full; reject this buy
+                        data_gaps.append(
+                            DataGap(
+                                signal.ticker, execution_date,
+                                f"cohort_slot_full_current_cohort={current_cohort}_positions_in_cohort={len(cohort_positions)}_capacity={slots_per_cohort}"
+                            )
+                        )
+                        continue
+
                 if signal.ticker not in fill_prices:
                     data_gaps.append(DataGap(signal.ticker, execution_date, "no_price_for_buy_signal"))
                     continue
@@ -1608,6 +1656,10 @@ class BacktestOrchestrator:
                 # Feed portfolio equity to adapter if it supports overlays (Phase 7/8)
                 if hasattr(adapter, "update_portfolio_equity"):
                     adapter.update_portfolio_equity(as_of, portfolio.equity_curve.iloc[-1])
+
+            # B-001: Increment rebalance counter at end of each rebalance date
+            if is_rebalance_date:
+                rebalance_index += 1
 
         if self._feature_log_writer is not None:
             self._feature_log_writer.flush()
@@ -1747,7 +1799,10 @@ class BacktestOrchestrator:
             if price is None:
                 continue  # no real price today for this ticker — never fabricate one to evaluate barriers
             position = portfolio.positions[ticker]
-            if price > position.peak_price:
+            if position.peak_price is not None:
+                if price > position.peak_price:
+                    position.peak_price = price
+            else:
                 position.peak_price = price
             days_held = (pd.Timestamp(as_of) - pd.Timestamp(position.entry_date)).days
             unrealised_pnl_pct = (price - position.entry_price) / position.entry_price if position.entry_price else 0.0
