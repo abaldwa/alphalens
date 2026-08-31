@@ -114,7 +114,7 @@ def _as_date(v: Any) -> Any:
     return date.fromisoformat(v) if isinstance(v, str) else v
 
 
-def _job_kwargs(job: Dict[str, Any], enable_screener_cache: bool = False) -> Dict[str, Any]:
+def _job_kwargs(job: Dict[str, Any], enable_screener_cache: bool = False, force_immediate: bool = False) -> Dict[str, Any]:
     import inspect
 
     valid = set(inspect.signature(run_orchestrator_backtest).parameters)
@@ -150,7 +150,15 @@ def _job_kwargs(job: Dict[str, Any], enable_screener_cache: bool = False) -> Dic
     # So it is opt-in. It becomes worthwhile when a template is run MANY
     # times, which is what an exit-variant sweep does (up to 9 jobs per
     # template) -- that is the case the cache was written for.
-    if not enable_screener_cache:
+    #
+    # force_immediate=True (A87 Phase 3, 2026-08-31): for momentum strategies
+    # in a single-process sweep, the deferred path is redundant (no multi-worker
+    # contention) and has silent-failure issues (DuckDB lock-retry exhaustion
+    # can die the process before backtest.duckdb is touched). Momentum strategies
+    # in Phase 2A/2B should always use immediate writes when run in-process.
+    if force_immediate:
+        kw.pop("defer_db_writes", None)
+    elif not enable_screener_cache:
         kw.setdefault("defer_db_writes", True)
     else:
         kw.pop("defer_db_writes", None)
@@ -271,7 +279,7 @@ def run_sweep(
         t0 = time.time()
         try:
             run_orchestrator_backtest(
-                **_job_kwargs(job, enable_screener_cache), report_suffix=f"{report_suffix}_job{idx}",
+                **_job_kwargs(job, enable_screener_cache, force_immediate=job.get('channel') == 'momentum'), report_suffix=f"{report_suffix}_job{idx}",
                 defer_feature_log=defer_feature_log,
             )
             outcome, err = "ok", None
