@@ -13,7 +13,7 @@
 | 2 | Profitability of Momentum Strategies | Jegadeesh & Titman | 2001 | Robustness and alternative explanations | Validation, reversal analysis |
 | 3 | On Persistence in Mutual Fund Performance | Carhart | 1997 | Momentum factor and performance attribution | Factor model, not trading strategy |
 | 4 | Do Industries Explain Momentum? | Moskowitz & Grinblatt | 1999 | Industry/sector momentum effects | Sector overlay (R10) |
-| 5 | The 52-Week High and Momentum Investing | George & Hwang | 2004 | Price-to-52-week-high signal | Price-based signal (R11) |
+| 5 | The 52-Week High and Momentum Investing | George & Hwang | 2004 | Price-to-52-week-high reversal signal | Size-based reversal (R5) and price-based momentum reporting (R11) |
 | 6 | The Quality Dimension of a Momentum Strategy | Novy-Marx | 2012 | Intermediate momentum (12-7 months) | Short-term momentum variant |
 | 7 | Momentum Crashes | Daniel & Moskowitz | 2016 | Momentum crash prediction and hedging | Crash-aware overlay (R7) |
 | 8 | Volatility-Managed Portfolios | Barroso & Santa-Clara | 2015 | Dynamic volatility scaling | Vol-scaling framework (R8) |
@@ -21,6 +21,7 @@
 | 10 | Revisiting Momentum Effects in India | Nigam & Pandey | 2023 | Indian long-only momentum design | India-specific configuration |
 | 11 | 52-Week High Effect in India | [Indian research] | 2023 | Indian validation of price-high signal | India-specific price signal |
 | 12 | Momentum, Reversals and Liquidity in India | Chui, Titman & Wei (adapted) | 2023 | Liquidity filters and holding periods | Liquidity-aware design (R12) |
+| 13 | Bollinger Bands | Bollinger, J. | 1992 | Mean-reversion detection via band proximity | Contrarian band-based mean-reversion (R13) |
 
 ---
 
@@ -77,7 +78,7 @@
 
 ---
 
-### **R4, R5, R6: Jegadeesh & Titman (1993) Lookback Variants**
+### **R4, R6: Jegadeesh & Titman (1993) Lookback Variants**
 
 **Source Paper:** Jegadeesh & Titman (1993) + variants
 
@@ -97,6 +98,41 @@
 - [ ] Monthly rebalance
 
 **Audit Sources:** Same as R1 + variant justification paper (if using non-standard lookback)
+
+---
+
+### **R5: George & Hwang (2004) Size-Based Reversal**
+
+**Source Paper:** George & Hwang, 2004. "The 52-Week High and Momentum Investing." Journal of Finance, Vol. 59, No. 5, pp. 2145-2176.
+
+**Specification:**
+- **Signal:** Price relative to 52-week high (proximity-to-high metric) — reversal strategy
+- **Ranking methodology:** Stocks ranked by (current_price / 52week_high) — select LOSERS (lowest scores, i.e., far from 52-week highs)
+- **Threshold:** Buy stocks with price < 70% of 52-week high (George & Hwang, 2004, p. 2155)
+- **Strategy type:** Mean-reversion / short-term reversal (NOT momentum)
+- **Holding period:** 1 month typical (faster exit than momentum)
+- **Rebalance frequency:** Monthly (30 calendar days)
+- **Universe:** Mid-cap to small-cap focus (small-cap concentration; larger impact on less-liquid names)
+- **Rationale:** Captures mean-reversion edge when stocks deviate far from recent highs; complements long-term momentum
+- **Expected Sharpe ratio:** 0.60-0.75 (lower than mid-cap momentum R1/R3, higher volatility; viable on mid-caps only)
+
+**Audit Checklist:**
+- [ ] 52-week high calculation correct (rolling 252-day window)
+- [ ] Price-to-high ratio computed (current / 52w_high)
+- [ ] Selection: LOSERS chosen (ascending sort by ratio, NOT descending)
+- [ ] Threshold logic: Buy when price < 70% of 52w_high (or documented alternative)
+- [ ] Holding period implemented (1 month, ±5 days)
+- [ ] Monthly rebalance frequency
+- [ ] Universe: Mid-cap/small-cap with ADTV floors (not large-cap)
+- [ ] Verify Sharpe ratio on mid-caps: 0.60-0.75 range expected
+
+**Deviations from George & Hwang (2004):**
+- **Market-cap focus:** Original paper tested broad NYSE; AlphaLens concentrates on mid/small-caps where reversal edge is stronger
+- **Liquidity filter:** ADTV > ₹5Cr (India-specific; George & Hwang did not apply explicit liquidity gate)
+
+**Audit Sources:**
+1. George & Hwang (2004) pp. 2145-2176 (primary)
+2. Indian validation: pct_of_52wk_high backtest results (R5 queue runs, 2019-2025 snapshot validation)
 
 ---
 
@@ -258,6 +294,49 @@
 1. Nigam & Pandey (2023) — Indian long-only momentum design
 2. Chui et al. (2023) — Indian momentum, reversals, liquidity
 3. Jegadeesh & Titman (1993) pp. 65-91 (base methodology)
+
+---
+
+### **R13: Bollinger Band Mean-Reversion (Contrarian)**
+
+**Source Paper:** Bollinger, J., 1992. "Bollinger on Bollinger Bands." McGraw-Hill. [Applied to mean-reversion detection per Phase 13 specification]
+
+**Specification:**
+- **Signal:** Oversold proximity to lower Bollinger Band
+- **Calculation:** Price distance to lower BB = (lower_bb - price) / (upper_bb - lower_bb), inverted for ranking
+- **Lookback:** 20 days for moving average + 2σ bands (standard Bollinger Band configuration)
+- **Ranking methodology:** Stocks ranked by proximity to lower band (lower = more oversold = stronger contrarian signal)
+- **Rebalance frequency:** 21 days (3-week cadence; intentional variant for faster mean-reversion capture vs. 30d monthly)
+- **Universe:** Band-specific holdings (M1-M12, initial validation on M1-M2)
+- **Portfolio structure:** Top N=15 stocks per band (contrarian oversold selection)
+- **Holding period:** Full 21-day rebalance cycle
+- **Rationale:** Mean-reversion effect; independent signal from momentum (R1-R12); tactical for oversold conditions
+
+**Audit Checklist:**
+- [ ] Bollinger Band calculation correct (20-day MA, 2σ bands)
+- [ ] Lower band proximity metric computed (distance = lower_bb - price)
+- [ ] Stocks ranked by oversold proximity (lowest = strongest signal)
+- [ ] Top N=15 selection logic (per band)
+- [ ] 21-day rebalance cadence documented (not typo; intentional for faster response)
+- [ ] Universe filtering applied (band-specific rank ranges)
+- [ ] Verify Sharpe ratio 0.50-0.70 (mean-reversion effects typically smaller than momentum)
+- [ ] Compare mean-reversion vs. baseline (non-contrarian) Bollinger Band strategy
+
+**Audit Sources:**
+1. Bollinger, J. (1992) — primary source
+2. Phase 13 specification (contrast with R1-R12 momentum; independent signal class)
+3. R13 validation queue results (once executed; decision gate: Sharpe > 0.50 to expand beyond M1-M2)
+
+**Implementation Status:**
+- Registry entries: `r13_bollinger_reversion_band{1..12}` (deferred; initial validation on bands 1-2)
+- Adapter: `MomentumAdapter` with `rank_method="bollinger_mean_reversion"`
+- Validation queue: `backtest/queues/r13_validation_2019_2025.json` (M1-M2 only; ~1-2 hours)
+- Full queue: `backtest/queues/r13_full_2009_2026.json` (all 12 bands; ready post-validation)
+
+**Expected Outcomes:**
+- **If Sharpe < 0.50** → Archive R13; insufficient signal strength
+- **If Sharpe 0.50-0.70** → Meets specification; expand to all 12 bands
+- **If Sharpe > 0.70** → HIGH confidence; fast-track for composite strategy consideration
 
 ---
 
