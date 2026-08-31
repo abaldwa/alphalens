@@ -29,7 +29,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import date as date_type, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import pandas as pd
 
@@ -98,7 +98,7 @@ def yearly_returns(trades: pd.DataFrame) -> List[YearBucket]:
         pnl = float(grp["pnl_inr"].sum())
         buckets.append(
             YearBucket(
-                trading_year=fy,
+                trading_year=cast(str, fy),
                 n_trades=int(len(grp)),
                 realized_pnl_inr=pnl,
                 invested_inr=invested,
@@ -150,7 +150,7 @@ def tax_liability(trades: pd.DataFrame, regime: str = "ltcg_12_5pct_1_25L") -> T
             lt_gain = float(grp.loc[is_long, "pnl_inr"].sum())
             st_tax = max(st_gain, 0.0) * STCG_RATE
             lt_tax = max(lt_gain - ltcg_exemption, 0.0) * ltcg_rate
-            per_year[fy] = {
+            per_year[cast(str, fy)] = {
                 "short_term_gain_inr": st_gain,
                 "long_term_gain_inr": lt_gain,
                 "stcg_tax_inr": st_tax,
@@ -191,12 +191,12 @@ def holdings_profile(trades: pd.DataFrame) -> Dict[str, Any]:
     such in the output key name."""
     if trades.empty:
         return {"avg_concurrent_positions_calendar": None, "peak_concurrent_positions": None, "n_days_spanned": 0}
-    start = trades["buy_date"].min().date()
-    end = trades["sale_date"].max().date()
-    delta = defaultdict(int)
+    start = cast(Any, trades["buy_date"].min()).date()
+    end = cast(Any, trades["sale_date"].max()).date()
+    delta: Any = defaultdict(int)
     for row in trades.itertuples(index=False):
-        delta[row.buy_date.date()] += 1
-        delta[row.sale_date.date()] -= 1
+        delta[cast(Any, row.buy_date).date()] += 1
+        delta[cast(Any, row.sale_date).date()] -= 1
     held = 0
     total = 0
     peak = 0
@@ -252,7 +252,7 @@ ROLLING_WINDOW_YEARS = (2, 3, 4, 5)
 
 
 def rolling_returns(
-    equity_curve: List[Dict[str, Any]], windows: tuple = ROLLING_WINDOW_YEARS,
+    equity_curve: List[Dict[str, Any]], windows: tuple[int, ...] = ROLLING_WINDOW_YEARS,
 ) -> Dict[str, Any]:
     """Rolling N-year returns over the run's daily mark-to-market equity
     curve, for each N in `windows`.
@@ -288,7 +288,7 @@ def rolling_returns(
         # For each end date, the value N years before it — reindex with
         # method="ffill" resolves an offset landing on a holiday/weekend
         # back to the most recent real trading day, never interpolating.
-        start_targets = series.index - pd.DateOffset(years=years)
+        start_targets = cast(Any, series.index) - pd.DateOffset(years=years)
         start_values = series.reindex(start_targets, method="ffill")
         valid = start_targets >= series.index[0]
         rets = []
