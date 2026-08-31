@@ -315,6 +315,10 @@ export function adaptRun(run: BacktestRunSummary): StrategyReport {
     tradeBookUrl: `${apiOrigin()}/api/v1/backtest/experiments/${encodeURIComponent(run.run_id)}/trade_log`,
     sourceRunId: run.run_id,
     reportedTaxBasis: (basis as TaxBasis | null) ?? null,
+    is_valid: run.is_valid ?? true,
+    validation_status: (run.validation_status ?? 'valid') as 'valid' | 'alternative_period' | 'flagged' | 'invalid',
+    marked_invalid_reason: run.marked_invalid_reason ?? null,
+    run_executed_at: run.run_executed_at ?? null,
     pending,
   }
 }

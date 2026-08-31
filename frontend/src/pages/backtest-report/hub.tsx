@@ -22,6 +22,9 @@ import {
 } from '@/lib/ui'
 import { ReportLayout } from '@/features/backtest-report/ui/ReportLayout'
 import { StrategyLink } from '@/features/backtest-report/ui/StrategyLink'
+import { ValidationFilter, useValidationFilter } from '@/features/backtest-report/ui/ValidationFilter'
+
+type ValidationStatus = 'valid' | 'alternative_period' | 'flagged' | 'invalid'
 import { cagrOn } from '@/features/backtest-report/ui/columns'
 import { pct, rate } from '@/features/backtest-report/core/format'
 import {
@@ -36,11 +39,26 @@ import { useReportPage } from '@/features/backtest-report/data/useReportPage'
 
 export function BacktestReportHubPage() {
   const page = useReportPage()
+  const { filter, setFilter } = useValidationFilter()
 
   const byChannel = useMemo(() => {
     const counts = new Map<string, number>()
     for (const s of page.strategies) {
       counts.set(s.channel, (counts.get(s.channel) ?? 0) + 1)
+    }
+    return counts
+  }, [page.strategies])
+
+  const validationCounts = useMemo(() => {
+    const counts: Record<ValidationStatus, number> = {
+      valid: 0,
+      alternative_period: 0,
+      flagged: 0,
+      invalid: 0,
+    }
+    for (const s of page.strategies) {
+      const status = (s.validation_status ?? 'valid') as ValidationStatus
+      counts[status]++
     }
     return counts
   }, [page.strategies])
@@ -92,6 +110,18 @@ export function BacktestReportHubPage() {
               </Badge>
             </button>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle>Data Quality</CardTitle>
+          <CardDescription>
+            Filter results by validation status to focus on production-ready or analysis data.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ValidationFilter value={filter} onChange={setFilter} counts={validationCounts} />
         </CardContent>
       </Card>
 

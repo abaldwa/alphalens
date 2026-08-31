@@ -25,6 +25,7 @@ import {
 import { EquityCurveChart } from '@/features/backtest-report/ui/EquityCurveChart'
 import { MatrixTable } from '@/features/backtest-report/ui/MatrixTable'
 import { TradesLink } from '@/features/backtest-report/ui/TradesLink'
+import { ValidationDetails, ValidationWarning } from '@/features/backtest-report/ui/ValidationDetails'
 import { EM_DASH, days, inr, num, pct, rate, rateDelta } from '@/features/backtest-report/core/format'
 import { useEquityCurve } from '@/features/backtest-report/data/useEquityCurve'
 import { useReportData } from '@/features/backtest-report/data/useReportData'
@@ -316,6 +317,12 @@ export function BacktestStrategyDetailPage() {
       title={report.label}
       description={`${report.channel} strategy — every attribute recorded for this backtest.`}
     >
+      <ValidationWarning
+        status={(report.validation_status ?? 'valid') as any}
+        reason={report.marked_invalid_reason ?? undefined}
+        isVisible={!report.is_valid}
+      />
+
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <Badge>{report.channel}</Badge>
         <span className="font-mono text-xs text-muted-foreground">{report.key}</span>
@@ -328,6 +335,13 @@ export function BacktestStrategyDetailPage() {
           filters={definition.filters}
           isLoading={definition.isLoading}
           error={definition.error}
+        />
+
+        <ValidationDetails
+          isValid={report.is_valid ?? true}
+          validationStatus={(report.validation_status ?? 'valid') as any}
+          markedInvalidReason={report.marked_invalid_reason ?? undefined}
+          runExecutedAt={report.run_executed_at ?? undefined}
         />
 
         <Card>

@@ -33,6 +33,9 @@ import { MatrixTable } from '@/features/backtest-report/ui/MatrixTable'
 import { MetricTabs, findMetricTab, type MetricTabId } from '@/features/backtest-report/ui/MetricTabs'
 import { ReportLayout } from '@/features/backtest-report/ui/ReportLayout'
 import { layoutProps } from '@/features/backtest-report/ui/sections'
+import { ValidationFilter, useValidationFilter, matchesValidationFilter } from '@/features/backtest-report/ui/ValidationFilter'
+
+type ValidationStatus = 'valid' | 'alternative_period' | 'flagged' | 'invalid'
 import {
   cashFlowYearGroup,
   cashHeatmapFor,
@@ -186,11 +189,34 @@ function MetricWorkspace({ tab }: { tab: MetricTabId }) {
   const page = useReportPage()
   const meta = findMetricTab(tab)
   const regular = page.params.mode === 'regular_returns'
+  const { filter, setFilter } = useValidationFilter()
   const series = useYearSeries(
     page.strategies,
     page.params.mode,
     page.params.topUpAfterLoss,
   )
+
+  const validationCounts = useMemo(() => {
+    const counts: Record<ValidationStatus, number> = {
+      valid: 0,
+      alternative_period: 0,
+      flagged: 0,
+      invalid: 0,
+    }
+    for (const s of page.strategies) {
+      const status = (s.validation_status ?? 'valid') as ValidationStatus
+      counts[status]++
+    }
+    return counts
+  }, [page.strategies])
+
+  // Filter rows by validation status
+  const filteredRows = useMemo(() => {
+    return page.strategies.filter(s => {
+      const status = (s.validation_status ?? 'valid') as ValidationStatus
+      return matchesValidationFilter(status, filter)
+    })
+  }, [page.strategies, filter])
 
   const columns = useMemo(
     () =>
@@ -201,18 +227,18 @@ function MetricWorkspace({ tab }: { tab: MetricTabId }) {
         // ones. Showing both would put two numbers under the same year
         // heading that disagree by design.
         regular
-          ? cashFlowYearGroup(page.strategies, page.params.topUpAfterLoss)
-          : fiscalYearGroup(page.strategies),
+          ? cashFlowYearGroup(filteredRows, page.params.topUpAfterLoss)
+          : fiscalYearGroup(filteredRows),
         setupGroup(),
       ].filter(Boolean) as never[],
-    [tab, page.params.taxBasis, regular, page.params.topUpAfterLoss, page.strategies],
+    [tab, page.params.taxBasis, regular, page.params.topUpAfterLoss, filteredRows],
   )
 
   // Rupee cells need rupee shading ceilings; the fraction ones would paint
   // every payout solid green.
   const heatmap = useMemo(
-    () => (regular ? cashHeatmapFor(page.strategies) : HEATMAP),
-    [regular, page.strategies],
+    () => (regular ? cashHeatmapFor(filteredRows) : HEATMAP),
+    [regular, filteredRows],
   )
 
   const description = regular && (tab === 'returns' || tab === 'all')
@@ -239,6 +265,18 @@ function MetricWorkspace({ tab }: { tab: MetricTabId }) {
     >
       <MetricTabs active={tab} />
 
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle>Data Quality</CardTitle>
+          <CardDescription>
+            Filter results by validation status to focus on production-ready or analysis data.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ValidationFilter value={filter} onChange={setFilter} counts={validationCounts} />
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>{regular && tab === 'returns' ? 'Regular returns' : meta.label}</CardTitle>
@@ -252,7 +290,7 @@ function MetricWorkspace({ tab }: { tab: MetricTabId }) {
             // does not rearrange Returns.
             id={`backtest-report-${tab}`}
             columns={columns}
-            rows={page.strategies}
+            rows={filteredRows}
             getRowId={rowId}
             series={series}
             heatmap={heatmap}
@@ -264,7 +302,7 @@ function MetricWorkspace({ tab }: { tab: MetricTabId }) {
         </CardContent>
       </Card>
 
-      {tab === 'consistency' ? <YoyMatrixCard page={page} /> : null}
+      {tab === 'consistency' ? <YoyMatrixCard page={page} filteredRows={filteredRows} /> : null}
       <DeploySelectionBar />
     </ReportLayout>
   )
@@ -279,18 +317,18 @@ function MetricWorkspace({ tab }: { tab: MetricTabId }) {
  * sortable grid does not make it scannable down a column the way a fixed
  * matrix is.
  */
-function YoyMatrixCard({ page }: { page: ReturnType<typeof useReportPage> }) {
+function YoyMatrixCard({ page, filteredRows }: { page: ReturnType<typeof useReportPage>; filteredRows: StrategyReport[] }) {
   const { matrixColumns, matrixRows } = useMemo(() => {
     // Newest first, matching the year columns in the grid above it — the two
     // are read against each other, and opposite orderings would make that a
     // trap rather than a cross-check.
-    const cols = collectFiscalYears(page.strategies, 'newest-first').map((y) => ({
+    const cols = collectFiscalYears(filteredRows, 'newest-first').map((y) => ({
       // key stays the engine's four-digit label — it is what each row's
       // values are keyed by. Only the heading is abbreviated.
       key: y,
       label: shortFyLabel(y),
     }))
-    const rows = page.strategies
+    const rows = filteredRows
       .filter((s) => s.consistency.yoy.length > 0)
       .map((s) => ({
         key: s.key,
@@ -302,7 +340,7 @@ function YoyMatrixCard({ page }: { page: ReturnType<typeof useReportPage> }) {
         ),
       }))
     return { matrixColumns: cols, matrixRows: rows }
-  }, [page.strategies])
+  }, [filteredRows])
 
   return (
     <Card className="mt-4">

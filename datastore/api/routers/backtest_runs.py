@@ -56,6 +56,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import duckdb
 import psutil
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -91,9 +92,9 @@ class BacktestRunSummary(BaseModel):
     # can show the actual strategy name (e.g. "E2"), not just strategy_id,
     # which may be a freeform label like "Test1" that says nothing about
     # which template/preset actually ran.
-    config: Optional[dict] = None
-    metrics: Optional[dict] = None
-    data_gaps: List[dict] = []
+    config: Optional[dict[str, Any]] = None
+    metrics: Optional[dict[str, Any]] = None
+    data_gaps: List[dict[str, Any]] = []
     integrity_passed: Optional[bool] = None
     live_eligible: bool = False
     # From backtest_feature_log's decision_taken column (core/engine.py's
@@ -103,7 +104,14 @@ class BacktestRunSummary(BaseModel):
     sell_signal_count: int = 0
     # Per-Bull/Bear/Sideways-segment performance (backtest/core/
     # regime_breakdown.py) — [] when the run wasn't given a regime_conn.
-    regime_breakdown: List[dict] = []
+    regime_breakdown: List[dict[str, Any]] = []
+    # Data validation fields added 2026-08-30 (see datastore/schema/create_backtest.py ALTER TABLE additions)
+    # validation_status: 'valid' (2009-2026), 'alternative_period' (other substantial periods),
+    # 'flagged' (data gaps), or 'invalid' (leverage/very short/missing metrics)
+    is_valid: bool = True
+    validation_status: str = "valid"
+    marked_invalid_reason: Optional[str] = None
+    run_executed_at: Optional[str] = None
 
 
 class BacktestRunListResponse(BaseModel):
@@ -120,7 +128,7 @@ class FeatureLogRow(BaseModel):
     ticker: str
     as_of_date: str
     horizon_bucket: str
-    feature_vector: dict
+    feature_vector: dict[str, Any]
     signal_output: Optional[str] = None
     decision_taken: str
 
@@ -130,7 +138,7 @@ class FeatureLogResponse(BaseModel):
     rows: List[FeatureLogRow]
 
 
-def _summary(row: dict, signal_counts: Optional[dict] = None) -> BacktestRunSummary:
+def _summary(row: dict[str, Any], signal_counts: Optional[dict[str, dict[str, int]]] = None) -> BacktestRunSummary:
     counts = (signal_counts or {}).get(row["run_id"], {})
     return BacktestRunSummary(
         **{k: row[k] for k in BacktestRunSummary.model_fields if k in row},
@@ -236,7 +244,7 @@ class ExperimentListResponse(BaseModel):
     experiments: List[ExperimentRow]
 
 
-def _experiment_row(row: dict) -> ExperimentRow:
+def _experiment_row(row: dict[str, Any]) -> ExperimentRow:
     metrics = row.get("metrics") or {}
     return ExperimentRow(
         run_id=row["run_id"],
@@ -329,7 +337,7 @@ _TRADE_COLUMNS = (
 )
 
 
-def _trades_table_missing(conn) -> bool:
+def _trades_table_missing(conn: "duckdb.DuckDBPyConnection") -> bool:
     """True when backtest_trades has not been created yet (fresh DB, or no
     queue has run). Callers return an empty result rather than a 500."""
     return not conn.execute(

@@ -15,8 +15,10 @@ backtest/reports/ only (no path traversal outside that directory).
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ REPORTS_DIR = Path("backtest/reports")
 
 
 @router.get("/reports")
-async def list_backtest_reports() -> dict:
+async def list_backtest_reports() -> dict[str, Any]:
     """List available backtest report filenames (without .json extension)."""
     if not REPORTS_DIR.exists():
         return {"reports": []}
@@ -35,7 +37,7 @@ async def list_backtest_reports() -> dict:
 
 
 @router.get("/reports/{name}")
-async def get_backtest_report(name: str) -> dict:
+async def get_backtest_report(name: str) -> dict[str, Any]:
     """Serve one backtest report JSON as-is, by filename stem (e.g. 'phase2_20260624')."""
     # Path-sanitize: reject any name that isn't a bare filename stem (no
     # slashes, no '..') before joining onto REPORTS_DIR, to prevent
@@ -47,7 +49,7 @@ async def get_backtest_report(name: str) -> dict:
     if REPORTS_DIR.resolve() not in report_path.parents or not report_path.exists():
         raise HTTPException(status_code=404, detail=f"Report '{name}' not found")
 
-    return json.loads(report_path.read_text())
+    return json.loads(report_path.read_text())  # type: ignore
 
 
 # --------------------------------------------------------------------------
@@ -69,7 +71,7 @@ _COMPARISON_PREFIX = "ta_comparison_"
 
 
 @router.get("/ta-comparisons")
-async def list_ta_comparisons() -> dict:
+async def list_ta_comparisons() -> dict[str, Any]:
     """List collated TA comparison reports, newest first."""
     if not REPORTS_DIR.exists():
         return {"comparisons": []}
@@ -98,7 +100,7 @@ async def list_ta_comparisons() -> dict:
 
 
 @router.get("/ta-comparisons/{name}")
-async def get_ta_comparison(name: str) -> dict:
+async def get_ta_comparison(name: str) -> dict[str, Any]:
     """Serve one collated TA comparison report by filename stem."""
     if "/" in name or "\\" in name or name in ("..", "."):
         raise HTTPException(status_code=400, detail="Invalid report name")
@@ -112,4 +114,36 @@ async def get_ta_comparison(name: str) -> dict:
     if REPORTS_DIR.resolve() not in report_path.parents or not report_path.exists():
         raise HTTPException(status_code=404, detail=f"Comparison '{name}' not found")
 
-    return json.loads(report_path.read_text())
+    return json.loads(report_path.read_text())  # type: ignore
+
+
+# --------------------------------------------------------------------------
+# HTML Report Serving (Strategy Analysis Reports)
+#
+# /html-reports lists HTML analysis reports (strategy comparisons, band analysis, etc.)
+# /html-reports/{name} serves the HTML file directly with proper content-type
+# --------------------------------------------------------------------------
+
+
+@router.get("/html-reports")
+async def list_html_reports() -> dict[str, Any]:
+    """List available HTML report filenames (strategy analysis reports)."""
+    if not REPORTS_DIR.exists():
+        return {"reports": []}
+    names = sorted(p.stem for p in REPORTS_DIR.glob("*.html"))
+    return {"reports": names}
+
+
+@router.get("/html-reports/{name}")
+async def get_html_report(name: str) -> FileResponse:
+    """Serve HTML analysis report by filename stem (e.g. 'r0_band_analysis_detailed')."""
+
+    # Path-sanitize: reject any name that isn't a bare filename stem
+    if "/" in name or "\\" in name or name in ("..", "."):
+        raise HTTPException(status_code=400, detail="Invalid report name")
+
+    report_path = (REPORTS_DIR / f"{name}.html").resolve()
+    if REPORTS_DIR.resolve() not in report_path.parents or not report_path.exists():
+        raise HTTPException(status_code=404, detail=f"HTML report '{name}' not found")
+
+    return FileResponse(path=report_path, media_type="text/html")

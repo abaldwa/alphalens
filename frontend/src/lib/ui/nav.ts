@@ -189,6 +189,11 @@ export const NAV_SECTIONS: NavSection[] = [
         label: 'Market Regimes',
         href: '/backtest-regimes',
       },
+      {
+        id: 'r0_band_analysis',
+        label: 'R0 Band Analysis',
+        href: '/backtest-r0-band-analysis',
+      },
     ],
   },
   {

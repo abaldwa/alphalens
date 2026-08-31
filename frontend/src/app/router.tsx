@@ -110,6 +110,7 @@ export const router = createBrowserRouter([
   { path: '/backlog', lazy: async () => ({ Component: (await import('@/pages/backlog')).BacklogPage }) },
   { path: '/backtest-experiments', lazy: async () => ({ Component: (await import('@/pages/backtest/ExperimentsPage')).ExperimentsPage }) },
   { path: '/backtest-regimes', lazy: async () => ({ Component: (await import('@/pages/backtest/RegimesPage')).RegimesPage }) },
+  { path: '/backtest-r0-band-analysis', lazy: async () => ({ Component: (await import('@/pages/backtest/r0-band-analysis')).R0BandAnalysisPage }) },
 
   { path: '/ops', lazy: async () => ({ Component: (await import('@/pages/ops/OpsPage')).OpsPage }) },
   { path: '/macro', lazy: async () => ({ Component: (await import('@/pages/macro/MacroPage')).MacroPage }) },

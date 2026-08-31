@@ -21,14 +21,17 @@ human-invoked function (not built yet — Phase 5/6) may ever flip it.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import duckdb
 
 from backtest.core.run_context import BacktestRunResult
+from backtest.core.validation_classifier import classify_run
 
 logger = logging.getLogger(__name__)
 
 
-def save_run_result(conn, result: BacktestRunResult, queue_id: Optional[str] = None) -> None:
+def save_run_result(conn: duckdb.DuckDBPyConnection, result: BacktestRunResult, queue_id: Optional[str] = None) -> None:
     """Upsert one BacktestRunResult into backtest_runs. Idempotent on
     run_id — a rerun of the same run_id (e.g. a resumed background job)
     overwrites its own prior row rather than erroring or duplicating.
@@ -75,7 +78,7 @@ def save_run_result(conn, result: BacktestRunResult, queue_id: Optional[str] = N
     logger.info(f"Saved backtest run {run.run_id} ({run.channel}/{run.strategy_id}/{run.horizon_bucket.value})")
 
 
-def update_dsr(conn, run_id: str, dsr: Optional[float], n_trials: int, post_hoc: bool = False) -> None:
+def update_dsr(conn: duckdb.DuckDBPyConnection, run_id: str, dsr: Optional[float], n_trials: int, post_hoc: bool = False) -> None:
     """Write a run's deflated Sharpe ratio back after computing it against
     the trial count known at write time (see save_run_result's queue_id
     docstring). post_hoc=True only for the one-off backfill of runs that
@@ -98,25 +101,27 @@ _COLUMNS = (
     "random_seed", "config_hash", "config_json", "created_at", "metrics_json", "data_gaps_json",
     "integrity_passed", "integrity_detail_json", "live_eligible", "regime_breakdown_json",
     "exit_policy_variant", "regime_label", "trade_log_path",
+    "is_valid", "validation_status", "marked_invalid_reason", "run_executed_at",
 )
 
 
-def _row_to_dict(row: tuple) -> Dict[str, Any]:
+def _row_to_dict(row: Tuple[Any, ...]) -> Dict[str, Any]:
     d = dict(zip(_COLUMNS, row))
     d["config"] = json.loads(d.pop("config_json"))
     d["metrics"] = json.loads(d.pop("metrics_json")) if d["metrics_json"] else None
     d["data_gaps"] = json.loads(d.pop("data_gaps_json")) if d["data_gaps_json"] else []
     d["integrity_detail"] = json.loads(d.pop("integrity_detail_json")) if d["integrity_detail_json"] else {}
     d["regime_breakdown"] = json.loads(d.pop("regime_breakdown_json")) if d["regime_breakdown_json"] else []
-    for date_field in ("start_date", "end_date", "created_at"):
-        if isinstance(d[date_field], (datetime,)):
-            d[date_field] = d[date_field].isoformat()
-        elif d[date_field] is not None:
-            d[date_field] = str(d[date_field])
+    for date_field in ("start_date", "end_date", "created_at", "run_executed_at"):
+        if date_field in d and d[date_field] is not None:
+            if isinstance(d[date_field], (datetime,)):
+                d[date_field] = d[date_field].isoformat()
+            else:
+                d[date_field] = str(d[date_field])
     return d
 
 
-def get_run(conn, run_id: str) -> Optional[Dict[str, Any]]:
+def get_run(conn: duckdb.DuckDBPyConnection, run_id: str) -> Optional[Dict[str, Any]]:
     row = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM backtest_runs WHERE run_id = ?", [run_id]).fetchone()
     return _row_to_dict(row) if row else None
 
@@ -128,7 +133,7 @@ def get_run(conn, run_id: str) -> Optional[Dict[str, Any]]:
 _COLUMNS_LIGHT = tuple(c for c in _COLUMNS if c not in ("data_gaps_json", "integrity_detail_json"))
 
 
-def _row_to_summary_dict(row: tuple) -> Dict[str, Any]:
+def _row_to_summary_dict(row: Tuple[Any, ...]) -> Dict[str, Any]:
     """Lightweight counterpart to _row_to_dict() for list_runs(): still
     json.loads-es metrics_json (cheaper in practice than N separate SQL
     json_extract calls per row — measured ~1.7s vs ~5.5s for 717 rows), but
@@ -152,11 +157,12 @@ def _row_to_summary_dict(row: tuple) -> Dict[str, Any]:
     d["data_gaps"] = []
     d["integrity_detail"] = {}
     d["regime_breakdown"] = json.loads(d.pop("regime_breakdown_json")) if d["regime_breakdown_json"] else []
-    for date_field in ("start_date", "end_date", "created_at"):
-        if isinstance(d[date_field], (datetime,)):
-            d[date_field] = d[date_field].isoformat()
-        elif d[date_field] is not None:
-            d[date_field] = str(d[date_field])
+    for date_field in ("start_date", "end_date", "created_at", "run_executed_at"):
+        if date_field in d and d[date_field] is not None:
+            if isinstance(d[date_field], (datetime,)):
+                d[date_field] = d[date_field].isoformat()
+            else:
+                d[date_field] = str(d[date_field])
     return d
 
 
@@ -171,7 +177,7 @@ _SORT_COLUMNS = {
 
 
 
-def _supersession_clause(conn, include_superseded: bool) -> str:
+def _supersession_clause(conn: duckdb.DuckDBPyConnection, include_superseded: bool) -> str:
     """A `NOT EXISTS` predicate hiding runs listed in run_supersessions, or ""
     when there is nothing to hide.
 
@@ -205,7 +211,7 @@ def _supersession_clause(conn, include_superseded: bool) -> str:
 
 
 def list_runs(
-    conn, channel: Optional[str] = None, mode: Optional[str] = None,
+    conn: duckdb.DuckDBPyConnection, channel: Optional[str] = None, mode: Optional[str] = None,
     strategy_id: Optional[str] = None, limit: int = 100, sort_by: str = "created_at",
     include_superseded: bool = False,
 ) -> List[Dict[str, Any]]:
@@ -242,7 +248,7 @@ def list_runs(
 
 
 def count_runs(
-    conn, channel: Optional[str] = None, mode: Optional[str] = None, strategy_id: Optional[str] = None,
+    conn: duckdb.DuckDBPyConnection, channel: Optional[str] = None, mode: Optional[str] = None, strategy_id: Optional[str] = None,
     include_superseded: bool = False,
 ) -> int:
     """Total matching row count, ignoring any page/limit — lets a caller
@@ -265,11 +271,11 @@ def count_runs(
     if superseded:
         where.append(superseded)
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
-    return conn.execute(f"SELECT COUNT(*) FROM backtest_runs {where_clause}", params).fetchone()[0]
+    return conn.execute(f"SELECT COUNT(*) FROM backtest_runs {where_clause}", params).fetchone()[0]  # type: ignore
 
 
 def list_experiments(
-    conn,
+    conn: duckdb.DuckDBPyConnection,
     strategy_id: Optional[str] = None,
     channel: Optional[str] = None,
     exit_policy_variant: Optional[str] = None,
@@ -310,7 +316,7 @@ def list_experiments(
     return [_row_to_dict(r) for r in rows]
 
 
-def get_signal_counts(conn, run_ids: List[str]) -> Dict[str, Dict[str, int]]:
+def get_signal_counts(conn: duckdb.DuckDBPyConnection, run_ids: List[str]) -> Dict[str, Dict[str, int]]:
     """Buy/sell signal counts per run_id, from backtest_feature_log's
     decision_taken column ('buy'/'sell' — see core/engine.py's _log_feature
     call sites). One batched query for a page of runs rather than N+1, and
@@ -340,7 +346,7 @@ def get_signal_counts(conn, run_ids: List[str]) -> Dict[str, Dict[str, int]]:
     return counts
 
 
-def get_run_lineage(conn, run_id: str) -> List[Dict[str, Any]]:
+def get_run_lineage(conn: duckdb.DuckDBPyConnection, run_id: str) -> List[Dict[str, Any]]:
     """Walk parent_run_id back to the root, returning [root, ..., run_id] —
     the feedback-loop "compare to parent run" chain (BacktestUmbrellaPlan.md
     Feature-Vector Logging & Feedback Loop section)."""
@@ -353,3 +359,66 @@ def get_run_lineage(conn, run_id: str) -> List[Dict[str, Any]]:
         parent_id = current.get("parent_run_id")
         current = get_run(conn, parent_id) if parent_id else None
     return list(reversed(chain))
+
+
+def update_run_validation(conn: duckdb.DuckDBPyConnection, run_id: str, executed_at: Optional[str] = None) -> None:
+    """Compute and update validation status for a run.
+
+    Fetches the run's dates, data gaps, and config, classifies it using
+    validation_classifier.classify_run(), and updates the backtest_runs
+    table with is_valid, validation_status, marked_invalid_reason, and
+    run_executed_at.
+
+    executed_at: Optional ISO timestamp for run_executed_at. If None and the
+      run has a created_at, uses created_at (when result was saved). If called
+      interactively post-hoc, set to now().
+    """
+    run = get_run(conn, run_id)
+    if not run:
+        logger.warning(f"update_run_validation: run_id {run_id!r} not found")
+        return
+
+    config = run.get("config", {})
+    data_gaps = run.get("data_gaps", [])
+    data_gaps_count = len(data_gaps)
+
+    is_valid, validation_status, marked_invalid_reason = classify_run(
+        run["start_date"],
+        run["end_date"],
+        data_gaps_count,
+        config,
+    )
+
+    # Use provided executed_at, fall back to created_at (when result was saved),
+    # or current time if neither available
+    if executed_at is None:
+        executed_at = run.get("created_at")
+    if executed_at is None:
+        executed_at = datetime.utcnow().isoformat()
+
+    conn.execute(
+        """UPDATE backtest_runs
+           SET is_valid = ?, validation_status = ?, marked_invalid_reason = ?, run_executed_at = ?
+           WHERE run_id = ?""",
+        [is_valid, validation_status, marked_invalid_reason, executed_at, run_id],
+    )
+    logger.info(
+        f"Updated validation for {run_id}: {validation_status}"
+        f"{f' ({marked_invalid_reason})' if marked_invalid_reason else ''}"
+    )
+
+
+def update_all_validations(conn: duckdb.DuckDBPyConnection) -> None:
+    """Batch-update validation status for all runs in backtest_runs.
+
+    Useful for backfilling existing runs after the validation system was added.
+    Sets run_executed_at to each run's created_at (when result was saved).
+    Run once via: python -c "from backtest.core.run_store import *; from datastore.api.db import *; import duckdb; conn = get_duckdb_connection(); update_all_validations(conn)"
+    """
+    rows = conn.execute(
+        "SELECT run_id FROM backtest_runs ORDER BY created_at DESC"
+    ).fetchall()
+    for (run_id,) in rows:
+        update_run_validation(conn, run_id)
+    conn.commit()
+    logger.info(f"Batch-updated validation for {len(rows)} runs")

@@ -210,11 +210,21 @@ def create_backtest_schema(
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS dsr DOUBLE")
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS dsr_n_trials INTEGER")
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS dsr_computed_post_hoc BOOLEAN")
+        # 2026-08-30 (Validation system): add backtest validation fields
+        # is_valid: TRUE unless marked_invalid_reason is set
+        # validation_status: 'valid' (2009-2026), 'alternative_period' (other substantial periods),
+        #   'flagged' (data gaps detected), or 'invalid' (leverage/very short/missing metrics)
+        # marked_invalid_reason: human-readable reason why is_valid=FALSE (leverage, period too short, etc.)
+        # run_executed_at: timestamp when this backtest run was executed
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS is_valid BOOLEAN DEFAULT TRUE")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS validation_status VARCHAR DEFAULT 'valid'")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS marked_invalid_reason VARCHAR")
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS run_executed_at TIMESTAMP")
 
     logger.info(f"Backtest schema ready at {db_path if db_path else ':memory:'}")
 
 
-def list_tables() -> dict:
+def list_tables() -> dict[str, list[str]]:
     """Return {engine: [table names]} created by this module."""
     return {"duckdb": list(_BACKTEST_TABLES.keys())}
 

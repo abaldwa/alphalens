@@ -125,6 +125,10 @@ export interface BacktestRunSummary {
   buy_signal_count: number
   sell_signal_count: number
   regime_breakdown: RegimeBreakdownRow[]
+  is_valid?: boolean
+  validation_status?: 'valid' | 'alternative_period' | 'flagged' | 'invalid'
+  marked_invalid_reason?: string | null
+  run_executed_at?: string | null
 }
 
 export interface BacktestRunListResponse {

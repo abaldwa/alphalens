@@ -274,6 +274,11 @@ export interface StrategyReport {
   /** Which metrics this row cannot supply yet, keyed by dotted path
    * ("returns.cagrPostTax"). Drives the em-dash tooltip. */
   pending: Record<string, PendingField>
+  /** Data quality validation status. */
+  is_valid?: boolean | null
+  validation_status?: 'valid' | 'alternative_period' | 'flagged' | 'invalid' | null
+  marked_invalid_reason?: string | null
+  run_executed_at?: string | null
 }
 
 /** Metrics awaiting engine work, so a blank cell can explain itself. Keys are

@@ -8,7 +8,7 @@
  * grid. The formatting rules do NOT fork: both files import the same
  * core/format helpers, so a rate still carries "%/yr" and a per-trade outcome
  * still does not, whichever grid is on screen. What differs is only what the
- * two grids can express — grouped headers spanning the fiscal years, pinned
+ * two grids can express - grouped headers spanning the fiscal years, pinned
  * identity, and a value/display split AG Grid needs for sorting and CSV
  * export to agree with each other.
  *
@@ -24,7 +24,10 @@ import { HEATMAP_COLUMN } from '@/lib/ui'
 
 import { StrategyLink } from './StrategyLink'
 import { TradesLink } from './TradesLink'
+import { ValidationBadge } from './ValidationBadge'
 import { cagrOn } from '../core/cagrOn'
+
+type ValidationStatus = 'valid' | 'alternative_period' | 'flagged' | 'invalid'
 import { EM_DASH, inr, int, num, pct, rate, rateDelta } from '../core/format'
 import { collectFiscalYears, shortFyLabel, yoyValueFor, isPartialFor } from '../core/fiscalYears'
 import { baseCapitalFor, regularReturnsByYear } from '../core/regularReturns'
@@ -97,7 +100,7 @@ export function identityGroup(): Group {
  * Returns.
  *
  * THE TWO CAGR COLUMNS ARE IN A FIXED ORDER: post-tax first, pre-tax second,
- * ALWAYS — regardless of which basis the toggle selects.
+ * ALWAYS - regardless of which basis the toggle selects.
  *
  * They used to swap places with the toggle, because the "headline" column
  * rendered the selected basis and the "other" column rendered its opposite.
@@ -112,7 +115,7 @@ export function identityGroup(): Group {
  * header says so. Nothing moves.
  *
  * (For the record, pre-tax ABOVE post-tax is correct and expected. Tax is a
- * cash outflow, so the post-tax curve is the smaller one — the gap between
+ * cash outflow, so the post-tax curve is the smaller one - the gap between
  * the two columns is what the taxman took, and it should reconcile against
  * "Tax paid" in this same group.)
  */
@@ -129,12 +132,12 @@ export function returnsGroup(basis: TaxBasis): Group {
       headerName: active ? `${label} ●` : label,
       headerTooltip: active
         ? `${explanation} This is the basis currently selected, so it is what Excess is measured against and what the shading tracks.`
-        : `${explanation} Not the selected basis — switch the Basis control above to rank on it.`,
+        : `${explanation} Not the selected basis - switch the Basis control above to rank on it.`,
       valueGetter: (p) => (p.data ? cagrOn(p.data, which) : null),
       valueFormatter: fmt(rate),
       width: 150,
       // Only the selected basis is shaded. Shading both turns the pair into a
-      // colour comparison between two numbers that are not alternatives —
+      // colour comparison between two numbers that are not alternatives -
       // they are the same run measured two ways.
       ...(active ? { context: HEATMAP_COLUMN } : {}),
       cellClass: active ? 'tabular-nums font-semibold' : 'tabular-nums',
@@ -148,7 +151,7 @@ export function returnsGroup(basis: TaxBasis): Group {
       cagrCol(
         'post_tax',
         'CAGR (post-tax)',
-        'Annualised growth after STCG/LTCG is paid as a cash outflow each financial year — the money you actually keep.',
+        'Annualised growth after STCG/LTCG is paid as a cash outflow each financial year - the money you actually keep.',
       ),
       cagrCol(
         'pre_tax',
@@ -170,7 +173,7 @@ export function returnsGroup(basis: TaxBasis): Group {
         colId: 'benchmarkCagr',
         headerName: 'Benchmark',
         headerTooltip:
-          'The selected index over this run\u2019s own window, buy and hold. The index name travels with the number — two rows scored against different indices are not comparable.',
+          'The selected index over this run\u2019s own window, buy and hold. The index name travels with the number - two rows scored against different indices are not comparable.',
         valueGetter: (p) => p.data?.returns.benchmarkCagr ?? null,
         valueFormatter: fmt(rate),
         tooltipValueGetter: (p) =>
@@ -179,7 +182,7 @@ export function returnsGroup(basis: TaxBasis): Group {
             (p.data as StrategyReport | undefined)?.returns.benchmarkCaveat,
           ]
             .filter(Boolean)
-            .join(' — ') || null,
+            .join(' - ') || null,
         width: 125,
       },
       {
@@ -202,7 +205,7 @@ export function returnsGroup(basis: TaxBasis): Group {
         colId: 'finalCapital',
         headerName: 'Final capital',
         headerTooltip:
-          'What the book was worth on the last day, on the basis the run was measured on. Read it against Capital in the Setup group — the two give the total multiple.',
+          'What the book was worth on the last day, on the basis the run was measured on. Read it against Capital in the Setup group - the two give the total multiple.',
         valueGetter: (p) => p.data?.returns.finalCapital ?? null,
         valueFormatter: fmt(inr),
         columnGroupShow: 'open',
@@ -213,7 +216,7 @@ export function returnsGroup(basis: TaxBasis): Group {
         colId: 'taxPaid',
         headerName: 'Tax paid',
         headerTooltip:
-          'Capital-gains tax across the whole window. This is the gap between the two CAGR columns, in rupees — the audit trail behind the post-tax figure rather than a second headline.',
+          'Capital-gains tax across the whole window. This is the gap between the two CAGR columns, in rupees - the audit trail behind the post-tax figure rather than a second headline.',
         valueGetter: (p) => p.data?.tradeQuality.totalTaxPaid ?? null,
         valueFormatter: fmt(inr),
         columnGroupShow: 'open',
@@ -245,7 +248,7 @@ export function consistencyGroup(): Group {
         colId: 'worst3y',
         headerName: 'Worst 3y',
         headerTooltip:
-          'The worst any three consecutive financial years did, annualised — the stretch you would have had to sit through.',
+          'The worst any three consecutive financial years did, annualised - the stretch you would have had to sit through.',
         valueGetter: (p) =>
           p.data ? rollingFromYoy(p.data.consistency.yoy, 3)?.minCagr ?? null : null,
         valueFormatter: fmt(rate),
@@ -274,7 +277,7 @@ export function consistencyGroup(): Group {
         colId: 'positiveYears',
         headerName: 'Positive years',
         headerTooltip:
-          'Financial years that ended up, out of the years the run covers. A year marked * in the year columns is partial — a real return over a real period, but not a full twelve months.',
+          'Financial years that ended up, out of the years the run covers. A year marked * in the year columns is partial - a real return over a real period, but not a full twelve months.',
         type: 'numericColumn',
         cellClass: 'tabular-nums',
         width: 130,
@@ -315,7 +318,7 @@ export function riskGroup(): Group {
         colId: 'volatility',
         headerName: 'Volatility',
         headerTooltip:
-          'Annualised standard deviation of returns. Says whether a given Sharpe came from a calm book or a wild one — Sharpe alone cannot.',
+          'Annualised standard deviation of returns. Says whether a given Sharpe came from a calm book or a wild one - Sharpe alone cannot.',
         valueGetter: (p) => p.data?.risk.volatility ?? null,
         valueFormatter: fmt(rate),
         width: 115,
@@ -325,7 +328,7 @@ export function riskGroup(): Group {
         colId: 'sharpe',
         headerName: 'Sharpe',
         headerTooltip:
-          'Return per unit of total volatility, annualised, with no risk-free rate deducted. Treats upside and downside swings alike — compare it with Sortino, which does not.',
+          'Return per unit of total volatility, annualised, with no risk-free rate deducted. Treats upside and downside swings alike - compare it with Sortino, which does not.',
         valueGetter: (p) => p.data?.risk.sharpe ?? null,
         valueFormatter: fmt(num),
         width: 100,
@@ -406,7 +409,7 @@ export function tradeQualityGroup(): Group {
         colId: 'winRate',
         headerName: '% trades won',
         headerTooltip:
-          'How OFTEN the strategy is right. Says nothing about size — a book can win 70% of its trades and still lose money.',
+          'How OFTEN the strategy is right. Says nothing about size - a book can win 70% of its trades and still lose money.',
         valueGetter: (p) => p.data?.tradeQuality.winRate ?? null,
         valueFormatter: fmt(pct),
         width: 130,
@@ -416,7 +419,7 @@ export function tradeQualityGroup(): Group {
         colId: 'avgWin',
         headerName: 'Avg gain per winning trade',
         headerTooltip:
-          'How MUCH it makes when it is right — the other half of the question "% trades won" answers.',
+          'How MUCH it makes when it is right - the other half of the question "% trades won" answers.',
         valueGetter: (p) => p.data?.tradeQuality.avgWinnerPct ?? null,
         valueFormatter: fmt(pct),
         width: 200,
@@ -426,7 +429,7 @@ export function tradeQualityGroup(): Group {
         colId: 'avgLoss',
         headerName: 'Avg loss per losing trade',
         headerTooltip:
-          'Mean return of the trades that lost money. A per-trade outcome, so a plain percentage — annualising a three-day trade is meaningless.',
+          'Mean return of the trades that lost money. A per-trade outcome, so a plain percentage - annualising a three-day trade is meaningless.',
         valueGetter: (p) => p.data?.tradeQuality.avgLoserPct ?? null,
         valueFormatter: fmt(pct),
         width: 190,
@@ -481,7 +484,7 @@ export function incomeGroup(): Group {
         colId: 'avgAnnualYield',
         headerName: 'Avg annual payout',
         headerTooltip:
-          'Mean yearly withdrawal as a share of the capital at work. A yield, not a growth rate — nothing compounds in this mode.',
+          'Mean yearly withdrawal as a share of the capital at work. A yield, not a growth rate - nothing compounds in this mode.',
         valueGetter: (p) => p.data?.income?.avgAnnualYieldPct ?? null,
         valueFormatter: fmt(pct),
         width: 165,
@@ -492,7 +495,7 @@ export function incomeGroup(): Group {
         colId: 'totalDrawn',
         headerName: 'Total cash out',
         headerTooltip:
-          'Every year’s gain above base capital, added up across the whole run — the total the strategy actually paid you. Gross of anything put back in; read it beside “Net of top-ups”.',
+          "Every year's gain above base capital, added up across the whole run - the total the strategy actually paid you. Gross of anything put back in; read it beside \"Net of top-ups\".",
         valueGetter: (p) => p.data?.income?.totalWithdrawn ?? null,
         valueFormatter: fmt(inr),
         width: 155,
@@ -519,7 +522,7 @@ export function incomeGroup(): Group {
         colId: 'toppedUp',
         headerName: 'Topped back up',
         headerTooltip:
-          'Cash put back after losing years. Money in, not money earned — subtract it before calling this an income source.',
+          'Cash put back after losing years. Money in, not money earned - subtract it before calling this an income source.',
         valueGetter: (p) => p.data?.income?.totalInjected ?? null,
         valueFormatter: fmt(inr),
         width: 155,
@@ -584,13 +587,58 @@ export function setupGroup(): Group {
         colId: 'trades',
         headerName: 'Trade book',
         headerTooltip:
-          'Downloads this run’s full trade log as CSV — every entry, exit, holding period and P&L behind the numbers in this row.',
+          "Downloads this run's full trade log as CSV - every entry, exit, holding period and P&L behind the numbers in this row.",
         width: 120,
         sortable: false,
         filter: false,
         cellRenderer: (p: { data?: StrategyReport }) => (
           <TradesLink url={p.data?.tradeBookUrl ?? null} label="Download" />
         ),
+      },
+      {
+        colId: 'validation',
+        headerName: 'Validation',
+        headerTooltip:
+          'Data quality status: Valid (standard 2009-2026), Alternative period (&gt;1 year but different timing), Flagged (data gaps), or Invalid (leverage/missing data).',
+        width: 140,
+        sortable: true,
+        valueGetter: (p) => p.data?.validation_status ?? 'valid',
+        cellRenderer: (p: { data?: StrategyReport }) => (
+          p.data ? (
+            <ValidationBadge
+              status={(p.data.validation_status ?? 'valid') as ValidationStatus}
+              reason={p.data.marked_invalid_reason ?? undefined}
+            />
+          ) : null
+        ),
+        columnGroupShow: 'open',
+      },
+      {
+        colId: 'executedAt',
+        headerName: 'Executed',
+        headerTooltip:
+          'The date and time when this backtest was executed. Use this to identify and discard results from problematic execution dates.',
+        width: 180,
+        sortable: true,
+        valueGetter: (p) => p.data?.run_executed_at ?? null,
+        valueFormatter: (params: ValueFormatterParams<StrategyReport>) => {
+          const date = params.value
+          if (!date) return EM_DASH
+          try {
+            const dt = new Date(date)
+            return dt.toLocaleString('en-IN', {
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })
+          } catch {
+            return date
+          }
+        },
+        columnGroupShow: 'open',
       },
     ],
   }
@@ -625,7 +673,7 @@ export function fiscalYearGroup(rows: StrategyReport[]): Group | null {
         yoyValueFor(p.data?.consistency.yoy ?? [], label)?.returnPct ?? null,
       tooltipValueGetter: (p) =>
         isPartialFor(p.data?.consistency.yoy ?? [], label)
-          ? `${label} is a PARTIAL financial year for this strategy — its run opened or closed mid-year.`
+          ? `${label} is a PARTIAL financial year for this strategy - its run opened or closed mid-year.`
           : undefined,
       valueFormatter: fmt(pct),
       context: HEATMAP_COLUMN,
@@ -639,13 +687,13 @@ export function fiscalYearGroup(rows: StrategyReport[]): Group | null {
  * In this mode the year-on-year return is the wrong thing to show. The mode
  * exists to answer "what did this pay me, and when did it pay me nothing?",
  * and a row of percentages answers a question the reader has already left
- * behind — worse, a +40% year on a book still under water pays exactly ₹0, so
+ * behind - worse, a +40% year on a book still under water pays exactly ₹0, so
  * the percentage and the cash disagree in precisely the years that matter.
  *
  * Each cell is `netCash`: money OUT to the investor as a positive, the year's
  * deficit as a negative. Under the top-up variant that deficit is real cash
- * you had to find; under the carry variant it is notional — the hole the book
- * must climb out of before it pays again — and the tooltip says which.
+ * you had to find; under the carry variant it is notional - the hole the book
+ * must climb out of before it pays again - and the tooltip says which.
  */
 export function cashFlowYearGroup(
   rows: StrategyReport[],
@@ -670,7 +718,7 @@ export function cashFlowYearGroup(
       colId: `cash-${label}`,
       headerName: shortFyLabel(label),
       headerTooltip: label.endsWith('*')
-        ? `${label.slice(0, -1)} — a PARTIAL financial year, so its payout covers less than twelve months.`
+        ? `${label.slice(0, -1)} - a PARTIAL financial year, so its payout covers less than twelve months.`
         : `Cash withdrawn in ${label}, or the deficit if the year ended below base capital.`,
       width: 120,
       valueGetter: (p) =>
@@ -686,7 +734,7 @@ export function cashFlowYearGroup(
         const kind = topUpAfterLoss
           ? `${inr(year.shortfall)} had to be put back to restore base capital`
           : `${inr(year.shortfall)} below base capital, carried into next year rather than funded`
-        return `${label}: nothing paid out. Opened at ${inr(year.openingCapital)}, returned ${pct(year.returnPct)} — ${kind}.`
+        return `${label}: nothing paid out. Opened at ${inr(year.openingCapital)}, returned ${pct(year.returnPct)} - ${kind}.`
       },
       context: HEATMAP_COLUMN,
     })),
