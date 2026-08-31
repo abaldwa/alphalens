@@ -1722,40 +1722,47 @@ def _run_deferred(
 
     # Short, serialized tail — the only part of this run touching
     # BACKTEST_DUCKDB_PATH's single read-write connection.
-    with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
-        create_backtest_schema(
-            BACKTEST_DUCKDB_PATH,
-            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
-            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
-            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
-        )
-        with get_duckdb_connection(
-            BACKTEST_DUCKDB_PATH, read_only=False, persist=False,
-            retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
-            retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
-            retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
-        ) as conn:
-            # [2026-08-19] defer_feature_log: leave the spill file on disk for
-            # a sweep-level bulk load instead of inserting it here.
-            #
-            # MEASURED in a warm job: this insert was 7.6s of duckdb
-            # executemany plus 3.9s re-reading the spill -- 11.5s of a 31.2s
-            # job, for a per-decision DEBUG log, not results.
-            #
-            # Durability is unaffected, which is the point: the spill file is
-            # already written and fsynced by FeatureLogWriter, so deferring
-            # moves rows that are on disk into the DB later rather than
-            # holding anything in memory. An OOM or a crash loses no feature
-            # rows -- the files are still there to load. backtest_runs and
-            # strategy_signals (the actual RESULTS) are still written per job
-            # by _persist_run_result below, unchanged.
-            if not defer_feature_log:
-                load_spill_file(conn, spill_path)
-            _persist_run_result(
-                conn, run_id, channel, descriptor, run_date, result,
-                template_name, preset, top_n, lookback_months,
-                saved_exit_policy_variant, regime_method, report_suffix,
+    try:
+        with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
+            create_backtest_schema(
+                BACKTEST_DUCKDB_PATH,
+                retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+                retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+                retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
             )
+            with get_duckdb_connection(
+                BACKTEST_DUCKDB_PATH, read_only=False, persist=False,
+                retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+                retry_base_delay_s=DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+                retry_max_delay_s=DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+            ) as conn:
+                # [2026-08-19] defer_feature_log: leave the spill file on disk for
+                # a sweep-level bulk load instead of inserting it here.
+                #
+                # MEASURED in a warm job: this insert was 7.6s of duckdb
+                # executemany plus 3.9s re-reading the spill -- 11.5s of a 31.2s
+                # job, for a per-decision DEBUG log, not results.
+                #
+                # Durability is unaffected, which is the point: the spill file is
+                # already written and fsynced by FeatureLogWriter, so deferring
+                # moves rows that are on disk into the DB later rather than
+                # holding anything in memory. An OOM or a crash loses no feature
+                # rows -- the files are still there to load. backtest_runs and
+                # strategy_signals (the actual RESULTS) are still written per job
+                # by _persist_run_result below, unchanged.
+                if not defer_feature_log:
+                    load_spill_file(conn, spill_path)
+                _persist_run_result(
+                    conn, run_id, channel, descriptor, run_date, result,
+                    template_name, preset, top_n, lookback_months,
+                    saved_exit_policy_variant, regime_method, report_suffix,
+                )
+    except Exception as e:
+        logger.error(
+            "TAIL WRITE FAILED for run_id=%s (channel=%s): %s",
+            run_id, channel, e, exc_info=True
+        )
+        raise
     return result
 
 
