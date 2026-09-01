@@ -346,3 +346,44 @@ class IDataStoreWriter(ABC):
         Raises:
             IOError: If write fails
         """
+
+
+class IRegimeDetector(ABC):
+    """
+    Abstract interface for market regime detection algorithms.
+    Implementations detect market conditions (Bull/Bear/Choppy) for position sizing.
+    """
+
+    @abstractmethod
+    def detect(self, ohlcv_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Detect regime for each date in the OHLCV dataframe.
+
+        Args:
+            ohlcv_df: DataFrame with OHLCV columns (open, high, low, close, volume)
+                     Index should be date
+
+        Returns:
+            DataFrame with single 'regime' column containing regime labels
+        """
+
+    @abstractmethod
+    def validate_walk_forward(
+        self,
+        start_date: Any,
+        end_date: Any,
+        train_window_days: int = 252,
+        test_window_days: int = 63,
+    ) -> Dict[str, Any]:
+        """
+        Walk-forward validation: train on window, predict next window, measure accuracy.
+
+        Args:
+            start_date: Start date for validation period
+            end_date: End date for validation period
+            train_window_days: Training window size in days
+            test_window_days: Testing window size in days
+
+        Returns:
+            Dictionary with validation metrics
+        """

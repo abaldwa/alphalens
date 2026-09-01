@@ -579,7 +579,8 @@ class TestTradeLogCsv:
                 rows = list(csv.DictReader(fh))
             assert list(rows[0].keys()) == [
                 "ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank",
-                "pnl_inr", "pnl_pct", "exit_reason",
+                "pnl_inr", "pnl_pct", "exit_reason", "regime", "regime_exposure",
+                "nifty_rsi_14", "nifty_ema_5", "nifty_ema_10",
             ]
             assert len(rows) == 1
             row = rows[0]
@@ -625,7 +626,8 @@ class TestTradeLogCsv:
                 rows = list(csv.reader(fh))
             assert rows == [[
                 "ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price", "stock_rank",
-                "pnl_inr", "pnl_pct", "exit_reason",
+                "pnl_inr", "pnl_pct", "exit_reason", "regime", "regime_exposure",
+                "nifty_rsi_14", "nifty_ema_5", "nifty_ema_10",
             ]]
         finally:
             csv_path.unlink(missing_ok=True)

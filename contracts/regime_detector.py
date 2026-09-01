@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+contracts/regime_detector.py
+
 Regime detection for market-cap-specific strategies.
 
 Supports multiple detection algorithms and market caps (Nifty 50, Next 50, 150, Smallcap 250, Microcap).
@@ -15,12 +17,14 @@ Algorithms:
 import logging
 from datetime import date as date_type, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import sys
 
 import pandas as pd
 import numpy as np
 import duckdb
+
+from contracts.interfaces import IRegimeDetector
 
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -41,14 +45,15 @@ MARKET_CAP_BANDS = {
 REGIMES = ['Bull', 'Bear', 'Choppy']
 
 
-class RegimeDetector:
+class RegimeDetector(IRegimeDetector):
     """Base regime detector class."""
 
-    def __init__(self, market_cap_band: str):
+    def __init__(self, market_cap_band: str) -> None:
         self.market_cap_band = market_cap_band
-        self.band_config = MARKET_CAP_BANDS.get(market_cap_band)
-        if not self.band_config:
+        band_config = MARKET_CAP_BANDS.get(market_cap_band)
+        if not band_config:
             raise ValueError(f"Unknown market cap band: {market_cap_band}")
+        self.band_config = band_config
 
     def load_index_ohlcv(
         self, start_date: date_type, end_date: date_type
@@ -78,13 +83,13 @@ class RegimeDetector:
 
     def detect(self, ohlcv_df: pd.DataFrame) -> pd.DataFrame:
         """Detect regime for each date. Override in subclasses."""
-        raise NotImplementedError
+        raise NotImplementedError("Subclasses must implement detect()")
 
     def validate_walk_forward(
-        self, start_date: date_type, end_date: date_type, train_window_days: int = 252, test_window_days: int = 63
-    ) -> Dict:
+        self, start_date: Any, end_date: Any, train_window_days: int = 252, test_window_days: int = 63
+    ) -> Dict[str, Any]:
         """Walk-forward validation: train on window, predict next window, measure accuracy."""
-        raise NotImplementedError
+        raise NotImplementedError("Subclasses must implement validate_walk_forward()")
 
 
 class EMARegimeDetector(RegimeDetector):
@@ -112,10 +117,10 @@ class EMARegimeDetector(RegimeDetector):
         df['ema_short'] = df['close'].ewm(span=self.short_span, adjust=False).mean()
         df['ema_long'] = df['close'].ewm(span=self.long_span, adjust=False).mean()
 
-        def get_regime(row):
-            close = row['close']
-            ema_short = row['ema_short']
-            ema_long = row['ema_long']
+        def get_regime(row: pd.Series) -> str:
+            close: float = row['close']
+            ema_short: float = row['ema_short']
+            ema_long: float = row['ema_long']
 
             if close > ema_short and ema_short > ema_long:
                 return 'Bull'
@@ -164,8 +169,8 @@ class RSIRegimeDetector(RegimeDetector):
 
         df['rsi'] = self._calculate_rsi(df['close'])
 
-        def get_regime(row):
-            rsi = row['rsi']
+        def get_regime(row: pd.Series) -> str:
+            rsi: float = row['rsi']
             if pd.isna(rsi):
                 return 'Choppy'
             if rsi > self.overbought:
@@ -217,10 +222,10 @@ class VolatilityRegimeDetector(RegimeDetector):
             self.vol_low_percentile / 100
         )
 
-        def get_regime(row):
-            vol = row['volatility']
-            vol_high = row['vol_high_thresh']
-            vol_low = row['vol_low_thresh']
+        def get_regime(row: pd.Series) -> str:
+            vol: float = row['volatility']
+            vol_high: float = row['vol_high_thresh']
+            vol_low: float = row['vol_low_thresh']
 
             if pd.isna(vol) or pd.isna(vol_high) or pd.isna(vol_low):
                 return 'Choppy'
@@ -267,7 +272,7 @@ class EnsembleRegimeDetector(RegimeDetector):
         # Majority voting
         regime_df = pd.DataFrame(results)
 
-        def get_ensemble_regime(row):
+        def get_ensemble_regime(row: pd.Series) -> str:
             regimes = row.dropna()
             if len(regimes) == 0:
                 return 'Choppy'
@@ -275,7 +280,7 @@ class EnsembleRegimeDetector(RegimeDetector):
             counts = regimes.value_counts()
             if counts.iloc[0] > len(regimes) / 2:
                 # Majority consensus
-                return counts.index[0]
+                return str(counts.index[0])
             else:
                 # No clear majority, default to Choppy (conservative)
                 return 'Choppy'
@@ -288,7 +293,7 @@ def run_regime_analysis(
     start_date: date_type,
     end_date: date_type,
     output_dir: Path = Path('/tmp/alphalens_regime_analysis'),
-) -> Dict[str, Path]:
+) -> Dict[tuple[str, str], Path]:
     """
     Run regime detection for all market caps using all algorithms.
     Write results to temp CSV files for review.
@@ -297,14 +302,14 @@ def run_regime_analysis(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    algorithms = {
-        'ema': lambda band: EMARegimeDetector(band),
-        'rsi': lambda band: RSIRegimeDetector(band),
-        'volatility': lambda band: VolatilityRegimeDetector(band),
-        'ensemble': lambda band: EnsembleRegimeDetector(band),
+    algorithms: Dict[str, type[RegimeDetector]] = {
+        'ema': EMARegimeDetector,
+        'rsi': RSIRegimeDetector,
+        'volatility': VolatilityRegimeDetector,
+        'ensemble': EnsembleRegimeDetector,
     }
 
-    results_map = {}
+    results_map: Dict[tuple[str, str], Path] = {}
 
     for market_cap_band in MARKET_CAP_BANDS.keys():
         logger.info(f"Processing market cap band: {market_cap_band}")

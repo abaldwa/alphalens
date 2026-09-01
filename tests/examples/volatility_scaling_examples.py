@@ -1,12 +1,22 @@
 """
-volatility_scaling.py — Usage Examples
+tests/examples/volatility_scaling_examples.py — Usage Examples
 
 Demonstrates how to use the four individual volatility scaling functions.
+This is a tutorial/documentation file; it generates synthetic data for
+demonstration purposes only and should not be executed as part of production.
 """
+
+import sys
+from pathlib import Path
 
 import pandas as pd
 import numpy as np
-from features.volatility_scaling import (
+
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from features.volatility_scaling import (  # noqa: E402
     baseline,
     inverse_volatility,
     inverse_variance,

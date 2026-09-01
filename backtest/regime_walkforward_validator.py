@@ -15,7 +15,7 @@ Output: CSV files in /tmp/alphalens_regime_validation/
 import logging
 from datetime import date as date_type, timedelta
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 import sys
 
 import pandas as pd
@@ -25,7 +25,7 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from backtest.regime_detector import (
+from contracts.regime_detector import (  # noqa: E402
     MARKET_CAP_BANDS,
     EMARegimeDetector,
     RSIRegimeDetector,
@@ -55,7 +55,7 @@ class RegimeWalkForwardValidator:
         df = detector.load_index_ohlcv(start_date, end_date)
         return df
 
-    def compare_regime_to_actual(self, train_df: pd.DataFrame, test_df: pd.DataFrame, detector) -> Dict:
+    def compare_regime_to_actual(self, train_df: pd.DataFrame, test_df: pd.DataFrame, detector: Any) -> Dict[str, Any]:
         """
         Compare regime predictions to actual price movement.
 
@@ -64,8 +64,8 @@ class RegimeWalkForwardValidator:
         - Bear regime → actual return < median → TP
         - Choppy regime → Regardless (we don't care about choppy accuracy)
         """
-        # Train on train_df
-        train_regime = detector.detect(train_df)
+        # Train detector on train_df (state is held in detector for walk-forward)
+        detector.detect(train_df)
 
         # Predict on test_df
         test_regime = detector.detect(test_df)
@@ -84,7 +84,7 @@ class RegimeWalkForwardValidator:
         })
 
         # Score: did regime predict correctly?
-        def score_prediction(row):
+        def score_prediction(row: pd.Series) -> Any:
             regime = row['regime']
             ret = row['actual_return']
 
@@ -135,7 +135,7 @@ class RegimeWalkForwardValidator:
         train_window_days: int = TRAIN_WINDOW_DAYS,
         test_window_days: int = TEST_WINDOW_DAYS,
         step_days: int = STEP_DAYS,
-    ) -> Dict[str, List[Dict]]:
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Walk forward: slide train/test windows across entire period.
 
@@ -158,7 +158,7 @@ class RegimeWalkForwardValidator:
             'ensemble': EnsembleRegimeDetector(self.market_cap_band),
         }
 
-        results = {algo: [] for algo in detectors.keys()}
+        results: Dict[str, List[Dict[str, Any]]] = {algo: [] for algo in detectors.keys()}
 
         # Walk forward
         idx = 0
@@ -197,9 +197,9 @@ class RegimeWalkForwardValidator:
 
         return results
 
-    def summarize_results(self, results: Dict[str, List[Dict]]) -> Dict[str, Dict]:
+    def summarize_results(self, results: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
         """Summarize walk-forward results."""
-        summary = {}
+        summary: Dict[str, Dict[str, Any]] = {}
 
         for algo_name, windows in results.items():
             if not windows:
@@ -224,11 +224,11 @@ def run_all_validations(
     start_date: date_type,
     end_date: date_type,
     output_dir: Path = Path('/tmp/alphalens_regime_validation'),
-) -> Dict[str, Dict]:
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """Run walk-forward validation for all market cap bands."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    all_summaries = {}
+    all_summaries: Dict[str, Dict[str, Dict[str, Any]]] = {}
     all_results_dfs = []
 
     for market_cap_band in MARKET_CAP_BANDS.keys():
@@ -278,7 +278,7 @@ def run_all_validations(
     return all_summaries
 
 
-def print_validation_report(summaries: Dict[str, Dict]):
+def print_validation_report(summaries: Dict[str, Dict[str, Dict[str, Any]]]) -> None:
     """Print readable validation report."""
     print("\n" + "=" * 80)
     print("REGIME DETECTION WALK-FORWARD VALIDATION REPORT")
