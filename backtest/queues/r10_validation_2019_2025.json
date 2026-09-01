@@ -3,7 +3,10 @@
   "_metadata": {
     "phase": "Phase 10",
     "strategy": "R10",
-    "bands": [1, 2],
+    "bands": [
+      1,
+      2
+    ],
     "lookback_months": 6,
     "skip_months": 1,
     "rebalance_cadence_days": 63,

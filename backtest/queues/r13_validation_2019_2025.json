@@ -3,7 +3,10 @@
   "_metadata": {
     "phase": "Phase 13",
     "strategy": "R13",
-    "bands": [1, 2],
+    "bands": [
+      1,
+      2
+    ],
     "rank_method": "bollinger_mean_reversion",
     "lookback_days": 20,
     "backtest_period": "2019-01-01:2025-12-31",

@@ -3,8 +3,17 @@
   "_metadata": {
     "phase": "Phase 12",
     "strategy": "R12",
-    "bands": [1, 9],
-    "signal_types": ["reversal_1mo", "momentum_3mo", "momentum_6mo", "momentum_12mo", "momentum_12_7_skip"],
+    "bands": [
+      1,
+      9
+    ],
+    "signal_types": [
+      "reversal_1mo",
+      "momentum_3mo",
+      "momentum_6mo",
+      "momentum_12mo",
+      "momentum_12_7_skip"
+    ],
     "backtest_period": "2019-01-01:2025-12-31",
     "created_at": "2026-08-31"
   },

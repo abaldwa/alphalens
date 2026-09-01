@@ -5,7 +5,14 @@
     "strategy": "R5",
     "rank_method": "pct_of_52wk_high",
     "backtest_period": "2009-01-01:2026-12-31",
-    "bands": [2, 4, 7, 9, 10, 12],
+    "bands": [
+      2,
+      4,
+      7,
+      9,
+      10,
+      12
+    ],
     "variant": "TOP7_12M_MONTHLY",
     "signal_reuse": "Phase 2A cached signals",
     "created_at": "2026-08-31",
@@ -28,8 +35,7 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -47,8 +53,7 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -66,8 +71,7 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -85,8 +89,7 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -104,8 +107,7 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -123,8 +125,7 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     }
   ]
 }

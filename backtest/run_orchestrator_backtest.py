@@ -82,7 +82,7 @@ from backtest.strategy_id import (
     default_horizon_for_technical,
 )
 from config.settings import (
-    BACKTEST_DUCKDB_PATH, DUCKDB_PATH,
+    BACKTEST_DUCKDB_PATH as _DEFAULT_BACKTEST_DUCKDB_PATH, DUCKDB_PATH,
     DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS, DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S, DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
 )
 from config.timezone import now_ist
@@ -104,6 +104,24 @@ from backtest.export_trade_book import export_trade_book
 from datastore.client import DataStoreClient
 from datastore.schema.create_backtest import create_backtest_schema
 from datastore.schema.create_strategy_catalog import create_strategy_catalog_schema
+
+# Allow parallel-DB mode: override DB path via BACKTEST_DUCKDB_PATH env var
+BACKTEST_DUCKDB_PATH = os.environ.get('BACKTEST_DUCKDB_PATH', _DEFAULT_BACKTEST_DUCKDB_PATH)
+
+# Detect if we're in parallel-DB mode: when env-var-overridden, skip the global
+# exclusive_backtest_lock since each process writes to its own isolated DB with
+# no DuckDB contention. The lock was added to serialize shared-DB access (2026-08
+# incident); isolated DBs don't need it and it defeats the parallelization speedup.
+_USING_ISOLATED_DB = 'BACKTEST_DUCKDB_PATH' in os.environ
+
+@contextlib.contextmanager
+def _optionally_locked(label: str) -> Iterator[None]:
+    """Wrapper around exclusive_backtest_lock that skips it in parallel-DB mode."""
+    if _USING_ISOLATED_DB:
+        yield  # no-op: isolated DBs have no contention
+    else:
+        with exclusive_backtest_lock(label=label):
+            yield
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -1036,7 +1054,7 @@ def _run_immediate(
     exclusive_backtest_lock and one live BACKTEST_DUCKDB_PATH connection
     throughout. Extracted verbatim from run_orchestrator_backtest() only to
     make room for _run_deferred() as a sibling — no logic changed."""
-    with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
+    with _optionally_locked(label=f"orchestrator[{run_id}]"):
         ohlcv = _fetch_real_ohlcv(
             max_tickers, min_history_days, start_date, end_date, ohlcv_snapshot_dir, pit_adtv_top_n,
         )
@@ -1723,7 +1741,7 @@ def _run_deferred(
     # Short, serialized tail — the only part of this run touching
     # BACKTEST_DUCKDB_PATH's single read-write connection.
     try:
-        with exclusive_backtest_lock(label=f"orchestrator[{run_id}]"):
+        with _optionally_locked(label=f"orchestrator[{run_id}]"):
             create_backtest_schema(
                 BACKTEST_DUCKDB_PATH,
                 retry_attempts=DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,

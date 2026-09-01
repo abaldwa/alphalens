@@ -294,23 +294,28 @@ def run_sweep(
 
         # fsynced per job: a crash at hour six must cost only what was in
         # flight (the MultiBagger lesson).
-        with jsonl.open("a") as fh:
-            fh.write(json.dumps({
-                "idx": idx, "outcome": outcome, "channel": job.get("channel"),
-                "name": _describe(job), "filtered": job.get("min_adtv_cr") is not None,
-                "duration_s": round(dt), "error": err,
-                "at": datetime.now().isoformat(timespec="seconds"),
-            }) + "\n")
-            fh.flush()
-            import os
-            os.fsync(fh.fileno())
+        try:
+            with jsonl.open("a") as fh:
+                fh.write(json.dumps({
+                    "idx": idx, "outcome": outcome, "channel": job.get("channel"),
+                    "name": _describe(job), "filtered": job.get("min_adtv_cr") is not None,
+                    "duration_s": round(dt), "error": err,
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                }) + "\n")
+                fh.flush()
+                import os
+                os.fsync(fh.fileno())
 
-        st = shared_panels.stats()
-        print(
-            f"  [{ok + failed:>4}/{todo}] {label:<44} {outcome:>6} "
-            f"{dt:6.1f}s  (panel hits {st['ohlcv_hits']}/{st['ohlcv_hits'] + st['ohlcv_misses']})",
-            flush=True,
-        )
+            st = shared_panels.stats()
+            print(
+                f"  [{ok + failed:>4}/{todo}] {label:<44} {outcome:>6} "
+                f"{dt:6.1f}s  (panel hits {st['ohlcv_hits']}/{st['ohlcv_hits'] + st['ohlcv_misses']})",
+                flush=True,
+            )
+        except Exception as progress_exc:
+            logger.error("Failed to write progress for %s: %s", label, progress_exc)
+            print(f"ERROR writing progress for job {idx}: {progress_exc}", flush=True)
+            traceback.print_exc()
 
     if defer_feature_log:
         # One bulk load for the whole shard, instead of one per job.

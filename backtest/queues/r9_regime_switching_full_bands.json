@@ -5,10 +5,17 @@
     "strategy": "R9",
     "approach": "regime_switching_adaptive",
     "backtest_period": "2019-01-01:2025-12-31",
-    "bands_tested": ["M2", "M4", "M7", "M9", "M10", "M12"],
+    "bands_tested": [
+      "M2",
+      "M4",
+      "M7",
+      "M9",
+      "M10",
+      "M12"
+    ],
     "regime_detectors": "ensemble (64-72% accuracy)",
     "created_at": "2026-08-30",
-    "notes": "Regime mapping: Bull (uptrend) → inverse_volatility (1.25x), Bear (crash) → downside_volatility (0.5x), Choppy → target_volatility (1.0x). All 6 bands in parallel for comprehensive comparison."
+    "notes": "Regime mapping: Bull (uptrend) \u2192 inverse_volatility (1.25x), Bear (crash) \u2192 downside_volatility (0.5x), Choppy \u2192 target_volatility (1.0x). All 6 bands in parallel for comprehensive comparison."
   },
   "jobs": [
     {

@@ -3,10 +3,21 @@
   "_metadata": {
     "phase": "Phase 2",
     "strategy": "R3",
-    "bands": [1, 2],
+    "bands": [
+      1,
+      2
+    ],
     "lookback_variants": [
-      {"lookback_months": 12, "skip_months": 1, "name": "12-7"},
-      {"lookback_months": 6, "skip_months": 1, "name": "6-2"}
+      {
+        "lookback_months": 12,
+        "skip_months": 1,
+        "name": "12-7"
+      },
+      {
+        "lookback_months": 6,
+        "skip_months": 1,
+        "name": "6-2"
+      }
     ],
     "backtest_period": "2019-01-01:2025-12-31",
     "note": "Validation run with 7-year window (2019-2025) for quick turnaround. Full 16-year run on demand.",

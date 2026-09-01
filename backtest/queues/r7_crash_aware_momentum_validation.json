@@ -29,7 +29,8 @@
       "top_n": 10,
       "crash_regime_enabled": false,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "rebalance_cadence_days": 21
+      "rebalance_cadence_days": 21,
+      "defer_db_writes": true
     },
     {
       "kind": "orchestrator",
@@ -47,7 +48,8 @@
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "rebalance_cadence_days": 21
+      "rebalance_cadence_days": 21,
+      "defer_db_writes": true
     },
     {
       "kind": "orchestrator",
@@ -65,7 +67,8 @@
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "rebalance_cadence_days": 21
+      "rebalance_cadence_days": 21,
+      "defer_db_writes": true
     },
     {
       "kind": "orchestrator",
@@ -78,7 +81,8 @@
       "top_n": 10,
       "crash_regime_enabled": false,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "rebalance_cadence_days": 21
+      "rebalance_cadence_days": 21,
+      "defer_db_writes": true
     },
     {
       "kind": "orchestrator",
@@ -96,7 +100,8 @@
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "rebalance_cadence_days": 21
+      "rebalance_cadence_days": 21,
+      "defer_db_writes": true
     },
     {
       "kind": "orchestrator",
@@ -114,7 +119,8 @@
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "rebalance_cadence_days": 21
+      "rebalance_cadence_days": 21,
+      "defer_db_writes": true
     }
   ]
 }

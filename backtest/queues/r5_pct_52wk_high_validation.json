@@ -3,7 +3,10 @@
   "_metadata": {
     "phase": "Phase 3",
     "strategy": "R5",
-    "bands": [1, 2],
+    "bands": [
+      1,
+      2
+    ],
     "signal_type": "pct_of_52wk_high",
     "backtest_period": "2019-01-01:2025-12-31",
     "note": "Validation run with 7-year window (2019-2025) for quick turnaround. Full 16-year run on demand. No skip-month variants for R5 (52-week-high is independent signal).",
@@ -25,7 +28,8 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "defer_db_writes": true
     },
     {
       "kind": "orchestrator",
@@ -42,7 +46,8 @@
       "exit_variant": "baseline",
       "strategy_family": "R",
       "rank_method": "pct_of_52wk_high",
-      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots"
+      "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
+      "defer_db_writes": true
     }
   ]
 }

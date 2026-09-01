@@ -5,7 +5,14 @@
     "strategy": "R9",
     "approach": "regime_switching_adaptive",
     "backtest_period": "2019-01-01:2025-12-31",
-    "bands_tested": ["M2", "M4", "M7", "M9", "M10", "M12"],
+    "bands_tested": [
+      "M2",
+      "M4",
+      "M7",
+      "M9",
+      "M10",
+      "M12"
+    ],
     "regime_detectors": "ensemble (64-72% accuracy)",
     "db_persistence": "DIRECT (no deferred writes)",
     "created_at": "2026-08-30",
@@ -26,7 +33,7 @@
       "vol_scaling_leverage_cap": 9999.0,
       "regime_switching_enabled": true,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "_comment": "M2: Nifty 50 benchmark. Ensemble accuracy: 64.3% (Bull: 50.4%, Bear: 52.0%). Results → backtest_runs table."
+      "_comment": "M2: Nifty 50 benchmark. Ensemble accuracy: 64.3% (Bull: 50.4%, Bear: 52.0%). Results \u2192 backtest_runs table."
     },
     {
       "kind": "orchestrator",
@@ -42,7 +49,7 @@
       "vol_scaling_leverage_cap": 9999.0,
       "regime_switching_enabled": true,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "_comment": "M4: Nifty Next 50. Ensemble accuracy: 66.5% (Bull: 60.9%, Bear: 53.2%). Results → backtest_runs table."
+      "_comment": "M4: Nifty Next 50. Ensemble accuracy: 66.5% (Bull: 60.9%, Bear: 53.2%). Results \u2192 backtest_runs table."
     },
     {
       "kind": "orchestrator",
@@ -58,7 +65,7 @@
       "vol_scaling_leverage_cap": 9999.0,
       "regime_switching_enabled": true,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "_comment": "M7: Nifty Midcap (Nifty 150). Ensemble accuracy: estimated 68-70%. Results → backtest_runs table."
+      "_comment": "M7: Nifty Midcap (Nifty 150). Ensemble accuracy: estimated 68-70%. Results \u2192 backtest_runs table."
     },
     {
       "kind": "orchestrator",
@@ -74,7 +81,7 @@
       "vol_scaling_leverage_cap": 9999.0,
       "regime_switching_enabled": true,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "_comment": "M9: Nifty Smallcap 250. Ensemble accuracy: 72.1% (BEST - Bull: 73.5%, Bear: 56.5%). Results → backtest_runs table."
+      "_comment": "M9: Nifty Smallcap 250. Ensemble accuracy: 72.1% (BEST - Bull: 73.5%, Bear: 56.5%). Results \u2192 backtest_runs table."
     },
     {
       "kind": "orchestrator",
@@ -90,7 +97,7 @@
       "vol_scaling_leverage_cap": 9999.0,
       "regime_switching_enabled": true,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "_comment": "M10: Nifty Smallcap 250 (same as M9). Duplicate for comparison/validation. Results → backtest_runs table."
+      "_comment": "M10: Nifty Smallcap 250 (same as M9). Duplicate for comparison/validation. Results \u2192 backtest_runs table."
     },
     {
       "kind": "orchestrator",
@@ -106,7 +113,7 @@
       "vol_scaling_leverage_cap": 9999.0,
       "regime_switching_enabled": true,
       "ohlcv_snapshot_dir": "/home/amit/projects/AlphaLens/backtest/cache/ohlcv_snapshots",
-      "_comment": "M12: Nifty Microcap. Ensemble accuracy: 71.4% (Bull: 68.3%, Bear: 61.8%). Results → backtest_runs table."
+      "_comment": "M12: Nifty Microcap. Ensemble accuracy: 71.4% (Bull: 68.3%, Bear: 61.8%). Results \u2192 backtest_runs table."
     }
   ]
 }

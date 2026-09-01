@@ -5,8 +5,18 @@
     "strategy": "R8",
     "rank_method": "jt_momentum",
     "backtest_period": "2009-01-01:2026-12-31",
-    "bands": [2, 4, 7, 9, 10, 12],
-    "variants": ["VOLTARGET_15", "VOLTARGET_10"],
+    "bands": [
+      2,
+      4,
+      7,
+      9,
+      10,
+      12
+    ],
+    "variants": [
+      "VOLTARGET_15",
+      "VOLTARGET_10"
+    ],
     "leverage_cap": 1.0,
     "signal_reuse": "Phase 2A cached signals",
     "created_at": "2026-08-31",
@@ -34,8 +44,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -55,11 +64,10 @@
       "strategy_family": "R",
       "rank_method": "jt_momentum",
       "vol_target_enabled": true,
-      "vol_target_pct": 0.10,
+      "vol_target_pct": 0.1,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -82,8 +90,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -103,11 +110,10 @@
       "strategy_family": "R",
       "rank_method": "jt_momentum",
       "vol_target_enabled": true,
-      "vol_target_pct": 0.10,
+      "vol_target_pct": 0.1,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -130,8 +136,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -151,11 +156,10 @@
       "strategy_family": "R",
       "rank_method": "jt_momentum",
       "vol_target_enabled": true,
-      "vol_target_pct": 0.10,
+      "vol_target_pct": 0.1,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -178,8 +182,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -199,11 +202,10 @@
       "strategy_family": "R",
       "rank_method": "jt_momentum",
       "vol_target_enabled": true,
-      "vol_target_pct": 0.10,
+      "vol_target_pct": 0.1,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -226,8 +228,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -247,11 +248,10 @@
       "strategy_family": "R",
       "rank_method": "jt_momentum",
       "vol_target_enabled": true,
-      "vol_target_pct": 0.10,
+      "vol_target_pct": 0.1,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -274,8 +274,7 @@
       "vol_target_pct": 0.15,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -295,11 +294,10 @@
       "strategy_family": "R",
       "rank_method": "jt_momentum",
       "vol_target_enabled": true,
-      "vol_target_pct": 0.10,
+      "vol_target_pct": 0.1,
       "vol_target_lookback_days": 63,
       "vol_target_leverage_cap": 1.0,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     }
   ]
 }

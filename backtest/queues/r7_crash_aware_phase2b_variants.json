@@ -5,8 +5,18 @@
     "strategy": "R7",
     "rank_method": "jt_momentum",
     "backtest_period": "2009-01-01:2026-12-31",
-    "bands": [2, 4, 7, 9, 10, 12],
-    "variants": ["CRASH_DISABLE", "CRASH_REDUCE"],
+    "bands": [
+      2,
+      4,
+      7,
+      9,
+      10,
+      12
+    ],
+    "variants": [
+      "CRASH_DISABLE",
+      "CRASH_REDUCE"
+    ],
     "signal_reuse": "Phase 2A cached signals",
     "created_at": "2026-08-31",
     "note": "Signal generation skipped (reuses Phase 2A). Tests crash overlay: disable buys vs reduce sizing by 50%."
@@ -35,8 +45,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -61,8 +70,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -87,8 +95,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -113,8 +120,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -139,8 +145,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -165,8 +170,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -191,8 +195,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -217,8 +220,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -243,8 +245,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -269,8 +270,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -295,8 +295,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": true,
       "crash_reduce_sizing": null,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     },
     {
       "kind": "orchestrator",
@@ -321,8 +320,7 @@
       "crash_vol_lookback_days": 20,
       "crash_disable_buys": false,
       "crash_reduce_sizing": 0.5,
-      "skip_signal_generation": true,
-      "defer_db_writes": true
+      "skip_signal_generation": true
     }
   ]
 }

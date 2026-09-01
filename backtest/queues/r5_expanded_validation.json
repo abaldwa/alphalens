@@ -3,7 +3,12 @@
   "_metadata": {
     "phase": "Phase 3",
     "strategy": "R5",
-    "bands": [1, 2, 10, 11],
+    "bands": [
+      1,
+      2,
+      10,
+      11
+    ],
     "signal_type": "pct_of_52wk_high",
     "backtest_period": "2019-01-01:2025-12-31",
     "note": "Validation run with 7-year window (2019-2025) across full market-cap spectrum. Compares R5 vs M-series (trailing 12-month momentum) for robustness across liquidity profiles.",

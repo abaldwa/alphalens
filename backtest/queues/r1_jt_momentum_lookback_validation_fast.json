@@ -3,8 +3,14 @@
   "_metadata": {
     "phase": "Phase 1",
     "strategy": "R1",
-    "bands": [1, 2],
-    "lookback_months": [6, 12],
+    "bands": [
+      1,
+      2
+    ],
+    "lookback_months": [
+      6,
+      12
+    ],
     "backtest_period": "2019-01-01:2025-12-31",
     "created_at": "2026-08-22",
     "note": "Validation run with reduced period for quick turnaround. Full 16-year run on demand."
