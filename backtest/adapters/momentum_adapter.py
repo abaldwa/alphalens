@@ -591,14 +591,23 @@ class MomentumAdapter:
         Cache only stores rankings for rebalance dates. Non-rebalance dates fall back to the
         nearest prior rebalance date (e.g., 2026-06-30 uses 2026-06-23 rankings if not cached).
 
-        NOTE: Cache strategy_id does not include skip_months, so it only applies to skip_months=0.
-        For skip_months > 0 (J&T 1-month skip), disable cache to avoid incorrect hits.
+        NOTE: For skip_months > 0 (J&T 1-month skip), query cache at a shifted date.
+        J&T: on date X with skip_months=1, use rankings computed 1 month ago (date X-21d).
+        Those rankings already exist in cache from R0.
         """
+        # Adjust query date for skip_months: shift backward by skip period
+        query_date = as_of_date
         if self.skip_months > 0:
-            logger.info(f"⚠️  Cache disabled for skip_months={self.skip_months} (J&T skip-month logic requires live computation)")
-            return None
+            skip_days = self.skip_months * 21  # ~21 trading days per month
+            if isinstance(as_of_date, str):
+                from datetime import datetime, timedelta
+                query_date = (datetime.strptime(as_of_date, "%Y-%m-%d") - timedelta(days=skip_days)).strftime("%Y-%m-%d")
+            else:
+                from datetime import timedelta
+                query_date = as_of_date - timedelta(days=skip_days)
+            logger.info(f"[CACHE J&T] skip_months={self.skip_months} → querying for {query_date} (shifted from {as_of_date})")
 
-        logger.info(f"[CACHE] Lookup called for {as_of_date}, band_id={self.rank_band_id}, conn={self._cache_conn is not None}")
+        logger.info(f"[CACHE] Lookup called for {query_date}, band_id={self.rank_band_id}, conn={self._cache_conn is not None}")
         if not self._cache_conn or self.rank_band_id is None:
             if self.rank_band_id is None:
                 logger.info("⚠️  Cache disabled: rank_band_id is None")
@@ -607,7 +616,8 @@ class MomentumAdapter:
         try:
             from features.momentum_universe import RANK_BANDS
 
-            date_str = as_of_date if isinstance(as_of_date, str) else as_of_date.isoformat()
+            # Use query_date (which may be shifted for skip_months) for cache lookups
+            query_date_str = query_date if isinstance(query_date, str) else query_date.isoformat() if hasattr(query_date, 'isoformat') else str(query_date)
 
             # Map rank_band_id to M-band and rank range
             band_info = next((b for b in RANK_BANDS if b[0] == self.rank_band_id), None)
@@ -632,28 +642,28 @@ class MomentumAdapter:
                 query = f"""
                     SELECT ticker, momentum_return
                     FROM momentum_rankings
-                    WHERE date = '{date_str}'
+                    WHERE date = '{query_date_str}'
                       AND strategy_id = '{strategy_id}'
                       AND momentum_return IS NOT NULL
                 """
 
                 result = self._cache_conn.execute(query).fetch_df()
                 if not result.empty:
-                    logger.info(f"🎯 CACHE HIT: {strategy_id} on {date_str} ({len(result)} tickers)")
+                    logger.info(f"🎯 CACHE HIT: {strategy_id} on {query_date_str} ({len(result)} tickers)")
                     break
             else:
                 # All rebalance cadences exhausted, try falling back to nearest prior date
                 fallback_to_prior_date = True
 
             if fallback_to_prior_date:
-                # Query for the most recent date <= as_of_date (cache may only have rebalance dates)
+                # Query for the most recent date <= query_date (cache may only have rebalance dates)
                 for rebalance_days in [21, 10, 5]:
                     strategy_id = f"momentum:M{band_id_m}_{rank_start}_{rank_end}_allrisk_lb{lookback_label}_{rebalance_days}d_top{self.top_n}"
 
                     query = f"""
                         SELECT ticker, momentum_return, date
                         FROM momentum_rankings
-                        WHERE date <= '{date_str}'
+                        WHERE date <= '{query_date_str}'
                           AND strategy_id = '{strategy_id}'
                           AND momentum_return IS NOT NULL
                         ORDER BY date DESC
@@ -663,11 +673,11 @@ class MomentumAdapter:
                     result = self._cache_conn.execute(query).fetch_df()
                     if result is not None and not result.empty:
                         fallback_date = str(result['date'].values[0]).split()[0]  # Extract date part
-                        logger.info(f"📦 CACHE FALLBACK: {strategy_id} from {fallback_date} (requested {date_str}, {len(result)} tickers)")
+                        logger.info(f"📦 CACHE FALLBACK: {strategy_id} from {fallback_date} (requested {query_date_str}, {len(result)} tickers)")
                         break
                 else:
                     # No data found even with fallback
-                    logger.info(f"❌ CACHE MISS: M{band_id_m} (lb{lookback_label}, top{self.top_n}) on {date_str} (no prior dates either)")
+                    logger.info(f"❌ CACHE MISS: M{band_id_m} (lb{lookback_label}, top{self.top_n}) on {query_date_str} (no prior dates either)")
                     return None
 
             # Filter to universe and return as Series indexed by ticker
