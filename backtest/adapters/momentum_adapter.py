@@ -374,9 +374,9 @@ class MomentumAdapter:
             try:
                 from config.settings import DUCKDB_PATH
                 self._cache_conn = duckdb.connect(str(DUCKDB_PATH), read_only=True)
-                logger.debug("Connected to momentum_rankings cache for fast lookups")
+                logger.info("✅ Connected to momentum_rankings cache (176M rows, 2009-2026) for ~100x speedup")
             except Exception as e:
-                logger.warning(f"Could not connect to momentum_rankings cache: {e}; will fall back to computing")
+                logger.warning(f"❌ Could not connect to momentum_rankings cache: {e}; will fall back to computing")
         # Shared equity history cache used by crash-aware, vol-target, and vol-scaling overlays
         self._equity_history: Optional[pd.Series] = None
         # Build rank_fn from rank_method if not explicitly provided
@@ -622,11 +622,11 @@ class MomentumAdapter:
 
                 result = self._cache_conn.execute(query).fetch_df()
                 if not result.empty:
-                    logger.debug(f"Cache hit: {strategy_id} on {date_str}")
+                    logger.info(f"🎯 CACHE HIT: {strategy_id} on {date_str} ({len(result)} tickers)")
                     break
             else:
                 # All rebalance cadences exhausted, cache miss
-                logger.debug(f"Cache miss for M{band_id_m} (lb{lookback_label}, top{self.top_n}) on {date_str} (tried 21d, 10d, 5d)")
+                logger.info(f"❌ CACHE MISS: M{band_id_m} (lb{lookback_label}, top{self.top_n}) on {date_str}")
                 return None
 
             # Filter to universe and return as Series indexed by ticker
@@ -639,7 +639,7 @@ class MomentumAdapter:
                 index=result_filtered['ticker'].values
             )
         except Exception as e:
-            logger.debug(f"Cache lookup failed for {as_of_date}: {e}; will compute momentum")
+            logger.info(f"❌ Cache lookup error for {as_of_date}: {e}; will compute momentum")
             return None
 
     def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
