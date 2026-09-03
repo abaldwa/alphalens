@@ -309,6 +309,7 @@ class MomentumAdapter:
         # same underlying bug.
         self.price_panel = price_panel.sort_index() if price_panel is not None else None
         self.top_n = top_n
+        self.lookback_months = lookback_months
         self.lookback_days = lookback_trading_days(lookback_months)
         self._sector_lookup = sector_lookup or {}
         self.volume_panel = volume_panel.sort_index() if volume_panel is not None else None
