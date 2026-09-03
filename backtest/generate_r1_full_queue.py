@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 
 BANDS = [2, 4, 7, 9, 10, 12]  # rank_band_id (M2-M12)
 LOOKBACK_MONTHS = [3, 6, 9, 12]  # J&T spec
+SKIP_MONTHS = 1  # Jegadeesh & Titman 1993: skip 1 month to avoid short-term reversal
 REBALANCE_CADENCE_DAYS = [5, 10, 21]  # 5-day, 10-day, 21-day (monthly)
 TOP_N_VALUES = [7, 10, 15]  # position sizes
 
@@ -37,6 +38,7 @@ def build_jobs() -> List[Dict[str, Any]]:
                         "rank_band_id": band_id,
                         "top_n": top_n,
                         "lookback_months": lookback_months,
+                        "skip_months": SKIP_MONTHS,
                         "rebalance_cadence_days": rebalance_days,
                         "strategy_family": "R",
                         "capital_mode": "lump",
@@ -55,17 +57,18 @@ def main() -> None:
     jobs = build_jobs()
     payload = {
         "_description": (
-            "R1 (Jegadeesh & Titman 1993 momentum) — Full Campaign: "
-            "3/6/9/12-month lookbacks × M2/M4/M7/M9/M10/M12 bands × "
+            "R1 (Jegadeesh & Titman 1993 momentum with 1-month skip) — Full Campaign: "
+            "3/6/9/12-month lookbacks with 1-month skip × M2/M4/M7/M9/M10/M12 bands × "
             "5d/10d/21d rebalance × top-7/10/15 positions. "
             "2009-2026 full cycle. 216 jobs. With momentum_rankings cache: ~1.5-2hr runtime."
         ),
         "_metadata": {
-            "strategy": "R1 (Jagdish)",
+            "strategy": "R1 (Jegadeesh & Titman 1993 momentum)",
             "phase": "Full Campaign",
             "total_jobs": len(jobs),
             "bands": BANDS,
             "lookback_months": LOOKBACK_MONTHS,
+            "skip_months": SKIP_MONTHS,
             "rebalance_cadences_days": REBALANCE_CADENCE_DAYS,
             "top_n_values": TOP_N_VALUES,
             "backtest_period": f"{START_DATE}:{END_DATE}",
