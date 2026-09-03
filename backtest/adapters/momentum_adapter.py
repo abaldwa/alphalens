@@ -72,6 +72,12 @@ from features.momentum_strategy import (
     rank_constituents_within_sectors,
 )
 
+try:
+    import duckdb
+    _DUCKDB_AVAILABLE = True
+except ImportError:
+    _DUCKDB_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -362,6 +368,15 @@ class MomentumAdapter:
         self._regime_cache: Dict[date_type, str] = {}  # Cache detected regimes
         if regime_switching_enabled and rank_band_id is not None:
             self._init_regime_detector()
+        # Momentum rankings cache connection (176M pre-computed rankings)
+        self._cache_conn: Optional[Any] = None
+        if _DUCKDB_AVAILABLE:
+            try:
+                from config.settings import DUCKDB_PATH
+                self._cache_conn = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+                logger.debug("Connected to momentum_rankings cache for fast lookups")
+            except Exception as e:
+                logger.warning(f"Could not connect to momentum_rankings cache: {e}; will fall back to computing")
         # Shared equity history cache used by crash-aware, vol-target, and vol-scaling overlays
         self._equity_history: Optional[pd.Series] = None
         # Build rank_fn from rank_method if not explicitly provided
@@ -567,6 +582,66 @@ class MomentumAdapter:
             self.rank_start, self.yearly_rank_lookup,
         )
 
+    def _get_cached_momentum_rankings(self, universe: List[str], as_of_date: date_type) -> Optional[pd.Series]:
+        """Query pre-computed momentum_rankings cache (176M rows) for this date/band/lookback combo.
+        Returns pd.Series(ticker -> momentum_return) if found; None to fall back to computing.
+        Cache is keyed by: date, strategy_id (momentum:{M}_{rank_start}_{rank_end}_allrisk_lb{lookback}_{rebalance}d_top{topn}).
+        """
+        if not self._cache_conn or self.rank_band_id is None:
+            return None
+
+        try:
+            from features.momentum_universe import RANK_BANDS
+
+            date_str = as_of_date if isinstance(as_of_date, str) else as_of_date.isoformat()
+
+            # Map rank_band_id to M-band and rank range
+            band_info = next((b for b in RANK_BANDS if b[0] == self.rank_band_id), None)
+            if not band_info:
+                return None
+
+            band_id_m, rank_start, rank_end = band_info
+
+            # Construct strategy_id in the format: momentum:M{band}_{rank_start}_{rank_end}_allrisk_lb{lookback}_{rebalance}d_top{topn}
+            # Example: momentum:M2_1_75_allrisk_lb12mo_21d_top15
+            # Note: rebalance_days is not known to the adapter, so try common cadences (21d, 10d, 5d)
+            lookback_label = f"{self.lookback_months}mo"
+
+            # Try rebalance cadences in order (21d most common for monthly rebalance)
+            for rebalance_days in [21, 10, 5]:
+                strategy_id = f"momentum:M{band_id_m}_{rank_start}_{rank_end}_allrisk_lb{lookback_label}_{rebalance_days}d_top{self.top_n}"
+
+                # Query: fetch rankings for this exact date + strategy_id combination
+                query = f"""
+                    SELECT ticker, momentum_return
+                    FROM momentum_rankings
+                    WHERE date = '{date_str}'
+                      AND strategy_id = '{strategy_id}'
+                      AND momentum_return IS NOT NULL
+                """
+
+                result = self._cache_conn.execute(query).fetch_df()
+                if not result.empty:
+                    logger.debug(f"Cache hit: {strategy_id} on {date_str}")
+                    break
+            else:
+                # All rebalance cadences exhausted, cache miss
+                logger.debug(f"Cache miss for M{band_id_m} (lb{lookback_label}, top{self.top_n}) on {date_str} (tried 21d, 10d, 5d)")
+                return None
+
+            # Filter to universe and return as Series indexed by ticker
+            result_filtered = result[result['ticker'].isin(universe)]
+            if result_filtered.empty:
+                return None
+
+            return pd.Series(
+                result_filtered['momentum_return'].values,
+                index=result_filtered['ticker'].values
+            )
+        except Exception as e:
+            logger.debug(f"Cache lookup failed for {as_of_date}: {e}; will compute momentum")
+            return None
+
     def generate_signals(self, universe: List[str], as_of_date: date_type, horizon_bucket: HorizonBucket) -> List[Signal]:
         # Sticky-promotion (Phase 3): extend the ranking pool BEFORE
         # momentum is computed, so a promoted holding's score is real and
@@ -579,8 +654,12 @@ class MomentumAdapter:
         # [ML40] One ranking implementation, shared with MomentumBacktester.
         # [Phase 0] Support custom rank functions (rank_fn) for R-family strategies.
         # [Phase 2] Use skip_months to wire Jegadeesh-Titman variants (e.g., 12-7, 6-2).
-        rank_fn = self.rank_fn or rank_fn_for_skip_months(self.skip_months)
-        momentum = rank_universe(self.price_panel, universe, as_of_date, self.lookback_days, rank_fn=rank_fn)
+        # [Optimization] Try cache lookup first (176M pre-computed rankings): ~100x speedup
+        momentum = self._get_cached_momentum_rankings(universe, as_of_date)
+        if momentum is None:
+            # Cache miss or unavailable: compute from scratch
+            rank_fn = self.rank_fn or rank_fn_for_skip_months(self.skip_months)
+            momentum = rank_universe(self.price_panel, universe, as_of_date, self.lookback_days, rank_fn=rank_fn)
         self._last_momentum = momentum
         if momentum.empty:
             # No fabricated ranking when there isn't enough real history yet
