@@ -1033,15 +1033,18 @@ def multi_signal_ensemble(
     if price_panel.empty or not universe:
         return pd.Series(dtype=float)
 
+    # Normalize as_of_date to string for downstream functions
+    as_of_date_str = as_of_date if isinstance(as_of_date, str) else as_of_date.isoformat() if hasattr(as_of_date, 'isoformat') else str(as_of_date)
+
     # Component 1: Trailing momentum (12-month, ~252 trading days).
     # Higher return = higher score (trending up = buy signal).
     momentum_12m = trailing_momentum_from_panel(
-        price_panel, universe, as_of_date, lookback_days=252
+        price_panel, universe, as_of_date_str, lookback_days=252
     )
 
     # Component 2: Pct of 52-week high.
     # Higher pct = higher score (near peak = momentum strength).
-    pct_52wk = pct_of_52wk_high(price_panel, universe, as_of_date, lookback_days=252)
+    pct_52wk = pct_of_52wk_high(price_panel, universe, as_of_date_str, lookback_days=252)
 
     # Component 3: Bollinger Band position, inverted.
     # Original: 0 = lower band (oversold, good for mean-reversion),

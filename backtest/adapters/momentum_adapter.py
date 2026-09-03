@@ -365,7 +365,7 @@ class MomentumAdapter:
         self.rank_band_id = rank_band_id
         self.select_lowest = select_lowest
         self.benchmark_equity = benchmark_equity.sort_index() if benchmark_equity is not None else None
-        self._regime_detector: Optional[object] = None  # EnsembleRegimeDetector (deferred import)
+        self._regime_detector: Optional[Any] = None  # EnsembleRegimeDetector (deferred import from backtest.core.regime_detection)
         self._regime_cache: Dict[date_type, str] = {}  # Cache detected regimes
         if regime_switching_enabled and rank_band_id is not None:
             self._init_regime_detector()
@@ -590,7 +590,14 @@ class MomentumAdapter:
 
         Cache only stores rankings for rebalance dates. Non-rebalance dates fall back to the
         nearest prior rebalance date (e.g., 2026-06-30 uses 2026-06-23 rankings if not cached).
+
+        NOTE: Cache strategy_id does not include skip_months, so it only applies to skip_months=0.
+        For skip_months > 0 (J&T 1-month skip), disable cache to avoid incorrect hits.
         """
+        if self.skip_months > 0:
+            logger.info(f"⚠️  Cache disabled for skip_months={self.skip_months} (J&T skip-month logic requires live computation)")
+            return None
+
         logger.info(f"[CACHE] Lookup called for {as_of_date}, band_id={self.rank_band_id}, conn={self._cache_conn is not None}")
         if not self._cache_conn or self.rank_band_id is None:
             if self.rank_band_id is None:
@@ -935,6 +942,8 @@ class MomentumAdapter:
 
     def _get_market_cap_band_name(self) -> Optional[str]:
         """Map rank_band_id to market cap band name."""
+        if self.rank_band_id is None:
+            return None
         band_mapping = {
             1: "nifty_50",
             2: "nifty_next_50",
@@ -998,7 +1007,7 @@ class MomentumAdapter:
             return 1.0
 
         # B-027: Determine vol_scaling_mode based on regime if enabled
-        active_mode = self.vol_scaling_mode
+        active_mode: Optional[str] = self.vol_scaling_mode
         regime = "Choppy"
         if self.regime_switching_enabled:
             regime = self._detect_regime(as_of_date)
@@ -1006,6 +1015,9 @@ class MomentumAdapter:
             if active_mode is None:
                 return 1.0
             logger.info(f"B-027: {as_of_date} regime={regime} → mode={active_mode}")
+
+        if active_mode is None:
+            return 1.0
 
         try:
             from features.volatility_scaling import VOL_SCALING_DISPATCH
