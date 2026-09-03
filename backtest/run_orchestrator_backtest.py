@@ -444,6 +444,38 @@ def _momentum_rank_band_wiring(
         }
 
 
+def _fetch_crash_benchmark_equity(
+    start_date: date_type, end_date: date_type, index_name: str = "Nifty 500",
+) -> Optional[pd.Series]:
+    """[Phase 7 fix, 2026-09-02] Real Nifty 500 close-price series for
+    MomentumAdapter's crash_regime_detector, read from index_ohlcv the same
+    way ta_comparison_report.benchmark_cagr() and
+    BacktestOrchestrator._build_benchmark_curve() do. Returns None (never a
+    synthetic/interpolated stand-in) on any lookup failure or insufficient
+    rows -- the adapter's crash detector already treats None as "detection
+    disabled, never block a buy on missing data" (see _is_crash_regime_today's
+    fallback to self._equity_history, which itself no-ops on empty input).
+    Called once per job, not memoized -- 216 jobs each pay one extra
+    read-only query against a table this size; not worth the cache-invalidation
+    complexity of a cross-job memo for a Phase B-scoped fix.
+    """
+    try:
+        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+            rows = conn.execute(
+                "SELECT date, close FROM index_ohlcv WHERE index_name = ? AND date BETWEEN ? AND ? AND close > 0 ORDER BY date",
+                [index_name, start_date, end_date],
+            ).fetchall()
+    except Exception:
+        logger.warning("crash-regime benchmark lookup failed; crash detection will no-op", exc_info=True)
+        return None
+    if len(rows) < 2:
+        return None
+    return pd.Series(
+        [float(close) for _, close in rows],
+        index=pd.DatetimeIndex([pd.Timestamp(d) for d, _ in rows]),
+    )
+
+
 def _build_pit_adtv_panel(ohlcv: pd.DataFrame, lookback: int) -> pd.DataFrame:
     """(date x ticker) trailing-mean turnover, SHIFTED so each date carries
     only bars strictly before it.
@@ -606,6 +638,7 @@ def _momentum_descriptor(
     strategy_family: str = "M",
     volatility_measure: str = "daily_return_stddev",
     crash_regime_enabled: bool = False,
+    select_lowest: bool = False,
     crash_drawdown_threshold: float = -0.15,
     crash_vol_percentile_threshold: float = 0.75,
     crash_vol_lookback_days: int = 20,
@@ -1029,6 +1062,7 @@ def _run_immediate(
     combo_templates: Optional[List[str]] = None, precomputed_matches_dir: Optional[Any] = None,
     prefetch_feature_parquets: bool = False, rank_band_id: Optional[int] = None, ohlcv_snapshot_dir: Optional[Any] = None,
     crash_regime_enabled: bool = False, crash_drawdown_threshold: float = -0.15,
+    select_lowest: bool = False,
     crash_vol_percentile_threshold: float = 0.75, crash_vol_lookback_days: int = 20,
     crash_disable_buys: bool = True, crash_reduce_sizing: Optional[float] = None,
     vol_target_enabled: bool = False, vol_target_pct: float = 0.15,
@@ -1209,6 +1243,12 @@ def _run_immediate(
             # B-027: regime_switching_enabled defaults to False (regime-based mode
             # selection disabled by default for vol-scaling strategies).
             regime_switching_enabled = False
+            # [Phase 7 fix] Real market-index series for crash detection,
+            # None (and therefore a no-op fetch) unless the overlay is on.
+            _crash_benchmark_equity = (
+                _fetch_crash_benchmark_equity(start_date, end_date)
+                if crash_regime_enabled else None
+            )
             adapter = MomentumAdapter(
                 price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
                 top_n=top_n, lookback_months=lookback_months,
@@ -1232,6 +1272,8 @@ def _run_immediate(
                 volatility_measure=volatility_measure,
                 # Phase 7: crash-aware overlay (all default-off for M-family compatibility).
                 crash_regime_enabled=crash_regime_enabled,
+                select_lowest=select_lowest,
+                benchmark_equity=_crash_benchmark_equity,
                 drawdown_threshold=crash_drawdown_threshold,
                 vol_percentile_threshold=crash_vol_percentile_threshold,
                 vol_lookback_days=crash_vol_lookback_days,
@@ -1280,6 +1322,7 @@ def _run_immediate(
                 "volatility_measure": volatility_measure,
                 "top_sectors": top_sectors,
                 "crash_regime_enabled": crash_regime_enabled,
+                "select_lowest": select_lowest,
                 "crash_drawdown_threshold": crash_drawdown_threshold,
                 "crash_vol_percentile_threshold": crash_vol_percentile_threshold,
                 "crash_vol_lookback_days": crash_vol_lookback_days,
@@ -1443,6 +1486,7 @@ def _run_deferred(
     combo_templates: Optional[List[str]] = None, precomputed_matches_dir: Optional[Any] = None,
     prefetch_feature_parquets: bool = False, rank_band_id: Optional[int] = None, ohlcv_snapshot_dir: Optional[Any] = None,
     crash_regime_enabled: bool = False, crash_drawdown_threshold: float = -0.15,
+    select_lowest: bool = False,
     crash_vol_percentile_threshold: float = 0.75, crash_vol_lookback_days: int = 20,
     crash_disable_buys: bool = True, crash_reduce_sizing: Optional[float] = None,
     vol_target_enabled: bool = False, vol_target_pct: float = 0.15,
@@ -1584,6 +1628,12 @@ def _run_deferred(
         # B-027: regime_switching_enabled defaults to False (regime-based mode
         # selection disabled by default for vol-scaling strategies).
         regime_switching_enabled = False
+        # [Phase 7 fix] Real market-index series for crash detection,
+        # None (and therefore a no-op fetch) unless the overlay is on.
+        _crash_benchmark_equity = (
+            _fetch_crash_benchmark_equity(start_date, end_date)
+            if crash_regime_enabled else None
+        )
         adapter = MomentumAdapter(
             price_panel=_price_panel_for_adtv, volume_panel=_volume_panel_for_adtv,
             top_n=top_n, lookback_months=lookback_months,
@@ -1606,6 +1656,8 @@ def _run_deferred(
             volatility_measure=volatility_measure,
             # Phase 7: crash-aware overlay (all default-off for M-family compatibility).
             crash_regime_enabled=crash_regime_enabled,
+            select_lowest=select_lowest,
+            benchmark_equity=_crash_benchmark_equity,
             drawdown_threshold=crash_drawdown_threshold,
             vol_percentile_threshold=crash_vol_percentile_threshold,
             vol_lookback_days=crash_vol_lookback_days,
@@ -1650,6 +1702,7 @@ def _run_deferred(
             "volatility_measure": volatility_measure,
             "top_sectors": top_sectors,
             "crash_regime_enabled": crash_regime_enabled,
+            "select_lowest": select_lowest,
             "crash_drawdown_threshold": crash_drawdown_threshold,
             "crash_vol_percentile_threshold": crash_vol_percentile_threshold,
             "crash_vol_lookback_days": crash_vol_lookback_days,
@@ -1803,6 +1856,7 @@ def run_orchestrator_backtest(
     lookback_months: int = 6, rank_method: str = "trailing_return", skip_months: int = 0,
     top_sectors: int = 5, strategy_family: str = "M", volatility_measure: str = "daily_return_stddev",
     crash_regime_enabled: bool = False,
+    select_lowest: bool = False,
     crash_drawdown_threshold: float = -0.15,
     crash_vol_percentile_threshold: float = 0.75,
     crash_vol_lookback_days: int = 20,
@@ -1985,6 +2039,7 @@ def run_orchestrator_backtest(
             volatility_measure=volatility_measure,
             # Phase 7: crash-aware overlay params for identity string.
             crash_regime_enabled=crash_regime_enabled,
+            select_lowest=select_lowest,
             crash_drawdown_threshold=crash_drawdown_threshold,
             crash_vol_percentile_threshold=crash_vol_percentile_threshold,
             crash_vol_lookback_days=crash_vol_lookback_days,
@@ -2060,6 +2115,7 @@ def run_orchestrator_backtest(
         combo_templates=combo_templates, precomputed_matches_dir=precomputed_matches_dir,
         prefetch_feature_parquets=prefetch_feature_parquets, rank_band_id=rank_band_id, ohlcv_snapshot_dir=ohlcv_snapshot_dir,
         crash_regime_enabled=crash_regime_enabled, crash_drawdown_threshold=crash_drawdown_threshold,
+        select_lowest=select_lowest,
         crash_vol_percentile_threshold=crash_vol_percentile_threshold, crash_vol_lookback_days=crash_vol_lookback_days,
         crash_disable_buys=crash_disable_buys, crash_reduce_sizing=crash_reduce_sizing,
         vol_target_enabled=vol_target_enabled, vol_target_pct=vol_target_pct,
@@ -2364,13 +2420,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rank-method", type=str, default="trailing_return",
-        choices=["trailing_return", "pct_of_52wk_high", "risk_adjusted_composite", "industry_momentum", "trailing_reversal_1mo", "equal_weight", "jt_momentum", "bollinger_mean_reversion"],
+        choices=["trailing_return", "pct_of_52wk_high", "risk_adjusted_composite", "industry_momentum", "trailing_reversal_1mo", "equal_weight", "jt_momentum", "bollinger_mean_reversion", "multi_signal_ensemble"],
         help=(
             "momentum channel only: ranking signal to use. 'trailing_return' (default) "
             "is the canonical momentum score. Other methods enable R-family strategies: "
             "'pct_of_52wk_high' for 52-week-high momentum, 'risk_adjusted_composite' for the "
             "volatility-adjusted composite, 'industry_momentum' for sector momentum, 'equal_weight' for "
-            "equal-weight baseline, 'jt_momentum' for jittered momentum signal (R1)."
+            "equal-weight baseline, 'jt_momentum' for jittered momentum signal (R1), 'bollinger_mean_reversion' "
+            "for Bollinger Band mean-reversion (R13), 'multi_signal_ensemble' for ensemble of momentum + "
+            "technical + mean-reversion signals (R12)."
         ),
     )
     parser.add_argument(
@@ -2405,6 +2463,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "momentum channel only (Phase 7, R7): enable crash-aware overlay (Daniel-Moskowitz). "
             "When enabled, buying is disabled or sizing is reduced during market crash regimes "
             "(drawdown + elevated volatility). Default disabled."
+        ),
+    )
+    parser.add_argument(
+        "--select-lowest", action="store_true",
+        help=(
+            "momentum channel only (R11): select the LOWEST-scoring names instead of the "
+            "highest. For rank_method=pct_of_52wk_high, this turns the 52wk-high proximity "
+            "score into a mean-reversion signal (buys stocks FAR from their 52wk high) instead "
+            "of R5's momentum signal (buys stocks NEAR their 52wk high) -- same rank_method, "
+            "opposite selection direction. Default disabled (R5's original highest-wins behavior)."
         ),
     )
     parser.add_argument(
@@ -2577,6 +2645,7 @@ def main() -> None:
         rank_method=args.rank_method, skip_months=args.skip_months, top_sectors=args.top_sectors, strategy_family=args.strategy_family,
         volatility_measure=args.volatility_measure,
         crash_regime_enabled=args.crash_regime_enabled,
+        select_lowest=args.select_lowest,
         crash_drawdown_threshold=args.crash_drawdown_threshold,
         crash_vol_percentile_threshold=args.crash_vol_percentile_threshold,
         crash_vol_lookback_days=args.crash_vol_lookback_days,

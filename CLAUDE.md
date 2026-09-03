@@ -154,6 +154,28 @@ AlphaLens is a quantitative trading system for the Indian equity market. It inge
 
 ---
 
+## R-Family Strategy Architecture
+
+**Implemented strategies (rank_method in code, matched to R-numbering):**
+
+| R | Strategy | Rank Method | Description | Status |
+|---|----------|-------------|-------------|--------|
+| R5 | 52-Week-High Momentum | `pct_of_52wk_high` | Trend continuation: scores stocks by proximity to 52-week high; highest scores win (winners). George & Hwang 2004. | **Validated Phase 3; failed gate on small-caps (501-800 band)** |
+| R7 | Crash-Aware Overlay | `trailing_return` + crash regime | Momentum with crash detection: reduces exposure during VIX-flagged downturns; 21-day rebalance cadence. | Validated Phase 7 |
+| R8 | Vol-Scaling (BSC) | `trailing_return` + Barroso-Santa-Clara vol-scaling | Momentum with vol normalization: scales position sizes by recent volatility regime. | Validated Phase 8 |
+| R9 | Vol-Scaling (Moreira-Muir) | `trailing_return` + Moreira-Muir 4-mode vol-scaling | **Default strategy.** Momentum with adaptive vol-scaling across 4 regimes (low/medium/high/crisis). | Validated Phase 9; **Phase A in progress** |
+| R10 | Sector Momentum | `industry_momentum` | Sector-level momentum ranking (Nigam-Pandey style): ranks industries by 6-month trailing returns; skip 1-month for momentum. | Implemented Phase 4; not yet validated in Phase A |
+| R11 | 52-Week-High Reversal | `pct_of_52wk_high` (inverted) | Mean-reversion: scores stocks by proximity to 52-week high; **lowest scores win** (oversold, far from peak). George & Hwang 2004. B-029 documented. | Implemented Phase 4; not yet validated in Phase A |
+| R12 | Multi-Signal Ensemble | `multi_signal_ensemble` | Blends 3 signals with equal weight: 12-month trailing momentum + pct_of_52wk_high (technical) + inverted Bollinger position (mean-reversion). Percentile normalization. | **Implemented; unit-tested; backtest validation pending** |
+| R13 | Bollinger Band Reversal | `bollinger_mean_reversion` | Mean-reversion: buys on oversold (lower Bollinger band), reduces on overbought (upper band). George & Hwang 2004. | Implemented; not yet validated in Phase A |
+
+**Validation gates per Phase:**
+- **Phase A (R5+R9, 144 jobs):** In progress
+- **Phase B (R7+R8+R10+R11+R13, 1,080 jobs):** Queued; verifies alternative strategies and vol-scaling approaches
+- **Phase C (all 7 strategies, 1,512 jobs):** Will launch after Phase B; full comparative coverage
+
+---
+
 ## Common Commands & Workflows
 
 ### Data & Ingestion

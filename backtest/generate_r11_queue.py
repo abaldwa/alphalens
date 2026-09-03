@@ -46,6 +46,10 @@ def build_jobs() -> List[Dict[str, Any]]:
             "min_history_days": 60,
             "exit_variant": "baseline",
             "rank_method": "pct_of_52wk_high",
+            "select_lowest": True,  # R11 fix: select LOWEST proximity-to-52wk-high
+            # (oldest B-029 intent implemented via reversal_selector.py, which was
+            # never wired into the live path -- this queue field + adapter flag is
+            # the actual fix. Without it, R11 silently duplicated R5's selection.)
             "defer_db_writes": True,
         }
         jobs.append(job)

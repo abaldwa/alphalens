@@ -51,6 +51,7 @@ backtest/core/engine.py's run() loop).
 """
 
 import logging
+import math
 from datetime import date as date_type
 from typing import Any, Dict, List, Optional, Set
 
@@ -128,6 +129,26 @@ class MomentumAdapter:
         # B-027: Regime-switching for vol-scaling strategies
         regime_switching_enabled: bool = False,
         rank_band_id: Optional[int] = None,
+        # R11 fix: reversal strategies (e.g. pct_of_52wk_high used as
+        # "far from 52wk high" mean-reversion, not "near it" momentum)
+        # need the LOWEST-scoring names, not the highest. Distinct from
+        # rank_method because R5 and R11 share rank_method="pct_of_52wk_high"
+        # but want opposite selection directions (all default-off).
+        select_lowest: bool = False,
+        # [Phase 7 fix, 2026-09-02] Crash detection input source. The
+        # original crash_regime_detector() call fed self._equity_history —
+        # THIS strategy's own portfolio equity — which is self-referential:
+        # a date can only be flagged "crash" after this specific concentrated
+        # basket has already lost >= |drawdown_threshold|, so the overlay
+        # cannot prevent the loss that triggers it, and on a noisy/idiosyncratic
+        # book it can trigger on strategy-specific whipsaws that aren't real
+        # market crashes at all. benchmark_equity is a real market index level
+        # series (e.g. Nifty 500 close, fetched once by the caller) used
+        # instead — crash regime is now a genuine market-wide signal,
+        # independent of how this particular basket is doing. None (default)
+        # falls back to the old self-referential behavior for backward
+        # compatibility with any caller that doesn't pass one.
+        benchmark_equity: Optional[pd.Series] = None,
     ) -> None:
         """
         price_panel : wide DataFrame (date index, ticker columns, close
@@ -335,7 +356,9 @@ class MomentumAdapter:
         # B-027: Regime-switching for vol-scaling strategies (all default-off).
         self.regime_switching_enabled = regime_switching_enabled
         self.rank_band_id = rank_band_id
-        self._regime_detector: Optional[EnsembleRegimeDetector] = None
+        self.select_lowest = select_lowest
+        self.benchmark_equity = benchmark_equity.sort_index() if benchmark_equity is not None else None
+        self._regime_detector: Optional[object] = None  # EnsembleRegimeDetector (deferred import)
         self._regime_cache: Dict[date_type, str] = {}  # Cache detected regimes
         if regime_switching_enabled and rank_band_id is not None:
             self._init_regime_detector()
@@ -363,6 +386,15 @@ class MomentumAdapter:
                 # Bollinger Band uses 20-day default lookback, ignoring passed lookback_days for BB window
                 return bollinger_mean_reversion(price_panel, universe, date_str, lookback_days=20)
             rank_fn = _rank_fn_bollinger
+        elif rank_fn is None and rank_method == "multi_signal_ensemble":
+            from features.momentum_signal import multi_signal_ensemble
+
+            def _rank_fn_ensemble(price_panel: pd.DataFrame, universe: List[str], date: date_type, lookback_days: int) -> pd.Series:
+                date_str = date if isinstance(date, str) else date.isoformat()
+                # Multi-signal ensemble: blend momentum, pct_52wk_high, and inverted Bollinger
+                # Uses 252-day (12-month) lookback for momentum and pct_52wk_high
+                return multi_signal_ensemble(price_panel, universe, date_str, lookback_days=252)
+            rank_fn = _rank_fn_ensemble
         elif rank_fn is None and rank_method == "risk_adjusted_composite":
             from features.momentum_signal import risk_adjusted_momentum_score
 
@@ -567,7 +599,7 @@ class MomentumAdapter:
         # BUY side: the filtered pool. Every entry filter is buy-side only.
         pool = self._selection_pool(momentum, as_of_date)
         target = (
-            set(pool.sort_values(ascending=False).head(self.top_n).index)
+            set(pool.sort_values(ascending=self.select_lowest).head(self.top_n).index)
             if not pool.empty else set()
         )
 
@@ -578,7 +610,7 @@ class MomentumAdapter:
         # sells off the filtered pool would turn every entry filter into an
         # exit rule nobody asked for.
         keep = (
-            set(momentum.sort_values(ascending=False).head(self.top_n).index)
+            set(momentum.sort_values(ascending=self.select_lowest).head(self.top_n).index)
             if not momentum.empty else set()
         )
 
@@ -600,6 +632,22 @@ class MomentumAdapter:
         in_crash_regime = self._is_crash_regime_today(as_of_date)
         if in_crash_regime and self.crash_disable_buys:
             buys_disabled = True
+        # [Phase 7 fix, 2026-09-02] Force partial de-risking of EXISTING
+        # holdings during crash regime, not just buy-disable. The prior
+        # behavior only ever affected fresh buys (see new_entrants below) --
+        # already-held names rode out the full crash regardless, which is
+        # why R7 could produce a WORSE max drawdown than plain momentum:
+        # all the downside stayed in the book, none of the recovery upside
+        # was bought back. Trim `keep` itself to the top crash_reduce_sizing
+        # fraction (by raw momentum) of currently-held names; the rest fall
+        # through the normal sell path below like any other rotated-out name.
+        if in_crash_regime and self.crash_reduce_sizing is not None and not momentum.empty:
+            held_and_kept = [t for t in keep if t in self._held]
+            n_keep = math.floor(len(held_and_kept) * self.crash_reduce_sizing)
+            if n_keep < len(held_and_kept):
+                held_momentum = momentum.reindex(held_and_kept).dropna().sort_values(ascending=self.select_lowest)
+                trimmed_out = set(held_momentum.index[n_keep:])
+                keep = keep - trimmed_out
         signals: List[Signal] = []
         new_held: Set[str] = set()
 
@@ -701,12 +749,21 @@ class MomentumAdapter:
         """
         Check if today is a crash regime day (drawdown + elevated vol).
         Returns False if crash detection is disabled or insufficient data.
+
+        [Phase 7 fix, 2026-09-02] Uses benchmark_equity (a real market index
+        level series, e.g. Nifty 500) when supplied -- crash regime is a
+        market-wide signal, not this basket's own P&L. Falls back to
+        self._equity_history (the old self-referential behavior) only if no
+        benchmark_equity was supplied, for backward compatibility.
         """
-        if not self.crash_regime_enabled or self._equity_history is None or self._equity_history.empty:
+        if not self.crash_regime_enabled:
+            return False
+        crash_input = self.benchmark_equity if self.benchmark_equity is not None else self._equity_history
+        if crash_input is None or crash_input.empty:
             return False
         try:
             crash_series = crash_regime_detector(
-                self._equity_history,
+                crash_input,
                 drawdown_threshold=self.drawdown_threshold,
                 vol_percentile_threshold=self.vol_percentile_threshold,
                 vol_lookback_days=self.vol_lookback_days,
@@ -749,8 +806,13 @@ class MomentumAdapter:
                 logger.warning(f"B-027: Unknown rank_band_id {self.rank_band_id}, regime switching disabled")
                 self.regime_switching_enabled = False
                 return
-            self._regime_detector = EnsembleRegimeDetector(market_cap_band)
-            logger.info(f"B-027: Initialized ensemble regime detector for {market_cap_band} (band {self.rank_band_id})")
+            try:
+                from backtest.core.regime_detection import EnsembleRegimeDetector as _EnsembleRegimeDetector
+                self._regime_detector = _EnsembleRegimeDetector(market_cap_band)
+                logger.info(f"B-027: Initialized ensemble regime detector for {market_cap_band} (band {self.rank_band_id})")
+            except ImportError:
+                logger.warning("EnsembleRegimeDetector not available; regime switching disabled")
+                self.regime_switching_enabled = False
         except Exception as e:
             logger.error(f"B-027: Failed to initialize regime detector: {e}")
             self.regime_switching_enabled = False

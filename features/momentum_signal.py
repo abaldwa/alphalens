@@ -996,3 +996,108 @@ def bollinger_mean_reversion(
     bb_position = bb_position.fillna(0.5)
 
     return bb_position.astype(float)
+
+
+def multi_signal_ensemble(
+    price_panel: pd.DataFrame,
+    universe: List[str],
+    as_of_date: Union[str, date, pd.Timestamp],
+    lookback_days: int = 252,
+) -> pd.Series:
+    """
+    R12 Multi-Signal Ensemble: blends three independent signals into a
+    composite rank for mean-reversion-aware momentum.
+
+    Components (why each, not what it does):
+    - Trailing momentum (12-month): captures trend continuation, rewards
+      stocks in uptrends that have proven their strength over medium-term.
+    - Pct_of_52wk_high: technical proxy for momentum strength — stocks
+      trading near/above peaks have already won conviction battles with
+      sellers; inversely, can also signal mean-reversion extremes.
+    - Bollinger Band position inverted: captures oversold (lower band) and
+      overbought (upper band) extremes. Inverting it so lower-band stocks
+      (oversold, high mean-reversion potential) score high creates a
+      contrarian tilt within the ensemble.
+
+    Weights are equal (0.33 each) rather than adaptive, prioritizing
+    robustness over optimization: three independent signals reduce variance
+    through diversification, and adaptive weighting would require expensive
+    recent-performance lookback windows that add complexity without proven
+    gain on short-term R12 horizons.
+
+    Returns a normalized composite score (mean-reverting to 0.5) per ticker.
+    Missing signal data (insufficient history) is treated conservatively
+    by substituting the universe median for that signal, keeping the ticket
+    in the ranking pool rather than silently excluding it on one weak signal.
+    """
+    if price_panel.empty or not universe:
+        return pd.Series(dtype=float)
+
+    # Component 1: Trailing momentum (12-month, ~252 trading days).
+    # Higher return = higher score (trending up = buy signal).
+    momentum_12m = trailing_momentum_from_panel(
+        price_panel, universe, as_of_date, lookback_days=252
+    )
+
+    # Component 2: Pct of 52-week high.
+    # Higher pct = higher score (near peak = momentum strength).
+    pct_52wk = pct_of_52wk_high(price_panel, universe, as_of_date, lookback_days=252)
+
+    # Component 3: Bollinger Band position, inverted.
+    # Original: 0 = lower band (oversold, good for mean-reversion),
+    # 1 = upper band (overbought, bad for mean-reversion).
+    # Inverted: 1 = lower band, 0 = upper band (flip for consistent scoring).
+    # This creates a ~1/3-weight contrarian tilt within the ensemble.
+    bb_position = bollinger_mean_reversion(
+        price_panel, universe, as_of_date, lookback_days=20
+    )
+    bb_inverted = 1.0 - bb_position  # Invert so oversold = high score
+
+    # Normalize each signal independently to [0, 1] using percentile rank.
+    # This handles outliers and makes scale-different signals comparable.
+    def percentile_rank(series: pd.Series) -> pd.Series:
+        """Rank values as percentile [0, 1], handling ties and NaNs."""
+        if len(series) < 2 or series.isna().all():
+            return pd.Series(0.5, index=series.index)
+        ranked = series.rank(method="average", pct=True)
+        # Clip to [0, 1] in case of numeric precision
+        return ranked.clip(0, 1)
+
+    momentum_norm = percentile_rank(momentum_12m)
+    pct_52wk_norm = percentile_rank(pct_52wk)
+    bb_norm = percentile_rank(bb_inverted)
+
+    # Align indices: all signals may not have the same universe coverage.
+    # Create a frame with all three normalized signals, filling missing
+    # with the universe median for that signal (conservative; pulls extreme
+    # scores toward center rather than excluding tickets on weak coverage).
+    common_idx = sorted(set(momentum_norm.index) | set(pct_52wk_norm.index) | set(bb_norm.index))
+    aligned = pd.DataFrame({
+        "momentum_norm": momentum_norm,
+        "pct_52wk_norm": pct_52wk_norm,
+        "bb_norm": bb_norm,
+    }, index=common_idx)
+
+    # Fill missing values with median of each column (neutral-ish position).
+    # This keeps tickers in the ranking pool rather than silently dropping
+    # them when one signal lacks data. The median is more robust than mean
+    # for this purpose (less affected by outlier signals on partial data).
+    aligned = aligned.fillna(aligned.median())
+
+    # Composite score: equal-weighted average of normalized signals.
+    # No explicit vol-scaling here — that is orthogonal and handled by
+    # the adapter's vol_scaling_mode parameter if requested.
+    composite = aligned.mean(axis=1)
+
+    # Ensure all universe tickers are in the result, even those missing from
+    # all three signals (rare in well-tracked universes, but possible for
+    # newly-listing or delisting tickers). Assign them the universe median.
+    missing = [t for t in universe if t not in composite.index]
+    if missing:
+        median_score = composite.median()
+        composite = pd.concat([
+            composite,
+            pd.Series(median_score, index=missing)
+        ])
+
+    return composite[universe].astype(float)
