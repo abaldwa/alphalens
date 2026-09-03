@@ -586,6 +586,9 @@ class MomentumAdapter:
         """Query pre-computed momentum_rankings cache (176M rows) for this date/band/lookback combo.
         Returns pd.Series(ticker -> momentum_return) if found; None to fall back to computing.
         Cache is keyed by: date, strategy_id (momentum:{M}_{rank_start}_{rank_end}_allrisk_lb{lookback}_{rebalance}d_top{topn}).
+
+        Cache only stores rankings for rebalance dates. Non-rebalance dates fall back to the
+        nearest prior rebalance date (e.g., 2026-06-30 uses 2026-06-23 rankings if not cached).
         """
         if not self._cache_conn or self.rank_band_id is None:
             return None
@@ -607,6 +610,9 @@ class MomentumAdapter:
             # Note: rebalance_days is not known to the adapter, so try common cadences (21d, 10d, 5d)
             lookback_label = f"{self.lookback_months}mo"
 
+            result = None
+            fallback_to_prior_date = False
+
             # Try rebalance cadences in order (21d most common for monthly rebalance)
             for rebalance_days in [21, 10, 5]:
                 strategy_id = f"momentum:M{band_id_m}_{rank_start}_{rank_end}_allrisk_lb{lookback_label}_{rebalance_days}d_top{self.top_n}"
@@ -625,11 +631,38 @@ class MomentumAdapter:
                     logger.info(f"🎯 CACHE HIT: {strategy_id} on {date_str} ({len(result)} tickers)")
                     break
             else:
-                # All rebalance cadences exhausted, cache miss
-                logger.info(f"❌ CACHE MISS: M{band_id_m} (lb{lookback_label}, top{self.top_n}) on {date_str}")
-                return None
+                # All rebalance cadences exhausted, try falling back to nearest prior date
+                fallback_to_prior_date = True
+
+            if fallback_to_prior_date:
+                # Query for the most recent date <= as_of_date (cache may only have rebalance dates)
+                for rebalance_days in [21, 10, 5]:
+                    strategy_id = f"momentum:M{band_id_m}_{rank_start}_{rank_end}_allrisk_lb{lookback_label}_{rebalance_days}d_top{self.top_n}"
+
+                    query = f"""
+                        SELECT ticker, momentum_return, date
+                        FROM momentum_rankings
+                        WHERE date <= '{date_str}'
+                          AND strategy_id = '{strategy_id}'
+                          AND momentum_return IS NOT NULL
+                        ORDER BY date DESC
+                        LIMIT 1
+                    """
+
+                    result = self._cache_conn.execute(query).fetch_df()
+                    if result is not None and not result.empty:
+                        fallback_date = str(result['date'].values[0]).split()[0]  # Extract date part
+                        logger.info(f"📦 CACHE FALLBACK: {strategy_id} from {fallback_date} (requested {date_str}, {len(result)} tickers)")
+                        break
+                else:
+                    # No data found even with fallback
+                    logger.info(f"❌ CACHE MISS: M{band_id_m} (lb{lookback_label}, top{self.top_n}) on {date_str} (no prior dates either)")
+                    return None
 
             # Filter to universe and return as Series indexed by ticker
+            if result is None or result.empty:
+                return None
+
             result_filtered = result[result['ticker'].isin(universe)]
             if result_filtered.empty:
                 return None
