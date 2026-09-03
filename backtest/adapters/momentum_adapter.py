@@ -660,19 +660,30 @@ class MomentumAdapter:
                 for rebalance_days in [21, 10, 5]:
                     strategy_id = f"momentum:M{band_id_m}_{rank_start}_{rank_end}_allrisk_lb{lookback_label}_{rebalance_days}d_top{self.top_n}"
 
-                    query = f"""
-                        SELECT ticker, momentum_return, date
+                    # First: find the most recent date <= query_date
+                    date_query = f"""
+                        SELECT MAX(date) as latest_date
                         FROM momentum_rankings
                         WHERE date <= '{query_date_str}'
                           AND strategy_id = '{strategy_id}'
                           AND momentum_return IS NOT NULL
-                        ORDER BY date DESC
-                        LIMIT 1
                     """
+                    date_result = self._cache_conn.execute(date_query).fetch_df()
+                    if date_result is None or date_result.empty or date_result['latest_date'].values[0] is None:
+                        continue  # Try next rebalance_days
 
-                    result = self._cache_conn.execute(query).fetch_df()
+                    fallback_date = str(date_result['latest_date'].values[0]).split()[0]
+
+                    # Second: fetch ALL tickers for that date (not LIMIT 1!)
+                    ticker_query = f"""
+                        SELECT ticker, momentum_return
+                        FROM momentum_rankings
+                        WHERE date = '{fallback_date}'
+                          AND strategy_id = '{strategy_id}'
+                          AND momentum_return IS NOT NULL
+                    """
+                    result = self._cache_conn.execute(ticker_query).fetch_df()
                     if result is not None and not result.empty:
-                        fallback_date = str(result['date'].values[0]).split()[0]  # Extract date part
                         logger.info(f"📦 CACHE FALLBACK: {strategy_id} from {fallback_date} (requested {query_date_str}, {len(result)} tickers)")
                         break
                 else:
