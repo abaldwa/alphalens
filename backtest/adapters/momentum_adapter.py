@@ -591,7 +591,10 @@ class MomentumAdapter:
         Cache only stores rankings for rebalance dates. Non-rebalance dates fall back to the
         nearest prior rebalance date (e.g., 2026-06-30 uses 2026-06-23 rankings if not cached).
         """
+        logger.info(f"[CACHE] Lookup called for {as_of_date}, band_id={self.rank_band_id}, conn={self._cache_conn is not None}")
         if not self._cache_conn or self.rank_band_id is None:
+            if self.rank_band_id is None:
+                logger.info("⚠️  Cache disabled: rank_band_id is None")
             return None
 
         try:
