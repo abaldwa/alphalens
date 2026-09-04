@@ -12,6 +12,8 @@
 !.env.example
 *.db
 *.duckdb
+*.duckdb.wal
+momentum_framework/cache/
 datastore/raw/
 datastore/normalised/
 datastore/features/

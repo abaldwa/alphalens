@@ -51,6 +51,8 @@ follow_imports = "normal"
 module = [
     "tests.*",
     "scripts.*",
+    "momentum_framework.tests.*",
+    "momentum_framework.scripts.*",
 ]
 ignore_errors = true
 
