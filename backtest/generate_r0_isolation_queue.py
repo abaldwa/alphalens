@@ -66,7 +66,7 @@ def build_jobs() -> List[Dict[str, Any]]:
                     "initial_capital": 1_000_000,
                     "max_tickers": 800,
                     "min_history_days": 60,
-                    "exit_variant": "risk_managed",
+                    "exit_variant": "unconstrained",
                     "defer_db_writes": True,
                     "ohlcv_snapshot_dir": OHLCV_SNAPSHOT_DIR,
                 }
