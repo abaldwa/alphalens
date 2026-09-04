@@ -40,6 +40,8 @@ def build_jobs() -> List[Dict[str, Any]]:
                 "top_n": 15,
                 "lookback_months": lookback_months,
                 "rebalance_cadence_days": REBALANCE_CADENCE_DAYS,
+                "rank_method": "trailing_return",
+                "crash_regime_enabled": False,
                 "strategy_family": "R",
                 "capital_mode": "lump",
                 "initial_capital": 1_000_000,

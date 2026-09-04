@@ -37,6 +37,8 @@ def build_jobs() -> List[Dict[str, Any]]:
             "rank_band_id": band_id,
             "top_n": 10,
             "lookback_months": 12,
+            "rank_method": "trailing_return",
+            "crash_regime_enabled": False,
             "strategy_family": "R",
             "vol_scaling_mode": "inverse_volatility",
             "vol_scaling_lookback_days": 126,

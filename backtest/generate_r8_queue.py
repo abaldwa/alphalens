@@ -36,6 +36,8 @@ def build_jobs() -> List[Dict[str, Any]]:
             "lookback_months": 12,
             "skip_months": 0,
             "top_n": 10,
+            "rank_method": "trailing_return",
+            "crash_regime_enabled": False,
             "vol_target_enabled": True,
             "vol_target_pct": 0.15,
             "vol_target_lookback_days": 63,
