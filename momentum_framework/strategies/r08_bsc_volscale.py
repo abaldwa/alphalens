@@ -13,15 +13,16 @@ Ported from backtest/adapters/momentum_adapter.py's vol_target_enabled
 branch + features/momentum_signal.py::realized_vol_target_multiplier().
 
 ARCHITECTURE NOTE: this strategy's exposure multiplier depends on its
-OWN realized portfolio value history (self._equity_history), accumulated
-via update_portfolio_equity() — a hook the framework's orchestrator does
-not call yet (see StrategyAdapter.update_portfolio_equity()'s docstring).
-rebalance() is complete and independently testable by manually seeding
-self._equity_history (see this file's __main__ block / test), but a real
-multi-day run needs native orchestrator execution, not yet built.
+OWN realized portfolio value history — received as `equity_curve`, a
+rebalance() parameter (see StrategyAdapter.rebalance()'s PURE-FUNCTION
+CONTRACT docstring). Previously this was self-tracked via a mutating
+update_portfolio_equity() hook and a self._equity_history attribute;
+removed 2026-09-04 (explicit user instruction — strategies must not own
+mutable state duplicating what BacktestOrchestrator.run_native() already
+computes in its simulation loop).
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, cast
 
 import pandas as pd
 
@@ -70,26 +71,13 @@ class R08BSCVolScale(StrategyBase):
         self.vol_target_pct = vol_target_pct
         self.vol_target_lookback_days = vol_target_lookback_days
         self.vol_target_leverage_cap = vol_target_leverage_cap
-        self._equity_history: Optional[pd.Series] = None
 
-    def update_portfolio_equity(self, as_of_date: str, equity: float) -> None:
-        # Built via concat, not `.loc[ts] = equity` in-place assignment —
-        # pandas-stubs' loc-assignment overloads are ambiguous for growing
-        # an empty float Series by a new Timestamp key (flags differently
-        # across pandas-stubs versions); concat has one unambiguous signature.
-        ts = pd.Timestamp(as_of_date)
-        new_point = pd.Series([equity], index=[ts])
-        if self._equity_history is None:
-            self._equity_history = new_point
-        else:
-            self._equity_history = pd.concat([self._equity_history, new_point])
-
-    def _exposure_multiplier(self, as_of_date: str) -> float:
-        if self._equity_history is None or self._equity_history.empty:
+    def _exposure_multiplier(self, as_of_date: str, equity_curve: pd.Series) -> float:
+        if equity_curve.empty:
             return 1.0
         try:
             mult_series = vol_target_multiplier(
-                self._equity_history,
+                equity_curve,
                 target_vol=self.vol_target_pct,
                 lookback_days=self.vol_target_lookback_days,
                 leverage_cap=self.vol_target_leverage_cap,
@@ -105,13 +93,14 @@ class R08BSCVolScale(StrategyBase):
             return float(mult_series.iloc[-1])
         return 1.0
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, self.signal.lookback_days)
         winners = scores.sort_values(ascending=False).head(self.top_n)
         if winners.empty:
             return []
 
-        exposure = self._exposure_multiplier(as_of_date)
+        exposure = self._exposure_multiplier(as_of_date, equity_curve)
         return [
             Signal(ticker=str(ticker), action="buy", conviction=score,
                    rank=rank + 1, size_multiplier=exposure)
@@ -135,7 +124,7 @@ class R08QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        return self.simple_momentum_grid(
+        return cast(List[Dict[str, Any]], self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -150,4 +139,4 @@ class R08QueueGenerator(QueueGenerator):
                 "vol_target_lookback_days": DEFAULT_VOL_TARGET_LOOKBACK_DAYS,
                 "vol_target_leverage_cap": DEFAULT_LEVERAGE_CAP,
             },
-        )
+        ))

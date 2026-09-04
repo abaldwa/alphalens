@@ -9,8 +9,10 @@ strategy file only has to implement rebalance() + describe().
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, cast
 import logging
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,10 @@ class StrategyAdapter(ABC):
         self.extra_params: Dict[str, Any] = kwargs
 
     @abstractmethod
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(
+        self, as_of_date: str, universe: List[str], conn: Any,
+        held: FrozenSet[str], equity_curve: pd.Series,
+    ) -> List[Signal]:
         """
         Compute the target basket at as_of_date and return Signal objects
         for every ticker entering, leaving, or resized in the portfolio.
@@ -64,6 +69,34 @@ class StrategyAdapter(ABC):
         full cross-band ticker list. Ranking within the wrong universe
         (e.g. ranking against all 800 stocks for a band_id=2 strategy)
         silently produces a different top_n than the band promises.
+
+        PURE-FUNCTION CONTRACT (explicit user instruction, 2026-09-04:
+        "the purpose of Strategy is to generate trades and nothing more
+        ... everything should be pure-computed or available for the
+        strategy to generate the trades"): a strategy must never hold its
+        own mutable state that duplicates ground truth the orchestrator
+        already has — `held` and `equity_curve` exist so it doesn't have
+        to. Before this, R07 tracked its own `self._held` set (assigned
+        from its OWN intended target at the end of rebalance(), BEFORE
+        Portfolio actually executed the trade) — if a buy silently failed
+        (no price data that day, see Portfolio.rebalance_to_target()'s
+        `if price is None: continue`), R07's guess would silently diverge
+        from what Portfolio really held. `held` is instead always
+        `set(portfolio.positions.keys())` — real, post-execution ground
+        truth, passed in fresh every call, impossible to drift.
+
+        `held`: tickers actually held by the Portfolio as of the START of
+        this rebalance (before today's trades) — real positions, not a
+        strategy's own memory of what it last requested.
+
+        `equity_curve`: the Portfolio's realized daily equity so far this
+        backtest (date-indexed, Timestamp index), for strategies whose
+        exposure depends on their OWN recent volatility (R08's Barroso-
+        Santa-Clara vol-target, R09's Moreira-Muir vol-scaling). Replaces
+        the old update_portfolio_equity() mutation hook — the orchestrator
+        already computes this series in its simulation loop; strategies
+        needing it now receive a read-only view instead of independently
+        re-accumulating their own copy via a stateful callback.
         """
         raise NotImplementedError
 
@@ -101,7 +134,7 @@ class StrategyAdapter(ABC):
                 )
                 cached = None
             if cached is not None:
-                return cached
+                return cast(List[str], cached)
             logger.debug(
                 f"Universe cache miss for band_id={self.band_id}, date={as_of_date} "
                 f"— falling back to live query. Run scripts/build_universe_cache.py "
@@ -109,26 +142,7 @@ class StrategyAdapter(ABC):
             )
 
         from momentum_framework.common.band_universe import resolve_band_universe
-        return resolve_band_universe(self.band_id, as_of_date, conn)
-
-    def update_portfolio_equity(self, as_of_date: str, equity: float) -> None:
-        """
-        Optional hook: called once per trading day with realized portfolio
-        value, for strategies whose exposure depends on their OWN recent
-        volatility (R08's Barroso-Santa-Clara vol-target, R09's
-        Moreira-Muir vol-scaling — see strategies/r08_bsc_volscale.py,
-        r09_mm_volscale.py). No-op by default; only those strategies
-        override it to accumulate an equity history.
-
-        NOT YET CALLED by anything — the framework's BacktestOrchestrator
-        still delegates simulation to the legacy engine (see that class's
-        docstring) rather than running rebalance() natively, so nothing
-        currently drives this hook end-to-end. R08/R09's rebalance() logic
-        is complete and independently testable (see their own test blocks)
-        but can't produce a real multi-day backtest until native execution
-        is built — tracked in docs/MIGRATION.md's "Known Gaps".
-        """
-        return None
+        return cast(List[str], resolve_band_universe(self.band_id, as_of_date, conn))
 
     def describe(self) -> Dict[str, Any]:
         """Full parameter dict — used for strategy_id generation and reports."""

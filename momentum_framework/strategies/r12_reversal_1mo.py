@@ -22,7 +22,9 @@ entirely — ranks the full band, matching the plain reversal signal with
 no liquidity interaction.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
+
+import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
 from momentum_framework.common.signals import TrailingMomentumSignal
@@ -49,7 +51,8 @@ class R12Reversal1Mo(StrategyBase):
         self.signal = TrailingMomentumSignal(lookback_months=REVERSAL_LOOKBACK_MONTHS)
         self.liquidity_quintile = liquidity_quintile
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         if self.liquidity_quintile is not None:
             from momentum_framework.common.liquidity import liquidity_quintile_universe
             universe = liquidity_quintile_universe(conn, universe, as_of_date, self.liquidity_quintile)

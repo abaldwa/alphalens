@@ -15,7 +15,9 @@ reimplemented pandas-only in common/bollinger_signal.py — see that
 file's docstring for why).
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, FrozenSet, List, cast
+
+import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
 from momentum_framework.common.bollinger_signal import BollingerBandSignal
@@ -48,7 +50,8 @@ class R13BollingerReversal(StrategyBase):
         self.bollinger_window = bollinger_window
         self.signal = BollingerBandSignal(window=bollinger_window, num_std=DEFAULT_NUM_STD)
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, self.bollinger_window)
         # ascending=True: LOWEST %B first (closest to lower band = most oversold)
         oversold = scores.sort_values(ascending=True).head(self.top_n)
@@ -78,7 +81,7 @@ class R13QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        return self.simple_momentum_grid(
+        return cast(List[Dict[str, Any]], self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -88,4 +91,4 @@ class R13QueueGenerator(QueueGenerator):
             end_date=self.end_date,
             filter_presets=self.FILTER_PRESETS,
             extra_fields={"bollinger_window": DEFAULT_WINDOW},
-        )
+        ))

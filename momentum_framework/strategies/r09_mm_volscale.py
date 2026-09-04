@@ -47,7 +47,7 @@ native orchestrator (backtesting/orchestrator.py) — ported 2026-09-04,
 see that module.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 import pandas as pd
 
@@ -112,25 +112,20 @@ class R09MMVolScale(StrategyBase):
         self.vol_scaling_leverage_cap = vol_scaling_leverage_cap
         self.vol_target_pct = vol_target_pct
         self.regime_switching_enabled = regime_switching_enabled
-        self._equity_history: Optional[pd.Series] = None
-        self._regime_series: Optional[pd.Series] = None  # lazily loaded, cached per instance
-
-    def update_portfolio_equity(self, as_of_date: str, equity: float) -> None:
-        # Built via concat, not `.loc[ts] = equity` in-place assignment —
-        # pandas-stubs' loc-assignment overloads are ambiguous for growing
-        # an empty float Series by a new Timestamp key (flags differently
-        # across pandas-stubs versions); concat has one unambiguous signature.
-        ts = pd.Timestamp(as_of_date)
-        new_point = pd.Series([equity], index=[ts])
-        if self._equity_history is None:
-            self._equity_history = new_point
-        else:
-            self._equity_history = pd.concat([self._equity_history, new_point])
+        self._regime_series: Optional[pd.Series] = None  # lazily loaded, cached per instance — see docstring below
 
     def _detect_regime(self, as_of_date: str, conn: Any) -> str:
         """
         Band-attached regime (see module docstring) — loaded once per
         instance and cached, not re-queried every rebalance call.
+
+        UNLIKE the removed self._equity_history (now the equity_curve
+        parameter — see rebalance()'s docstring), this cache is safe to
+        keep as strategy-owned state: it's a DETERMINISTIC function of
+        the band's benchmark index alone, never of Portfolio execution
+        outcomes, so there is no drift risk — re-running it live would
+        always produce the identical series. Kept as a performance
+        memoization, not ground-truth tracking.
         """
         if self._regime_series is None:
             from momentum_framework.common.benchmark import load_benchmark_equity_curve
@@ -150,8 +145,8 @@ class R09MMVolScale(StrategyBase):
         regime = self._detect_regime(as_of_date, conn)
         return REGIME_MODE_OVERRIDE.get(regime, self.vol_scaling_mode)
 
-    def _exposure_multiplier(self, as_of_date: str, conn: Any) -> float:
-        if self._equity_history is None or self._equity_history.empty:
+    def _exposure_multiplier(self, as_of_date: str, conn: Any, equity_curve: pd.Series) -> float:
+        if equity_curve.empty:
             return 1.0
         active_mode = self._active_mode(as_of_date, conn)
         scaling_fn = VOL_SCALING_DISPATCH[active_mode]
@@ -162,7 +157,7 @@ class R09MMVolScale(StrategyBase):
         if active_mode == "target_volatility":
             kwargs["target_vol"] = self.vol_target_pct
         try:
-            mult_series = scaling_fn(self._equity_history, **kwargs)
+            mult_series = scaling_fn(equity_curve, **kwargs)
         except (ValueError, KeyError):
             return 1.0
         ts = pd.Timestamp(as_of_date)
@@ -172,13 +167,14 @@ class R09MMVolScale(StrategyBase):
             return float(mult_series.iloc[-1])
         return 1.0
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, self.signal.lookback_days)
         winners = scores.sort_values(ascending=False).head(self.top_n)
         if winners.empty:
             return []
 
-        exposure = self._exposure_multiplier(as_of_date, conn)
+        exposure = self._exposure_multiplier(as_of_date, conn, equity_curve)
         return [
             Signal(ticker=str(ticker), action="buy", conviction=score,
                    rank=rank + 1, size_multiplier=exposure)

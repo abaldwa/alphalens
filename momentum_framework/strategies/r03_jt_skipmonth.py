@@ -24,10 +24,13 @@ the other's constant. (Strategy numbers zero-padded to R01/R03/... on
 2026-09-04 — see project_r_number_zero_padding memory.)
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, FrozenSet, List
+
+import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
 from momentum_framework.common.signals import TrailingMomentumSignal
+from momentum_framework.common.trading_calendar import offset_trading_date
 from momentum_framework.queues.generator import QueueGenerator
 from momentum_framework.strategies.base import StrategyBase
 
@@ -52,39 +55,22 @@ class R03JTSkipMonth(StrategyBase):
         self.signal = TrailingMomentumSignal(lookback_months=lookback_months)
         self.skip_days = SKIP_MONTHS * TRADING_DAYS_PER_MONTH
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         """
         Ranks `universe` by trailing return as of (as_of_date - skip_days),
         not as_of_date itself — see module docstring for why the skip
-        exists. The caller is responsible for resolving as_of_date to the
-        actual prior trading date (see backtest/adapters/momentum_adapter.py's
-        cache-offset logic for the reference implementation).
+        exists. Date-offset resolution now lives in
+        common/trading_calendar.py (generic infra, not strategy-specific —
+        moved out 2026-09-04, see that module's docstring).
         """
-        offset_date = self._offset_trading_date(as_of_date, self.skip_days, conn)
+        offset_date = offset_trading_date(conn, as_of_date, self.skip_days)
         scores = self.signal.compute(conn, universe, offset_date, self.signal.lookback_days)
         winners = scores.sort_values(ascending=False).head(self.top_n)
         return [
             Signal(ticker=str(ticker), action="buy", conviction=score, rank=rank + 1)
             for rank, (ticker, score) in enumerate(winners.items())
         ]
-
-    @staticmethod
-    def _offset_trading_date(as_of_date: str, skip_days: int, conn: Any) -> str:
-        """Resolve the trading date `skip_days` sessions before as_of_date."""
-        row = conn.execute(
-            """
-            SELECT date FROM (
-                SELECT DISTINCT date FROM ohlcv_adjusted
-                WHERE date <= ?
-                ORDER BY date DESC
-                LIMIT 1 OFFSET ?
-            )
-            """,
-            [as_of_date, skip_days],
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Not enough trading history before {as_of_date} to skip {skip_days} days")
-        return str(row[0])
 
 
 class R03QueueGenerator(QueueGenerator):

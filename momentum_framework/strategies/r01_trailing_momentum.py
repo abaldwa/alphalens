@@ -19,7 +19,9 @@ academic citation in the codebase; R03 is the one that explicitly
 implements Jegadeesh & Titman (1993)'s skip-month methodology.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, FrozenSet, List
+
+import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
 from momentum_framework.common.signals import TrailingMomentumSignal
@@ -44,7 +46,8 @@ class R01TrailingMomentum(StrategyBase):
                           filter_preset=filter_preset, skip_months=SKIP_MONTHS, **kwargs)
         self.signal = TrailingMomentumSignal(lookback_months=lookback_months)
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, self.signal.lookback_days)
         winners = scores.sort_values(ascending=False).head(self.top_n)
         return [

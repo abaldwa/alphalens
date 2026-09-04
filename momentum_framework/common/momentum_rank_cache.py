@@ -119,6 +119,45 @@ def get_cached_ranking(
             conn.close()
 
 
+def is_floor_eligible(
+    normalised_conn: Any, floor_date: Optional[str], as_of_date: str, lookback_days: int,
+) -> bool:
+    """
+    Does a cached (unbounded) momentum_return for `as_of_date` equal what
+    a FLOORED live computation (MomentumSignal.floor_date, see
+    common/signals.py) would have produced for the same date?
+
+    KEY INSIGHT (2026-09-04, explicit user direction after discussing the
+    two-cache-per-floor problem): the cache is built UNBOUNDED (no floor
+    at all — the correct convention for production reuse, which never
+    wants an artificial start-date floor). A floored and an unbounded
+    computation read the EXACT SAME underlying rows — and so produce the
+    EXACT SAME value — whenever the lookback window already fits entirely
+    on/after floor_date. They only diverge in the narrow warm-up window
+    right after floor_date, where floored has no signal yet (not enough
+    real history since the floor) but unbounded reaches further back and
+    produces a real number anyway.
+
+    So eligibility reduces to: has at least `lookback_days + 1` trading
+    sessions elapsed between floor_date and as_of_date? If yes, the cached
+    value is safe to use as-is for ANY backtest's floor_date, no matter
+    what start_date that backtest uses — one shared unbounded cache serves
+    every floor. If no, the cache must NOT be used — treat as unranked,
+    matching what a real floored computation would return (empty), not
+    what the cache happens to hold.
+
+    `floor_date=None` (unbounded backtest / production) is always eligible
+    — there is no warm-up gap to protect against.
+    """
+    if floor_date is None:
+        return True
+    count = normalised_conn.execute(
+        "SELECT COUNT(DISTINCT date) FROM ohlcv_adjusted WHERE date >= ? AND date <= ?",
+        [floor_date, as_of_date],
+    ).fetchone()[0]
+    return bool(count >= lookback_days + 1)
+
+
 def cache_coverage_summary(cache_conn: Optional[Any] = None) -> Dict[Any, Dict[str, Any]]:
     """Per-(band, lookback) summary of what's cached — date range and
     count, for sanity-checking after a build."""

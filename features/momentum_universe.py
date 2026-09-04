@@ -109,6 +109,15 @@ RANK_BANDS: List[Tuple[int, int, int]] = [
     (10, 301, 500),
     (11, 501, 800),
     (12, 551, 800),
+    # M13 (2026-09-04): full 800-stock ADTV universe — every framework
+    # band goes through the SAME market-cap-within-liquid-universe
+    # resolution (see momentum_framework/common/band_universe.py::
+    # resolve_band_universe's docstring); M13 is just rank_start=1,
+    # rank_end=800, not a special case. Registration here was missed when
+    # M13 was added to the campaign registry/queue generators, causing
+    # every M13 config to fail with "unknown rank_band_id 13" (see
+    # project_m13_band_added memory) — this closes that gap.
+    (13, 1, 800),
 ]
 
 #: The seven ranges that predate the 2026-08-20 expansion, by their CURRENT

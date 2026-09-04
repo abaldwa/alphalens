@@ -23,7 +23,9 @@ sector table, should one exist — stock_master is a static current
 snapshot, not point-in-time, see common/sector_data.py's docstring).
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, cast
+
+import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
 from momentum_framework.common.signals import IndustryMomentumSignal
@@ -62,7 +64,8 @@ class R10SectorMomentum(StrategyBase):
             lookback_months=lookback_months, sector_lookup=sector_lookup, top_sectors=top_sectors,
         )
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date)
         winners = scores.sort_values(ascending=False).head(self.top_n)
         return [
@@ -87,7 +90,7 @@ class R10QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        return self.simple_momentum_grid(
+        return cast(List[Dict[str, Any]], self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -97,4 +100,4 @@ class R10QueueGenerator(QueueGenerator):
             end_date=self.end_date,
             filter_presets=self.FILTER_PRESETS,
             extra_fields={"top_sectors": DEFAULT_TOP_SECTORS},
-        )
+        ))

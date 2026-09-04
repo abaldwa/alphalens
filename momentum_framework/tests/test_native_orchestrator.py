@@ -85,18 +85,26 @@ def test_r07_crash_overlay_runs_through_covid_without_error(prod_conn):
 
 
 def test_r09_equity_history_and_regime_populate_through_native_run(prod_conn):
-    """Regression test for the update_portfolio_equity() wiring verified
-    manually 2026-09-04: real daily equity accumulation and real regime
-    detection must both actually fire during a native run, not just be
-    theoretically callable in isolation."""
+    """Regression test for R09's exposure-multiplier wiring, updated
+    2026-09-04 for the pure-function rebalance() refactor (explicit user
+    instruction: strategies must not own mutable state duplicating what
+    the orchestrator already tracks — equity_curve is now a rebalance()
+    parameter, not a self-accumulated self._equity_history). Verifies real
+    daily equity accumulation (via the orchestrator's own
+    BacktestResult.equity_curve, not a strategy-internal copy) and real
+    regime detection (strategy._regime_series — kept as strategy state
+    deliberately, since it's a deterministic function of the band
+    benchmark alone, not of portfolio execution — see that attribute's
+    docstring in r09_mm_volscale.py) both actually fire during a native
+    run, not just theoretically callable in isolation."""
     strategy = R09MMVolScale(
         band_id=2, top_n=5, lookback_months=6, rebalance_cadence_days=21,
         vol_scaling_mode="inverse_volatility", regime_switching_enabled=True,
     )
     config = BacktestConfig(start_date="2019-09-01", end_date="2020-03-31", initial_capital=1_000_000)
-    BacktestOrchestrator(strategy, config).run_native(prod_conn)
+    result = BacktestOrchestrator(strategy, config).run_native(prod_conn)
 
-    assert strategy._equity_history is not None and len(strategy._equity_history) > 100
+    assert result.equity_curve is not None and len(result.equity_curve) > 100
     assert strategy._regime_series is not None and len(strategy._regime_series) > 1000
 
 

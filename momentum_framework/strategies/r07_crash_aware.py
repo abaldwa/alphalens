@@ -39,13 +39,23 @@ R07QueueGenerator.BANDS until that mapping is decided.
 Held-position tracking: unlike R01/R03/R14-R17 (which rebuild the target
 basket from scratch every rebalance with no memory of prior holdings),
 R07 needs to know what it already holds to decide which existing
-positions to trim during a crash — so this StrategyAdapter carries
-`self._held` state across rebalance() calls, updated at the end of each
-call, matching how the legacy adapter tracks it (`self._held`, an
-adapter-level attribute, not queried back from the portfolio).
+positions to trim during a crash. FIXED 2026-09-04 (explicit user
+instruction — "the purpose of Strategy is to generate trades and nothing
+more... everything should be pure-computed or available for the strategy"):
+this used to be `self._held`, a strategy-owned mutable set assigned from
+its OWN intended target at the end of rebalance() — BEFORE Portfolio
+actually executed the trade. If a buy silently failed (no price data
+that day — see Portfolio.rebalance_to_target()'s `if price is None:
+continue`), `self._held` would claim a ticker was owned that Portfolio
+never actually bought, silently corrupting the next rebalance's trim/keep
+decision. Now `held` arrives as a rebalance() parameter, sourced by
+BacktestOrchestrator.run_native() directly from `portfolio.positions.
+keys()` — real, post-execution ground truth, fresh every call, impossible
+to drift (see StrategyAdapter.rebalance()'s PURE-FUNCTION CONTRACT
+docstring).
 """
 
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, FrozenSet, List, Optional, Set, cast
 import math
 
 import pandas as pd
@@ -107,7 +117,6 @@ class R07CrashAware(StrategyBase):
         self.crash_vol_percentile_threshold = crash_vol_percentile_threshold
         self.crash_vol_lookback_days = crash_vol_lookback_days
         self.min_adtv_cr = min_adtv_cr
-        self._held: Set[str] = set()
         self._benchmark_equity: Optional[pd.Series] = None  # lazily loaded from the band, cached per instance
 
     def _in_crash_regime(self, as_of_date: str, conn: Any) -> bool:
@@ -134,7 +143,8 @@ class R07CrashAware(StrategyBase):
         ts = pd.Timestamp(as_of_date)
         return bool(crash_series.get(ts, False))
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, self.signal.lookback_days)
         winners = scores.sort_values(ascending=False).head(self.top_n)
         target: Set[str] = set(winners.index)
@@ -142,7 +152,9 @@ class R07CrashAware(StrategyBase):
         in_crash = self._in_crash_regime(as_of_date, conn)
 
         # Plain list-swap: keep whatever's both held and still in target.
-        keep = self._held & target
+        # `held` is real Portfolio ground truth (see this file's module
+        # docstring) — never re-derived from what we last asked for.
+        keep = set(held) & target
 
         # [Phase 7 fix] Trim EXISTING holdings during crash, not just gate
         # new buys — else all the crash downside stays in the book. Trim
@@ -156,7 +168,7 @@ class R07CrashAware(StrategyBase):
                 keep -= trimmed_out
 
         buys_disabled = in_crash and self.crash_disable_buys
-        new_entrants = [] if buys_disabled else sorted(target - self._held)
+        new_entrants = [] if buys_disabled else sorted(target - set(held))
 
         # Circuit-lock + ADTV filter (common/liquidity.py) — a locked or
         # too-illiquid name is unfillable at this close; skipped THIS
@@ -181,7 +193,6 @@ class R07CrashAware(StrategyBase):
                 conviction *= self.crash_reduce_sizing
             signals.append(Signal(ticker=ticker, action="buy", conviction=conviction, rank=rank + 1))
 
-        self._held = final_target
         return signals
 
 
@@ -212,7 +223,7 @@ class R07QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        jobs = self.simple_momentum_grid(
+        jobs = cast(List[Dict[str, Any]], self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -222,7 +233,7 @@ class R07QueueGenerator(QueueGenerator):
             end_date=self.end_date,
             filter_presets=self.FILTER_PRESETS,
             crash_regime_enabled=True,
-        )
+        ))
         for job in jobs:
             job["crash_disable_buys"] = DEFAULT_CRASH_DISABLE_BUYS
             job["crash_reduce_sizing"] = None

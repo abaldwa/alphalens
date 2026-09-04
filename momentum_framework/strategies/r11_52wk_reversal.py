@@ -19,7 +19,9 @@ project_strategy_identity_bug_r_vs_m memory for why (rejected at the
 Phase 3 gate, historical reference only).
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, FrozenSet, List, cast
+
+import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
 from momentum_framework.common.signals import PctOf52WeekHighSignal
@@ -46,7 +48,8 @@ class R11FiftyTwoWeekReversal(StrategyBase):
                           filter_preset=filter_preset, select_lowest=SELECT_LOWEST, **kwargs)
         self.signal = PctOf52WeekHighSignal()
 
-    def rebalance(self, as_of_date: str, universe: List[str], conn: Any) -> List[Signal]:
+    def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
+                  held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, LOOKBACK_DAYS_52WK)
         # ascending=True: LOWEST pct-of-52wk-high first (furthest from high = most oversold)
         losers = scores.sort_values(ascending=True).head(self.top_n)
@@ -79,7 +82,7 @@ class R11QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        return self.simple_momentum_grid(
+        return cast(List[Dict[str, Any]], self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -89,4 +92,4 @@ class R11QueueGenerator(QueueGenerator):
             end_date=self.end_date,
             filter_presets=self.FILTER_PRESETS,
             extra_fields={"select_lowest": SELECT_LOWEST},
-        )
+        ))

@@ -7,7 +7,11 @@ Source: features/momentum_signal.py (adapted)
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
+import logging
+
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 class MomentumSignal(ABC):
@@ -30,6 +34,13 @@ class MomentumSignal(ABC):
         # version of it. None (default) means unbounded — used by
         # anything not wired to a floor (tests, ad hoc scripts).
         self.floor_date: Optional[str] = None
+        # Set by BacktestOrchestrator.run_native() to the strategy's
+        # band_id, so TrailingMomentumSignal.compute() can consult the
+        # pre-built momentum_rank_snapshots cache (common/momentum_rank_
+        # cache.py) instead of re-querying OHLCV live. None (default)
+        # disables the cache fast-path entirely — a signal never wired to
+        # a band_id always computes live, same as before this existed.
+        self.band_id: Optional[int] = None
 
     @abstractmethod
     def compute(
@@ -115,6 +126,16 @@ class TrailingMomentumSignal(MomentumSignal):
         if not tickers:
             return pd.Series(dtype=float)
 
+        # Cache fast-path — only when using THIS instance's own lookback
+        # (no per-call override in effect) and band_id has been wired (see
+        # MomentumSignal.band_id docstring). Skips the live windowed OHLCV
+        # query entirely when eligible; returns None (not an empty Series)
+        # on any miss/ineligibility that should fall through to live.
+        if self.band_id is not None and days == self.lookback_days:
+            cached = self._try_cache(normalised_conn, tickers, as_of_date)
+            if cached is not None:
+                return cached
+
         placeholders = ",".join("?" for _ in tickers)
         floor_clause = " AND date >= ?" if self.floor_date else ""
         floor_params = [self.floor_date] if self.floor_date else []
@@ -155,6 +176,52 @@ class TrailingMomentumSignal(MomentumSignal):
             return pd.Series(dtype=float)
         returns = returns.dropna()
         return returns.astype(float)
+
+    def _try_cache(self, normalised_conn: Any, tickers: List[str], as_of_date: str) -> Optional[pd.Series]:
+        """
+        Returns a Series (possibly empty) if the pre-built momentum_rank_
+        snapshots cache can answer this call, or None to signal "fall
+        through to the live query" (cache file missing, this exact
+        (band_id, date, lookback_months) not in the pre-built grid, or the
+        cache file is mid-build and lock-contended). NEVER raises — any
+        unexpected error also falls through to live, matching resolve_
+        universe()'s existing graceful-degradation convention.
+
+        An empty (non-None) Series is a real, deliberate answer: it means
+        the cache says this date is BEFORE this backtest's floor_date has
+        enough history — see momentum_rank_cache.py::is_floor_eligible()'s
+        docstring for why that's safe to trust without even checking what
+        the (unbounded) cache actually holds for this date.
+        """
+        from momentum_framework.common.momentum_rank_cache import (
+            CACHE_DB_PATH, get_cache_connection, get_cached_ranking, is_floor_eligible,
+        )
+
+        if self.band_id is None or not CACHE_DB_PATH.exists():
+            return None
+        band_id = self.band_id  # narrow for mypy — instance attrs don't narrow across calls
+        try:
+            if not is_floor_eligible(normalised_conn, self.floor_date, as_of_date, self.lookback_days):
+                return pd.Series(dtype=float)
+
+            cache_conn = get_cache_connection(read_only=True)
+            try:
+                cached = get_cached_ranking(band_id, as_of_date, self.lookback_months, cache_conn)
+            finally:
+                cache_conn.close()
+        except Exception as e:
+            logger.debug(
+                f"Momentum rank cache unreadable for band_id={self.band_id}, date={as_of_date}, "
+                f"lookback={self.lookback_months}mo ({type(e).__name__}: {e}) — falling back to live query."
+            )
+            return None
+
+        if cached is None:
+            return None  # miss — this (band, date, lookback) not pre-built; fall through to live
+
+        wanted = set(tickers)
+        scores = {ticker: values["momentum_return"] for ticker, values in cached.items() if ticker in wanted}
+        return pd.Series(scores, dtype=float)
 
 
 class PctOf52WeekHighSignal(MomentumSignal):
@@ -262,7 +329,13 @@ class IndustryMomentumSignal(MomentumSignal):
             from momentum_framework.common.sector_data import load_sector_lookup
             self.sector_lookup = load_sector_lookup(normalised_conn)
 
-        self._trailing.floor_date = self.floor_date  # propagate — see MomentumSignal.floor_date docstring
+        # Propagate both — see MomentumSignal.floor_date/.band_id docstrings.
+        # band_id enables R10 to use the momentum_rank_snapshots cache fast-
+        # path too: the raw per-ticker score IS the same shared trailing_
+        # return the cache stores, R10's sector filter is a second stage
+        # applied AFTER this, same as it is for a live computation.
+        self._trailing.floor_date = self.floor_date
+        self._trailing.band_id = self.band_id
         momentum = self._trailing.compute(normalised_conn, tickers, as_of_date, lookback_days)
         if momentum.empty or not self.sector_lookup:
             return momentum

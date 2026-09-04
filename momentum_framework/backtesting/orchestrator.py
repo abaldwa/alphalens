@@ -4,11 +4,14 @@ normalization retained for the migration window.
 
 NATIVE EXECUTION PORTED 2026-09-04 (run_native()) — trading-calendar-
 driven loop: resolves each rebalance date's band-scoped universe
-(StrategyAdapter.resolve_universe()), calls strategy.rebalance(),
-executes the returned Signals into a Portfolio (backtesting/portfolio.py),
-marks to market and calls strategy.update_portfolio_equity() every
-trading day (not just rebalance days — R08/R09's exposure multiplier
-needs a real daily equity history), and computes metrics via
+(StrategyAdapter.resolve_universe()), calls strategy.rebalance() with
+real Portfolio ground truth (held positions, realized equity curve so
+far — see StrategyAdapter.rebalance()'s PURE-FUNCTION CONTRACT docstring,
+explicit user instruction 2026-09-04: strategies must not own mutable
+state duplicating what the orchestrator already tracks), executes the
+returned Signals into a Portfolio (backtesting/portfolio.py), marks to
+market every trading day (not just rebalance days — R08/R09's exposure
+multiplier needs a real daily equity history), and computes metrics via
 metrics.standard.MetricsCalculator on the resulting equity curve.
 
 This is deliberately simpler than backtest/core/engine.py (no tax lots,
@@ -135,18 +138,55 @@ class BacktestOrchestrator:
         # like the published legacy baseline does.
         if hasattr(self.strategy, "signal"):
             self.strategy.signal.floor_date = self.config.start_date
+            # Enables the momentum_rank_snapshots cache fast-path in
+            # TrailingMomentumSignal.compute() (common/signals.py) — see
+            # that module's MomentumSignal.band_id docstring. Safe
+            # regardless of this strategy's start_date or any further
+            # universe narrowing it does (R07's circuit-lock filter, R12's
+            # liquidity_quintile) — see common/momentum_rank_cache.py's
+            # is_floor_eligible() docstring for why one unbounded cache
+            # serves every floor_date correctly.
+            self.strategy.signal.band_id = self.strategy.band_id
 
         rebalance_dates = set(calendar[::self.strategy.rebalance_cadence_days])
         rebalance_dates.add(calendar[0])  # always establish an initial basket
 
         portfolio = Portfolio(self.config.initial_capital)
-        equity_curve: Dict[str, float] = {}
+        # Parallel lists, not a {date_str: float} dict rebuilt into a Series
+        # every rebalance call (performance fix, 2026-09-04 — the original
+        # per-call `pd.Series(dict) + pd.to_datetime(strings)` reconversion
+        # nearly doubled a full 2009-2026 run's wall time, since it re-
+        # parsed the ENTIRE accumulated history from scratch on every one
+        # of ~200 rebalance calls). Timestamps are pre-converted once, on
+        # the day they're recorded, so building `equity_so_far` at
+        # rebalance time is a cheap Series-from-already-typed-lists
+        # construction, not a string-reparsing pass over growing history.
+        equity_dates: List[pd.Timestamp] = []
+        equity_values: List[float] = []
 
         for as_of_date in calendar:
             if as_of_date in rebalance_dates:
                 universe = self.strategy.resolve_universe(as_of_date, conn)
                 if universe:
-                    signals = self.strategy.rebalance(as_of_date, universe, conn)
+                    # PURE-FUNCTION CONTRACT (see StrategyAdapter.rebalance()'s
+                    # docstring) — `held` is REAL post-execution ground truth
+                    # from Portfolio (not a strategy's own memory of what it
+                    # last requested, which can silently diverge if a buy
+                    # failed — see that docstring for the R07 incident this
+                    # replaced), and `equity_curve` is the Portfolio's own
+                    # realized daily series so far, replacing the old
+                    # update_portfolio_equity() mutation hook.
+                    held = frozenset(portfolio.positions.keys())
+                    equity_so_far = pd.Series(equity_values, index=equity_dates, dtype=float)
+                    signals = self.strategy.rebalance(as_of_date, universe, conn, held, equity_so_far)
+                    # Generic position-sizing pass (2026-09-04): "equal" is a
+                    # no-op; "inverse_volatility" resizes buy signals via
+                    # StrategyBase.size_signals() so ANY strategy's own
+                    # ranking signal can also run weighted, not only
+                    # R14-R17 (which size themselves inline and are skipped
+                    # here via has_own_weighting — see StrategyBase docstring).
+                    if signals and hasattr(self.strategy, "size_signals"):
+                        signals = self.strategy.size_signals(signals, as_of_date, conn)
                     if signals:
                         # Union of signal tickers AND currently-held tickers —
                         # a position being SOLD (held, absent from this
@@ -158,12 +198,10 @@ class BacktestOrchestrator:
 
             held_prices = self._closes_on(conn, list(portfolio.positions.keys()), as_of_date)
             equity = portfolio.market_value(held_prices)
-            equity_curve[as_of_date] = equity
-            self.strategy.update_portfolio_equity(as_of_date, equity)
+            equity_dates.append(pd.Timestamp(as_of_date))
+            equity_values.append(equity)
 
-        equity_series = pd.Series(equity_curve)
-        equity_series.index = pd.to_datetime(equity_series.index)
-        equity_series = equity_series.sort_index()
+        equity_series = pd.Series(equity_values, index=equity_dates, dtype=float).sort_index()
 
         metrics = MetricsCalculator().compute(
             equity_series, trade_count=len(portfolio.trade_log),
@@ -200,6 +238,7 @@ class BacktestOrchestrator:
             metrics=metrics,
             trades=list(portfolio.trade_log),  # copy — see BacktestResult.trades docstring
             trade_count=len(portfolio.trade_log),
+            equity_curve=equity_series.rename("portfolio_value").rename_axis("date").reset_index(),
             integrity_passed=True,
             integrity_detail={
                 "engine": "native", "trading_days": len(calendar),
