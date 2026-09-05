@@ -44,6 +44,7 @@ Run: PYTHONPATH=. python3 momentum_framework/scripts/run_campaign.py
 
 import concurrent.futures
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -81,7 +82,6 @@ def _acquire_lock() -> None:
     file is enough here — Pass 1 is sequential and only one `main()`
     should ever be constructing a ProgressTracker at a time.
     """
-    import os
 
     if LOCK_FILE.exists():
         try:
@@ -251,6 +251,22 @@ def run_pass2(strategy_code: str, band_id: int, factory, label: Optional[str] = 
     if label is None:
         label = f"{strategy_code}/M{band_id:02d}"
     prod_conn = duckdb.connect(PROD_DB_PATH, read_only=True)
+    # PRAGMA threads cap (2026-09-05 finding): DuckDB defaults to using EVERY
+    # available core for its own internal query parallelism, PER CONNECTION.
+    # Each of this pool's worker threads opens its own prod_conn, so with no
+    # cap, PASS2_MAX_WORKERS threads each spin up to os.cpu_count() DuckDB-
+    # internal threads — e.g. 4 workers x 14 cores = up to 56 threads
+    # contending for 14 physical cores. This was masked earlier by an
+    # unrelated per-call connection-open bottleneck (momentum_rank_cache.py's
+    # get_thread_cache_connection() fix) that kept 3 of 4 workers mostly idle;
+    # once that was fixed, all 4 workers ran real, fully concurrent
+    # computation and this oversubscription became the dominant cost,
+    # stalling the M13 top_n sweep a third time with the same symptom (high
+    # CPU, zero completions) but a different root cause. Capped so the total
+    # DuckDB-internal thread budget across all workers stays near the
+    # physical core count.
+    _worker_count = int(os.environ.get("M13_MAX_WORKERS", PASS2_MAX_WORKERS))
+    prod_conn.execute(f"PRAGMA threads={max(1, (os.cpu_count() or _worker_count) // _worker_count)}")
     try:
         strategy = factory()  # fresh instance — never reuse across runs
         config = BacktestConfig(start_date=FULL_START, end_date=FULL_END, initial_capital=INITIAL_CAPITAL)

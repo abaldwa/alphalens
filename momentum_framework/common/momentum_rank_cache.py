@@ -40,6 +40,7 @@ production DB). Table: momentum_rank_snapshots
 from pathlib import Path
 from typing import Any, Dict, Optional
 import logging
+import os
 import threading
 
 import duckdb
@@ -115,6 +116,13 @@ def get_thread_cache_connection() -> duckdb.DuckDBPyConnection:
     conn = getattr(_thread_local, "conn", None)
     if conn is None:
         conn = get_cache_connection(read_only=True)
+        # Same PRAGMA threads cap as run_campaign.py::run_pass2's prod_conn,
+        # same reasoning (see that call site's comment): uncapped, this
+        # connection's own DuckDB-internal parallelism stacks on top of
+        # every other worker thread's connections and oversubscribes the
+        # physical cores once per-call overhead stops masking it.
+        worker_count = int(os.environ.get("M13_MAX_WORKERS", 4))
+        conn.execute(f"PRAGMA threads={max(1, (os.cpu_count() or worker_count) // worker_count)}")
         _thread_local.conn = conn
     return conn
 
