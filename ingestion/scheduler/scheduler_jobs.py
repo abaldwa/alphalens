@@ -21,7 +21,7 @@ import time
 from datetime import date as date_type
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -58,7 +58,7 @@ def create_scheduler(db_path: Optional[Path] = None) -> BackgroundScheduler:
     return BackgroundScheduler(jobstores={"default": create_jobstore(db_path)})
 
 
-def _determine_groww_live_snapshot_month() -> tuple:
+def _determine_groww_live_snapshot_month() -> Tuple[int, int]:
     """Sample one scheme to find Groww's live snapshot (year, month)."""
     from ingestion.scrapers.groww_mf_holdings import _fetch_scheme_detail, _list_scheme_ids
     scheme_ids = _list_scheme_ids("SBI Mutual Fund")
@@ -296,7 +296,7 @@ def _execute_model_training_job(model_names: Optional[List[str]] = None, job_id:
             dur, rss = _job_timer_stats(_t0)
             _record_heartbeat(job_id, "skipped", "no models overdue", duration_seconds=dur, peak_rss_mb=rss)
             return
-        seen_scripts: set = set()
+        seen_scripts: set[str] = set()
         for model_name, reason in overdue_models:
             script = _MODEL_TRAINING_SCRIPT_MAP.get(model_name)
             if script is not None and script in seen_scripts:
@@ -486,6 +486,27 @@ def _execute_promoter_pledge_backfill_job() -> None:
         _record_heartbeat("promoter_pledge_backfill", "failed", str(exc), duration_seconds=dur, peak_rss_mb=rss)
 
 
+def _execute_onboard_new_tickers_job() -> None:
+    """Sunday new-NSE-listing detection + FYERS history pull + universe/stock_master refresh."""
+    _t0 = _job_timer_start()
+    try:
+        result = subprocess.run(
+            [sys.executable, "scripts/onboard_new_tickers.py"],
+            capture_output=False, timeout=3600 * 2,
+        )
+        dur, rss = _job_timer_stats(_t0)
+        status = "failed" if result.returncode != 0 else "success"
+        _record_heartbeat("onboard_new_tickers", status, f"exit {result.returncode}" if result.returncode else None,
+                          duration_seconds=dur, peak_rss_mb=rss)
+    except subprocess.TimeoutExpired:
+        dur, rss = _job_timer_stats(_t0)
+        _record_heartbeat("onboard_new_tickers", "failed", "timeout after 2h", duration_seconds=dur, peak_rss_mb=rss)
+    except Exception as exc:
+        logger.error(f"onboard_new_tickers job raised exception: {exc}", exc_info=True)
+        dur, rss = _job_timer_stats(_t0)
+        _record_heartbeat("onboard_new_tickers", "failed", str(exc), duration_seconds=dur, peak_rss_mb=rss)
+
+
 def _execute_balance_sheet_backfill_job() -> None:
     """Saturday balance-sheet catch-up."""
     _t0 = _job_timer_start()
@@ -604,7 +625,7 @@ def _execute_emergency_recompute_job(
     progress_path = Path("datastore/logs/emergency_recompute_progress.json")
     progress_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _write_progress(**fields) -> None:
+    def _write_progress(**fields: Any) -> None:
         state = {}
         if progress_path.exists():
             try:
@@ -832,6 +853,16 @@ def schedule_promoter_pledge_backfill(scheduler: BackgroundScheduler, schedule_t
     logger.info(f"Promoter pledge backfill scheduled: {schedule_time} IST (sat)")
 
 
+def schedule_onboard_new_tickers(scheduler: BackgroundScheduler, schedule_time: Optional[str] = None) -> None:
+    if schedule_time is None:
+        from config.settings import ONBOARD_NEW_TICKERS_SCHEDULE_TIME
+        schedule_time = ONBOARD_NEW_TICKERS_SCHEDULE_TIME
+    h, m = (int(p) for p in schedule_time.split(":"))
+    scheduler.add_job(_execute_onboard_new_tickers_job, CronTrigger(hour=h, minute=m, day_of_week="sun", timezone="Asia/Kolkata"),
+                      id="onboard_new_tickers", replace_existing=True, misfire_grace_time=86400, coalesce=True)
+    logger.info(f"New-ticker onboarding scheduled: {schedule_time} IST (sun)")
+
+
 def schedule_balance_sheet_backfill(scheduler: BackgroundScheduler, schedule_time: Optional[str] = None) -> None:
     if schedule_time is None:
         from config.settings import BALANCE_SHEET_BACKFILL_SCHEDULE_TIME
@@ -872,7 +903,7 @@ def schedule_nse_xbrl_fundamentals(scheduler: BackgroundScheduler, schedule_time
     logger.info(f"NSE XBRL fundamentals scan scheduled: {schedule_time} IST (sat)")
 
 
-def schedule_emergency_recompute(scheduler: BackgroundScheduler, run_at=None,
+def schedule_emergency_recompute(scheduler: BackgroundScheduler, run_at: Optional[datetime] = None,
                                  from_date: Optional[str] = None, job_id: Optional[str] = None) -> str:
     if run_at is None:
         run_at = now_ist() + timedelta(seconds=10)

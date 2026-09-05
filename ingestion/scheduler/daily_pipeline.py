@@ -2744,6 +2744,7 @@ def main() -> None:
         schedule_model_training_nightly,
         schedule_multibagger_scoring,
         schedule_nse_xbrl_fundamentals,
+        schedule_onboard_new_tickers,
         schedule_promoter_pledge_backfill,
         schedule_weekend_feature_backfill,
     )
@@ -2857,6 +2858,9 @@ def main() -> None:
     # closed, no contention with weekday pipeline or Saturday jobs).
     schedule_multibagger_scoring(scheduler)
     schedule_forensic_scoring(scheduler)
+    # Weekly new-NSE-listing detection + FYERS history pull + universe/
+    # stock_master refresh. Sunday morning, same low-contention window.
+    schedule_onboard_new_tickers(scheduler)
     # 2026-07-04: daily off-machine backup (rclone to Backblaze B2) — every
     # day, not just weekdays, since paper_trading/config can change
     # regardless of whether NSE was open. No-op (records "skipped") until

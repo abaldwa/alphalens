@@ -358,6 +358,10 @@ NSE_XBRL_FUNDAMENTALS_SCHEDULE_TIME = "05:00"  # HH:MM, Asia/Kolkata, saturday
 PROMOTER_PLEDGE_BACKFILL_SCHEDULE_TIME = "11:00"    # HH:MM, Asia/Kolkata, saturday
 BALANCE_SHEET_BACKFILL_SCHEDULE_TIME = "11:30"      # HH:MM, Asia/Kolkata, saturday
 
+# Weekly detection of newly NSE-listed tickers + full FYERS history pull +
+# universe/stock_master refresh. Sunday, ahead of the weekday pipeline.
+ONBOARD_NEW_TICKERS_SCHEDULE_TIME = "09:00"         # HH:MM, Asia/Kolkata, sunday
+
 # ---------------------------------------------------------------------------
 # Observability — SPEC-OBS-001 through SPEC-OBS-005
 # ---------------------------------------------------------------------------

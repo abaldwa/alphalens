@@ -83,6 +83,16 @@ JOB_REGISTRY: Dict[str, Dict[str, Any]] = {
         "catchup_action": "rerun_script",
         "catchup_params": {"script": "scripts/backfill_balance_sheet_from_screener.py", "args": []},
     },
+    # [2026-09-06] New weekly job (schedule_onboard_new_tickers, Sunday
+    # 09:00 IST): detects newly-listed NSE tickers, pulls their full FYERS
+    # history, refreshes the universe CSV and stock_master. Registered here
+    # from day one so it gets the same catchup coverage the two jobs above
+    # were missing for months.
+    "onboard_new_tickers": {
+        "weekdays": _SUN,
+        "catchup_action": "rerun_script",
+        "catchup_params": {"script": "scripts/onboard_new_tickers.py", "args": []},
+    },
     "daily_backup": {
         "weekdays": _DAILY,
         "catchup_action": "rerun_script",
