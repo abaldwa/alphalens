@@ -28,7 +28,7 @@ process; see ohlcv.py's module docstring for the full incident this avoids.
 import logging
 import datetime as _dt
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -169,7 +169,7 @@ async def get_fundamentals_history_by_quarters(
         df = df.sort_values(["announcement_date", "quarter_end_date", "_nonnull_count"]).drop(columns="_nonnull_count")
         df = df.astype(object).where(df.notna(), None)
 
-    data = [FundamentalsRow(**row) for row in df.to_dict(orient="records")]
+    data = [FundamentalsRow(**cast(Dict[str, Any], row)) for row in df.to_dict(orient="records")]
     return FundamentalsResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))
 
 
@@ -229,8 +229,8 @@ def _matched_tickers(preset: str, panel: Any, resolved_date: str) -> List[str]:
     if preset in BESPOKE_PRESETS:
         with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
             adapter._db_conn = conn
-            return adapter.select_candidates(universe, as_of)
-    return adapter.select_candidates(universe, as_of)
+            return cast(List[str], adapter.select_candidates(universe, as_of))
+    return cast(List[str], adapter.select_candidates(universe, as_of))
 
 
 @router.get("/screener", response_model=FAScreenerResponse)
@@ -421,8 +421,8 @@ async def get_fundamental_scores(ticker: str) -> FAScoresResponse:
     if row is None:
         return FAScoresResponse(ticker=ticker, date=resolved_date)
 
-    ratios = {c: row.get(c) for c in RATIO_FEATURES if c in row.index}
-    governance = {c: row.get(c) for c in GOVERNANCE_FEATURES if c in row.index}
+    ratios = {c: float(row[c]) for c in RATIO_FEATURES if c in row.index and pd.notna(row.get(c))}
+    governance = {c: float(row[c]) for c in GOVERNANCE_FEATURES if c in row.index and pd.notna(row.get(c))}
     # Some strategies (Under-followed Growth Improvers, Governance-Aware
     # Quality Growth, Promoter-Aligned Compounders) blend z-scored ratios
     # with raw governance fields in one dict — same merged shape those
@@ -601,7 +601,7 @@ async def get_fundamentals_bulk(
             rows_for_ticker = []
             for row in group.to_dict(orient="records"):
                 try:
-                    rows_for_ticker.append(FundamentalsRow(**row))
+                    rows_for_ticker.append(FundamentalsRow(**cast(Dict[str, Any], row)))
                 except Exception as exc:
                     # One bad pre-existing row must never fail the WHOLE
                     # bulk request — see shareholding.py's bulk endpoint for
@@ -673,7 +673,7 @@ async def get_fundamentals(
     if not df.empty:
         df = df.astype(object).where(df.notna(), None)
 
-    data = [FundamentalsRow(**row) for row in df.to_dict(orient="records")]
+    data = [FundamentalsRow(**cast(Dict[str, Any], row)) for row in df.to_dict(orient="records")]
     return FundamentalsResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))
 
 

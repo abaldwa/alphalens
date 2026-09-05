@@ -426,6 +426,7 @@ def _run_pool_over_chunks(
 
     import multiprocessing
     import os
+    import signal
 
     # See compute_hmm_regime_features's docstring for the full measured
     # history behind capping BLAS threads to 1 per worker before Pool
@@ -441,7 +442,49 @@ def _run_pool_over_chunks(
             os.environ[var] = "1"
         ctx = multiprocessing.get_context("spawn")
         with ctx.Pool(processes=panel_workers) as pool:
-            return list(pool.imap(worker_fn, worker_args_list))
+            # `with Pool()` only terminates workers via __exit__, which never
+            # runs if this process is killed by SIGTERM (systemd stop, or an
+            # operator killing a stuck run) — Python's default SIGTERM handler
+            # exits immediately without unwinding context managers, leaving
+            # the spawned workers orphaned. Orphans keep any DB connections
+            # they opened (e.g. macro_features.py's direct read-only handle
+            # on the main DuckDB file, a documented SPEC-DS-002 exception)
+            # open indefinitely, blocking every later writer. Install a
+            # handler for the duration of the pool's life so SIGTERM
+            # terminates the pool before the process itself exits.
+            def _terminate_pool_on_sigterm(signum: int, frame: Any) -> None:
+                pool.terminate()
+                pool.join()
+                raise SystemExit(f"_run_pool_over_chunks: terminated by signal {signum}")
+
+            _prev_sigterm_handler = signal.signal(signal.SIGTERM, _terminate_pool_on_sigterm)
+            try:
+                # [2026-09-05] plain `pool.imap(...)` blocks forever if a
+                # worker hangs (e.g. the multiprocessing.Pool deadlock found
+                # during the 2026-08-14..09-05 scheduler-pause incident,
+                # where a dead worker's in-flight task never surfaced an
+                # error) — the whole daily pipeline process, and the
+                # get_duckdb_connection block whichever step called this
+                # from is still inside, would then hold the DB lock
+                # indefinitely with no operator watching. apply_async +
+                # per-task .get(timeout=...) bounds the wait: a stuck
+                # worker now raises within PANEL_POOL_CHUNK_TIMEOUT_S
+                # instead of hanging the process (and its DB lock) forever.
+                from config.settings import PANEL_POOL_CHUNK_TIMEOUT_S
+
+                async_results = [pool.apply_async(worker_fn, (arg,)) for arg in worker_args_list]
+                try:
+                    return [ar.get(timeout=PANEL_POOL_CHUNK_TIMEOUT_S) for ar in async_results]
+                except multiprocessing.TimeoutError:
+                    pool.terminate()
+                    pool.join()
+                    raise TimeoutError(
+                        f"_run_pool_over_chunks: a worker did not complete within "
+                        f"{PANEL_POOL_CHUNK_TIMEOUT_S}s — pool terminated to release "
+                        "its DB connections rather than hang the caller indefinitely"
+                    )
+            finally:
+                signal.signal(signal.SIGTERM, _prev_sigterm_handler)
     finally:
         for var, val in _prev_env.items():
             if val is None:

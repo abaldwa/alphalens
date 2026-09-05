@@ -29,7 +29,7 @@ ohlcv.py's module docstring for the full incident this avoids.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional, cast
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -97,5 +97,5 @@ async def get_governance(
     # same fix and full explanation.
     if not df.empty:
         df = df.astype(object).where(df.notna(), None)
-    data = [GovernanceRow(**row) for row in df.to_dict(orient="records")]
+    data = [GovernanceRow(**cast(Dict[str, Any], row)) for row in df.to_dict(orient="records")]
     return GovernanceResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))

@@ -60,8 +60,9 @@ import logging
 import sys
 import time
 from datetime import date as date_type
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -83,7 +84,7 @@ _G_ALL_DATES: List[pd.Timestamp] = []             # ~300 KB
 _G_SKIP_FRACDIFF: bool = False                    # see --skip-fracdiff
 
 
-def _worker_init(benchmark_wide: "pd.DataFrame", all_dates: list, skip_fracdiff: bool = False) -> None:
+def _worker_init(benchmark_wide: "pd.DataFrame", all_dates: List[pd.Timestamp], skip_fracdiff: bool = False) -> None:
     """Pool initializer — sets globals in each spawned worker process."""
     global _G_BENCHMARK_WIDE, _G_ALL_DATES, _G_SKIP_FRACDIFF
     _G_BENCHMARK_WIDE = benchmark_wide
@@ -296,7 +297,7 @@ def _load_benchmark_ohlcv(duckdb_path: Path) -> pd.DataFrame:
     return df
 
 
-def _get_fno_eligible_tickers(duckdb_path: Path) -> frozenset:
+def _get_fno_eligible_tickers(duckdb_path: Path) -> "frozenset[str]":
     """Return the set of tickers that actually have rows in fno_data."""
     from datastore.api.db import get_duckdb_connection
     with get_duckdb_connection(duckdb_path, read_only=True, persist=False) as conn:
@@ -425,7 +426,7 @@ def _save_staging(staging_dir: Path, ticker: str, df: pd.DataFrame) -> None:
     df.to_parquet(staging_dir / f"{ticker}.parquet", index=False)
 
 
-def _stage1_ticker(args: Tuple) -> Tuple[str, str]:
+def _stage1_ticker(args: Tuple[Any, ...]) -> Tuple[str, str]:
     """
     Stage 1 worker — called per-ticker via multiprocessing.Pool.imap_unordered.
 
@@ -461,7 +462,7 @@ def _stage1_ticker(args: Tuple) -> Tuple[str, str]:
 
         class _TickerCache:
             """Minimal cache stub — avoids passing the full BackfillDataCache object."""
-            def __init__(self):
+            def __init__(self) -> None:
                 self._fundamentals = {ticker: fund_raw}
                 self._shareholding = {ticker: share_raw}
                 self._corp_actions = {ticker: corp_raw}
@@ -491,9 +492,9 @@ def run_stage1(
     all_dates: List[pd.Timestamp],
     ohlcv_by_ticker: Dict[str, pd.DataFrame],
     benchmark_ohlcv: pd.DataFrame,
-    cache,
+    cache: Any,
     mf_by_ticker: Dict[str, pd.DataFrame],
-    listing_dates: Dict[str, Optional[object]],
+    listing_dates: Dict[str, Optional[datetime]],
     compute_hmm: bool,
     staging_dir: Path,
     duckdb_path: Path,
@@ -564,31 +565,86 @@ def run_stage1(
         ]
 
         import multiprocessing
+        import os
+
+        # [2026-09-05] BLAS thread oversubscription found live: with
+        # OMP_NUM_THREADS/OPENBLAS_NUM_THREADS unset, a single Stage 1
+        # worker was observed holding 55 threads — each of n_workers
+        # processes independently spawning its own BLAS thread pool
+        # (default: one thread per detected core) for the numpy/scipy/
+        # sklearn calls inside compute_advanced_technical_features/
+        # compute_hmm_regime_features. With n_workers=10 on a 14-core
+        # machine that is 10x oversubscription, not 10-way parallelism —
+        # profiled live: compute_advanced_technical_features alone (skip_
+        # fracdiff=True) measured 129-161s/ticker under this contention,
+        # vs this module's own documented ~25s/ticker estimate (0.005s/bar
+        # x 5123 bars) for that same skip_fracdiff configuration. Same
+        # fix already applied in features/matrix_builder.py's
+        # _run_pool_over_chunks — capping to 1 BLAS thread per worker here
+        # too, since env vars are inherited by each spawned child at
+        # process creation, before its own numpy import initializes BLAS.
+        _blas_env_vars = (
+            "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
+        )
+        _prev_env = {var: os.environ.get(var) for var in _blas_env_vars}
+        for var in _blas_env_vars:
+            os.environ[var] = "1"
+
         _spawn_ctx = multiprocessing.get_context("spawn")
         done_count = cached_count = error_count = 0
-        with _spawn_ctx.Pool(
-            processes=n_workers,
-            initializer=_worker_init,
-            initargs=(benchmark_wide, all_dates, skip_fracdiff),
-        ) as pool:
-            for i, (ticker, status) in enumerate(
-                pool.imap_unordered(_stage1_ticker, worker_args), start=1
-            ):
-                if status == "cached":
-                    cached_count += 1
-                elif status == "done":
-                    done_count += 1
-                    if done_count % 10 == 0 or done_count == 1:
-                        elapsed = time.monotonic() - t0_stage1
-                        rate = done_count / elapsed * 60
-                        logger.info(
-                            "  Stage 1 progress: %d/%d done, %d cached, %d errors "
-                            "(%.1f tickers/min)",
-                            done_count, len(tickers), cached_count, error_count, rate,
-                        )
+        try:
+            _pool_cm = _spawn_ctx.Pool(
+                processes=n_workers,
+                initializer=_worker_init,
+                initargs=(benchmark_wide, all_dates, skip_fracdiff),
+            )
+        finally:
+            for var, val in _prev_env.items():
+                if val is None:
+                    os.environ.pop(var, None)
                 else:
-                    error_count += 1
-                    logger.error("  %s: %s", ticker, status)
+                    os.environ[var] = val
+
+        # [2026-09-05] Same orphaned-worker gap found and fixed in
+        # features/matrix_builder.py's _run_pool_over_chunks: `with Pool()`
+        # only calls pool.terminate() via __exit__, which never runs on a
+        # raw SIGTERM (killing this script, or an operator's `kill -TERM`
+        # on a stuck run) — Python's default SIGTERM handler exits
+        # immediately without unwinding context managers. Verified live:
+        # SIGTERM-ing this script's parent left all `n_workers` Stage 1
+        # children running as orphans. Install a handler for the pool's
+        # lifetime so SIGTERM terminates it before the process exits.
+        import signal
+
+        def _terminate_pool_on_sigterm(signum: int, frame: Any) -> None:
+            _pool_cm.terminate()
+            _pool_cm.join()
+            raise SystemExit(f"run_stage1: terminated by signal {signum}")
+
+        _prev_sigterm_handler = signal.signal(signal.SIGTERM, _terminate_pool_on_sigterm)
+        try:
+            with _pool_cm as pool:
+                for i, (ticker, status) in enumerate(
+                    pool.imap_unordered(_stage1_ticker, worker_args), start=1
+                ):
+                    if status == "cached":
+                        cached_count += 1
+                    elif status == "done":
+                        done_count += 1
+                        if done_count % 10 == 0 or done_count == 1:
+                            elapsed = time.monotonic() - t0_stage1
+                            rate = done_count / elapsed * 60
+                            logger.info(
+                                "  Stage 1 progress: %d/%d done, %d cached, %d errors "
+                                "(%.1f tickers/min)",
+                                done_count, len(tickers), cached_count, error_count, rate,
+                            )
+                    else:
+                        error_count += 1
+                        logger.error("  %s: %s", ticker, status)
+        finally:
+            signal.signal(signal.SIGTERM, _prev_sigterm_handler)
 
         logger.info(
             "  Stage 1 workers complete: %d done, %d cached, %d errors",
@@ -754,7 +810,7 @@ def run_stage2(
             mb_by_date = {}
 
     ok = err = skip = 0
-    elapsed_times: list = []
+    elapsed_times: List[float] = []
 
     logger.info("Stage 2: assembling %d date matrices …", len(dates))
     t0_stage2 = time.monotonic()
@@ -988,7 +1044,6 @@ def main() -> None:
     from config.universe import get_tickers_for_feature_engineering, load_universe
     from datastore.client import DataStoreClient
     from features.backfill_cache import BackfillDataCache
-    from datetime import datetime
 
     from_dt = date_type.fromisoformat(args.from_date)
     to_dt = date_type.fromisoformat(args.to_date) if args.to_date else date_type.today()
@@ -1065,7 +1120,7 @@ def main() -> None:
             ld_rows = conn.execute(
                 "SELECT ticker, CAST(MIN(date) AS VARCHAR) FROM ohlcv_adjusted GROUP BY ticker"
             ).fetchall()
-        listing_dates: Dict[str, Optional[object]] = {
+        listing_dates: Dict[str, Optional[datetime]] = {
             r[0]: pd.Timestamp(r[1]).to_pydatetime() for r in ld_rows
         }
         already_done = sum(1 for t in tickers if (staging_dir / f"{t}.parquet").exists())
@@ -1101,7 +1156,7 @@ def main() -> None:
             ld_rows = conn.execute(
                 "SELECT ticker, CAST(MIN(date) AS VARCHAR) FROM ohlcv_adjusted GROUP BY ticker"
             ).fetchall()
-        listing_dates: Dict[str, Optional[object]] = {
+        listing_dates = {
             r[0]: pd.Timestamp(r[1]).to_pydatetime() for r in ld_rows
         }
         already_done = sum(1 for t in tickers if (staging_dir / f"{t}.parquet").exists())
@@ -1115,7 +1170,7 @@ def main() -> None:
         )
     else:
         tickers = get_tickers_for_feature_engineering()
-        listing_dates: Dict[str, Optional[object]] = {}
+        listing_dates = {}
         if "listing_date" in universe_meta.columns:
             listing_dates = {
                 row["ticker"]: pd.Timestamp(row["listing_date"]).to_pydatetime()

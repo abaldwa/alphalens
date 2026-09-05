@@ -46,6 +46,7 @@ from config.settings import (
     DATASTORE_API_CORS_ORIGINS,
     DATASTORE_API_HOST,
     DATASTORE_API_PORT,
+    DATASTORE_API_WORKERS,
 )
 
 from .routers import (
@@ -78,6 +79,7 @@ from .routers import (
     paper_trading,
     paper_trading_unified,
     pipeline,
+    portfolios,
     regime,
     sector_accumulation,
     sector_rotation,
@@ -183,6 +185,9 @@ app.include_router(indices.router)
 app.include_router(strategy_registry_router.router)
 # A91: channel-agnostic deployment of a registry strategy.
 app.include_router(deployments_router.router)
+# ML38: generic cross-channel portfolios (schema + router both added 2026-09-05
+# — see datastore/schema/create_normalised.py's _CREATE_PORTFOLIOS comment).
+app.include_router(portfolios.router)
 # [AS BUILT, P2.6] forensic.router and multibagger.router MUST be registered
 # before signals.router: their literal "/forensic/{ticker}" and
 # "/multibagger/{ticker}" paths would otherwise structurally collide with
@@ -289,4 +294,5 @@ if __name__ == "__main__":
         host=DATASTORE_API_HOST,
         port=DATASTORE_API_PORT,
         reload=False,
+        workers=DATASTORE_API_WORKERS,
     )

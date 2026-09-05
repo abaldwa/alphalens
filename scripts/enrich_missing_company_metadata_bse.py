@@ -1,51 +1,42 @@
 """
-scripts/enrich_missing_company_metadata.py
+scripts/enrich_missing_company_metadata_bse.py
 
-Phase: Backlog #31 follow-up (2026-07-04)
-Owner: Platform / QA
+[2026-09-05] BSE fallback pass for tickers scripts/enrich_missing_company_
+metadata.py's screener.in-only pass couldn't resolve (config/
+tickers_missing_company_name.csv, ~691 remaining as of this writing).
+Uses ingestion.scrapers.screener_sector_lookup.resolve_company_metadata_bse
+(exact-symbol BSE search + ComHeadernew) — verified live 2026-09-05 to
+match screener.in's own taxonomy/values (e.g. ALKYLAMINE -> "Chemicals"
+via BSE, identical to the existing manually-researched value already in
+the universe CSV for that ticker).
 
-Resolves company_name/sector for the 1,817 blank-name tickers in
-config/nifty500_universe.csv via screener.in's public company-search API
-(no login required) — confirmed live against RELIANCE/TCS/HDFCBANK that
-screener's "Peer comparison" breadcrumb's 2nd-level link matches this
-project's existing `sector` taxonomy convention exactly (e.g.
-"Oil Gas & Consumable Fuels", "Information Technology", "Financial Services").
-
-Resumable/checkpointed: writes resolved rows to
-config/company_metadata_enrichment_progress.csv incrementally (one line per
-resolved ticker, flushed immediately) so an interrupted run loses no
-progress — re-running only processes tickers not already in that file.
-
-Does NOT modify config/nifty500_universe.csv directly; run
-scripts/apply_company_metadata_enrichment.py afterward to merge resolved
-rows in (kept separate so a bad run can be inspected/discarded before it
-touches the real universe file).
-
-Tickers screener.in has no match for are logged to
-config/company_metadata_enrichment_unresolved.csv for a follow-up pass
-against Tijori/Trendlyne (both require login; not attempted here since
-screener alone resolves the large majority — see this script's summary
-output for the actual unresolved count).
+Resumable/checkpointed the same way as the screener-only script: writes to
+config/company_metadata_enrichment_bse_progress.csv incrementally, and
+still-unresolved tickers to config/company_metadata_enrichment_bse_unresolved.csv.
+Does NOT modify config/nifty500_universe.csv directly — run
+scripts/apply_company_metadata_enrichment.py afterward (it already merges
+from company_metadata_enrichment_progress.csv; point it at this file, or
+merge both progress files, before applying).
 """
 
 import csv
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ingestion.scrapers.screener_sector_lookup import search_screener as _search_screener  # noqa: E402
-from ingestion.scrapers.screener_sector_lookup import fetch_sector as _fetch_sector  # noqa: E402
+from ingestion.scrapers.screener_sector_lookup import resolve_company_metadata_bse  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MISSING_CSV = PROJECT_ROOT / "config" / "tickers_missing_company_name.csv"
-PROGRESS_CSV = PROJECT_ROOT / "config" / "company_metadata_enrichment_progress.csv"
-UNRESOLVED_CSV = PROJECT_ROOT / "config" / "company_metadata_enrichment_unresolved.csv"
+PROGRESS_CSV = PROJECT_ROOT / "config" / "company_metadata_enrichment_bse_progress.csv"
+UNRESOLVED_CSV = PROJECT_ROOT / "config" / "company_metadata_enrichment_bse_unresolved.csv"
 
 REQUEST_DELAY_SECONDS = 0.6
-PROGRESS_FIELDS = ["ticker", "company_name", "sector", "screener_url"]
+PROGRESS_FIELDS = ["ticker", "company_name", "sector", "isin"]
 
 
 def _load_done_tickers() -> set[str]:
@@ -57,7 +48,7 @@ def _load_done_tickers() -> set[str]:
     return done
 
 
-def main(limit: int | None = None) -> None:
+def main(limit: Optional[int] = None) -> None:
     with open(MISSING_CSV, newline="") as f:
         tickers = [row["ticker"] for row in csv.DictReader(f)]
 
@@ -83,19 +74,17 @@ def main(limit: int | None = None) -> None:
 
         for i, ticker in enumerate(todo):
             try:
-                match = _search_screener(ticker)
-                if match is None:
+                metadata = resolve_company_metadata_bse(ticker)
+                if metadata is None:
                     uwriter.writerow({"ticker": ticker})
                     uf.flush()
                     unresolved_count += 1
                 else:
-                    sector = _fetch_sector(match["url"])
-                    time.sleep(REQUEST_DELAY_SECONDS)
                     pwriter.writerow({
                         "ticker": ticker,
-                        "company_name": match["name"],
-                        "sector": sector or "",
-                        "screener_url": match["url"],
+                        "company_name": metadata["company_name"],
+                        "sector": metadata["sector"],
+                        "isin": metadata["isin"],
                     })
                     pf.flush()
                     resolved_count += 1
@@ -110,7 +99,6 @@ def main(limit: int | None = None) -> None:
                 print(f"  ...{i + 1}/{len(todo)} processed ({resolved_count} resolved, {unresolved_count} unresolved so far)")
 
     print(f"Done this run: {resolved_count} resolved, {unresolved_count} unresolved.")
-    print(f"Progress file: {PROGRESS_CSV} ({sum(1 for _ in open(PROGRESS_CSV)) - 1} total resolved rows)")
 
 
 if __name__ == "__main__":

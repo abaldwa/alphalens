@@ -814,10 +814,15 @@ class TestPipelineRunLockPerStepScope:
     for this date has been attempted."""
 
     def test_lock_is_acquired_once_per_step_not_once_for_the_whole_run(self, tmp_path, monkeypatch):
-        """The core A56 guarantee, proven directly: pipeline_run_lock()
-        must be called (acquire + release) once per attempted step, not
-        once for the entire STEPS cascade — otherwise it's still held
-        continuously end-to-end and nothing else could ever interleave."""
+        """[2026-09-05] Updated for wave-based parallelization: pipeline_run_lock()
+        is now acquired once per *wave* (not once per step), where a wave is a
+        group of steps with no intra-wave dependencies. This allows multiple
+        steps to run concurrently within a wave while still releasing the lock
+        between waves for inter-process coordination (preserving A56's intent).
+
+        The original A56 guarantee still holds: the lock is released between
+        logical execution units (now waves instead of steps), enabling other
+        processes to interleave."""
         import config.settings as settings_mod
         import ingestion.scheduler.pipeline_scheduler as ps_mod
         import ingestion.scheduler.pipeline_steps as _ps_steps
@@ -847,11 +852,12 @@ class TestPipelineRunLockPerStepScope:
         result = run_steps_for_date(date(2026, 7, 2), step_runner, cm, is_backfill=False)
 
         assert result is True
-        # One acquire/release cycle per step actually attempted (not per
-        # STEPS entry — dependency-skipped steps don't touch the lock at
-        # all, see run_steps_for_date's docstring) — and NOT a single
-        # acquisition covering the whole run.
-        assert len(acquisitions) == len(executed) > 1
+        # One acquire/release cycle per wave (not per STEPS entry or per step).
+        # With dependency-based wave grouping, we have significantly fewer
+        # acquisitions than steps (one per wave boundary, not per step).
+        # E.g., 7 independent steps + several dependent steps = ~8 waves.
+        assert len(acquisitions) > 0, "Should have at least one wave"
+        assert len(acquisitions) < len(executed), "Should have fewer waves than steps"
         assert all(acquisitions)
 
     def test_losing_lock_after_partial_progress_returns_false_not_true(self, tmp_path, monkeypatch):
@@ -919,6 +925,128 @@ class TestPipelineRunLockPerStepScope:
 
         assert result is True
         assert executed == []
+
+
+class TestWaveParallelization:
+    """Tests for SPEC-SCHED-013 parallelization of independent steps.
+
+    [2026-09-05] run_steps_for_date now groups steps by dependency depth
+    into "waves" and executes steps within each wave concurrently using
+    ThreadPoolExecutor, instead of sequentially. This preserves all existing
+    semantics (SPEC-SCHED-011 dependencies, checkpoints, backfill skips,
+    lock semantics for inter-process coordination) while allowing I/O-bound
+    download steps to overlap in wall-clock time."""
+
+    def test_independent_steps_execute_concurrently_not_sequentially(self):
+        """
+        Verify that independent download steps (those with no depends_on)
+        execute concurrently and not sequentially — multiple steps should
+        start within a short time window (indicating parallel start), not
+        sequentially (each starting after the previous one ends).
+        """
+        import time
+
+        step_duration_s = 0.05
+        execution_times = {}
+        start_times = []
+
+        def slow_step_runner(run_date, step_name):
+            """Simulate an I/O step by sleeping; record start time."""
+            start_times.append((step_name, time.time()))
+            execution_times[step_name] = time.time()
+            time.sleep(step_duration_s)
+
+        cm = CheckpointManager(in_memory=True)
+        run_date = date(2026, 7, 2)
+
+        result = run_steps_for_date(run_date, slow_step_runner, cm, is_backfill=False)
+        assert result is True, "All independent steps should succeed"
+
+        # Identify independent steps (those with depends_on: [])
+        independent_steps = {step["name"] for step in STEPS if not step.get("depends_on")}
+        executed = set(execution_times.keys())
+        independent_executed = executed & independent_steps
+
+        # Should have some independent steps executed
+        assert len(independent_executed) > 1, "Should have multiple independent steps"
+
+        # Concurrency check: look at start times. If steps are running in
+        # parallel, many should start close together (within ~0.05s = one
+        # step duration). If sequential, each starts ~0.05s after the
+        # previous one finishes.
+        independent_starts = [t for step, t in start_times if step in independent_executed]
+        independent_starts.sort()
+
+        if len(independent_starts) >= 3:
+            # Check: how many steps start in the first step_duration window?
+            # Parallel: most/all of them. Sequential: just one.
+            first_window_start = independent_starts[0]
+            first_window_end = first_window_start + step_duration_s + 0.01  # +10ms margin
+            concurrent_starts = sum(1 for t in independent_starts if t <= first_window_end)
+
+            # Parallel: expect most steps to start in the first window (~len * 80%)
+            # Sequential: expect just one
+            threshold = max(2, len(independent_starts) // 2)  # At least 50% in first window for parallel
+            assert concurrent_starts >= threshold, (
+                f"Only {concurrent_starts}/{len(independent_starts)} independent steps started "
+                f"within the first {step_duration_s:.3f}s window, expected {threshold}+ for "
+                f"parallel execution. Steps may be serializing."
+            )
+
+    def test_dependency_ordering_still_respected_with_parallelization(self):
+        """
+        Verify that dependencies are still enforced even with concurrent
+        execution: if step B depends on step A, B must not run before A
+        completes successfully.
+        """
+        execution_order = []
+
+        def step_runner(run_date, step_name):
+            execution_order.append(step_name)
+
+        cm = CheckpointManager(in_memory=True)
+        run_date = date(2026, 7, 2)
+
+        result = run_steps_for_date(run_date, step_runner, cm, is_backfill=False)
+
+        assert result is True
+
+        # Verify dependency chain: adjust_prices comes after download_bhavcopy
+        if "download_bhavcopy" in execution_order and "adjust_prices" in execution_order:
+            assert (
+                execution_order.index("download_bhavcopy")
+                < execution_order.index("adjust_prices")
+            ), "adjust_prices must run after download_bhavcopy succeeds"
+
+        # Verify another dependency: compute_features comes after adjust_prices
+        if "adjust_prices" in execution_order and "compute_features" in execution_order:
+            assert (
+                execution_order.index("adjust_prices")
+                < execution_order.index("compute_features")
+            ), "compute_features must run after adjust_prices succeeds"
+
+    def test_backfill_semantics_preserved_with_parallelization(self):
+        """
+        Verify that is_backfillable skipping still works correctly with
+        parallelization: non-backfillable steps (paper_trade, propose_paper_trades)
+        should not be called during a backfill.
+        """
+        executed = []
+
+        def step_runner(run_date, step_name):
+            executed.append(step_name)
+
+        cm = CheckpointManager(in_memory=True)
+        run_date = date(2026, 7, 2)
+
+        result = run_steps_for_date(run_date, step_runner, cm, is_backfill=True)
+
+        assert result is True
+        # paper_trade and propose_paper_trades are not backfillable
+        assert "paper_trade" not in executed
+        assert "propose_paper_trades" not in executed
+        # But compute_features IS backfillable
+        assert "compute_features" in executed
 
 
 class TestPipelineRunLock:

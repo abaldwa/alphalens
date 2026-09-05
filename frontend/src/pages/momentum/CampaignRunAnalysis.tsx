@@ -316,6 +316,10 @@ export function CampaignRunAnalysis({ runId, runLabel }: { runId: string | null;
         {/* Benchmark */}
         <div>
           <h4 className="mb-2 text-sm font-semibold">Benchmark</h4>
+          <p className="mb-3 text-xs text-muted-foreground">
+            The index's own CAGR/Sharpe/drawdown over its full available history -- independent of this run's own
+            backtest window, which ends where the campaign's trades end (see Trade Quality above).
+          </p>
           {benchmark?.index_name ? (
             <>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -323,7 +327,7 @@ export function CampaignRunAnalysis({ runId, runLabel }: { runId: string | null;
                 <StatCard label="Sharpe" value={fmtNum(benchmark.benchmark_sharpe_ratio)} />
                 <StatCard label="Max Drawdown" value={fmtPct(benchmark.benchmark_max_drawdown)} tone={signTone(benchmark.benchmark_max_drawdown)} />
                 <StatCard
-                  label="Period"
+                  label="Benchmark Index Data As Of"
                   value={`${benchmark.benchmark_period_start ?? EM_DASH} → ${benchmark.benchmark_period_end ?? EM_DASH}`}
                 />
               </div>

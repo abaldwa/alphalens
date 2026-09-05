@@ -340,9 +340,11 @@ _TRADE_COLUMNS = (
 def _trades_table_missing(conn: "duckdb.DuckDBPyConnection") -> bool:
     """True when backtest_trades has not been created yet (fresh DB, or no
     queue has run). Callers return an empty result rather than a 500."""
-    return not conn.execute(
+    row = conn.execute(
         "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = 'backtest_trades'"
-    ).fetchone()[0]
+    ).fetchone()
+    assert row is not None  # COUNT(*) with no GROUP BY always returns exactly one row
+    return not row[0]
 
 
 @router.get("/trades")

@@ -20,7 +20,7 @@ immediately, same as every other read-only router in this package.
 
 import logging
 from datetime import date as date_type, timedelta
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -61,7 +61,7 @@ class CorporateAnnouncementResponse(BaseModel):
     record_count: int
 
 
-def _row_to_model(row: tuple) -> CorporateAnnouncementRow:
+def _row_to_model(row: Tuple[Any, ...]) -> CorporateAnnouncementRow:
     d = dict(zip(_COLUMNS, row))
     d["announced_at"] = d["announced_at"].isoformat() if d["announced_at"] is not None else None
     d["exchange_disseminated_at"] = (
@@ -81,7 +81,7 @@ async def get_recent_announcements(
 
     cutoff = date_type.today() - timedelta(days=days)
     conditions = ["announced_at >= ?"]
-    params = [cutoff]
+    params: List[Any] = [cutoff]
     if category:
         conditions.append("category = ?")
         params.append(category)
@@ -119,7 +119,7 @@ async def search_announcements(
         raise HTTPException(status_code=400, detail="from must be <= to")
 
     conditions = []
-    params = []
+    params: List[Any] = []
     if ticker:
         conditions.append("ticker = ?")
         params.append(ticker)

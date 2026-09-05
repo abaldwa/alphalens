@@ -29,7 +29,7 @@ from datetime import date as date_type
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -677,7 +677,7 @@ async def get_integrity_findings(
 
     findings = [
         OpsIntegrityFinding(
-            id=int(row.id),
+            id=int(cast(Any, row.id)),
             check_name=str(row.check_name),
             ticker=str(row.ticker) if row.ticker is not None else None,
             finding_date=str(row.finding_date),
@@ -748,7 +748,7 @@ async def get_missed_job_findings(
 
     findings = [
         OpsMissedJobFinding(
-            id=int(row.id),
+            id=int(cast(Any, row.id)),
             job_id=str(row.job_id),
             missed_date=str(row.missed_date),
             severity=str(row.severity),

@@ -86,7 +86,7 @@ import uuid
 from datetime import date as date_type
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Literal, Tuple
+from typing import Any, Dict, List, Optional, Literal, Tuple, cast
 
 from duckdb import DuckDBPyConnection
 from fastapi import APIRouter, HTTPException
@@ -306,7 +306,7 @@ async def get_universe(
             if ranking.empty:
                 return []
             rows = [
-                (r.ticker, float(r.momentum_return), int(r.momentum_rank), bool(r.in_top_n))
+                (r.ticker, float(cast(Any, r.momentum_return)), int(cast(Any, r.momentum_rank)), bool(r.in_top_n))
                 for r in ranking.itertuples(index=False)
             ]
 

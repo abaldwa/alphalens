@@ -33,6 +33,7 @@ fixes.
 
 import logging
 from datetime import date as date_type
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -169,7 +170,10 @@ async def get_ohlcv(
     ]
 
     return OHLCVResponse(
-        ticker=ticker, start_date=from_date, end_date=to_date, data=data, record_count=len(data)
+        ticker=ticker,
+        start_date=datetime.combine(from_date, datetime.min.time()),
+        end_date=datetime.combine(to_date, datetime.min.time()),
+        data=data, record_count=len(data),
     )
 
 

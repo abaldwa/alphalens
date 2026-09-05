@@ -22,7 +22,7 @@ ohlcv.py's module docstring for the full incident this avoids.
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -93,7 +93,7 @@ async def get_shareholding_bulk(
             rows_for_ticker = []
             for row in group.to_dict(orient="records"):
                 try:
-                    rows_for_ticker.append(ShareholdingRow(**row))
+                    rows_for_ticker.append(ShareholdingRow(**cast(Dict[str, Any], row)))
                 except Exception as exc:
                     # One bad pre-existing row (e.g. a sign-error
                     # promoter_pledge < 0 from a scraping bug) must never
@@ -103,7 +103,7 @@ async def get_shareholding_bulk(
                     # losing every other ticker's data (see
                     # BackfillDataCache's all-or-nothing exception fallback).
                     logger.warning(f"shareholding.bulk: skipping invalid row for {ticker}: {exc}")
-            data[ticker] = rows_for_ticker
+            data[str(ticker)] = rows_for_ticker
 
     record_count = sum(len(v) for v in data.values())
     return ShareholdingBulkResponse(as_of=pit_reference, data=data, record_count=record_count)
@@ -152,7 +152,7 @@ async def get_shareholding(
     # fundamentals.py's get_fundamentals/get_fundamentals_history).
     if not df.empty:
         df = df.astype(object).where(df.notna(), None)
-    data = [ShareholdingRow(**row) for row in df.to_dict(orient="records")]
+    data = [ShareholdingRow(**cast(Dict[str, Any], row)) for row in df.to_dict(orient="records")]
     return ShareholdingResponse(ticker=ticker, as_of=pit_reference, data=data, record_count=len(data))
 
 

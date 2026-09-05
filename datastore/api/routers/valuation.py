@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date as date_type
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -133,7 +133,7 @@ async def get_batch_ranked(
 
     ranked = sorted(
         [r for r in results if r and r.margin_of_safety is not None],
-        key=lambda r: r.margin_of_safety,  # type: ignore[arg-type]
+        key=lambda r: cast(float, r.margin_of_safety),
         reverse=True,
     )
 
@@ -333,7 +333,7 @@ async def get_valuation_history(
                 return {"ticker": ticker, "count": 0, "history": []}
 
             clauses = ["ticker = ?"]
-            params: list = [ticker]
+            params: List[Any] = [ticker]
             if start_date:
                 clauses.append("date >= ?")
                 params.append(start_date)
@@ -382,7 +382,7 @@ def _ttm_pe(ticker: str, fund_df: pd.DataFrame, aod: str) -> Optional[float]:
     price = _load_current_price(ticker, aod)
     if price is None:
         return None
-    return price / ttm_eps
+    return float(price) / ttm_eps
 
 
 @router.get("/{ticker}/relative")

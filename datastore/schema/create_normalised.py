@@ -1047,6 +1047,43 @@ _CREATE_BACKLOG_DEPENDENCIES = """
     )
 """
 
+# [2026-09-05] datastore/api/routers/portfolios.py (ML38, 2026-08-09) has
+# always imported _CREATE_PORTFOLIOS/_CREATE_PORTFOLIO_CASH_FLOWS from this
+# module — neither ever existed here, so the router would raise ImportError
+# on load. Never caught because the router was also never mounted in
+# datastore/api/main.py. Both gaps closed together 2026-09-05 (found while
+# clearing mypy's attr-defined error for the missing names). Columns match
+# that router's own _PORTFOLIO_COLUMNS/_CASH_FLOW_COLUMNS exactly — those
+# lists, plus every INSERT/SELECT already written against them, were the
+# spec; this DDL was written to satisfy an interface that pre-existed it.
+_CREATE_PORTFOLIOS = """
+    CREATE SEQUENCE IF NOT EXISTS portfolios_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS portfolios (
+        portfolio_id BIGINT PRIMARY KEY DEFAULT nextval('portfolios_id_seq'),
+        name VARCHAR NOT NULL UNIQUE,
+        description VARCHAR,
+        channel VARCHAR,
+        base_capital DOUBLE NOT NULL DEFAULT 0.0,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+"""
+
+_CREATE_PORTFOLIO_CASH_FLOWS = """
+    CREATE SEQUENCE IF NOT EXISTS portfolio_cash_flows_id_seq START 1;
+    CREATE TABLE IF NOT EXISTS portfolio_cash_flows (
+        id BIGINT PRIMARY KEY DEFAULT nextval('portfolio_cash_flows_id_seq'),
+        portfolio_id BIGINT NOT NULL,
+        date DATE NOT NULL,
+        amount DOUBLE NOT NULL,
+        kind VARCHAR NOT NULL,
+        note VARCHAR,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        FOREIGN KEY (portfolio_id) REFERENCES portfolios(portfolio_id)
+    )
+"""
+
 _ALL_TABLES = {
     "market_regimes": _CREATE_MARKET_REGIMES,
     "ohlcv_adjusted": _CREATE_OHLCV_ADJUSTED,
@@ -1088,6 +1125,8 @@ _ALL_TABLES = {
     "momentum_strategy_configs": _CREATE_MOMENTUM_STRATEGY_CONFIGS,
     "backlog_items": _CREATE_BACKLOG_ITEMS,
     "backlog_dependencies": _CREATE_BACKLOG_DEPENDENCIES,
+    "portfolios": _CREATE_PORTFOLIOS,
+    "portfolio_cash_flows": _CREATE_PORTFOLIO_CASH_FLOWS,
 }
 
 # [AS BUILT, P2.1] This project has no formal migration system — `CREATE

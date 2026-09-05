@@ -20,7 +20,7 @@ docstring for the cross-process DUCKDB_PATH lock-conflict this avoids.
 
 import logging
 from datetime import date as date_type
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -58,7 +58,7 @@ async def get_corporate_actions_bulk(
 
     placeholders = ", ".join("?" for _ in tickers)
     conditions = [f"ticker IN ({placeholders})"]
-    params: list = list(tickers)
+    params: List[Any] = list(tickers)
     if from_date:
         conditions.append("ex_date >= ?")
         params.append(from_date)
@@ -108,7 +108,7 @@ async def get_corporate_actions(
         raise HTTPException(status_code=400, detail="from must be <= to")
 
     conditions = ["ticker = ?"]
-    params = [ticker]
+    params: List[Any] = [ticker]
     if from_date:
         conditions.append("ex_date >= ?")
         params.append(from_date)

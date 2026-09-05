@@ -33,7 +33,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -60,7 +60,7 @@ class TriggerStatusResponse(BaseModel):
     report_file: Optional[str] = None
 
 
-def _launch_trigger(module: str, job_prefix: str, extra_args: Optional[list] = None) -> TriggerResponse:
+def _launch_trigger(module: str, job_prefix: str, extra_args: Optional[List[str]] = None) -> TriggerResponse:
     job_id = f"{job_prefix}_{uuid.uuid4().hex[:10]}"
     _TRIGGER_LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _TRIGGER_LOGS_DIR / f"{job_id}.log"
@@ -96,7 +96,7 @@ def _read_latest_report(glob_pattern: str, not_found_detail: str) -> Dict[str, A
     if not files:
         raise HTTPException(status_code=404, detail=not_found_detail)
     latest = files[-1]
-    data = json.loads(latest.read_text())
+    data: Dict[str, Any] = json.loads(latest.read_text())
     data["report_file"] = latest.name
     return data
 
@@ -202,7 +202,7 @@ async def get_trade_book(
     offset: int = 0,
     outcome: Optional[str] = None,
     financial_year: Optional[str] = None,
-) -> TATradeBookOut:
+) -> Dict[str, Any]:
     """One run's trades, paginated, straight from backtest_trades.
 
     Paginated rather than whole because the store holds 1.85M rows and a single
@@ -220,7 +220,7 @@ async def get_trade_book(
 
     limit = max(1, min(limit, 2000))
     where = ["run_id = ?"]
-    params: list = [run_id]
+    params: List[Any] = [run_id]
     if outcome == "win":
         where.append("pnl_inr > 0")
     elif outcome == "loss":
@@ -235,10 +235,12 @@ async def get_trade_book(
     except Exception as exc:  # pragma: no cover - depends on live DB state
         raise HTTPException(status_code=503, detail=f"backtest store unavailable: {exc}") from exc
     try:
-        total, wins, gross = conn.execute(
+        agg_row = conn.execute(
             f"SELECT COUNT(*), COUNT(*) FILTER (WHERE pnl_inr > 0), COALESCE(SUM(pnl_inr), 0) "
             f"FROM backtest_trades WHERE {clause}", params,
         ).fetchone()
+        assert agg_row is not None  # COUNT(*) with no GROUP BY always returns exactly one row
+        total, wins, gross = agg_row
         if total == 0 and offset == 0:
             raise HTTPException(status_code=404, detail=f"no trades stored for run {run_id}")
         cols = ["ticker", "qty", "buy_date", "buy_price", "sale_date", "sale_price",
@@ -317,9 +319,11 @@ async def get_template_leaderboard() -> Dict[str, Any]:
     # the whole statement before executing it: naming a table that does not
     # exist fails at bind time, so an `OR NOT EXISTS(... duckdb_tables ...)`
     # guard would not save a fresh database.
-    _has_supersessions = bt.execute(
+    _supersessions_row = bt.execute(
         "SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = 'run_supersessions'"
-    ).fetchone()[0]
+    ).fetchone()
+    assert _supersessions_row is not None  # COUNT(*) with no GROUP BY always returns exactly one row
+    _has_supersessions = _supersessions_row[0]
     _not_superseded = (
         "AND NOT EXISTS (SELECT 1 FROM run_supersessions rs "
         "WHERE rs.run_id = backtest_runs.run_id)"
@@ -338,7 +342,7 @@ async def get_template_leaderboard() -> Dict[str, Any]:
 
     _bench_cache: Dict[str, Optional[float]] = {}
 
-    def _benchmark(start, end) -> Optional[float]:
+    def _benchmark(start: Any, end: Any) -> Optional[float]:
         key = f"{start}->{end}"
         if key in _bench_cache:
             return _bench_cache[key]
@@ -356,7 +360,7 @@ async def get_template_leaderboard() -> Dict[str, Any]:
         _bench_cache[key] = val
         return val
 
-    best: Dict[tuple, Dict[str, Any]] = {}
+    best: Dict[Tuple[Any, Any], Dict[str, Any]] = {}
     for config_json, metrics_json, start, end, integrity, dsr, exit_variant in rows:
         try:
             cfg = json.loads(config_json) or {}

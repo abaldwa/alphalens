@@ -738,6 +738,39 @@ FEATURE_CACHE_PRELOAD_WORKERS = int(os.environ.get("FEATURE_CACHE_PRELOAD_WORKER
 # compute_hmm_regime_features's n_workers).
 PANEL_COMPUTE_WORKERS = int(os.environ.get("PANEL_COMPUTE_WORKERS", "1"))
 
+# [2026-09-05] Gap backfill (run_backfill in ingestion/scheduler/pipeline_steps.py)
+# used to run compute_features once per missed date via the live, date-first
+# code path (step_compute_features) — each call reloads full per-ticker
+# history from scratch. Fine for the live daily case (1 date), but a real
+# multi-week scheduler pause (2026-08-14 to 2026-09-05 incident) showed this
+# blowing past 90 minutes and hanging (multiprocessing.Pool deadlock) on a
+# single date, because it never amortizes the per-ticker OHLCV/fundamentals
+# load across dates the way scripts/feature_backfill_hybrid.py's ticker-first
+# design does (verified same-day: 2,317 tickers x 15 dates completed in the
+# time date-first couldn't finish ONE date). MULTI_DAY_BACKFILL_THRESHOLD_DAYS
+# gap dates or more routes compute_features through the hybrid batch script
+# instead; below the threshold (the ordinary single-missed-day case) keeps
+# the existing per-date step unchanged.
+MULTI_DAY_BACKFILL_THRESHOLD_DAYS = int(os.environ.get("MULTI_DAY_BACKFILL_THRESHOLD_DAYS", "2"))
+
+# Workers for the hybrid batch backfill's Stage 1 (ticker-first per-ticker
+# compute) when auto-triggered by run_backfill — kept below the 10 manually
+# verified safe on this 14-core/14GB box (2026-09-05) since an unattended
+# scheduler-triggered run has no one watching memory pressure live.
+FEATURE_BACKFILL_HYBRID_WORKERS = int(os.environ.get("FEATURE_BACKFILL_HYBRID_WORKERS", "6"))
+
+# [2026-09-05] Hard ceiling on how long _run_pool_over_chunks
+# (features/matrix_builder.py) waits for a single chunk-worker task before
+# terminating the whole pool and raising. Added after the same incident
+# above surfaced a multiprocessing.Pool deadlock that hung compute_features
+# (and, with it, whatever get_duckdb_connection block was still open in the
+# calling step) indefinitely — un-timed-out, this holds the DB write lock
+# forever with no operator watching. 1800s (30 min) is generous headroom
+# above any single chunk's observed cost on this machine (full-universe
+# panel chunks finish in low single-digit minutes); tune down if a tighter
+# bound is wanted once more chunk-timing data exists.
+PANEL_POOL_CHUNK_TIMEOUT_S = int(os.environ.get("PANEL_POOL_CHUNK_TIMEOUT_S", "1800"))
+
 # ---------------------------------------------------------------------------
 # Off-machine backup — rclone to Backblaze B2 (2026-07-04 architecture
 # review; switched from an initial Google Drive design after the OAuth
@@ -778,6 +811,21 @@ DATASTORE_API_PORT = int(os.environ.get("DATASTORE_API_PORT", "8000"))
 # ".../api/v1/api/v1/ohlcv/..." for every DataStoreClient call (caught
 # while wiring features/matrix_builder.py, P1.1 — see BuildLog.md).
 DATASTORE_API_BASE_URL = f"http://{DATASTORE_API_HOST}:{DATASTORE_API_PORT}"
+
+# [2026-09-05] Single-worker uvicorn meant every request — including the
+# OHLCV GET endpoints compute_features hammers per backfill date — was
+# served one at a time off one event loop; under concurrent panel_workers
+# load, a normally sub-second query queued up to 6-10s+, at one point
+# stalling even the static /docs route. Safe to raise: get_duckdb_connection
+# already opens the OHLCV hot path as read_only+persist=False (DuckDB
+# permits unlimited concurrent read-only connections across processes,
+# per datastore/api/db.py's SPEC-SCHED-013 docstring), and the one startup
+# write (create_schema()) already tolerates a lock conflict from a
+# sibling worker via its own IOException handler in main.py's lifespan.
+# Kept conservative (not e.g. 14, matching this box's core count) per the
+# HMM_FEATURE_WORKERS precedent above — that setting's own history notes
+# 10 spawn-context workers OOM-killed this same 14-core machine twice.
+DATASTORE_API_WORKERS = int(os.environ.get("DATASTORE_API_WORKERS", "4"))
 
 # CORS origins allowed to call the API. Defaults cover the Vite dashboard's
 # dev server (5173) and local preview build (4173); production origins are

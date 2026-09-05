@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date as date_type
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -84,7 +84,7 @@ async def get_sector_accumulation_daily(
     # NaN -> None: DuckDB NULLs surface as float('nan'), which Pydantic v2
     # rejects even for Optional[float] fields (same fix as fundamentals.py).
     df = df.astype(object).where(df.notna(), None)
-    return [SectorAccumulationRow(**row) for row in df.to_dict(orient="records")]
+    return [SectorAccumulationRow(**cast(Dict[str, Any], row)) for row in df.to_dict(orient="records")]
 
 
 @router.get("/drilldown", response_model=List[SectorAccumulationDrilldownRow])
@@ -102,4 +102,4 @@ async def get_sector_accumulation_drilldown(
         raise HTTPException(status_code=500, detail=str(exc))
 
     df = df.astype(object).where(df.notna(), None)
-    return [SectorAccumulationDrilldownRow(**row) for row in df.to_dict(orient="records")]
+    return [SectorAccumulationDrilldownRow(**cast(Dict[str, Any], row)) for row in df.to_dict(orient="records")]

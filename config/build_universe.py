@@ -414,6 +414,97 @@ def backfill_market_cap_from_screener_cache(
     return df[OUTPUT_COLUMNS]
 
 
+def backfill_sector_via_screener(
+    df: pd.DataFrame,
+    max_lookups: int = 200,
+    delay_s: float = 0.6,
+) -> pd.DataFrame:
+    """
+    Fill blank `sector` values in-place (returns the same df) via
+    ingestion.scrapers.screener_sector_lookup.resolve_sector — the same
+    proven, taxonomy-matching mechanism scripts/enrich_missing_company_
+    metadata.py used for the historical blank-sector backlog, reused here
+    so it runs automatically whenever the universe is rebuilt (e.g. a new
+    IPO landing in ohlcv_adjusted for the first time), not just as a
+    manual one-off script.
+
+    Never fabricates: a ticker screener.in can't resolve (no exact match,
+    unexpected page shape) is left blank, same as before this call — no
+    different than the pre-existing "blank sector" state a caller not
+    using this function would see. Logs unresolved tickers rather than
+    silently dropping them, so a human can decide whether to chase Tijori/
+    Trendlyne for them (same triage as config/company_metadata_
+    enrichment_unresolved.csv's existing convention).
+
+    Parameters
+    ----------
+    df : DataFrame
+        Must have 'ticker' and 'sector' columns. Mutated in place.
+    max_lookups : int
+        Safety cap on how many blank tickers to resolve in one call — the
+        steady-state case (new tickers trickling in) is a handful per
+        universe rebuild, not the ~1,800-ticker one-time historical
+        backlog scripts/enrich_missing_company_metadata.py was built for;
+        that script (with its resumable progress file) is still the right
+        tool for a large backlog. Default 200 comfortably covers a normal
+        run while bounding worst-case added wall-clock (~200 * ~1.2s
+        round-trip ≈ 4 min) if something unusual dumps many new tickers
+        into ohlcv_adjusted at once.
+    delay_s : float
+        Courtesy delay between screener.in requests (matches the existing
+        enrichment script's REQUEST_DELAY_SECONDS convention).
+
+    Returns
+    -------
+    pd.DataFrame
+        The same df, with as many blank `sector` values filled as could be
+        resolved this call.
+    """
+    import time
+
+    import requests
+
+    from ingestion.scrapers.screener_sector_lookup import resolve_sector
+
+    blank_mask = df["sector"].isna() | (df["sector"].astype(str).str.strip() == "")
+    blank_tickers = df.loc[blank_mask, "ticker"].tolist()
+    if not blank_tickers:
+        return df
+
+    if len(blank_tickers) > max_lookups:
+        logger.info(
+            "backfill_sector_via_screener: %d blank tickers, capping this run to %d "
+            "(use scripts/enrich_missing_company_metadata.py for a large backlog)",
+            len(blank_tickers), max_lookups,
+        )
+        blank_tickers = blank_tickers[:max_lookups]
+
+    resolved: Dict[str, str] = {}
+    unresolved: List[str] = []
+    for ticker in blank_tickers:
+        try:
+            sector = resolve_sector(ticker)
+        except requests.RequestException as exc:
+            logger.warning(
+                "backfill_sector_via_screener: network error (%s) — stopping this run's "
+                "remaining lookups, %d/%d already attempted", exc, len(resolved) + len(unresolved), len(blank_tickers),
+            )
+            break
+        if sector:
+            resolved[ticker] = sector
+        else:
+            unresolved.append(ticker)
+        time.sleep(delay_s)
+
+    if resolved:
+        df.loc[df["ticker"].isin(resolved.keys()), "sector"] = df["ticker"].map(resolved).fillna(df["sector"])
+    logger.info(
+        "backfill_sector_via_screener: resolved %d/%d attempted (%d unresolved — screener had no exact match)",
+        len(resolved), len(resolved) + len(unresolved), len(unresolved),
+    )
+    return df
+
+
 def build_full_nse_universe_from_db(
     output_path: Optional[Path] = None,
     db_path: Optional[Path] = None,
@@ -566,6 +657,15 @@ def build_full_nse_universe_from_db(
     merged["market_cap_cr"] = 0
     merged["is_fno_eligible"] = merged["ticker"].isin(fno_eligible_tickers)
 
+    # [2026-09-05] Any ticker outside the Nifty 500 constituent list lands
+    # here with sector="" (NSE's free archives only publish Industry for
+    # Nifty 500 members) — this is the gap R10 (industry_momentum) needs
+    # filled for a newly onboarded ticker (fresh IPO, or a tier-6 stock
+    # entering ohlcv_adjusted for the first time) to actually participate
+    # in sector ranking instead of being dropped as unmapped. Best-effort,
+    # never fabricated — see backfill_sector_via_screener's docstring.
+    merged = backfill_sector_via_screener(merged)
+
     out = merged[OUTPUT_COLUMNS].drop_duplicates(subset="ticker").reset_index(drop=True)
 
     output_path = output_path or UNIVERSE_CSV_PATH
@@ -716,11 +816,20 @@ if __name__ == "__main__":
             "(see backfill_market_cap_from_screener_cache)."
         ),
     )
+    parser.add_argument(
+        "--refresh-sector",
+        action="store_true",
+        help=(
+            "Fill blank sector values in the existing universe CSV via screener.in "
+            "(see backfill_sector_via_screener) — also runs automatically as part of "
+            "--full-nse, this flag is for topping up an existing CSV on its own."
+        ),
+    )
     args = parser.parse_args()
 
     if args.full_nse:
         build_full_nse_universe_from_db(active_days=args.active_days)
-    elif not (args.refresh_adtv or args.refresh_market_cap):
+    elif not (args.refresh_adtv or args.refresh_market_cap or args.refresh_sector):
         build_universe_csv()
 
     if args.refresh_adtv:
@@ -728,3 +837,7 @@ if __name__ == "__main__":
     if args.refresh_market_cap:
         compute_market_cap_from_fundamentals()
         backfill_market_cap_from_screener_cache()
+    if args.refresh_sector:
+        existing = pd.read_csv(UNIVERSE_CSV_PATH)
+        existing = backfill_sector_via_screener(existing)
+        existing.to_csv(UNIVERSE_CSV_PATH, index=False)

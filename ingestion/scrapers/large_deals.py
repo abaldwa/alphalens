@@ -106,12 +106,13 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import pandas as pd
 import requests
 
 from config.settings import LARGE_DEALS_RATE_LIMIT_SLEEP_SECONDS, LARGE_DEALS_RAW_DIR
+from config.timezone import now_ist
 from ingestion.scrapers.bhavcopy import NSE_HOMEPAGE_URL, USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ def _normalise_transaction_type(raw: str) -> str:
 # NSE fetchers
 # ---------------------------------------------------------------------------
 
-def _fetch_nse_deals(target_date: str, deal_type: str) -> List[dict]:
+def _fetch_nse_deals(target_date: str, deal_type: str) -> List[Dict[str, Any]]:
     """
     Fetch bulk or block deals from NSE for target_date.
 
@@ -227,6 +228,9 @@ def _fetch_nse_deals(target_date: str, deal_type: str) -> List[dict]:
     history_url = NSE_BULK_DEALS_HISTORY if deal_type == DEAL_TYPE_BULK else NSE_BLOCK_DEALS_HISTORY
     snapshot_url = NSE_BULK_DEALS_SNAPSHOT if deal_type == DEAL_TYPE_BULK else NSE_BLOCK_DEALS_SNAPSHOT
 
+    # Determine today's date for snapshot-fallback eligibility check
+    today_str = now_ist().date().isoformat()
+
     last_exc: Optional[Exception] = None
 
     # --- Try historical endpoint first ---
@@ -250,8 +254,8 @@ def _fetch_nse_deals(target_date: str, deal_type: str) -> List[dict]:
                 # Try nested keys
                 for key in ("bulkDealData", "blockDealData", "bulkDeals", "blockDeals"):
                     if key in data and isinstance(data[key], list):
-                        return data[key]
-                return list(data.values())[0] if data else []
+                        return cast(List[Any], data[key])
+                return cast(List[Any], list(data.values())[0]) if data else []
             return []
         except Exception as exc:
             last_exc = exc
@@ -262,42 +266,56 @@ def _fetch_nse_deals(target_date: str, deal_type: str) -> List[dict]:
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_SECONDS)
 
-    # --- Fall back to snapshot (useful only if target_date == today) ---
-    logger.warning(
-        f"NSE {deal_type} historical endpoint failed for {target_date} "
-        f"({last_exc}) — trying snapshot endpoint"
-    )
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            session = _nse_session()
-            resp = session.get(snapshot_url, timeout=15)
-            resp.raise_for_status()
-            payload = resp.json()
-            if isinstance(payload, list):
-                return payload
-            if isinstance(payload, dict):
-                data = payload.get("data", payload)
-                if isinstance(data, list):
-                    return data
-                for key in ("bulkDealData", "blockDealData", "bulkDeals", "blockDeals"):
-                    if key in data and isinstance(data[key], list):
-                        return data[key]
-                return list(data.values())[0] if data else []
-            return []
-        except Exception as exc:
-            last_exc = exc
-            logger.warning(
-                f"NSE {deal_type} snapshot attempt {attempt}/{MAX_RETRIES} "
-                f"for {target_date}: {exc}"
-            )
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
+    # --- Fall back to snapshot (only useful if target_date == today) ---
+    # Skip snapshot endpoint for historical dates: NSE's snapshot endpoint
+    # only ever serves today's live data, so for any date not literally today,
+    # the 3x retries + exponential backoff would waste measurable wall-clock
+    # time with zero chance of success. For today's run (same-day daily
+    # pipeline), the snapshot is attempted as the final fallback before the
+    # archive CSV.
+    if target_date == today_str:
+        logger.warning(
+            f"NSE {deal_type} historical endpoint failed for {target_date} "
+            f"({last_exc}) — trying snapshot endpoint"
+        )
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                session = _nse_session()
+                resp = session.get(snapshot_url, timeout=15)
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, list):
+                    return payload
+                if isinstance(payload, dict):
+                    data = payload.get("data", payload)
+                    if isinstance(data, list):
+                        return cast(List[Dict[str, Any]], data)
+                    for key in ("bulkDealData", "blockDealData", "bulkDeals", "blockDeals"):
+                        if key in data and isinstance(data[key], list):
+                            return cast(List[Dict[str, Any]], data[key])
+                    return cast(List[Dict[str, Any]], list(data.values())[0]) if data else []
+                return []
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    f"NSE {deal_type} snapshot attempt {attempt}/{MAX_RETRIES} "
+                    f"for {target_date}: {exc}"
+                )
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_DELAY_SECONDS)
+    else:
+        # Historical date: skip snapshot attempts entirely, go straight to archive CSV
+        logger.debug(
+            f"NSE {deal_type} historical endpoint failed for {target_date} "
+            f"({last_exc}) — skipping snapshot endpoint (historical date, "
+            f"snapshot only serves today) and trying archive CSV"
+        )
 
     # --- Fall back to the static archive CSV (see module docstring's
     # 2026-07-05 incident note) — no cookie priming, no anti-bot challenge,
     # but only ever carries the most recent trading day's data.
     logger.warning(
-        f"NSE {deal_type} snapshot endpoint failed for {target_date} "
+        f"NSE {deal_type} snapshot endpoint {'skipped' if target_date != today_str else 'failed'} for {target_date} "
         f"({last_exc}) — trying archive CSV"
     )
     try:
@@ -311,7 +329,7 @@ def _fetch_nse_deals(target_date: str, deal_type: str) -> List[dict]:
     )
 
 
-def _fetch_nse_archive_csv(target_date: str, deal_type: str) -> List[dict]:
+def _fetch_nse_archive_csv(target_date: str, deal_type: str) -> List[Dict[str, Any]]:
     """
     Fetch bulk/block deals from NSE's static archive CSV.
 
@@ -352,7 +370,7 @@ def _fetch_nse_archive_csv(target_date: str, deal_type: str) -> List[dict]:
     ]
 
 
-def _parse_nse_records(records: List[dict], target_date: str, deal_type: str) -> pd.DataFrame:
+def _parse_nse_records(records: List[Dict[str, Any]], target_date: str, deal_type: str) -> pd.DataFrame:
     """
     Parse raw NSE bulk/block deal records into the large_deals schema.
 
@@ -367,7 +385,7 @@ def _parse_nse_records(records: List[dict], target_date: str, deal_type: str) ->
     """
     rows = []
     for rec in records:
-        def g(*keys):
+        def g(*keys: str) -> Optional[Any]:
             for k in keys:
                 v = rec.get(k) or rec.get(k.upper()) or rec.get(k.lower())
                 if v is not None and str(v).strip() not in ("", "-", "null", "None"):
@@ -406,7 +424,7 @@ def _parse_nse_records(records: List[dict], target_date: str, deal_type: str) ->
 # BSE fetchers
 # ---------------------------------------------------------------------------
 
-def _fetch_bse_deals(target_date: str, deal_type: str) -> List[dict]:
+def _fetch_bse_deals(target_date: str, deal_type: str) -> List[Dict[str, Any]]:
     """
     Fetch bulk or block deals from BSE open API.
 
@@ -441,7 +459,7 @@ def _fetch_bse_deals(target_date: str, deal_type: str) -> List[dict]:
             if isinstance(payload, dict):
                 for key in ("Table", "table", "data", "Data"):
                     if key in payload and isinstance(payload[key], list):
-                        return payload[key]
+                        return cast(List[Dict[str, Any]], payload[key])
             return []
         except Exception as exc:
             last_exc = exc
@@ -471,7 +489,7 @@ def _parse_bse_date(raw: str) -> Optional[str]:
     return None
 
 
-def _parse_bse_records(records: List[dict], target_date: str, deal_type: str) -> pd.DataFrame:
+def _parse_bse_records(records: List[Dict[str, Any]], target_date: str, deal_type: str) -> pd.DataFrame:
     """
     Parse raw BSE bulk/block deal records into the large_deals schema.
 
@@ -581,7 +599,7 @@ def download_large_deals(date: str) -> pd.DataFrame:
     return combined
 
 
-def persist_large_deals(conn, df: pd.DataFrame, trade_date: str) -> int:
+def persist_large_deals(conn: Any, df: pd.DataFrame, trade_date: str) -> int:
     """
     Delete existing large_deals rows for trade_date and insert the new set.
 

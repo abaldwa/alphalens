@@ -15,13 +15,13 @@ from __future__ import annotations
 
 from datetime import date as date_type
 from datetime import timedelta
-from typing import List
+from typing import Any, List
 
 from datastore.health.findings import Finding
 from datastore.health.job_registry import JOB_REGISTRY, expected_dates
 
 
-def check_job_completeness(conn, as_of_date: date_type, lookback_days: int = 7) -> List[Finding]:
+def check_job_completeness(conn: Any, as_of_date: date_type, lookback_days: int = 35) -> List[Finding]:
     """
     For every job in JOB_REGISTRY, find calendar dates in the trailing
     `lookback_days` (inclusive of as_of_date) on which the job was
@@ -30,6 +30,16 @@ def check_job_completeness(conn, as_of_date: date_type, lookback_days: int = 7) 
     into a single Finding per job (severity='critical' if 2+ missed
     dates, 'warning' if exactly 1 — a single-run flake vs. a systemic
     gap), with the job's registered catch-up action attached.
+
+    [2026-09-05] Default raised from 7 to 35: this check itself only runs
+    weekly (job_health_check, Saturdays), so a 7-day window meant any gap
+    surviving past the check's OWN next scheduled run became permanently
+    invisible — exactly what happened during the 2026-08-14 scheduler
+    pause (job_health_check itself last succeeded 2026-08-02; several
+    other jobs had been silently stale since 2026-07-11, uncaught for
+    weeks because no run of this check ever looked back far enough to see
+    them). 35 days comfortably covers "the health check itself was down
+    for up to a month" while staying a cheap date-range scan.
     """
     # lookback_days=7 means a true 7-calendar-day inclusive window
     # (as_of_date and the 6 days before it) — timedelta(lookback_days - 1),

@@ -22,7 +22,7 @@ never a fabricated placeholder list.
 """
 
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import pandas as pd
 from fastapi import APIRouter, Query
@@ -55,7 +55,7 @@ _ATR_MULTIPLIER = 1.5  # realistic-target fallback: horizon-scaled ATR band, use
 # the quantile model has no q50_return for a ticker/date (never a fixed 15%)
 
 
-def _build_price_map(price_df: pd.DataFrame) -> dict:
+def _build_price_map(price_df: pd.DataFrame) -> Dict[str, Optional[float]]:
     """
     REV26 (2026-07-21 review): a plain `dict(zip(...))` here would let a
     NaN `close` (fetchdf() surfaces a NULL float as float('nan'), not None)
@@ -100,8 +100,8 @@ async def get_watchlist_current() -> WatchlistResponse:
     recommendable_df = filter_recommendable(all_df).head(_TOP_N)
     low_liq_df = all_df[~all_df["ticker"].isin(recommendable_df["ticker"])].head(_TOP_N)
 
-    tickers = recommendable_df.to_dict("records")
-    low_liquidity_tickers = low_liq_df.to_dict("records")
+    tickers = cast(List[Dict[str, Any]], recommendable_df.to_dict("records"))
+    low_liquidity_tickers = cast(List[Dict[str, Any]], low_liq_df.to_dict("records"))
     return WatchlistResponse(
         tickers=tickers,
         low_liquidity_tickers=low_liquidity_tickers,
@@ -114,7 +114,7 @@ async def get_watchlist_current() -> WatchlistResponse:
 
 
 @router.get("/pillar_summary")
-async def get_ml_pillar_summary() -> dict:
+async def get_ml_pillar_summary() -> Dict[str, Any]:
     """Home page pillar-outcome card: buy-signal count + avg forward
     q50_return for whichever of the 5d/21d/63d horizon models has the most
     recent signal date. No win-rate/success-rate table exists for ML
@@ -123,7 +123,7 @@ async def get_ml_pillar_summary() -> dict:
     rather than fabricating a number; per project memory, ml_signals has
     historically been close to a single-date snapshot, so a small/zero
     recommendation_count here reflects real data availability, not a bug."""
-    best: Optional[tuple] = None  # (date, model_name, horizon_label)
+    best: Optional[Tuple[Any, str, str]] = None  # (date, model_name, horizon_label)
     with get_duckdb_connection(SIGNALS_DUCKDB_PATH, persist=False, read_only=True) as conn:
         for model_name, horizon_label, _horizon_days in _HORIZON_MODELS:
             latest = conn.execute(

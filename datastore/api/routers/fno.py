@@ -25,6 +25,7 @@ docstring): this API process and the ingestion scheduler share DUCKDB_PATH.
 
 import logging
 from datetime import date as date_type
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -78,5 +79,8 @@ async def get_fno_chain(
     ]
 
     return FNOResponse(
-        ticker=ticker, start_date=from_date, end_date=to_date, data=data, record_count=len(data)
+        ticker=ticker,
+        start_date=datetime.combine(from_date, datetime.min.time()),
+        end_date=datetime.combine(to_date, datetime.min.time()),
+        data=data, record_count=len(data),
     )

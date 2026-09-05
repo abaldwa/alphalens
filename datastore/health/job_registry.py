@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from datetime import date as date_type
 from datetime import timedelta
-from typing import Dict, List
+from typing import Any, Dict, List
 
 # Weekday numbers per datetime.date.weekday(): 0=Mon ... 6=Sun.
 _MON_FRI = {0, 1, 2, 3, 4}
@@ -31,7 +31,7 @@ _SAT = {5}
 _SUN = {6}
 
 # job_id -> {"weekdays": set of expected weekday() values, "catchup_action": str, "catchup_params": dict}
-JOB_REGISTRY: Dict[str, Dict] = {
+JOB_REGISTRY: Dict[str, Dict[str, Any]] = {
     "daily_pipeline": {
         "weekdays": _MON_FRI,
         "catchup_action": "force_run_daily_pipeline",
@@ -66,6 +66,22 @@ JOB_REGISTRY: Dict[str, Dict] = {
         "weekdays": _SUN,
         "catchup_action": "rerun_script",
         "catchup_params": {"script": "features/deep_forensic.py", "args": []},
+    },
+    # [2026-09-05] Found missing during the 2026-08-14 scheduler-pause
+    # recovery: both are real registered Saturday jobs in
+    # ingestion/scheduler/scheduler_jobs.py (schedule_promoter_pledge_backfill,
+    # schedule_balance_sheet_backfill) but were never added here, so
+    # check_job_completeness could never detect or catch them up — they'd
+    # silently stay stale indefinitely with no Finding ever raised.
+    "promoter_pledge_backfill": {
+        "weekdays": _SAT,
+        "catchup_action": "rerun_script",
+        "catchup_params": {"script": "scripts/backfill_promoter_pledge_nse.py", "args": []},
+    },
+    "balance_sheet_backfill": {
+        "weekdays": _SAT,
+        "catchup_action": "rerun_script",
+        "catchup_params": {"script": "scripts/backfill_balance_sheet_from_screener.py", "args": []},
     },
     "daily_backup": {
         "weekdays": _DAILY,

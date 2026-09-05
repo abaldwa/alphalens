@@ -25,6 +25,7 @@ directly observable through the API instead.
 """
 
 import logging
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 
@@ -41,7 +42,7 @@ router = APIRouter(tags=["System"])
 API_VERSION = "1.0"
 
 
-def _last_pipeline_run() -> dict:
+def _last_pipeline_run() -> Optional[Dict[str, Any]]:
     try:
         with get_sqlite_connection(PIPELINE_LOG_DB_PATH) as conn:
             cursor = conn.cursor()
@@ -109,7 +110,7 @@ async def health_check() -> SystemHealthResponse:
 
 
 @router.get("/stock-master/listing-dates")
-async def get_listing_dates() -> dict:
+async def get_listing_dates() -> Dict[str, str]:
     """
     {ticker: "YYYY-MM-DD"} for every ticker with a real stock_master.listing_date
     (2026-07-07: backfilled via scripts/backfill_listing_dates_nse.py from NSE's
