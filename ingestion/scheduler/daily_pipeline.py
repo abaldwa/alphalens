@@ -2354,7 +2354,7 @@ def step_publish_and_snapshot(run_date: date_type, db_path: Optional[Path] = Non
         from pathlib import Path
         from datastore.staging.snapshot import take_snapshot
         from datastore.api.db import get_duckdb_connection
-        with get_duckdb_connection({resolved_db_path!r}, persist=False) as conn:
+        with get_duckdb_connection({str(resolved_db_path)!r}, persist=False) as conn:
             take_snapshot(conn, {tables!r}, Path({str(SNAPSHOT_DIR)!r}))
     """)
     try:
