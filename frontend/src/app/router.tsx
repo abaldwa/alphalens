@@ -74,12 +74,15 @@ export const router = createBrowserRouter([
   { path: '/momentum-portfolio', lazy: async () => ({ Component: (await import('@/pages/momentum/portfolio')).MomentumPortfolioPage }) },
   { path: '/momentum-rebalance', lazy: async () => ({ Component: (await import('@/pages/momentum/rebalance')).MomentumRebalancePage }) },
   { path: '/momentum-universe', lazy: async () => ({ Component: (await import('@/pages/momentum/universe')).MomentumUniversePage }) },
-  { path: '/momentum-experimentation', lazy: async () => ({ Component: (await import('@/pages/momentum/experimentation')).MomentumExperimentationPage }) },
-  { path: '/momentum-dynamic-report', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report')).MomentumDynamicReportPage }) },
-  { path: '/momentum-dynamic-report/rolling-returns', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/rolling-returns')).MomentumRollingReturnsPage }) },
-  { path: '/momentum-dynamic-report/strategy-sweep', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/strategy-sweep')).MomentumStrategySweepPage }) },
-  { path: '/momentum-dynamic-report/yoy', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/yoy')).MomentumYoyPage }) },
-  { path: '/momentum-dynamic-report/income-mode', lazy: async () => ({ Component: (await import('@/pages/momentum/dynamic-report/income-mode')).MomentumIncomeModePage }) },
+  // momentum-experimentation and the momentum-dynamic-report family (2026-09-05,
+  // explicit user instruction): defunct, removed. /backtest-report/metrics and
+  // /momentum-campaign-results now cover the same ground on the native engine.
+  { path: '/momentum-experimentation', element: <Navigate to="/momentum-campaign-results" replace /> },
+  { path: '/momentum-dynamic-report', element: <Navigate to="/backtest-report" replace /> },
+  { path: '/momentum-dynamic-report/rolling-returns', element: <Navigate to="/backtest-report/returns?channel=momentum" replace /> },
+  { path: '/momentum-dynamic-report/strategy-sweep', element: <Navigate to="/momentum-campaign-results" replace /> },
+  { path: '/momentum-dynamic-report/yoy', element: <Navigate to="/backtest-report/consistency?channel=momentum" replace /> },
+  { path: '/momentum-dynamic-report/income-mode', element: <Navigate to="/backtest-report/returns?channel=momentum" replace /> },
   // Superseded by /backtest-report/consistency, which renders the same pivot
   // through the shared MatrixTable across all four channels rather than
   // momentum alone. Redirected rather than removed so existing links and

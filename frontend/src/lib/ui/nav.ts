@@ -138,16 +138,6 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'portfolio', label: 'Portfolio', href: '/momentum-portfolio' },
       { id: 'rebalance', label: 'Rebalance', href: '/momentum-rebalance' },
       { id: 'universe', label: 'Universe', href: '/momentum-universe' },
-      { id: 'experimentation', label: 'Universe Sweep', href: '/momentum-experimentation' },
-      // 2026-07-30 user request: the old Recommended Strategies page and the
-      // static (never-auto-updating) Backtest Ledger / Year-on-Year Report /
-      // Rank-Band Sweep artifact links are discontinued in favor of this one
-      // dynamic report, generated fresh by scripts/run_momentum_dynamic_report.py.
-      {
-        id: 'dynamic_report',
-        label: 'Strategy Report',
-        href: '/momentum-dynamic-report',
-      },
       // 2026-08-08: Live Strategy Configuration & Deployment Page
       {
         id: 'strategy_deploy',

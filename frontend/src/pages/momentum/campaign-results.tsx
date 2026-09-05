@@ -7,27 +7,161 @@
  * touches config_json/metrics_json or a DB path directly (see that
  * file's docstring on why: a frontend rewrite should only need to keep
  * FrameworkRunSummary's shape stable, not chase every page that reads it).
+ *
+ * [2026-09-05, explicit user instruction] Rebuilt to match the look of
+ * /backtest-report/metrics: the same AnalyticsGrid workspace (AG Grid,
+ * grouped/pinned columns, CAGR/drawdown shading, CSV export, print layout)
+ * that page uses, via the same lib/ui/AnalyticsGrid component -- rather
+ * than the plain DataTable this page had before. The column set differs
+ * because the underlying data differs (one point-in-time run per row, not
+ * a multi-year StrategyReport): identity + the sweep's own config columns
+ * (band, top_n, lookback, cadence, sizing) are added since they don't
+ * exist on the backtest-report side at all.
  */
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import type { ColDef, ColGroupDef, ValueFormatterParams } from 'ag-grid-community'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { Card, CardContent, CardHeader, CardTitle, DataTable, Input, StatCard } from '@/lib/ui'
+import {
+  AnalyticsGrid,
+  AppShell,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  DataTable,
+  HEATMAP_COLUMN,
+  Input,
+  StatCard,
+} from '@/lib/ui'
 import { listFrameworkRuns, type FrameworkRunSummary } from '@/shared/api/framework_backtest'
 import { getOverallMomentumRank, type OverallRankRow } from '@/shared/api/momentum_overall_rank'
+import { CampaignRunAnalysis } from './CampaignRunAnalysis'
+import { EM_DASH, fmtPct, fmtNum, signClass } from './campaignFormat'
 
-function fmtPct(v: number | null) {
-  return typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : '—'
+/** AG Grid value formatters need the null-safe wrapper on a plain fraction so
+ * sorting stays numeric (the value getter returns the raw number) while the
+ * cell still renders the same "—" the rest of the app uses for missing data. */
+function fmt(format: (v: number) => string) {
+  return (params: ValueFormatterParams<FrameworkRunSummary>) =>
+    params.value == null || !Number.isFinite(Number(params.value)) ? EM_DASH : format(Number(params.value))
 }
-function fmtNum(v: number | null, digits = 2) {
-  return typeof v === 'number' ? v.toFixed(digits) : '—'
+
+const NUMERIC: Partial<ColDef<FrameworkRunSummary>> = {
+  type: 'numericColumn',
+  cellClass: 'tabular-nums',
+  width: 110,
 }
+
+/** Same shape as backtest-report's identityGroup: pinned so the row keeps
+ * its label while the reader scrolls the metric columns sideways. */
+function identityGroup(): ColGroupDef<FrameworkRunSummary> {
+  return {
+    headerName: 'Identity',
+    children: [
+      { field: 'strategy_code', headerName: 'Strategy', pinned: 'left', width: 100 },
+      {
+        field: 'band_id',
+        headerName: 'Band',
+        pinned: 'left',
+        width: 80,
+        valueFormatter: (p) => `M${String(p.value).padStart(2, '0')}`,
+      },
+    ],
+  }
+}
+
+/** The sweep's own dimensions — not present on any backtest-report table
+ * because that report compares strategies, not individual grid configs. */
+function configGroup(): ColGroupDef<FrameworkRunSummary> {
+  return {
+    headerName: 'Config',
+    children: [
+      { field: 'top_n', headerName: 'Top N', width: 90, type: 'numericColumn' },
+      { field: 'lookback_months', headerName: 'Lookback (mo)', width: 110, type: 'numericColumn' },
+      { field: 'rebalance_cadence_days', headerName: 'Cadence (d)', width: 100, type: 'numericColumn' },
+      { field: 'position_sizing', headerName: 'Sizing', width: 140 },
+    ],
+  }
+}
+
+function performanceGroup(): ColGroupDef<FrameworkRunSummary> {
+  return {
+    headerName: 'Performance',
+    children: [
+      { field: 'cagr', headerName: 'CAGR', valueFormatter: fmt((v) => fmtPct(v)), context: HEATMAP_COLUMN, ...NUMERIC },
+      { field: 'sharpe_ratio', headerName: 'Sharpe', valueFormatter: fmt((v) => fmtNum(v)), ...NUMERIC },
+      { field: 'sortino_ratio', headerName: 'Sortino', valueFormatter: fmt((v) => fmtNum(v)), ...NUMERIC },
+      { field: 'calmar_ratio', headerName: 'Calmar', valueFormatter: fmt((v) => fmtNum(v)), ...NUMERIC },
+      { field: 'max_drawdown', headerName: 'Max DD', valueFormatter: fmt((v) => fmtPct(v)), context: HEATMAP_COLUMN, ...NUMERIC },
+      { field: 'volatility_annualized', headerName: 'Volatility', valueFormatter: fmt((v) => fmtPct(v)), ...NUMERIC },
+      { field: 'win_rate', headerName: 'Win Rate', valueFormatter: fmt((v) => fmtPct(v, 1)), ...NUMERIC },
+    ],
+  }
+}
+
+function tradeGroup(): ColGroupDef<FrameworkRunSummary> {
+  return {
+    headerName: 'Trades',
+    children: [
+      { field: 'trade_count', headerName: 'Trades', width: 90, type: 'numericColumn' },
+      { field: 'run_executed_at', headerName: 'Executed', width: 170 },
+    ],
+  }
+}
+
+/** One "Analyze" button per row, opening that run in the drill-down panel
+ * below the grid (Long Term CAGR / Regular Returns / tax / rolling window /
+ * benchmark / trade quality — see CampaignRunAnalysis.tsx). A plain button
+ * rather than row selection: AnalyticsGrid's own row selection is scoped to
+ * its trend chart and isn't exposed to the page. */
+function analyzeColumn(onAnalyze: (run: FrameworkRunSummary) => void): ColDef<FrameworkRunSummary> {
+  return {
+    headerName: '',
+    pinned: 'right',
+    width: 100,
+    sortable: false,
+    filter: false,
+    cellRenderer: (p: { data?: FrameworkRunSummary }) =>
+      p.data ? (
+        <button
+          type="button"
+          onClick={() => onAnalyze(p.data as FrameworkRunSummary)}
+          className="text-xs text-primary underline-offset-2 hover:underline"
+        >
+          Analyze
+        </button>
+      ) : null,
+  }
+}
+
+function buildColumns(
+  onAnalyze: (run: FrameworkRunSummary) => void,
+): Array<ColDef<FrameworkRunSummary> | ColGroupDef<FrameworkRunSummary>> {
+  return [identityGroup(), configGroup(), performanceGroup(), tradeGroup(), analyzeColumn(onAnalyze)]
+}
+
+// Same thresholds as backtest-report's HEATMAP: full colour at +50%/-35% CAGR
+// or drawdown is roughly where a run stops being ordinary and starts being
+// an outlier.
+const HEATMAP = { positiveCeiling: 0.5, negativeCeiling: 0.35 }
+
+const rowId = (r: FrameworkRunSummary) => r.run_id
 
 const OVERALL_RANK_COLUMNS: ColumnDef<OverallRankRow, unknown>[] = [
   { accessorKey: 'rank', header: 'Rank' },
   { accessorKey: 'ticker', header: 'Ticker' },
-  { accessorKey: 'momentum_return', header: 'Momentum Return', cell: ({ row }) => fmtPct(row.original.momentum_return) },
+  {
+    accessorKey: 'momentum_return',
+    header: 'Momentum Return',
+    meta: { align: 'right' },
+    cell: ({ row }) => (
+      <span className={signClass(row.original.momentum_return)}>{fmtPct(row.original.momentum_return)}</span>
+    ),
+  },
 ]
 
 const LOOKBACK_OPTIONS = [1, 3, 6, 9, 12] as const
@@ -46,10 +180,10 @@ function OverallMomentumRankSection() {
     <Card>
       <CardHeader>
         <CardTitle>Overall Momentum Rank (All ~800 Stocks)</CardTitle>
-        <p className="text-sm text-gray-600 mt-1">
+        <CardDescription>
           The full-universe momentum rank — computed once across every liquid stock (M13), the same source every
           band-scoped rank is sliced from. Not a separate computation; top 100 shown.
-        </p>
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -85,20 +219,6 @@ function OverallMomentumRankSection() {
   )
 }
 
-const COLUMNS: ColumnDef<FrameworkRunSummary, unknown>[] = [
-  { accessorKey: 'strategy_code', header: 'Strategy' },
-  { accessorKey: 'band_id', header: 'Band', cell: ({ row }) => `M${String(row.original.band_id).padStart(2, '0')}` },
-  { accessorKey: 'top_n', header: 'Top N' },
-  { accessorKey: 'lookback_months', header: 'Lookback (mo)' },
-  { accessorKey: 'rebalance_cadence_days', header: 'Cadence (d)' },
-  { accessorKey: 'position_sizing', header: 'Sizing' },
-  { accessorKey: 'cagr', header: 'CAGR', cell: ({ row }) => fmtPct(row.original.cagr) },
-  { accessorKey: 'sharpe_ratio', header: 'Sharpe', cell: ({ row }) => fmtNum(row.original.sharpe_ratio) },
-  { accessorKey: 'max_drawdown', header: 'Max DD', cell: ({ row }) => fmtPct(row.original.max_drawdown) },
-  { accessorKey: 'trade_count', header: 'Trades' },
-  { accessorKey: 'run_executed_at', header: 'Executed' },
-]
-
 export function MomentumCampaignResultsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['framework-campaign-runs'],
@@ -109,6 +229,9 @@ export function MomentumCampaignResultsPage() {
   })
 
   const runs = useMemo(() => data?.runs ?? [], [data?.runs])
+
+  const [selectedRun, setSelectedRun] = useState<FrameworkRunSummary | null>(null)
+  const columns = useMemo(() => buildColumns(setSelectedRun), [])
 
   const stats = useMemo(() => {
     const byStrategy = new Set(runs.map((r) => r.strategy_code))
@@ -123,32 +246,45 @@ export function MomentumCampaignResultsPage() {
   }, [runs, data?.total])
 
   return (
-    <div className="space-y-4 p-4">
-      <div>
-        <h1 className="text-3xl font-bold mb-2">Momentum Campaign Results</h1>
-        <p className="text-gray-600">
-          Live results from the full native-engine campaign — every (strategy, band, lookback, cadence,
-          position sizing) config. Refreshes every 30s while the campaign is still running.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+    <AppShell
+      title="Momentum Campaign Results"
+      description="Live results from the full native-engine campaign — every (strategy, band, lookback, cadence, position sizing) config. Refreshes every 30s while the campaign is still running."
+    >
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mb-4">
         <StatCard label="Jobs Persisted" value={String(stats.total)} />
         <StatCard label="Loaded (this page)" value={String(stats.loaded)} />
         <StatCard label="Distinct Strategies" value={String(stats.strategies)} />
         <StatCard label="Best CAGR So Far" value={fmtPct(stats.bestCagr)} />
       </div>
 
-      <Card>
+      <Card className="mb-4">
         <CardHeader>
           <CardTitle>All Runs</CardTitle>
+          <CardDescription>
+            CAGR and max drawdown are shaded by magnitude — scan for shape before reading a single number. Every
+            other column sorts, filters and exports the same way as the Backtest Report grids.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <DataTable columns={COLUMNS} data={runs} isLoading={isLoading} emptyMessage="No campaign runs persisted yet." />
+          <AnalyticsGrid
+            id="momentum-campaign-results"
+            columns={columns}
+            rows={runs}
+            getRowId={rowId}
+            heatmap={HEATMAP}
+            isLoading={isLoading}
+            csvFileName="momentum_campaign_results"
+            title="Momentum campaign results — full native-engine grid"
+            emptyMessage="No campaign runs persisted yet."
+          />
         </CardContent>
       </Card>
 
+      <div className="mb-4">
+        <CampaignRunAnalysis runId={selectedRun?.run_id ?? null} runLabel={selectedRun?.strategy_id ?? null} />
+      </div>
+
       <OverallMomentumRankSection />
-    </div>
+    </AppShell>
   )
 }
