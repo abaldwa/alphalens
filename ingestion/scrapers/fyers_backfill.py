@@ -47,7 +47,7 @@ import time
 from datetime import date as date_type
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
@@ -124,6 +124,15 @@ _PROGRESS_LOG_INTERVAL_S = 20.0
 _IDLE_WATCHDOG_S = 180.0
 
 EXCHANGE_SEGMENT_SUFFIX = "-EQ"
+# [2026-09-05, found investigating corp-action price discontinuities] a
+# ticker that has moved into NSE's trade-to-trade/surveillance segment
+# (or, rarely, -BZ/-SM) no longer resolves under -EQ on FYERS at all —
+# download_history used to hardcode -EQ and fail outright ("Invalid symbol
+# provided") for any such ticker, silently dropping it from every FYERS
+# pull (not just historical corp-action checks). Confirmed via FYERS' own
+# NSE_CM symbol master: DPSCLTD, MADHUCON, RSWM, DIACABS, CALSOFT and 11
+# others were live and pullable the whole time, just under -BE.
+EXCHANGE_SEGMENT_FALLBACKS = ["-EQ", "-BE", "-BZ", "-SM"]
 EXCHANGE_PREFIX = "NSE:"
 RESOLUTION_DAILY = "D"
 DATE_FORMAT_EPOCH = "0"  # FYERS history API: "0" = unix epoch, "1" = "yyyy-mm-dd"
@@ -212,6 +221,11 @@ class FYERSBackfill:
         # other thread. The lock makes only the FIRST thread do the
         # token dance; the rest block briefly and then reuse self._client.
         self._client_lock = threading.Lock()
+        # ticker -> working "NSE:TICKER-XX" symbol, once resolved by
+        # download_history's segment fallback (see EXCHANGE_SEGMENT_FALLBACKS)
+        # — avoids re-probing every segment on every chunk/call for the same
+        # ticker within this instance's lifetime.
+        self._resolved_symbol_cache: Dict[str, str] = {}
 
     @staticmethod
     def _extract_auth_code(raw_input_value: str) -> str:
@@ -401,7 +415,7 @@ class FYERSBackfill:
         ------
         None
         """
-        return self._build_session().generate_authcode()
+        return str(self._build_session().generate_authcode())
 
     def exchange_auth_code(self, raw_input_value: str) -> str:
         """
@@ -444,7 +458,7 @@ class FYERSBackfill:
         if not isinstance(response, dict) or response.get("s") != "ok":
             raise RuntimeError(f"FYERS token exchange failed: {response}")
 
-        token = response["access_token"]
+        token = str(response["access_token"])
         self._access_token = token
         self._save_cached_token(token)
         return token
@@ -483,7 +497,8 @@ class FYERSBackfill:
             return None
         if cache.get("date") != now_ist().date().isoformat():
             return None
-        return cache.get("token")
+        token = cache.get("token")
+        return str(token) if token is not None else None
 
     def _save_cached_token(self, token: str) -> None:
         """Persist today's token so repeated runs in one day skip the OAuth prompt."""
@@ -524,6 +539,56 @@ class FYERSBackfill:
         inter-request throttle, not a daily budget.
         """
         _RATE_LIMITER.acquire()
+
+    @staticmethod
+    def _is_invalid_symbol_error(exc: Exception) -> bool:
+        """True for FYERS' code=-300 'Invalid symbol provided' — the one
+        error worth retrying under a different exchange segment. Any other
+        RuntimeError (rate limit exhausted, malformed request, etc.) is a
+        real failure that changing the segment suffix can't fix."""
+        return "-300" in str(exc) or "Invalid symbol" in str(exc)
+
+    def _resolve_symbol_for_window(
+        self, ticker: str, window_start: date_type, window_end: date_type, timeframe: str
+    ) -> Tuple[str, pd.DataFrame]:
+        """
+        Download one chunk, trying -EQ first (the common case — costs no
+        extra call beyond the chunk itself) and falling back to
+        -BE/-BZ/-SM only on an explicit "Invalid symbol" response. Returns
+        (resolved_symbol, that chunk's data) so the caller doesn't have to
+        re-fetch the window it just used to resolve the segment.
+
+        Cached per ticker for this instance's lifetime — a ticker that
+        needed a fallback once uses it directly on every later chunk/call
+        instead of re-probing -EQ again.
+        """
+        if ticker in self._resolved_symbol_cache:
+            symbol = self._resolved_symbol_cache[ticker]
+            return symbol, self._download_chunk(symbol, window_start, window_end, timeframe)
+
+        last_error: Optional[Exception] = None
+        for suffix in EXCHANGE_SEGMENT_FALLBACKS:
+            candidate = f"{EXCHANGE_PREFIX}{ticker}{suffix}"
+            try:
+                chunk = self._download_chunk(candidate, window_start, window_end, timeframe)
+                self._resolved_symbol_cache[ticker] = candidate
+                if suffix != EXCHANGE_SEGMENT_SUFFIX:
+                    logger.info(f"{ticker}: resolved via {suffix} segment (not {EXCHANGE_SEGMENT_SUFFIX})")
+                return candidate, chunk
+            except RuntimeError as e:
+                last_error = e
+                if not self._is_invalid_symbol_error(e):
+                    # A real failure (rate limit exhausted, etc.) — not a
+                    # segment mismatch. Don't burn through every fallback
+                    # segment for an unrelated error; surface it directly.
+                    raise
+                continue
+
+        assert last_error is not None
+        raise RuntimeError(
+            f"{ticker}: not found on FYERS under any of {EXCHANGE_SEGMENT_FALLBACKS} "
+            f"— last error: {last_error}"
+        )
 
     def download_history(
         self,
@@ -572,9 +637,10 @@ class FYERSBackfill:
         ------
         RuntimeError
             If the daily call budget is exhausted mid-download, or if
-            FYERS returns an error response ('s' != 'ok' and != 'no_data').
+            FYERS rejects every segment in EXCHANGE_SEGMENT_FALLBACKS for
+            this ticker (i.e. it is genuinely not resolvable on FYERS, not
+            just sitting in a non-EQ segment).
         """
-        symbol = f"{EXCHANGE_PREFIX}{ticker}{EXCHANGE_SEGMENT_SUFFIX}"
         start = datetime.strptime(from_date, "%Y-%m-%d").date()
         end = datetime.strptime(to_date, "%Y-%m-%d").date()
 
@@ -584,7 +650,7 @@ class FYERSBackfill:
             window_end = min(
                 window_start + timedelta(days=FYERS_HISTORY_MAX_DAYS_PER_CALL - 1), end
             )
-            chunk = self._download_chunk(symbol, window_start, window_end, timeframe)
+            _, chunk = self._resolve_symbol_for_window(ticker, window_start, window_end, timeframe)
             if not chunk.empty:
                 chunks.append(chunk)
             window_start = window_end + timedelta(days=1)
