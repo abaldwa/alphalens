@@ -19,11 +19,35 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Signal:
-    """A single buy/sell/hold decision emitted at a rebalance date."""
+    """A single buy/sell/hold decision emitted at a rebalance date.
+
+    size_multiplier vs exposure_multiplier (split 2026-09-05 after a
+    confirmed bug: R08/R09 set size_multiplier to the SAME value on every
+    buy signal, meaning "scale total book exposure by this factor" — but
+    Portfolio.rebalance_to_target() NORMALIZES size_multiplier across the
+    buy set (target[t]/total_weight), which cancels out any UNIFORM value
+    by construction (dividing N identical numbers by their own sum always
+    gives 1/N, whatever the numbers were). R08's Barroso-Santa-Clara
+    vol-target and R09's vol-scaling modes were therefore silent no-ops
+    for as long as this class has existed — every R08/R09 native result
+    was actually equivalent to plain equal-weight R01, regardless of
+    computed exposure. See momentum_framework/strategies/r08_bsc_volscale.py.
+
+    size_multiplier: PER-TICKER relative weight among the buy set (R14-R17's
+    use case — different tickers, different values, normalized to sum to 1,
+    total exposure stays ~100%). Also what StrategyBase.size_signals()'s
+    generic equal/inverse_volatility position-sizing pass writes.
+
+    exposure_multiplier: PORTFOLIO-LEVEL scalar applied AFTER per-ticker
+    normalization (R08/R09's use case — the same value on every signal,
+    scaling how much of total_value gets deployed vs left in cash). 1.0
+    (full deployment) is the default/no-op.
+    """
     ticker: str
     action: str  # "buy" | "sell" | "hold" | "forced_close"
     conviction: Optional[float] = None
     size_multiplier: float = 1.0
+    exposure_multiplier: float = 1.0
     rank: Optional[int] = None
     context: Dict[str, Any] = field(default_factory=dict)
 

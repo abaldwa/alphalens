@@ -91,6 +91,14 @@ class Portfolio:
         target: Dict[str, float] = {
             s.ticker: (s.size_multiplier or 1.0) for s in signals if s.action == "buy"
         }
+        # PORTFOLIO-LEVEL scalar (R08/R09 — see Signal's docstring for why
+        # this must be separate from size_multiplier, which gets normalized
+        # across the buy set below and would silently cancel out a uniform
+        # value). Every buy signal in one rebalance carries the SAME
+        # exposure_multiplier by construction (it's a book-wide scalar, not
+        # a per-ticker one) — any single buy signal's value represents it.
+        exposure_multipliers = [s.exposure_multiplier for s in signals if s.action == "buy"]
+        exposure = exposure_multipliers[0] if exposure_multipliers else 1.0
         explicit_sells = {s.ticker for s in signals if s.action in ("sell", "forced_close")}
 
         held = set(self.positions.keys())
@@ -109,7 +117,7 @@ class Portfolio:
         if total_weight <= 0:
             return
 
-        requested = {t: total_value * (target[t] / total_weight) for t in to_buy}
+        requested = {t: total_value * (target[t] / total_weight) * exposure for t in to_buy}
         total_requested = sum(requested.values())
         scale = 1.0
         if total_requested > self.cash and total_requested > 0:

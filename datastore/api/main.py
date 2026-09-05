@@ -53,6 +53,8 @@ from .routers import (
     backlog,
     backtest_reports,
     backtest_runs,
+    framework_backtest_runs,
+    momentum_overall_rank,
     big_investors,
     copilot,
     corporate_actions,
@@ -212,6 +214,8 @@ app.include_router(paper_trading.router)
 app.include_router(paper_trading_unified.router)
 app.include_router(backtest_reports.router)
 app.include_router(backtest_runs.router)
+app.include_router(framework_backtest_runs.router)
+app.include_router(momentum_overall_rank.router)
 # [AS BUILT, SPEC-TA-004] Technical Analysis API scaffolding over the
 # already-computed features/{technical,advanced_technical,pattern_scores}.py
 # output — see plan: squishy-frolicking-whisper.md.

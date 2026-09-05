@@ -103,7 +103,7 @@ class R08BSCVolScale(StrategyBase):
         exposure = self._exposure_multiplier(as_of_date, equity_curve)
         return [
             Signal(ticker=str(ticker), action="buy", conviction=score,
-                   rank=rank + 1, size_multiplier=exposure)
+                   rank=rank + 1, exposure_multiplier=exposure)
             for rank, (ticker, score) in enumerate(winners.items())
         ]
 

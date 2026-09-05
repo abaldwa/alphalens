@@ -110,7 +110,12 @@ export const router = createBrowserRouter([
   { path: '/backlog', lazy: async () => ({ Component: (await import('@/pages/backlog')).BacklogPage }) },
   { path: '/backtest-experiments', lazy: async () => ({ Component: (await import('@/pages/backtest/ExperimentsPage')).ExperimentsPage }) },
   { path: '/backtest-regimes', lazy: async () => ({ Component: (await import('@/pages/backtest/RegimesPage')).RegimesPage }) },
-  { path: '/backtest-r0-band-analysis', lazy: async () => ({ Component: (await import('@/pages/backtest/r0-band-analysis')).R0BandAnalysisPage }) },
+  // Renamed 2026-09-04: R0 was retired and split into R14-R17, so the old
+  // static-report-embed page no longer reflects the current strategy set.
+  // Redirected (not removed) so bookmarks/links keep working.
+  { path: '/backtest-r0-band-analysis', element: <Navigate to="/momentum-band-strategy-ranking" replace /> },
+  { path: '/momentum-band-strategy-ranking', lazy: async () => ({ Component: (await import('@/pages/momentum/band-strategy-ranking')).MomentumBandStrategyRankingPage }) },
+  { path: '/momentum-campaign-results', lazy: async () => ({ Component: (await import('@/pages/momentum/campaign-results')).MomentumCampaignResultsPage }) },
 
   { path: '/ops', lazy: async () => ({ Component: (await import('@/pages/ops/OpsPage')).OpsPage }) },
   { path: '/macro', lazy: async () => ({ Component: (await import('@/pages/macro/MacroPage')).MacroPage }) },

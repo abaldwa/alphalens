@@ -25,10 +25,23 @@ guarantee as the two-pass runs) and run_pass2() (the native full-history
 BacktestOrchestrator.run_native() call), plus the PID lock file so this
 can never collide with another campaign process.
 
+STRATEGY_FILTER (added 2026-09-05): comma-separated strategy_code allowlist
+via env var, for a targeted rerun of specific strategies after a fix —
+e.g. R08/R09's Barroso-Santa-Clara/Moreira-Muir exposure scaling was a
+silent no-op (Signal.size_multiplier, a per-ticker weight, was being set
+to the SAME value on every buy signal to mean "scale the whole book" —
+but Portfolio.rebalance_to_target() normalizes size_multiplier across the
+buy set, which cancels out any uniform value by construction; fixed via
+a new Signal.exposure_multiplier field applied post-normalization — see
+backtesting/adapter.py's Signal docstring). Unset (default) runs every
+config, matching prior behavior exactly.
+
 Run: PYTHONPATH=. python3 momentum_framework/scripts/run_full_campaign.py
+     STRATEGY_FILTER=R08,R09 PYTHONPATH=. python3 momentum_framework/scripts/run_full_campaign.py
 """
 
 import concurrent.futures
+import os
 import time
 from typing import Any, Dict
 
@@ -55,6 +68,11 @@ def main() -> None:
 
 def _main() -> None:
     configs = all_configs()
+    filter_env = os.environ.get("STRATEGY_FILTER")
+    if filter_env:
+        allowed = {code.strip() for code in filter_env.split(",") if code.strip()}
+        configs = [c for c in configs if c[0] in allowed]
+        print(f"STRATEGY_FILTER={filter_env} — scoped to {len(configs)} configs")
     print(f"Full campaign (native-only, no parity gate): {len(configs)} configs")
     print(f"Live progress: {PROGRESS_LOG}\nIncremental results: {RESULTS_LOG}\n")
 

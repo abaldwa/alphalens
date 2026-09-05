@@ -155,6 +155,18 @@ export const NAV_SECTIONS: NavSection[] = [
         href: '/momentum-deploy',
         group: 'Live',
       },
+      // 2026-09-04: full native-engine campaign (all 13 strategies x
+      // band x lookback x cadence x position-sizing grid).
+      {
+        id: 'campaign_results',
+        label: 'Campaign Results',
+        href: '/momentum-campaign-results',
+      },
+      {
+        id: 'band_strategy_ranking',
+        label: 'Band Strategy Ranking',
+        href: '/momentum-band-strategy-ranking',
+      },
     ],
   },
   {
@@ -189,10 +201,14 @@ export const NAV_SECTIONS: NavSection[] = [
         label: 'Market Regimes',
         href: '/backtest-regimes',
       },
+      // Renamed 2026-09-04 -- R0 retired/split into R14-R17; the old
+      // static-report page is superseded by Momentum > Band Strategy
+      // Ranking above (kept here too, old label removed, for discovery
+      // from the Backtest section as well).
       {
         id: 'r0_band_analysis',
-        label: 'R0 Band Analysis',
-        href: '/backtest-r0-band-analysis',
+        label: 'Band Strategy Ranking',
+        href: '/momentum-band-strategy-ranking',
       },
     ],
   },
