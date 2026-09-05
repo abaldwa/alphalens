@@ -40,6 +40,7 @@ production DB). Table: momentum_rank_snapshots
 from pathlib import Path
 from typing import Any, Dict, Optional
 import logging
+import threading
 
 import duckdb
 
@@ -82,37 +83,105 @@ def get_cache_connection(read_only: bool = True) -> duckdb.DuckDBPyConnection:
     return conn
 
 
+_thread_local = threading.local()
+
+
+def get_thread_cache_connection() -> duckdb.DuckDBPyConnection:
+    """
+    One read-only connection to the (1GB+) cache file per THREAD, reused
+    for the life of that thread rather than opened fresh per call.
+
+    [2026-09-05, explicit user instruction — diagnosing the M13 sweep's
+    R03 stall a second time] The stall was NOT (only) R03's date-matching
+    — that was real and is fixed by get_cached_ranking()'s floor lookup —
+    but the dominant cost turned out to be `duckdb.connect()` itself
+    against this file: ~2.9s PER CALL, measured directly, regardless of
+    read_only mode or cache hit/miss. signals.py's `_try_cache()` used to
+    open-then-close a connection on every single rebalance call (hundreds
+    per backtest), so even a perfect cache hit paid ~2.9s of connection
+    overhead every time — the sweep was CPU-bound on opening its own
+    read-only cache file, not on any actual computation. Caching one
+    connection per thread (there are exactly PASS2_MAX_WORKERS of them,
+    a small fixed number) turns that into a one-time cost per worker
+    thread for the entire sweep.
+
+    Safe to share across every job run on this thread: DuckDB connections
+    are safe for sequential (not concurrent) use from a single thread,
+    which is exactly the ThreadPoolExecutor access pattern here — one
+    thread runs one job's calls to completion before picking up the next.
+    Never shared ACROSS threads (that would need real synchronization);
+    threading.local() gives each worker thread its own connection object.
+    """
+    conn = getattr(_thread_local, "conn", None)
+    if conn is None:
+        conn = get_cache_connection(read_only=True)
+        _thread_local.conn = conn
+    return conn
+
+
 def get_cached_ranking(
-    band_id: int, as_of_date: str, lookback_months: int, cache_conn: Optional[Any] = None
+    band_id: int,
+    as_of_date: str,
+    lookback_months: int,
+    cache_conn: Optional[Any] = None,
+    min_date: Optional[str] = None,
 ) -> Optional[Dict[str, Dict[str, float]]]:
     """
     Returns {ticker: {"momentum_return": ..., "rank": ...}} for
-    (band_id, as_of_date, lookback_months), or None on a cache MISS (this
-    exact combination not in the pre-built grid). None, not an empty
-    dict, distinguishes "not cached" from "cached as genuinely empty" —
-    same convention as universe_cache.py::get_cached_universe(), for the
-    same reason (lets a caller fall back to live computation instead of
-    silently treating a miss as "no tickers ranked").
+    (band_id, lookback_months) at the LATEST pre-built date <= as_of_date
+    (not >= min_date, if given), or None on a genuine cache miss (nothing
+    at or before as_of_date exists for this band+lookback at all).
+
+    FLOOR LOOKUP, NOT EXACT MATCH (2026-09-05, explicit user instruction,
+    fixing the M13 top_n sweep's R03 stall): the pre-built grid only ever
+    covers the UNSHIFTED rebalance-date union (calendar[::5/10/21]).
+    strategies/r03_jt_skipmonth.py ranks at as_of_date minus a 21-trading-
+    day skip, which almost never lands exactly on that grid — an exact
+    match missed on every R03 rebalance and fell through to a live,
+    GIL-holding pandas computation, which is what stalled the sweep.
+
+    Floor-matching is a strict superset of the old exact-match behaviour
+    for every OTHER caller (R01/R07/R08/R09/R10/R12/R14-R17): they always
+    pass an as_of_date that IS already on the grid, so "the latest cached
+    date <= as_of_date" is as_of_date itself — same row, same answer, zero
+    behaviour change. For R03, it resolves to the nearest already-tabulated
+    snapshot at or before the true skip target: still skips AT LEAST the
+    intended month (never uses data newer than the true target, so the
+    short-term-reversal contamination J&T's skip-month rule exists to
+    avoid is never reintroduced), typically off by at most a few trading
+    days given the grid's density.
+
+    `min_date` (pass the backtest's floor_date) additionally refuses to
+    snap PAST that boundary — protects the narrow warm-up window right
+    after a backtest's start where floor-snapping could otherwise reach
+    for a real cached date that existed before the backtest is supposed
+    to have any history at all.
     """
     owns_conn = cache_conn is None
     conn = cache_conn or get_cache_connection(read_only=True)
     try:
+        min_clause = " AND as_of_date >= ?" if min_date else ""
+        min_params = [min_date] if min_date else []
+        resolved = conn.execute(
+            f"""
+            SELECT MAX(as_of_date) FROM momentum_rank_snapshots
+            WHERE band_id = ? AND lookback_months = ? AND as_of_date <= ?{min_clause}
+            """,
+            [band_id, lookback_months, as_of_date] + min_params,
+        ).fetchone()
+        resolved_date = resolved[0] if resolved else None
+        if resolved_date is None:
+            return None  # nothing at or before as_of_date (and after min_date) for this band+lookback
         rows = conn.execute(
             """
             SELECT ticker, momentum_return, rank FROM momentum_rank_snapshots
             WHERE band_id = ? AND as_of_date = ? AND lookback_months = ?
             ORDER BY rank
             """,
-            [band_id, as_of_date, lookback_months],
+            [band_id, resolved_date, lookback_months],
         ).fetchall()
         if not rows:
-            any_row = conn.execute(
-                "SELECT 1 FROM momentum_rank_snapshots WHERE band_id = ? AND lookback_months = ? LIMIT 1",
-                [band_id, lookback_months],
-            ).fetchone()
-            if any_row is None:
-                return None  # this band+lookback combination never built at all
-            return None  # this specific date not in the pre-built grid
+            return None
         return {ticker: {"momentum_return": ret, "rank": rank} for ticker, ret, rank in rows}
     finally:
         if owns_conn:

@@ -194,7 +194,7 @@ class TrailingMomentumSignal(MomentumSignal):
         the (unbounded) cache actually holds for this date.
         """
         from momentum_framework.common.momentum_rank_cache import (
-            CACHE_DB_PATH, get_cache_connection, get_cached_ranking, is_floor_eligible,
+            CACHE_DB_PATH, get_cached_ranking, get_thread_cache_connection, is_floor_eligible,
         )
 
         if self.band_id is None or not CACHE_DB_PATH.exists():
@@ -204,11 +204,22 @@ class TrailingMomentumSignal(MomentumSignal):
             if not is_floor_eligible(normalised_conn, self.floor_date, as_of_date, self.lookback_days):
                 return pd.Series(dtype=float)
 
-            cache_conn = get_cache_connection(read_only=True)
-            try:
-                cached = get_cached_ranking(band_id, as_of_date, self.lookback_months, cache_conn)
-            finally:
-                cache_conn.close()
+            # get_thread_cache_connection(), NOT a fresh open-per-call connection
+            # (2026-09-05 finding): duckdb.connect() against this 1GB+ cache file
+            # measured ~2.9s PER CALL regardless of hit/miss — with hundreds of
+            # rebalance calls per backtest, that connection overhead alone was
+            # the dominant cost, not any per-strategy date-matching logic. One
+            # connection per worker thread, reused for the thread's whole
+            # lifetime, turns that into a one-time cost. See that function's
+            # docstring for why sharing it is safe here.
+            cache_conn = get_thread_cache_connection()
+            # min_date=self.floor_date: floor-lookup (see get_cached_ranking's
+            # docstring) must never snap to a cached date before the backtest's
+            # own start — that would serve real historical data through a
+            # window the backtest is supposed to have no signal in yet.
+            cached = get_cached_ranking(
+                band_id, as_of_date, self.lookback_months, cache_conn, min_date=self.floor_date,
+            )
         except Exception as e:
             logger.debug(
                 f"Momentum rank cache unreadable for band_id={self.band_id}, date={as_of_date}, "
