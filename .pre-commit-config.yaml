@@ -15,6 +15,20 @@ repos:
         args: [--config-file=pyproject.toml]
         language: python
         language_version: python3.11
+        # pyproject.toml already declares scripts.*/tests.*/momentum_framework.
+        # {scripts,tests}.* as ignore_errors=true (mypy.ini's own top-comment
+        # states scripts/ is excluded from the project's typing standard), but
+        # that module-pattern override only resolves when mypy walks the
+        # package itself (`mypy .`) — pre-commit instead passes each staged
+        # file's PATH directly as a CLI arg, which mypy treats as its own
+        # "main" module rather than resolving it through scripts.*, so the
+        # override silently never applies here (found 2026-09-05: a 6-line
+        # change to scripts/feature_backfill_hybrid.py surfaced 30+ unrelated
+        # pre-existing errors in a file the project explicitly never intended
+        # to type-check). Excluding the same paths at the pre-commit level
+        # keeps the hook consistent with the policy already declared in
+        # pyproject.toml, rather than silently ignoring it.
+        exclude: ^(scripts|tests|momentum_framework/(scripts|tests))/
         # fastapi is needed here, not just in the project venv: pre-commit runs
         # mypy in an ISOLATED environment, so pyproject's
         # follow_imports = "normal" override for fastapi could not resolve the

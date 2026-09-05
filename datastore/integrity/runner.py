@@ -6,22 +6,28 @@ Specs: FeatureBacklog.md A20
 Owner: Data Layer / Ops / Scheduler
 Consumers: ingestion/scheduler/daily_pipeline.py::step_data_integrity_check
 
-Orchestrates the four checks in datastore/integrity/checks.py, inserts
-every returned Finding via datastore/integrity/findings.py, and returns a
-summary the caller uses to decide whether the pipeline step itself should
-fail (any 'critical' finding does).
+Orchestrates the checks in datastore/integrity/checks.py (_CHECKS below),
+inserts every returned Finding via datastore/integrity/findings.py, and
+returns a summary the caller uses to decide whether the pipeline step
+itself should fail (any 'critical' finding does).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date as date_type
-from typing import Dict, List
+from typing import Any, Callable, Dict, List
 
 from datastore.integrity import checks as check_fns
 from datastore.integrity.findings import Finding, insert_finding
 
-_CHECKS = {
+# Each check_fns.check_* function takes optional keyword-only tuning params
+# beyond (conn, as_of_date) (lookback_days, fyers_client, sample_size, ...),
+# so their signatures don't unify into one Callable type on their own --
+# annotated here since every call site (below) only ever calls them
+# positionally with exactly these two args, using each function's own
+# default for the rest.
+_CHECKS: Dict[str, Callable[[Any, date_type], List[Finding]]] = {
     "corporate_actions": check_fns.check_corporate_actions,
     "null_sweep": check_fns.check_null_sweep,
     "holiday_leakage": check_fns.check_holiday_leakage,
@@ -30,6 +36,13 @@ _CHECKS = {
     # with zero corporate_actions rows despite substantial trading
     # history (see check_corporate_actions_coverage's docstring).
     "corporate_actions_coverage": check_fns.check_corporate_actions_coverage,
+    # 2026-09-05: A20 follow-up — check_corporate_actions only covers
+    # SPLIT/BONUS and depends on FYERS already being correctly adjusted;
+    # this one is self-referential (no FYERS call) and covers every
+    # action_type, closing the RIGHTS/DIVIDEND/OTHER blind spot that let
+    # 95 tickers' worth of unadjusted price discontinuities go undetected
+    # (see check_corporate_action_continuity's docstring).
+    "corporate_action_continuity": check_fns.check_corporate_action_continuity,
 }
 
 
@@ -45,9 +58,9 @@ class IntegrityCheckResult:
         return sum(self.findings_by_check.values())
 
 
-def run_integrity_checks(conn, as_of_date: date_type) -> IntegrityCheckResult:
+def run_integrity_checks(conn: Any, as_of_date: date_type) -> IntegrityCheckResult:
     """
-    Run all four A20 checks against `conn` for `as_of_date`, inserting
+    Run every A20 check in _CHECKS against `conn` for `as_of_date`, inserting
     every finding as status='pending'. Never raises on a per-check
     failure — a single check's own exception (e.g. a Fyers outage) is
     logged and treated as zero findings for that check, so one flaky

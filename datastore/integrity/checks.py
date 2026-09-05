@@ -34,7 +34,7 @@ import logging
 from datetime import date as date_type
 from datetime import timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -54,10 +54,10 @@ from scripts.detect_missing_split_reconstruction import (  # noqa: E402
 
 
 def check_corporate_actions(
-    conn,
+    conn: Any,
     as_of_date: date_type,
     lookback_days: int = 7,
-    fyers_client=None,
+    fyers_client: Any = None,
 ) -> List[Finding]:
     """
     For every corporate_actions row actioned (ex_date) in the trailing
@@ -197,6 +197,119 @@ def check_corporate_actions(
     return findings
 
 
+# [2026-09-05, found investigating the momentum campaign's corp-action price
+# discontinuities] check_corporate_actions above only ever covers SPLIT/
+# BONUS, and even for those it depends on FYERS' OWN series already being
+# correctly adjusted (it flags a MISMATCH between "our close / fyers
+# close" before vs after ex_date). That investigation found 95 tickers
+# with a genuine unadjusted discontinuity, 60 of which FYERS shows too
+# (mostly RIGHTS/DIVIDEND-with-scheme/OTHER Demerger events) -- for those,
+# "our ratio to Fyers" never jumps, because both sides share the identical
+# raw jump, so check_corporate_actions's method silently passes them.
+#
+# This check is deliberately self-referential instead: it looks for a
+# discontinuity in OUR OWN close-to-close series at ex_date, the same
+# threshold-and-comparison ingestion/adjust/price_adjuster.py's own
+# check_price_continuity() already uses -- but that function only ever
+# runs per-ticker, on demand, from inside adjust_for_corporate_actions(),
+# and only logs a warning (easy to miss in scheduler output, never
+# persisted or queryable). This wraps the same logic as a Finding, run
+# across ALL action types, with no FYERS dependency (so it's also cheap
+# enough to run as a one-off full-history sweep -- pass a large
+# lookback_days, or None, to check every corporate_actions row ever
+# ingested rather than just the trailing window).
+MAX_CONTINUITY_GAP_PCT = 20.0
+"""Deliberately looser than price_adjuster.py's own MAX_CONTINUITY_GAP_PCT
+(1.0%) -- that function's threshold is tuned for "did OUR OWN adjuster's
+multiplicative factor land exactly right", a much finer question than this
+check's "is this corporate action's ex_date associated with a plausible
+same-magnitude jump at all". 20% keeps this from flagging every ordinary
+volatile trading day on a name with no adjustment problem at all, while
+still catching every one of the 2026-09-05 investigation's confirmed
+cases (all >=40% raw jumps)."""
+
+
+def check_corporate_action_continuity(
+    conn: Any,
+    as_of_date: date_type,
+    lookback_days: Optional[int] = 7,
+) -> List[Finding]:
+    """
+    For every corporate_actions row (ANY action_type -- SPLIT, BONUS,
+    RIGHTS, DIVIDEND, OTHER alike) actioned in [as_of_date - lookback_days,
+    as_of_date], flag a close-to-close gap at ex_date wider than
+    MAX_CONTINUITY_GAP_PCT in ohlcv_adjusted's OWN series.
+
+    `lookback_days=None` sweeps every corporate_actions row ever ingested
+    regardless of ex_date, for a one-off historical backfill check (this is
+    how the 2026-09-05 investigation's 95-ticker backlog should be re-run
+    to confirm no more remain once the confirmed fixes are applied) --
+    the daily pipeline itself should keep calling this with the normal
+    trailing-window default so newly-ingested corporate actions are caught
+    going forward, not just at the one-time cleanup.
+
+    No FYERS call, no external dependency: this only ever reads
+    corporate_actions and ohlcv_adjusted, so it is safe and cheap to run
+    unattended or as a large historical sweep.
+    """
+    where = "" if lookback_days is None else "WHERE ex_date BETWEEN ? AND ?"
+    params = [] if lookback_days is None else [as_of_date - timedelta(days=lookback_days), as_of_date]
+    actions = conn.execute(
+        f"SELECT ticker, ex_date, action_type, ratio FROM corporate_actions {where}",
+        params,
+    ).df()
+
+    findings: List[Finding] = []
+    for row in actions.itertuples():
+        ticker, ex_date, action_type, ratio = row.ticker, row.ex_date, row.action_type, row.ratio
+
+        px = conn.execute(
+            """
+            SELECT date, close FROM ohlcv_adjusted
+            WHERE ticker = ? AND date BETWEEN ? AND ?
+            ORDER BY date
+            """,
+            [ticker, pd.Timestamp(ex_date) - pd.Timedelta(days=10), pd.Timestamp(ex_date) + pd.Timedelta(days=10)],
+        ).df()
+        if len(px) < 2:
+            continue
+
+        px["date"] = pd.to_datetime(px["date"])
+        ex_ts = pd.Timestamp(ex_date)
+        before = px[px["date"] < ex_ts]
+        on_or_after = px[px["date"] >= ex_ts]
+        if before.empty or on_or_after.empty:
+            continue
+
+        prev_close = float(before.iloc[-1]["close"])
+        ex_close = float(on_or_after.iloc[0]["close"])
+        if prev_close <= 0:
+            continue
+
+        gap_pct = abs(ex_close - prev_close) / prev_close * 100
+        if gap_pct < MAX_CONTINUITY_GAP_PCT:
+            continue
+
+        findings.append(
+            Finding(
+                check_name="corporate_action_continuity",
+                finding_date=as_of_date,
+                severity="critical",
+                description=(
+                    f"{ticker}: {gap_pct:.1f}% close-to-close gap at {action_type} "
+                    f"ex_date={ex_date} (ratio={ratio}) -- unadjusted price discontinuity"
+                ),
+                ticker=ticker,
+                evidence={
+                    "ex_date": str(ex_date), "action_type": action_type, "ratio": ratio,
+                    "prev_close": prev_close, "ex_close": ex_close, "gap_pct": gap_pct,
+                },
+            )
+        )
+
+    return findings
+
+
 _NULL_SWEEP_TABLES = ["ohlcv_adjusted", "fundamentals", "macro_indicators"]
 # Baseline null-rate tolerance for columns not otherwise known-sparse.
 # Anything above this is flagged as a warning; a column that's 100% NaN
@@ -204,7 +317,7 @@ _NULL_SWEEP_TABLES = ["ohlcv_adjusted", "fundamentals", "macro_indicators"]
 _NULL_SWEEP_WARN_THRESHOLD = 0.10
 
 
-def check_null_sweep(conn, as_of_date: date_type) -> List[Finding]:
+def check_null_sweep(conn: Any, as_of_date: date_type) -> List[Finding]:
     """
     Per-column null/NaN rate sweep over SOURCE input tables only, skipping
     columns already known to be structurally sparse
@@ -265,7 +378,9 @@ def check_null_sweep(conn, as_of_date: date_type) -> List[Finding]:
     return findings
 
 
-def _null_rate_findings(df: pd.DataFrame, source: str, as_of_date: date_type, known_sparse: set) -> List[Finding]:
+def _null_rate_findings(
+    df: pd.DataFrame, source: str, as_of_date: date_type, known_sparse: "set[str]"
+) -> List[Finding]:
     findings: List[Finding] = []
     n = len(df)
     for col in df.columns:
@@ -295,7 +410,7 @@ def _null_rate_findings(df: pd.DataFrame, source: str, as_of_date: date_type, kn
     return findings
 
 
-def check_holiday_leakage(conn, as_of_date: date_type, lookback_days: int = 30) -> List[Finding]:
+def check_holiday_leakage(conn: Any, as_of_date: date_type, lookback_days: int = 30) -> List[Finding]:
     """
     Cross-reference config.nse_holidays.is_nse_holiday against
     ohlcv_adjusted dates and written feature Parquet partition filenames
@@ -347,13 +462,13 @@ def check_holiday_leakage(conn, as_of_date: date_type, lookback_days: int = 30) 
 
 
 def check_spot_check(
-    conn,
+    conn: Any,
     as_of_date: date_type,
     sample_size: int = 100,
     lookback_years: int = 5,
     seed: Optional[int] = None,
-    fyers_client=None,
-    yahoo_fetch=None,
+    fyers_client: Any = None,
+    yahoo_fetch: Any = None,
 ) -> List[Finding]:
     """
     Sample `sample_size` random (ticker, date) pairs across the trailing
@@ -472,7 +587,7 @@ _KNOWN_ACTION_FREE_TICKERS = {
 
 
 def check_corporate_actions_coverage(
-    conn,
+    conn: Any,
     as_of_date: date_type,
     min_trading_days: int = 500,
     lookback_years: int = 10,

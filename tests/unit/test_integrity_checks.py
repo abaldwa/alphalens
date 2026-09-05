@@ -16,6 +16,7 @@ import pytest
 
 from datastore.api.db import get_duckdb_connection
 from datastore.integrity.checks import (
+    check_corporate_action_continuity,
     check_corporate_actions,
     check_corporate_actions_coverage,
     check_holiday_leakage,
@@ -110,6 +111,83 @@ class TestCheckCorporateActions:
 
         findings = check_corporate_actions(conn, date(2026, 6, 5), lookback_days=7, fyers_client=fake_fy)
         assert findings == []
+
+
+class TestCheckCorporateActionContinuity:
+    """
+    check_corporate_action_continuity covers the blind spot found
+    2026-09-05: check_corporate_actions above only ever looks at SPLIT/
+    BONUS, and even then requires FYERS' own series to already be
+    correctly adjusted. RIGHTS/DIVIDEND/OTHER (the WEIZMANIND-style
+    Scheme-of-Arrangement case in particular) need a check with no FYERS
+    dependency at all, since FYERS may carry the identical unadjusted jump.
+    """
+
+    def test_flags_unadjusted_discontinuity_for_other_action_type(self, conn):
+        # action_type='OTHER' (Demerger/Scheme of Arrangement) is exactly
+        # the category the SPLIT/BONUS-only check_corporate_actions skips.
+        ticker = "TESTSCHEME"
+        ex_date = date(2026, 6, 1)
+        conn.execute(
+            "INSERT INTO corporate_actions (ticker, ex_date, action_type, ratio) VALUES (?, ?, 'OTHER', 0.0)",
+            [ticker, ex_date],
+        )
+        d = ex_date - timedelta(days=15)
+        for i in range(31):
+            dd = d + timedelta(days=i)
+            # WEIZMANIND-shaped: flat ~80, then a single-day crash to ~27 at ex_date.
+            close = 27.0 if dd >= ex_date else 80.0
+            conn.execute(
+                "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (dd, ticker, close, close, close, close, 1000),
+            )
+
+        findings = check_corporate_action_continuity(conn, date(2026, 6, 5), lookback_days=7)
+        assert len(findings) == 1
+        assert findings[0].ticker == ticker
+        assert findings[0].severity == "critical"
+        assert findings[0].check_name == "corporate_action_continuity"
+
+    def test_no_finding_when_series_already_continuous(self, conn):
+        ticker = "TESTGOOD"
+        ex_date = date(2026, 6, 1)
+        conn.execute(
+            "INSERT INTO corporate_actions (ticker, ex_date, action_type, ratio) VALUES (?, ?, 'OTHER', 0.0)",
+            [ticker, ex_date],
+        )
+        d = ex_date - timedelta(days=15)
+        for i in range(31):
+            dd = d + timedelta(days=i)
+            conn.execute(
+                "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (dd, ticker, 80.0, 80.0, 80.0, 80.0, 1000),
+            )
+
+        findings = check_corporate_action_continuity(conn, date(2026, 6, 5), lookback_days=7)
+        assert findings == []
+
+    def test_full_history_sweep_ignores_ex_date_window_when_lookback_none(self, conn):
+        # An ex_date far outside any trailing window must still be caught
+        # when lookback_days=None -- this is the one-off historical-backlog
+        # sweep mode, not just the daily incremental check.
+        ticker = "TESTOLD"
+        ex_date = date(2010, 12, 8)
+        conn.execute(
+            "INSERT INTO corporate_actions (ticker, ex_date, action_type, ratio) VALUES (?, ?, 'DIVIDEND', 0.5)",
+            [ticker, ex_date],
+        )
+        d = ex_date - timedelta(days=15)
+        for i in range(31):
+            dd = d + timedelta(days=i)
+            close = 27.0 if dd >= ex_date else 82.0
+            conn.execute(
+                "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (dd, ticker, close, close, close, close, 1000),
+            )
+
+        findings = check_corporate_action_continuity(conn, date(2026, 6, 5), lookback_days=None)
+        assert len(findings) == 1
+        assert findings[0].ticker == ticker
 
 
 class TestCheckNullSweep:
