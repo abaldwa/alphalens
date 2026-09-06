@@ -7,7 +7,9 @@
 3. Fyers `-EQ` exchange segment hardcoding; tickers migrated to `-BE` broke silently
 4. Missing/incomplete Demerger/Scheme model in backward-adjustment pipeline
 
-**Scope:** 101 tickers with gaps >20% price jumps; 54 specific corporate action events across 50 tickers applied/remediated.
+**Scope:** 
+- **Phase 1 (2026-09-05):** 101 tickers with gaps >20%; 50 fixed, 12 pending
+- **Phase 2 (2026-09-06):** Comprehensive scan revealed **3,886 gaps >= 5%** across 1,684 tickers
 
 ---
 
@@ -15,18 +17,24 @@
 
 | Category | Count | Status | Notes |
 |----------|-------|--------|-------|
-| **Applied Fixes** | | | |
+| **Phase 1: Applied Fixes** | | | |
 | Fyers-repull (segment migration) | 15 | ✅ APPLIED | Fresh FYERS data, correct segment found |
 | Already correct (no Fyers needed) | 11 | ✅ VERIFIED | Stored data was already good; no action needed |
 | Empirical Demerger/Scheme factors | 23 | ✅ APPLIED | Category B high-confidence via empirical pre/post median |
 | PEL (NSE bhavcopy empirical) | 1 | ✅ APPLIED | Verified via public demerger announcement |
-| **Subtotal Applied** | **50** | ✅ | |
-| **Pending / Unresolved** | | | |
+| **Phase 1 Subtotal** | **50** | ✅ | 1.3% of comprehensive inventory |
+| **Phase 1 Pending / Unresolved** | | | |
 | Compound BONUS+SPLIT (no bhavcopy 2009–2016) | 5 | ⏳ | Derived candidates ready; need historical price source |
 | Demerger/Scheme (no bhavcopy pre-2020) | 5 | ⏳ | Same method as PEL; blocked on historical data source |
 | RIGHTS type (user deferred) | 2 | 🔒 | Explicitly left unfixed per user instruction |
-| **Subtotal Pending** | **12** | | |
-| **Total Tickers Affected** | **62** | | 50 applied + 12 pending |
+| **Phase 1 Subtotal Pending** | **12** | | |
+| **Phase 1 Total** | **62** | | 50 applied + 12 pending |
+| | | | |
+| **Phase 2: Comprehensive Scan (2026-09-06)** | | | |
+| Gaps >= 50% (critical) | 66 | ⏳ Inventory | Multi-leg events; pre-2010 legacy data |
+| Gaps 20-50% (high) | 147 | ⏳ Inventory | Mixed historical/recent; unlogged CA |
+| Gaps 5-20% (moderate) | 3,673 | ⏳ Inventory | Mostly DIVIDENDs; mostly 2015+ |
+| **Phase 2 Total** | **3,886** | 📊 Inventory | Across 1,684 unique tickers |
 
 ---
 
@@ -297,13 +305,57 @@ Detects corporate-action discontinuities (gaps >20% at ex_date) and flags them a
 
 ---
 
+---
+
+## Phase 2: Comprehensive Price-Continuity Scan (2026-09-06)
+
+**Threshold Lowered:** MAX_CONTINUITY_GAP_PCT: 20% → 5% (to capture full scope)
+
+**Scan Results:**
+- **3,886 total gaps** across 1,684 unique tickers
+- Distribution:
+  - 66 gaps >= 50% (critical; mostly pre-2010 legacy)
+  - 147 gaps 20-50% (high impact)
+  - 3,673 gaps 5-20% (moderate impact; mostly DIVIDENDs)
+- **Average gap:** 10%, **Median gap:** 6.9%
+
+**Top Priority Tickers (by remediation score):**
+1. CGPOWER: 425.9% max gap, 5 events (pre-2010)
+2. JAYBARMARU: 418.6% max gap, 5 events (pre-2010)
+3. GAEL: 307% max gap, 4 events (pre-2010)
+4. ASHAPURMIN: 104.7% max gap, 3 events (**already fixed, but has multiple events**)
+5. INFY: 98.7% max gap, 3 events (tier-1 stock)
+
+**Key Insight:** ASHAPURMIN is in our "fixed" list but shows 3 gaps. This reveals:
+- Some tickers have **multiple corporate events** across different years
+- Phase 1 fixes only addressed the **most recent event per ticker**
+- **Comprehensive remediation requires handling all events chronologically**
+
+**Inventory Exported:**
+- `docs/findings_export_2026_09_06/findings_by_severity.csv` — All 3,886 gaps ranked by size
+- `docs/findings_export_2026_09_06/remediation_priority_queue.csv` — Top-100 by impact score
+- `docs/findings_export_2026_09_06/summary_statistics.csv` — Aggregate metrics
+
+**Remediation Strategy:** See `docs/PRICE_CONTINUITY_REMEDIATION_STRATEGY_2026_09.md` for detailed 3-phase plan:
+- Phase 1 (Ready): Top-100 tickers, ~1,500-1,800 gaps, 2-3 days
+- Phase 2 (Planned): Remaining high-impact, 1-2 weeks
+- Phase 3 (Ongoing): Daily check + weekly triage
+
+---
+
 ## Status Summary
 
-- **✅ Applied:** 50 tickers; 54 corporate action events fixed
-- **⏳ Pending Clarity:** 12 tickers; awaiting (a) historical bhavcopy archive location, or (b) user decision on derived factors
-- **🔒 User-Deferred:** 2 RIGHTS-type tickers (leave unfixed)
+| Item | Phase 1 | Phase 2 | Overall |
+|------|---------|---------|---------|
+| **Fixed** | 50 tickers | TBD | 1.3% of inventory |
+| **Inventory** | 62 tickers | 1,684 tickers | 3,886 gaps identified |
+| **Pending** | 12 tickers | 1,634 tickers | 97% of gaps await remediation |
+| **Automation** | Manual | Daily check at 5% | Continuous |
+| **DB Lock** | Available | Available | As needed |
 
-**Database Write Lock:** Currently available; ready to apply any remaining fixes once data sources are confirmed.
+**Critical Finding:** Phase 1's 101-ticker investigation was only **1.3% comprehensive**. The full scope (3,886 gaps, 1,684 tickers) represents the true data quality risk to all strategies (R9, R11, R7, R8, R12).
+
+**Next Action:** User decision on Phase 1 execution scope (top-100 immediate, or review priority queue first?).
 
 ---
 

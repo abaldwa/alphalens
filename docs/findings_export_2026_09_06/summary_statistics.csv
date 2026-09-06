@@ -1,0 +1,8 @@
+metric,count
+Total gaps found,3886.0
+Unique tickers affected,1684.0
+Gaps >= 50%,66.0
+Gaps 20-50%,147.0
+Gaps 5-20%,3673.0
+Avg gap size,9.991636644364386
+Median gap size,6.9
