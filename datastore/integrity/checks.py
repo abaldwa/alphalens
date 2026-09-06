@@ -218,15 +218,19 @@ def check_corporate_actions(
 # enough to run as a one-off full-history sweep -- pass a large
 # lookback_days, or None, to check every corporate_actions row ever
 # ingested rather than just the trailing window).
-MAX_CONTINUITY_GAP_PCT = 20.0
-"""Deliberately looser than price_adjuster.py's own MAX_CONTINUITY_GAP_PCT
-(1.0%) -- that function's threshold is tuned for "did OUR OWN adjuster's
-multiplicative factor land exactly right", a much finer question than this
-check's "is this corporate action's ex_date associated with a plausible
-same-magnitude jump at all". 20% keeps this from flagging every ordinary
-volatile trading day on a name with no adjustment problem at all, while
-still catching every one of the 2026-09-05 investigation's confirmed
-cases (all >=40% raw jumps)."""
+MAX_CONTINUITY_GAP_PCT = 5.0
+"""Comprehensive price-continuity check: flag any close-to-close gap >= 5%
+on a corporate-action ex_date. This is deliberately generous (price_adjuster.py's
+own tolerance is 1.0%) to catch the full scope of unaccounted movements:
+- Normal volatility: 2-3% typical daily move
+- At 5%: very rare, but real moves happen
+- Above 5%: almost always corporate-action related
+
+At 5%, this check will flag 1000s of gaps historically, and 100s monthly going
+forward. That volume is intentional: the 2026-09-05 investigation found that
+our 101-ticker scan missed A2ZINFRA and thousands of other gaps. Comprehensive
+inventory is required before we can trust any backtest. This check is the tool
+to build that inventory."""
 
 
 def check_corporate_action_continuity(
