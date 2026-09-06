@@ -59,23 +59,34 @@ from ingestion.scrapers.fyers_backfill import FYERSBackfill  # noqa: E402
 PRICE_TOLERANCE_PCT = 0.5  # rows within this tolerance aren't reported as a diff (rounding noise)
 
 
+WINDOW_DAYS_BEFORE = 30
+WINDOW_TOTAL_DAYS = 365
+
+
 def _diff_ticker(
-    conn: duckdb.DuckDBPyConnection, fy: FYERSBackfill, ticker: str
+    conn: duckdb.DuckDBPyConnection, fy: FYERSBackfill, ticker: str, ex_date: str
 ) -> Optional[pd.DataFrame]:
     """
-    Fetch this ticker's full stored date range, re-pull the same range from
-    FYERS, and return a DataFrame of rows that differ beyond tolerance --
-    date, stored_close, fresh_close, pct_diff. None if the ticker has no
-    stored rows or FYERS has nothing for it.
-    """
-    bounds = conn.execute(
-        "SELECT MIN(date), MAX(date) FROM ohlcv_adjusted WHERE ticker = ?", [ticker]
-    ).fetchone()
-    if bounds is None or bounds[0] is None:
-        print(f"{ticker}: no stored ohlcv_adjusted rows -- skipping")
-        return None
+    Re-pull only a window around `ex_date` -- WINDOW_DAYS_BEFORE days
+    before it through WINDOW_TOTAL_DAYS total (one single FYERS call, no
+    chunking) -- rather than this ticker's full stored history. The
+    FIXED_BY_REPULL verdict only tells us FYERS is continuous AT this
+    specific ex_date; a full-history pull re-verifies years of data that
+    was never in question, for 26 tickers, at real API-call cost, with no
+    added confidence about the one date range that actually needs fixing.
 
-    from_date, to_date = str(bounds[0]), str(bounds[1])
+    Returns a DataFrame of rows in that window that differ beyond
+    tolerance -- date, stored_close, fresh_close, pct_diff. None if the
+    ticker has no stored rows in the window or FYERS has nothing for it.
+    """
+    ex_ts = pd.Timestamp(ex_date)
+    from_ts = ex_ts - pd.Timedelta(days=WINDOW_DAYS_BEFORE)
+    # Clip to today -- a recent ex_date (e.g. CAPTRUST, 2025-10-10) pushes
+    # from_ts + WINDOW_TOTAL_DAYS past the current date, which FYERS
+    # rejects outright rather than just truncating the response itself.
+    to_ts = min(from_ts + pd.Timedelta(days=WINDOW_TOTAL_DAYS), pd.Timestamp.now().normalize())
+    from_date, to_date = from_ts.strftime("%Y-%m-%d"), to_ts.strftime("%Y-%m-%d")
+
     fresh = fy.download_history(ticker, from_date, to_date)
     if fresh.empty:
         print(f"{ticker}: FYERS returned no data for {from_date}..{to_date} -- skipping")
@@ -83,9 +94,12 @@ def _diff_ticker(
 
     stored = conn.execute(
         "SELECT date, open, high, low, close, volume, source, adj_factor "
-        "FROM ohlcv_adjusted WHERE ticker = ? ORDER BY date",
-        [ticker],
+        "FROM ohlcv_adjusted WHERE ticker = ? AND date BETWEEN ? AND ? ORDER BY date",
+        [ticker, from_date, to_date],
     ).fetchdf()
+    if stored.empty:
+        print(f"{ticker}: no stored ohlcv_adjusted rows in {from_date}..{to_date} -- skipping")
+        return None
     stored["date"] = pd.to_datetime(stored["date"])
     fresh["date"] = pd.to_datetime(fresh["date"])
 
@@ -158,9 +172,9 @@ def main() -> None:
     ap.add_argument("--apply", action="store_true", help="Actually write. Without this, dry-run only.")
     args = ap.parse_args()
 
-    tickers = sorted(pd.read_csv(args.input)["ticker"].unique())
+    targets = pd.read_csv(args.input)[["ticker", "ex_date"]].drop_duplicates().sort_values("ticker")
     if args.ticker:
-        tickers = [t for t in tickers if t == args.ticker]
+        targets = targets[targets["ticker"] == args.ticker]
 
     fy = FYERSBackfill()
     summary: List[Dict[str, Any]] = []
@@ -170,8 +184,9 @@ def main() -> None:
     # script's own run, and retry-with-backoff on a transient lock instead
     # of failing outright (get_duckdb_connection's default budget).
     with get_duckdb_connection(DUCKDB_PATH, read_only=not args.apply, persist=False) as conn:
-        for ticker in tickers:
-            changed = _diff_ticker(conn, fy, ticker)
+        for row in targets.itertuples():
+            ticker, ex_date = str(row.ticker), str(row.ex_date)
+            changed = _diff_ticker(conn, fy, ticker, ex_date)
             if changed is None:
                 summary.append({"ticker": ticker, "status": "skipped_no_data"})
                 continue
