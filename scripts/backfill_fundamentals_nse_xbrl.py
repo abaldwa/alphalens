@@ -366,16 +366,23 @@ def main() -> None:
         from datastore.staging.publish import publish_run_lock, publish_table
 
         new_df = pd.DataFrame([{c: r.get(c) for c in all_cols} for r in delta_records])
+        # [2026-09-06 fix] Read existing data without holding DB lock during merge.
+        # Separate read phase (acquire lock, read table, release) from
+        # staging/publish phase (acquire lock later) so downloads+merge happen
+        # while other processes (scheduler) can access the DB.
         with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
             existing_df = conn.execute("SELECT * FROM fundamentals").df()
-            merged_df = coalesce_merge(
-                existing_df, new_df, key_cols=["ticker", "fiscal_year", "quarter"],
-                new_wins=True,  # nse_xbrl: freshly-parsed filing value always overwrites
-            )
-            with publish_run_lock() as acquired:
-                if not acquired:
-                    logger.error("Another publish is in progress — staged xbrl backfill NOT published.")
-                else:
+
+        merged_df = coalesce_merge(
+            existing_df, new_df, key_cols=["ticker", "fiscal_year", "quarter"],
+            new_wins=True,  # nse_xbrl: freshly-parsed filing value always overwrites
+        )
+
+        with publish_run_lock() as acquired:
+            if not acquired:
+                logger.error("Another publish is in progress — staged xbrl backfill NOT published.")
+            else:
+                with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
                     result = stage_dataframe(conn, "fundamentals", merged_df, validators=[])
                     if not result.ok:
                         logger.error("Staging gate rejected the entire batch — nothing published.")
