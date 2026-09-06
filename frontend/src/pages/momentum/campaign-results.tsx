@@ -23,6 +23,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColDef, ColGroupDef, ValueFormatterParams } from 'ag-grid-community'
 import type { ColumnDef } from '@tanstack/react-table'
+import { Copy, Check } from 'lucide-react'
 
 import {
   AnalyticsGrid,
@@ -41,6 +42,16 @@ import { listFrameworkRuns, type FrameworkRunSummary } from '@/shared/api/framew
 import { getOverallMomentumRank, type OverallRankRow } from '@/shared/api/momentum_overall_rank'
 import { CampaignRunAnalysis } from './CampaignRunAnalysis'
 import { EM_DASH, fmtPct, fmtNum, signClass } from './campaignFormat'
+
+/** Copy text to clipboard with visual feedback */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
 
 /** AG Grid value formatters need the null-safe wrapper on a plain fraction so
  * sorting stays numeric (the value getter returns the raw number) while the
@@ -121,35 +132,53 @@ function tradeGroup(): ColGroupDef<FrameworkRunSummary> {
   }
 }
 
-/** One "Analyze" button per row, opening that run in the drill-down panel
- * below the grid (Long Term CAGR / Regular Returns / tax / rolling window /
- * benchmark / trade quality — see CampaignRunAnalysis.tsx). A plain button
- * rather than row selection: AnalyticsGrid's own row selection is scoped to
- * its trend chart and isn't exposed to the page. */
-function analyzeColumn(onAnalyze: (run: FrameworkRunSummary) => void): ColDef<FrameworkRunSummary> {
+/** Actions column with "Analyze" button and copy functionality.
+ * Opens drill-down panel for Long Term CAGR / Returns / tax / rolling window /
+ * benchmark / trade quality (see CampaignRunAnalysis.tsx). */
+function actionsColumn(
+  onAnalyze: (run: FrameworkRunSummary) => void,
+  copiedId: string | null,
+  onCopy: (id: string) => void,
+): ColDef<FrameworkRunSummary> {
   return {
-    headerName: '',
+    headerName: 'Actions',
     pinned: 'right',
-    width: 100,
+    width: 150,
     sortable: false,
     filter: false,
-    cellRenderer: (p: { data?: FrameworkRunSummary }) =>
-      p.data ? (
-        <button
-          type="button"
-          onClick={() => onAnalyze(p.data as FrameworkRunSummary)}
-          className="text-xs text-primary underline-offset-2 hover:underline"
-        >
-          Analyze
-        </button>
-      ) : null,
+    cellRenderer: (p: { data?: FrameworkRunSummary }) => {
+      if (!p.data) return null
+      const isCopied = copiedId === p.data.run_id
+
+      return (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onAnalyze(p.data as FrameworkRunSummary)}
+            className="text-xs text-primary underline-offset-2 hover:underline whitespace-nowrap"
+          >
+            Analyze
+          </button>
+          <button
+            type="button"
+            onClick={() => onCopy(p.data!.run_id)}
+            className="text-xs text-muted-foreground hover:text-foreground p-1"
+            title="Copy run ID"
+          >
+            {isCopied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
+          </button>
+        </div>
+      )
+    },
   }
 }
 
 function buildColumns(
   onAnalyze: (run: FrameworkRunSummary) => void,
+  copiedId: string | null,
+  onCopy: (id: string) => void,
 ): Array<ColDef<FrameworkRunSummary> | ColGroupDef<FrameworkRunSummary>> {
-  return [identityGroup(), configGroup(), performanceGroup(), tradeGroup(), analyzeColumn(onAnalyze)]
+  return [identityGroup(), configGroup(), performanceGroup(), tradeGroup(), actionsColumn(onAnalyze, copiedId, onCopy)]
 }
 
 // Same thresholds as backtest-report's HEATMAP: full colour at +50%/-35% CAGR
@@ -239,7 +268,16 @@ export function MomentumCampaignResultsPage() {
   const runs = useMemo(() => data?.runs ?? [], [data?.runs])
 
   const [selectedRun, setSelectedRun] = useState<FrameworkRunSummary | null>(null)
-  const columns = useMemo(() => buildColumns(setSelectedRun), [])
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const handleCopy = async (runId: string) => {
+    if (await copyToClipboard(runId)) {
+      setCopiedId(runId)
+      setTimeout(() => setCopiedId(null), 2000)
+    }
+  }
+
+  const columns = useMemo(() => buildColumns(setSelectedRun, copiedId, handleCopy), [copiedId])
 
   const stats = useMemo(() => {
     const byStrategy = new Set(runs.map((r) => r.strategy_code))
