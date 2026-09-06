@@ -70,6 +70,14 @@ function identityGroup(): ColGroupDef<FrameworkRunSummary> {
         width: 80,
         valueFormatter: (p) => `M${String(p.value).padStart(2, '0')}`,
       },
+      {
+        field: 'run_id',
+        headerName: 'Run ID',
+        pinned: 'left',
+        width: 240,
+        cellClass: 'font-mono text-xs',
+        suppressSizeToFit: true,
+      },
     ],
   }
 }
