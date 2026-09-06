@@ -311,6 +311,53 @@ Detects corporate-action discontinuities (gaps >20% at ex_date) and flags them a
 
 **Threshold Lowered:** MAX_CONTINUITY_GAP_PCT: 20% → 5% (to capture full scope)
 
+### Ticker-by-Ticker Remediation Reference
+
+Complete list with ex_dates, gap sizes, and proposed remediation:
+
+| Ticker | Ex-Date | Gap % | Action Type | Remediation Proposed | Notes |
+|--------|---------|-------|-------------|----------------------|-------|
+| CGPOWER | 2006-08-10 | 425.9% | SPLIT/BONUS | Investigate registry: multi-leg event | Pre-2010 legacy; verify NSE archives |
+| JAYBARMARU | 2006-09-25 | 418.6% | SPLIT/BONUS | Investigate registry: multi-leg event | Pre-2010 legacy; 5 total gaps |
+| GAEL | 2006-01-06 | 307.0% | SPLIT/BONUS | Investigate registry: multi-leg event | Pre-2010 legacy; 4 total gaps |
+| ASHAPURMIN | 2006-03-23 | 104.7% | SPLIT/BONUS | Investigate registry: multi-leg event | **Already "fixed" (1 event), but has 3 gaps** |
+| ASHAPURMIN | 2007-10-18 | 45.0% | DEMERGER | Empirical correction: compute factor | Second event on same ticker |
+| ASHAPURMIN | 2008-09-15 | 30.2% | DEMERGER | Empirical correction: compute factor | Third event; already applied in Phase 1 |
+| ZYDUSLIFE | 2006-08-30 | 103.7% | SPLIT/BONUS | Investigate registry: multi-leg event | Pre-2010 legacy; 2 total gaps |
+| INFY | 2006-07-13 | 98.7% | SPLIT/BONUS | Investigate registry: multi-leg event | Tier-1 stock; pre-2010; 3 total gaps |
+| INFY | 2008-10-16 | 42.5% | SPLIT/BONUS | Empirical correction: compute factor | Second event on INFY |
+| INFY | 2014-05-29 | 25.3% | BONUS | Empirical correction: compute factor | Third event on INFY |
+| UNITECH | 2006-06-23 | 98.4% | SPLIT/BONUS | Investigate registry: multi-leg event | Pre-2010 legacy |
+| BTML | 2024-04-05 | 90.2% | STOCK_SPLIT | Empirical correction: compute factor | **Recent (2024); already "fixed" in Phase 1** |
+| TPHQ | 2023-12-14 | 89.6% | SPLIT/BONUS | Empirical correction: compute factor | **Recent (2023); already "fixed" in Phase 1** |
+| AKI | 2023-06-22 | 79.9% | SPLIT/BONUS | Empirical correction: compute factor | **Recent (2023); already "fixed" in Phase 1** |
+| AURIONPRO | 2018-08-14 | 89.3% | SPLIT/BONUS | Empirical correction: compute factor | **Already "fixed" in Phase 1 as "already_correct"** |
+| AURUM | 2020-03-23 | 98.8% | SPLIT/BONUS | Investigate/empirical hybrid | Recent; validate vs Fyers |
+| AURUM | 2020-12-23 | 45.2% | BONUS | Empirical correction: compute factor | Second event on AURUM |
+| AURUM | 2022-04-12 | 15.8% | DIVIDEND | Review threshold: may accept as-is | Third event; borderline 5-20% band |
+| SUNILHITEC | 2010-03-12 | 94.7% | BONUS+SPLIT | Empirical correction: compute factor | Compound event; in Phase 1 pending |
+| RASOYPR | 2010-05-21 | 92.7% | BONUS+SPLIT | Empirical correction: compute factor | Compound event; in Phase 1 pending |
+| STER | 2006-05-05 | 79.3% | SPLIT/BONUS | Investigate registry: multi-leg event | Pre-2010; 2 total gaps |
+| STER | 2010-06-21 | 73.0% | BONUS+SPLIT | Empirical correction: compute factor | Second event; compound; Phase 1 pending |
+| SHARONBIO | 2014-02-20 | 88.0% | DEMERGER | Empirical correction: compute factor | Pre-2020; in Phase 1 pending |
+| BIRLAPOWER | 2009-08-03 | 88.7% | SPLIT/BONUS | Empirical correction: compute factor | Compound event; in Phase 1 pending |
+| CORDELIA | 2026-08-25 | 90.0% | SPLIT/BONUS | Investigate/Empirical hybrid | **Very recent (2026-08-25); recent data** |
+| TCC | 2026-09-04 | 81.1% | SPLIT | Empirical correction: compute factor | **Extremely recent (2026-09-04); 5:1 SPLIT** |
+| MASTEK | 2026-08-31 | 8.0% | DIVIDEND | Review threshold: likely accept as-is | Recent dividend; normal range |
+| TBZ | 2026-09-02 | 14.0% | DIVIDEND | Review threshold: borderline; may fix | Recent dividend; borderline band |
+| BIRLAPREC | 2026-09-03 | 19.9% | DIVIDEND | Empirical correction: compute factor | Recent dividend; near 20% boundary |
+| ACE | 2026-09-03 | 5.0% | DIVIDEND | Review threshold: accept as-is | Recent dividend; minimal gap |
+| FCL | 2026-09-04 | 6.4% | DIVIDEND | Review threshold: accept as-is | Recent dividend; minimal gap |
+| FMGOETZE | 2026-09-04 | 18.3% | DIVIDEND | Review threshold: borderline; may fix | Recent dividend; high ratio (7.5) |
+| HIKAL | 2026-09-04 | 7.5% | DIVIDEND | Review threshold: accept as-is | Recent dividend; normal dividend yield |
+
+**Pattern Analysis Opportunities:**
+- **Pre-2010 Legacy (CGPOWER, JAYBARMARU, GAEL, etc.):** Likely compound events (Bonus+Split) not fully captured; consider investigating in batch by decade
+- **Multi-Event Tickers (INFY, AURUM, STER, ASHAPURMIN):** Have 3-5 gaps each; fix all chronologically to compound correctly
+- **Recently "Fixed" But Still Showing Gaps (BTML, TPHQ, AKI, AURIONPRO):** Phase 1 addressed latest event; earlier events remain
+- **Recent Dividends (2026-08-31 to 2026-09-04):** Mix of acceptable (<=10%) and borderline (10-20%); user threshold decision needed
+- **Compound SPLIT+BONUS (STER, SUNILHITEC, RASOYPR, BIRLAPOWER):** All pre-2010; require chronological factor composition
+
 **Scan Results:**
 - **3,886 total gaps** across 1,684 unique tickers
 - Distribution:
