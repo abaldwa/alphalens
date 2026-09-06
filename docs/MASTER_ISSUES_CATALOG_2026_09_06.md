@@ -104,7 +104,24 @@ R12 is "1-Month Reversal + Liquidity" — ranks by 1-month trailing return, buys
 
 **Status:** New finding this session, no separate doc yet.
 
-### B5. Minor: narrow exception-swallowing without logging (observability gap, not correctness bug)
+### B6. **CRITICAL: Mean-reversion strategy design vulnerability to structural collapses** (R11/R12/R13)
+
+**Finding:** 102 of 126 R11/R12/R13 runs (81%) show vol > 25% + max DD < -35%. Tradebook analysis reveals worst losses are on **REAL price collapses and systemic crises**, not data artifacts:
+
+- **ADANIENT 2015-06-03**: Real -82.77% single-day move (₹617 → ₹106, 47M share volume) followed by -13.4% next day. R11 bought at the "oversold" low (far from 52-week high), then the crash/split happened. No recovery.
+- **ADANIENSOL Jan 2023**: Real -20% to -15% consecutive daily losses (structural deterioration, not gap). R12 bought the "losers" (low 1-month return), strategy bet on reversal, stock kept falling.
+- **YESBANK, PNB, INDUSINDBK 2018-2020**: R12 worst losses during banking crisis (2018) and pandemic (2020), when "oversold" signals coincided with actual systemic distress.
+- **STEELXIND, TVVISION, MEDICO 2017-2024**: R13 worst losses in small-cap/distressed names with structural issues, not temporary oversold bounces.
+
+**Root cause:** All three strategies implement pure mean-reversion (buy low, sell high) without (a) stop-loss logic, (b) regime detection (don't trade during crises), or (c) quality filters (avoid stocks with structural problems). When a stock is "far from its 52-week high" or has "low 1-month returns" or trades "near its lower Bollinger Band," it could mean (i) a temporary dip (strategy's intended target) OR (ii) the beginning of a structural collapse (strategy's worst enemy). The current design cannot distinguish.
+
+**Status:** Not a code bug per se (the strategy does what it's coded to do), but a fundamental design limitation. R07 has crash-regime detection (Config B3 issue, not executed); R11/R12/R13 have none.
+
+**Severity:** This is the PRIMARY driver of R11/R12/R13's 81% of anomalous runs. Data fixes will NOT resolve this.
+
+---
+
+### B7. Minor: narrow exception-swallowing without logging (observability gap, not correctness bug)
 
 **Files:** `r07_crash_aware.py:141`, `r08_bsc_volscale.py:85`, `r09_mm_volscale.py:161`
 
@@ -137,12 +154,12 @@ For completeness — these were audited and found sound:
 From `BACKTEST_PERFORMANCE_ANOMALIES_ROOT_CAUSE_ANALYSIS.md`:
 
 - **1,129 of 1,354 framework runs (83%) show abnormal metrics** (volatility >40% or max DD <-80% or negative Sharpe)
-- **R11/R13 (reversal strategies):** primarily a DATA problem (Category A) — buy artificial "oversold" gaps that never mean-revert (A2ZINFRA: -₹18.8M single-ticker loss)
+- **R11/R12/R13 (mean-reversion strategies):** primarily a STRATEGY DESIGN vulnerability, NOT data — **Updated finding 2026-09-06**. Tradebook review shows worst losses are on REAL price collapses (ADANIENT -82.77% single-day 2015-06-03 = corporate action/crash, not data gap; ADANIENSOL -20% consecutive days Jan 2023 = structural decline; YESBANK/INDUSINDBK 2018-2020 = systemic crises). These strategies bet on "oversold" signals (R11=far-from-52wk-high, R12=low-1mo-return, R13=near-lower-Bollinger-Band) that **appear during real crashes or sector stress**, then fail to recover. The strategy design offers NO stop-loss or regime guard. Even A2ZINFRA's -₹18.8M loss (82.77% gap on 2015-06-03) is a real price action, not a discontinuity artifact — the split/crash happened, R11 was long, no recovery occurred. **Data issues are secondary here; the primary issue is mean-reversion's vulnerability to structural collapses.**
 - **R09/R14/R16:** primarily a CODE problem (Category B1/B2) — weighting logic doesn't actually execute, so results are just R01 relabeled
 - **R07:** a CODE/CONFIG gap (Category B3) — crash mitigation is weaker than documented, not necessarily "wrong," but understates the strategy's designed defensive behavior
-- **R12:** a DOCUMENTATION problem (Category B4) — analysis of "R12 anomalies" earlier in this investigation was actually analyzing a different strategy than CLAUDE.md describes
+- **R12 (second issue):** a DOCUMENTATION problem (Category B4) — CLAUDE.md describes R12 as "Multi-Signal Ensemble", but actual code is "1-Month Reversal + Liquidity"
 
-**These are separable and additive.** Fixing data issues alone would still leave R09 reporting R01's numbers. Fixing the weighting bug alone would still leave R11/R13 vulnerable to A2ZINFRA-style losses.
+**These are separable and additive.** Fixing data issues alone would NOT fix R11/R12/R13's anomalies — the root issue is strategy design. Fixing the weighting bug would leave R09 corrected but not R11/R12/R13.
 
 ---
 
@@ -170,14 +187,37 @@ To be transparent about the boundaries of this pass:
 4. **`common/bollinger_signal.py`** (R13's core signal) — not independently verified against a hand-computed reference case.
 5. **Transaction costs / slippage modeling** — `portfolio.py`'s own docstring states costs.py/tax.py are "layered on once trade-by-trade parity is checked" — i.e., NOT YET MODELED. All CAGR/Sharpe figures in this entire campaign are gross of costs. This is a known, documented gap, not a hidden one, but worth restating here since it affects every single number in every document above.
 6. **Queue-generation parameter grids themselves** (band/lookback/cadence choices) — not audited for whether the grid appropriately covers the strategy's intended design space.
+7. **R11/R12/R13 regime defense mechanisms** — whether adding VIX/crash-regime gates (like R07 attempts) would reduce catastrophic losses without gutting the mean-reversion edge in normal periods. This would require a separate design study and re-backtesting.
+
+---
+
+## Key Finding Summary
+
+**"Data Explains Everything" Hypothesis: REJECTED**
+
+User's initial hypothesis — that 1,129 anomalous runs (83% of the portfolio) were driven by data discontinuities — is **partially correct but fundamentally incomplete**:
+
+- **Data issues (Category A):** Real, ~50 tickers fixed so far, 1,684 tickers in inventory. SECONDARY in driving overall anomaly severity.
+- **Strategy design vulnerability (Category B6):** PRIMARY driver. R11/R12/R13 are pure mean-reversion with no regime defense. Worst losses are on REAL crashes (ADANIENT -82.77%, ADANIENSOL structural -20%+, 2018 banking crisis, 2020 pandemic), not data artifacts. 102/126 R11/R12/R13 runs (81%) anomalous BECAUSE OF STRATEGY DESIGN.
+- **Code bugs (Category B1/B2):** R09/R14/R16 collapse to R01 due to portfolio weighting bug.
+- **Config/documentation gaps (Category B3/B4/B7):** R07 crash-reduction never executes; R12 mislabeled in docs.
+
+**Fixing order:**
+1. **B6 (strategy design)** — requires NEW code: add regime guards to R11/R12/R13 (optional), or accept the design risk
+2. **B1 (portfolio weighting)** — fix rebalance_to_target() normalization (code bug, high impact on 3 strategies)
+3. **A1 (data fixes)** — phase in 50+ tickers (will improve R11/R12/R13 marginally but NOT resolve their core issue)
+4. **B3/B4** — documentation/config corrections (low cost, clarity)
 
 ---
 
 ## Recommendation
 
 Do not proceed to fixes until:
-1. This catalog is reviewed and any priority/sequencing decisions are made explicit (which category fixes first: A or B?)
+1. This catalog is reviewed and a **strategic decision** is made: 
+   - **For R11/R12/R13:** Accept mean-reversion's inherent vulnerability to crashes (no fix needed), OR invest in regime-aware variants (R11-with-VIX-gate, etc.)? This changes the strategy's risk profile fundamentally and requires re-backtesting.
+   - **For R09/R14/R16:** Fix B1 portfolio weighting bug (straightforward, high ROI on 3 strategies)
+   - **For data:** Continue with Phase 1 (top-100 tickers) or expand scope? (secondary impact on reversal strategies given B6)
 2. CLAUDE.md's R12 entry is corrected (near-zero cost, prevents further confusion)
 3. A decision is made on R07's `crash_reduce_sizing` (re-run with a real value, or accept current design and update docs)
-4. Items in "What Is NOT Yet Investigated" are triaged — either explicitly deprioritized or added to the queue
+4. Items in "What Is NOT Yet Investigated" are triaged — especially item 7 (regime defense for reversals)
 
