@@ -10,35 +10,30 @@ the way an isolated per-strategy call cannot.
 import pytest
 
 from momentum_framework.metrics.nomenclature import build_strategy_id
+from momentum_framework.queues.active_generators import ACTIVE_GENERATORS
 from momentum_framework.strategies.r01_trailing_momentum import R01QueueGenerator
-from momentum_framework.strategies.r03_jt_skipmonth import R03QueueGenerator
-from momentum_framework.strategies.r07_crash_aware import R07QueueGenerator
-from momentum_framework.strategies.r08_bsc_volscale import R08QueueGenerator
-from momentum_framework.strategies.r09_mm_volscale import R09QueueGenerator
-from momentum_framework.strategies.r10_sector_momentum import R10QueueGenerator
-from momentum_framework.strategies.r11_52wk_reversal import R11QueueGenerator
-from momentum_framework.strategies.r12_reversal_1mo import R12QueueGenerator
-from momentum_framework.strategies.r13_bollinger_reversal import R13QueueGenerator
-from momentum_framework.strategies.r14_inverse_volatility import R14QueueGenerator
-from momentum_framework.strategies.r15_inverse_variance import R15QueueGenerator
-from momentum_framework.strategies.r16_target_volatility import R16QueueGenerator
-from momentum_framework.strategies.r17_downside_volatility import R17QueueGenerator
 
-ALL_GENERATORS = [
-    R01QueueGenerator, R03QueueGenerator, R07QueueGenerator, R08QueueGenerator,
-    R09QueueGenerator, R10QueueGenerator, R11QueueGenerator, R12QueueGenerator,
-    R13QueueGenerator, R14QueueGenerator, R15QueueGenerator, R16QueueGenerator,
-    R17QueueGenerator,
-]
+# ALL_GENERATORS kept as a name here (re-exported from the single source
+# of truth in queues/active_generators.py, added 2026-09-06 so the real
+# campaign-queue assembly script and this test never drift apart — see
+# that module's docstring). R16QueueGenerator is NOT in this list —
+# retired 2026-09-06 (Category B2, mathematically redundant with R14);
+# see test_r16_never_generated below and
+# strategies/r16_target_volatility.py's module docstring.
+ALL_GENERATORS = ACTIVE_GENERATORS
 
 # Minimum expected job counts — a floor, not an exact match, so the test
 # doesn't need updating every time a generator's grid is deliberately
 # widened, but WILL catch a generator silently returning far fewer jobs
 # than expected (e.g. a band accidentally dropped).
+
+# Updated 2026-09-06: user decision shrank TOP_N_BY_BAND (partitioned
+# bands [5,10,15]->[5,10]; M13 [10,20,30,40]->[10,15,20]) — floors below
+# reflect the new, smaller, intentional grid sizes actually produced.
 MIN_JOB_COUNT = {
-    "R01": 264, "R03": 264, "R07": 200, "R08": 264, "R09": 900,
-    "R10": 264, "R11": 60, "R12": 350, "R13": 60,
-    "R14": 264, "R15": 264, "R16": 264, "R17": 264,
+    "R01": 170, "R03": 170, "R07": 150, "R08": 170, "R09": 600,
+    "R10": 170, "R11": 40, "R12": 260, "R13": 40,
+    "R14": 170, "R15": 170, "R17": 170,
 }
 
 
@@ -86,20 +81,26 @@ def test_all_13_strategies_combined_zero_collisions():
             )
             all_ids.add(sid)
 
-    assert total_jobs >= 3000, f"Expected >= 3000 total jobs across 13 strategies, got {total_jobs}"
+    # Updated 2026-09-06: user decision shrank TOP_N_BY_BAND (was >= 3000
+    # before that change) AND R16 was retired, dropping ALL_GENERATORS
+    # from 13 to 12 strategies (see MIN_JOB_COUNT's comment above and
+    # test_r16_never_generated).
+    assert total_jobs >= 2300, f"Expected >= 2300 total jobs across 12 strategies, got {total_jobs}"
     assert len(all_ids) == total_jobs, (
         f"{total_jobs - len(all_ids)} strategy_id collision(s) across the combined 13-strategy set"
     )
 
 
 def test_m13_band_present_with_wider_top_n():
-    """M13 (band_id=13, full ADTV universe) must use top_n in {10,20,30,40},
-    never the partitioned bands' {5,10,15} — see project_m13_band_added memory."""
+    """M13 (band_id=13, full ADTV universe) must use top_n in {10,15,20},
+    never the partitioned bands' {5,10} — see project_m13_band_added
+    memory. Sets updated 2026-09-06 (user decision): M13 was
+    {10,20,30,40}, partitioned bands were {5,10,15}."""
     jobs = R01QueueGenerator().generate()
     m13_top_ns = {j["top_n"] for j in jobs if j["rank_band_id"] == 13}
     other_top_ns = {j["top_n"] for j in jobs if j["rank_band_id"] != 13}
-    assert m13_top_ns == {10, 20, 30, 40}
-    assert other_top_ns == {5, 10, 15}
+    assert m13_top_ns == {10, 15, 20}
+    assert other_top_ns == {5, 10}
 
 
 def test_r05_never_generated():
@@ -109,6 +110,19 @@ def test_r05_never_generated():
         jobs = generator_cls().generate()
         for job in jobs:
             assert job["strategy_family"] != "R05", "R05 must never be generated — see docs/CODE_TRACEABILITY.md"
+
+
+def test_r16_never_generated():
+    """R16 retired 2026-09-06 (Category B2: mathematically redundant with
+    R14 — see strategies/r16_target_volatility.py's module docstring) —
+    no generator in ALL_GENERATORS (R16QueueGenerator deliberately
+    excluded from it) should ever produce an R16 job."""
+    for generator_cls in ALL_GENERATORS:
+        jobs = generator_cls().generate()
+        for job in jobs:
+            assert job["strategy_family"] != "R16", (
+                "R16 is retired — see strategies/r16_target_volatility.py's module docstring"
+            )
 
 
 def test_no_generator_uses_retired_baseline_exit_variant():

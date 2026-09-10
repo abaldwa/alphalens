@@ -22,7 +22,8 @@ mutable state duplicating what BacktestOrchestrator.run_native() already
 computes in its simulation loop).
 """
 
-from typing import Any, Dict, FrozenSet, List, cast
+from typing import Any, Dict, FrozenSet, List
+import logging
 
 import pandas as pd
 
@@ -31,6 +32,8 @@ from momentum_framework.common.portfolio_vol_scaling import vol_target_multiplie
 from momentum_framework.common.signals import TrailingMomentumSignal
 from momentum_framework.queues.generator import QueueGenerator
 from momentum_framework.strategies.base import StrategyBase
+
+logger = logging.getLogger(__name__)
 
 STRATEGY_CODE = "R08"
 RANK_METHOD = "trailing_return"
@@ -82,7 +85,11 @@ class R08BSCVolScale(StrategyBase):
                 lookback_days=self.vol_target_lookback_days,
                 leverage_cap=self.vol_target_leverage_cap,
             )
-        except (ValueError, KeyError):
+        except (ValueError, KeyError) as e:
+            logger.warning(
+                "vol_target_multiplier failed for %s (%s: %s) — degrading to exposure=1.0 for this call",
+                self.__class__.__name__, type(e).__name__, e,
+            )
             return 1.0
         ts = pd.Timestamp(as_of_date)
         # Mirrors legacy off-by-one comment: rebalance runs before today's
@@ -124,7 +131,7 @@ class R08QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        return cast(List[Dict[str, Any]], self.simple_momentum_grid(
+        return self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -139,4 +146,4 @@ class R08QueueGenerator(QueueGenerator):
                 "vol_target_lookback_days": DEFAULT_VOL_TARGET_LOOKBACK_DAYS,
                 "vol_target_leverage_cap": DEFAULT_LEVERAGE_CAP,
             },
-        ))
+        )

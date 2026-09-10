@@ -260,16 +260,37 @@ class PctOf52WeekHighSignal(MomentumSignal):
         placeholders = ",".join("?" for _ in tickers)
         floor_clause = " AND date >= ?" if self.floor_date else ""
         floor_params = [self.floor_date] if self.floor_date else []
+        # Bounded-window subquery — same pattern as TrailingMomentumSignal.
+        # compute() (rn <= days+1) — restricts each ticker's PARTITION to
+        # its trailing lookback_days+1 rows BEFORE the window MAX runs, so
+        # the outer query never scans full history-since-inception per
+        # ticker. Fixed 2026-09-07 (Category R11-52wk-bug): the previous
+        # query used a single GLOBAL `LIMIT {len(tickers)}` on raw rows
+        # instead of a per-ticker bound — with `ORDER BY ticker, date DESC`
+        # and no partition awareness, that limit was exhausted by the
+        # first 1-2 alphabetically-sorted tickers' full histories, so
+        # every OTHER ticker in the universe got zero rows and no score at
+        # all. R11 (the only strategy using this signal) was silently
+        # running as a ~1-2-stock rotation instead of a genuine top_n=5
+        # diversified reversal basket for its entire campaign history —
+        # found via a live leaderboard's -95.2% MaxDD outlier (a single
+        # ADANIENT 2015-06-03 -83.2% loss consumed ~100% of NAV instead of
+        # the ~20% a real 5-way equal-weight basket would have absorbed).
         df = normalised_conn.execute(
             f"""
-            SELECT ticker, date, close,
-                   MAX(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN {lookback_days} PRECEDING AND CURRENT ROW) as high_52w
-            FROM ohlcv_adjusted
-            WHERE ticker IN ({placeholders}) AND date <= ?{floor_clause}
-            ORDER BY ticker, date DESC
-            LIMIT {len(tickers)}
+            SELECT ticker, date,
+                   MAX(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN {lookback_days} PRECEDING AND CURRENT ROW) as high_52w,
+                   close
+            FROM (
+                SELECT ticker, date, close,
+                       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) AS rn
+                FROM ohlcv_adjusted
+                WHERE ticker IN ({placeholders}) AND date <= ?{floor_clause}
+            )
+            WHERE rn <= ?
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) = 1
             """,
-            list(tickers) + [as_of_date] + floor_params,
+            list(tickers) + [as_of_date] + floor_params + [lookback_days + 1],
         ).fetch_df()
 
         if df.empty:

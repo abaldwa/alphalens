@@ -55,13 +55,18 @@ to drift (see StrategyAdapter.rebalance()'s PURE-FUNCTION CONTRACT
 docstring).
 """
 
-from typing import Any, Dict, FrozenSet, List, Optional, Set, cast
+from typing import Any, Dict, FrozenSet, List, Optional, Set
 import math
 
 import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
-from momentum_framework.common.crash_regime import crash_regime_detector
+from momentum_framework.common.crash_regime import (
+    CrashRegimeGuardMixin,
+    DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+    DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
+    DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+)
 from momentum_framework.common.signals import TrailingMomentumSignal
 from momentum_framework.queues.generator import QueueGenerator
 from momentum_framework.strategies.base import StrategyBase
@@ -69,16 +74,19 @@ from momentum_framework.strategies.base import StrategyBase
 STRATEGY_CODE = "R07"
 RANK_METHOD = "trailing_return"
 
-# Legacy defaults (backtest/adapters/momentum_adapter.py's crash_* fields)
-DEFAULT_DRAWDOWN_THRESHOLD = -0.15
-DEFAULT_VOL_PERCENTILE_THRESHOLD = 0.75
-DEFAULT_VOL_LOOKBACK_DAYS = 20
-DEFAULT_REGIME_LOOKBACK_DAYS = 252
 DEFAULT_CRASH_DISABLE_BUYS = True
 
 
-class R07CrashAware(StrategyBase):
-    """Trailing-return momentum with a crash-regime buy-disable + trim overlay."""
+class R07CrashAware(CrashRegimeGuardMixin, StrategyBase):
+    """Trailing-return momentum with a crash-regime buy-disable + trim overlay.
+
+    2026-09-06: crash detection now goes through the SHARED
+    CrashRegimeGuardMixin (common/crash_regime.py) — one Nifty 500 -12.5%
+    detector reused identically by R11/R12/R13's guard, replacing R07's
+    former band-resolved benchmark (common/benchmark.py). See that
+    module's docstring for why. Trim/buy-disable logic below (this
+    strategy's own, richer than the mixin's other users) is unchanged.
+    """
 
     strategy_code = STRATEGY_CODE
     rank_method = RANK_METHOD
@@ -93,9 +101,9 @@ class R07CrashAware(StrategyBase):
         filter_preset: str = "all_risk",
         crash_disable_buys: bool = DEFAULT_CRASH_DISABLE_BUYS,
         crash_reduce_sizing: Optional[float] = None,
-        crash_drawdown_threshold: float = DEFAULT_DRAWDOWN_THRESHOLD,
-        crash_vol_percentile_threshold: float = DEFAULT_VOL_PERCENTILE_THRESHOLD,
-        crash_vol_lookback_days: int = DEFAULT_VOL_LOOKBACK_DAYS,
+        crash_drawdown_threshold: float = DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+        crash_vol_percentile_threshold: float = DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+        crash_vol_lookback_days: int = DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
         min_adtv_cr: Optional[float] = None,
         **kwargs: Any,
     ):
@@ -111,37 +119,14 @@ class R07CrashAware(StrategyBase):
             **kwargs,
         )
         self.signal = TrailingMomentumSignal(lookback_months=lookback_months)
+        self.crash_regime_enabled = True  # R07 is always crash-aware, unlike R11/R12/R13's opt-in guard
         self.crash_disable_buys = crash_disable_buys
         self.crash_reduce_sizing = crash_reduce_sizing
         self.crash_drawdown_threshold = crash_drawdown_threshold
         self.crash_vol_percentile_threshold = crash_vol_percentile_threshold
         self.crash_vol_lookback_days = crash_vol_lookback_days
         self.min_adtv_cr = min_adtv_cr
-        self._benchmark_equity: Optional[pd.Series] = None  # lazily loaded from the band, cached per instance
-
-    def _in_crash_regime(self, as_of_date: str, conn: Any) -> bool:
-        """
-        Benchmark is resolved from self.band_id (common/benchmark.py) —
-        see this file's module docstring for why it's band-attached, not
-        passed per-strategy.
-        """
-        if self._benchmark_equity is None:
-            from momentum_framework.common.benchmark import load_benchmark_equity_curve
-            self._benchmark_equity = load_benchmark_equity_curve(self.band_id, conn)
-        if self._benchmark_equity.empty:
-            return False
-        try:
-            crash_series = crash_regime_detector(
-                self._benchmark_equity,
-                drawdown_threshold=self.crash_drawdown_threshold,
-                vol_percentile_threshold=self.crash_vol_percentile_threshold,
-                lookback_days=DEFAULT_REGIME_LOOKBACK_DAYS,
-                vol_lookback_days=self.crash_vol_lookback_days,
-            )
-        except (ValueError, KeyError):
-            return False
-        ts = pd.Timestamp(as_of_date)
-        return bool(crash_series.get(ts, False))
+        self._benchmark_equity: Optional[pd.Series] = None  # lazily loaded, cached per instance (see mixin)
 
     def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
                   held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
@@ -223,7 +208,7 @@ class R07QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        jobs = cast(List[Dict[str, Any]], self.simple_momentum_grid(
+        jobs = self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -233,11 +218,19 @@ class R07QueueGenerator(QueueGenerator):
             end_date=self.end_date,
             filter_presets=self.FILTER_PRESETS,
             crash_regime_enabled=True,
-        ))
+        )
         for job in jobs:
             job["crash_disable_buys"] = DEFAULT_CRASH_DISABLE_BUYS
-            job["crash_reduce_sizing"] = None
-            job["crash_drawdown_threshold"] = DEFAULT_DRAWDOWN_THRESHOLD
-            job["crash_vol_percentile_threshold"] = DEFAULT_VOL_PERCENTILE_THRESHOLD
-            job["crash_vol_lookback_days"] = DEFAULT_VOL_LOOKBACK_DAYS
+            # 2026-09-06 (Category B3 fix): was hardcoded to None, meaning
+            # R07's tested behavior only ever "blocked new buys" during a
+            # crash and never actually trimmed existing holdings, despite
+            # rebalance()'s crash-trim logic (see this module's docstring)
+            # existing and being exercised nowhere. 0.5 = keep the top half
+            # of held positions by momentum score, trim the rest, during a
+            # detected crash regime. User decision 2026-09-06: re-run with
+            # a real value rather than accept "buy-disable only" as final.
+            job["crash_reduce_sizing"] = 0.5
+            job["crash_drawdown_threshold"] = DEFAULT_CRASH_DRAWDOWN_THRESHOLD
+            job["crash_vol_percentile_threshold"] = DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD
+            job["crash_vol_lookback_days"] = DEFAULT_CRASH_VOL_LOOKBACK_DAYS
         return jobs

@@ -1,6 +1,21 @@
 """
 R16: Trailing Momentum, Target-Volatility Weighted
 
+RETIRED 2026-09-06 (Category B2, explicit user instruction: "Retire
+R16"). TargetVolatilityWeighting.compute_weights() —
+`normalize(target_vol/vol_i)` — algebraically cancels to the exact same
+formula as R14's InverseVolatilityWeighting (`normalize(1/vol_i)`) unless
+the `leverage_cap` clip actually engages, which never happened across the
+7 tested configs. R16 was therefore never a genuinely distinct strategy
+from R14, independent of the (separately fixed) B1 portfolio-weighting
+bug. This file is KEPT for historical reference / parity-checking against
+past legacy R16 results (same convention as the never-ported R05 — see
+strategies/__init__.py's module docstring) but R16QueueGenerator below is
+no longer wired into any active campaign generator (removed from
+tests/test_queue_generators.py::ALL_GENERATORS and
+scripts/campaign_registry.py::WEIGHTED_STRATEGIES) — see
+test_r16_never_generated for the permanent regression guard.
+
 Same shared ranking as R01/R03/R07/R08/R09/R14/R15/R17 (see
 common/signals.py::TrailingMomentumSignal's module note) — the only
 difference is the weighting formula: each position is scaled toward a

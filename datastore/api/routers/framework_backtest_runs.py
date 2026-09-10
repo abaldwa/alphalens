@@ -32,6 +32,7 @@ from backtest.core.tax import total_tax as compute_total_tax
 from config.benchmarks import RANK_BAND_BENCHMARKS
 from config.settings import BACKTEST_DUCKDB_PATH
 from datastore.api.db import get_duckdb_connection
+from momentum_framework.results.stale_results import STALE_RESULTS_CUTOFF_AT
 
 router = APIRouter(prefix="/api/v1/framework-backtest", tags=["Framework Backtest"])
 
@@ -93,6 +94,19 @@ def _row_to_summary(row: Dict[str, Any]) -> FrameworkRunSummary:
 async def list_framework_runs(
     strategy_code: Optional[str] = Query(None, description="Filter to one strategy code, e.g. R01"),
     band_id: Optional[int] = Query(None, description="Filter to one band_id"),
+    include_stale: bool = Query(
+        False,
+        description=(
+            "If false (default), excludes every run with run_executed_at "
+            "before the 2026-09-06 remediation fixes (see "
+            "momentum_framework/results/stale_results.py) -- those runs "
+            "predate the portfolio-weighting fix (B1), the R07/R11-R13 "
+            "crash-guard config (B3/B6), the top_n grid change (E1/E2), and "
+            "costs+tax (E5), and are not comparable to current results. Set "
+            "true to see everything, e.g. for a deliberate before/after "
+            "comparison -- old rows are never deleted."
+        ),
+    ),
     limit: int = Query(500, le=5000),
     offset: int = Query(0, ge=0),
 ) -> FrameworkRunListResponse:
@@ -104,6 +118,9 @@ async def list_framework_runs(
     if band_id is not None:
         where.append("band_id = ?")
         params.append(band_id)
+    if not include_stale:
+        where.append("run_executed_at >= ?")
+        params.append(STALE_RESULTS_CUTOFF_AT)
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
 
     with get_duckdb_connection(BACKTEST_DUCKDB_PATH, persist=False, read_only=True) as conn:

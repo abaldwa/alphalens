@@ -81,6 +81,97 @@ def get_circuit_locked_tickers(conn: Any, tickers: List[str], as_of_date: str) -
     return set(df["ticker"].astype(str)) if not df.empty else set()
 
 
+def get_circuit_locked_tickers_cached(tickers: List[str], as_of_date: str) -> Set[str]:
+    """
+    Same result as get_circuit_locked_tickers(), but reads from the
+    pre-materialized circuit_lock_snapshots table (momentum_framework/
+    cache/universe_cache.duckdb, built once by
+    scripts/build_liquidity_cache.py) instead of scanning ohlcv_adjusted
+    live on every call.
+
+    WHY THIS EXISTS (2026-09-06): this check runs on EVERY rebalance date
+    for EVERY job (added this session for Category B8's circuit-lock
+    exclusion, both buy-side in orchestrator.py and sell-side in
+    portfolio.py) — for a 5-day-cadence job over the full 2009-2026
+    window that's ~880 live queries, measured at ~7ms each. Across a
+    1,116-job campaign that adds up to real wall-clock time for zero
+    benefit, since the underlying fact ("was ticker X locked on date D")
+    never changes between jobs or campaigns — same principle as
+    common/momentum_rank_cache.py's existing rank cache, applied here.
+
+    Falls back to a live query (via get_circuit_locked_tickers, which
+    needs a real prod connection this function doesn't have) is NOT done
+    here — a caller needing that fallback should check
+    momentum_rank_cache.CACHE_DB_PATH.exists() itself and choose which
+    function to call, same pattern common/signals.py already uses for the
+    rank cache.
+    """
+    if not tickers:
+        return set()
+    from momentum_framework.common.momentum_rank_cache import get_thread_cache_connection
+    conn = get_thread_cache_connection()
+    placeholders = ",".join("?" for _ in tickers)
+    df = conn.execute(
+        f"SELECT ticker FROM circuit_lock_snapshots WHERE ticker IN ({placeholders}) AND date = ?",
+        list(tickers) + [as_of_date],
+    ).fetch_df()
+    return set(df["ticker"].astype(str)) if not df.empty else set()
+
+
+def compute_adtv_cr_cached(tickers: List[str], as_of_date: str) -> pd.Series:
+    """
+    Same result as compute_adtv_cr() (default 20-day lookback, inclusive
+    of as_of_date — see that function's docstring), but reads from the
+    pre-materialized adtv_snapshots table instead of a live windowed
+    aggregation over ohlcv_adjusted on every call. See
+    get_circuit_locked_tickers_cached()'s docstring for why this matters
+    at campaign scale — same reasoning, this function is ~42ms/call live.
+    Verified 2026-09-06: matches compute_adtv_cr() to floating-point
+    precision on real spot-checked tickers/dates.
+    """
+    if not tickers:
+        return pd.Series(dtype=float)
+    from momentum_framework.common.momentum_rank_cache import get_thread_cache_connection
+    conn = get_thread_cache_connection()
+    placeholders = ",".join("?" for _ in tickers)
+    df = conn.execute(
+        f"SELECT ticker, adtv_cr FROM adtv_snapshots WHERE ticker IN ({placeholders}) AND date = ?",
+        list(tickers) + [as_of_date],
+    ).fetch_df()
+    if df.empty:
+        return pd.Series(dtype=float)
+    return df.set_index("ticker")["adtv_cr"]
+
+
+def get_circuit_locked_tickers_auto(conn: Any, tickers: List[str], as_of_date: str) -> Set[str]:
+    """
+    Prefers the pre-materialized cache (get_circuit_locked_tickers_cached);
+    falls back to the live query (get_circuit_locked_tickers) on ANY cache
+    error — missing cache file, missing table (e.g. built before
+    scripts/build_liquidity_cache.py existed), stale schema, etc. Same
+    graceful-degradation convention common/signals.py already uses for the
+    momentum-rank cache: never let a cache miss/error become a hard
+    failure, only a slower correct answer. Use this at call sites instead
+    of picking one function by hand.
+    """
+    if not tickers:
+        return set()
+    try:
+        return get_circuit_locked_tickers_cached(tickers, as_of_date)
+    except Exception:
+        return get_circuit_locked_tickers(conn, tickers, as_of_date)
+
+
+def compute_adtv_cr_auto(conn: Any, tickers: List[str], as_of_date: str) -> pd.Series:
+    """Same fallback convention as get_circuit_locked_tickers_auto(), for ADTV."""
+    if not tickers:
+        return pd.Series(dtype=float)
+    try:
+        return compute_adtv_cr_cached(tickers, as_of_date)
+    except Exception:
+        return compute_adtv_cr(conn, tickers, as_of_date)
+
+
 def filter_tradeable(conn: Any, tickers: List[str], as_of_date: str,
                       min_adtv_cr: Optional[float] = None,
                       adtv_lookback_days: int = ADTV_LOOKBACK_DAYS_DEFAULT) -> List[str]:

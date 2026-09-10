@@ -84,8 +84,8 @@ MBANDS: Dict[int, MBand] = {
         description=(
             "Top 800 ADTV stocks — the FULL universe, not a partition. "
             "Deliberately overlaps every other band (see "
-            "TOP_N_BY_BAND: M13 tests wider, deeper baskets "
-            "(top 10/20/30/40) than the partitioned bands "
+            "TOP_N_BY_BAND: M13 tests wider baskets "
+            "(top 10/15/20) than the partitioned bands "
             "(top 5/10/15) since it draws from the whole universe."
         ),
     ),
@@ -94,15 +94,17 @@ MBANDS: Dict[int, MBand] = {
 # Per-band top_n test set. M13 (the full 800-stock universe) is tested with
 # wider baskets than the partitioned bands (M2/M4/M7/M9/M10/M12), which each
 # only have 75-550 stocks to choose from — a top_n=40 cut on a 75-stock band
-# (M2) would be half the band, not a concentrated selection.
+# (M2) would be half the band, not a concentrated selection. M13 restricted
+# to exactly [10, 15, 20] (was [10, 20, 30, 40]) per user decision 2026-09-06.
+# Partitioned bands' top_n=15 dropped the same day — user decision: [5, 10] only.
 TOP_N_BY_BAND: Dict[int, List[int]] = {
-    2: [5, 10, 15],
-    4: [5, 10, 15],
-    7: [5, 10, 15],
-    9: [5, 10, 15],
-    10: [5, 10, 15],
-    12: [5, 10, 15],
-    13: [10, 20, 30, 40],
+    2: [5, 10],
+    4: [5, 10],
+    7: [5, 10],
+    9: [5, 10],
+    10: [5, 10],
+    12: [5, 10],
+    13: [10, 15, 20],  # user decision 2026-09-06: restrict M13 to exactly these 3 — was [10, 20, 30, 40]
 }
 
 

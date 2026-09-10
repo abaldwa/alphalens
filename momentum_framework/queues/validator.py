@@ -107,6 +107,8 @@ class QueueValidator:
                 vol_target_enabled=job.get("vol_target_enabled", False),
                 vol_target_pct=job.get("vol_target_pct"),
                 liquidity_quintile=job.get("liquidity_quintile"),
+                exclude_extraordinary_returns=job.get("exclude_extraordinary_returns", False),
+                extraordinary_returns_top_n=job.get("extraordinary_returns_top_n", 15),
             )
             seen[sid] = seen.get(sid, 0) + 1
 

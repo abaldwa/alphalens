@@ -19,11 +19,17 @@ project_strategy_identity_bug_r_vs_m memory for why (rejected at the
 Phase 3 gate, historical reference only).
 """
 
-from typing import Any, Dict, FrozenSet, List, cast
+from typing import Any, Dict, FrozenSet, List
 
 import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
+from momentum_framework.common.crash_regime import (
+    CrashRegimeGuardMixin,
+    DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+    DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
+    DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+)
 from momentum_framework.common.signals import PctOf52WeekHighSignal
 from momentum_framework.queues.generator import QueueGenerator
 from momentum_framework.strategies.base import StrategyBase
@@ -34,8 +40,16 @@ SELECT_LOWEST = True  # the defining difference from the rejected R05 — never 
 LOOKBACK_DAYS_52WK = 252
 
 
-class R11FiftyTwoWeekReversal(StrategyBase):
-    """52-week-high reversal: buy stocks furthest from their 52-week high."""
+class R11FiftyTwoWeekReversal(CrashRegimeGuardMixin, StrategyBase):
+    """52-week-high reversal: buy stocks furthest from their 52-week high.
+
+    Optional crash-regime guard (Category B6 Option B, 2026-09-06,
+    disabled by default): when `crash_regime_enabled=True` and the band's
+    benchmark is in a detected crash regime, new "oversold" buys are
+    skipped this rebalance — already-held survivors that are still in
+    this period's target basket are kept, not force-sold. See
+    common/crash_regime.py::CrashRegimeGuardMixin's docstring for why.
+    """
 
     strategy_code = STRATEGY_CODE
     rank_method = RANK_METHOD
@@ -43,20 +57,46 @@ class R11FiftyTwoWeekReversal(StrategyBase):
 
     def __init__(self, band_id: int, top_n: int, lookback_months: int,
                  rebalance_cadence_days: int, filter_preset: str = "all_risk",
+                 crash_regime_enabled: bool = False,
+                 crash_drawdown_threshold: float = DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+                 crash_vol_percentile_threshold: float = DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+                 crash_vol_lookback_days: int = DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
                  **kwargs: Any):
         super().__init__(band_id, top_n, lookback_months, rebalance_cadence_days,
-                          filter_preset=filter_preset, select_lowest=SELECT_LOWEST, **kwargs)
+                          filter_preset=filter_preset, select_lowest=SELECT_LOWEST,
+                          crash_regime_enabled=crash_regime_enabled,
+                          crash_drawdown_threshold=crash_drawdown_threshold,
+                          crash_vol_percentile_threshold=crash_vol_percentile_threshold,
+                          crash_vol_lookback_days=crash_vol_lookback_days,
+                          **kwargs)
         self.signal = PctOf52WeekHighSignal()
+        self.crash_regime_enabled = crash_regime_enabled
+        self.crash_drawdown_threshold = crash_drawdown_threshold
+        self.crash_vol_percentile_threshold = crash_vol_percentile_threshold
+        self.crash_vol_lookback_days = crash_vol_lookback_days
+        self._benchmark_equity = None
 
     def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
                   held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, LOOKBACK_DAYS_52WK)
         # ascending=True: LOWEST pct-of-52wk-high first (furthest from high = most oversold)
         losers = scores.sort_values(ascending=True).head(self.top_n)
-        return [
-            Signal(ticker=str(ticker), action="buy", conviction=1.0 - score, rank=rank + 1)
-            for rank, (ticker, score) in enumerate(losers.items())
-        ]
+        target = set(losers.index)
+
+        if self._in_crash_regime(as_of_date, conn):
+            # Buy-disable only: keep survivors still in target, don't add new oversold names.
+            allowed = set(held) & target
+        else:
+            allowed = target
+
+        signals: List[Signal] = []
+        rank = 0
+        for ticker, score in losers.items():
+            if ticker not in allowed:
+                continue
+            rank += 1
+            signals.append(Signal(ticker=str(ticker), action="buy", conviction=1.0 - score, rank=rank))
+        return signals
 
 
 class R11QueueGenerator(QueueGenerator):
@@ -82,7 +122,7 @@ class R11QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        return cast(List[Dict[str, Any]], self.simple_momentum_grid(
+        return self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -92,4 +132,5 @@ class R11QueueGenerator(QueueGenerator):
             end_date=self.end_date,
             filter_presets=self.FILTER_PRESETS,
             extra_fields={"select_lowest": SELECT_LOWEST},
-        ))
+            crash_regime_enabled=True,  # user decision 2026-09-06 (B6): current default is guard ON
+        )

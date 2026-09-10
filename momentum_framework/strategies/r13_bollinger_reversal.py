@@ -15,12 +15,18 @@ reimplemented pandas-only in common/bollinger_signal.py — see that
 file's docstring for why).
 """
 
-from typing import Any, Dict, FrozenSet, List, cast
+from typing import Any, Dict, FrozenSet, List
 
 import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
 from momentum_framework.common.bollinger_signal import BollingerBandSignal
+from momentum_framework.common.crash_regime import (
+    CrashRegimeGuardMixin,
+    DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+    DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
+    DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+)
 from momentum_framework.queues.generator import QueueGenerator
 from momentum_framework.strategies.base import StrategyBase
 
@@ -30,8 +36,13 @@ DEFAULT_WINDOW = 20  # standard Bollinger Band window
 DEFAULT_NUM_STD = 2.0
 
 
-class R13BollingerReversal(StrategyBase):
-    """Bollinger Band %B mean-reversion: buy stocks nearest their lower band."""
+class R13BollingerReversal(CrashRegimeGuardMixin, StrategyBase):
+    """Bollinger Band %B mean-reversion: buy stocks nearest their lower band.
+
+    Optional crash-regime guard (Category B6 Option B, 2026-09-06,
+    disabled by default) — see common/crash_regime.py::
+    CrashRegimeGuardMixin and R11's class docstring for the mechanism.
+    """
 
     strategy_code = STRATEGY_CODE
     rank_method = RANK_METHOD
@@ -39,6 +50,10 @@ class R13BollingerReversal(StrategyBase):
 
     def __init__(self, band_id: int, top_n: int, rebalance_cadence_days: int,
                  filter_preset: str = "all_risk", bollinger_window: int = DEFAULT_WINDOW,
+                 crash_regime_enabled: bool = False,
+                 crash_drawdown_threshold: float = DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+                 crash_vol_percentile_threshold: float = DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+                 crash_vol_lookback_days: int = DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
                  **kwargs: Any):
         # Bollinger has no "lookback_months" concept — the window is in
         # trading days (bollinger_window), not months. lookback_months=1 is
@@ -46,19 +61,40 @@ class R13BollingerReversal(StrategyBase):
         # positivity check) to fit StrategyAdapter's shared constructor
         # signature; it plays no role in this strategy's ranking.
         super().__init__(band_id, top_n, 1, rebalance_cadence_days,
-                          filter_preset=filter_preset, bollinger_window=bollinger_window, **kwargs)
+                          filter_preset=filter_preset, bollinger_window=bollinger_window,
+                          crash_regime_enabled=crash_regime_enabled,
+                          crash_drawdown_threshold=crash_drawdown_threshold,
+                          crash_vol_percentile_threshold=crash_vol_percentile_threshold,
+                          crash_vol_lookback_days=crash_vol_lookback_days,
+                          **kwargs)
         self.bollinger_window = bollinger_window
         self.signal = BollingerBandSignal(window=bollinger_window, num_std=DEFAULT_NUM_STD)
+        self.crash_regime_enabled = crash_regime_enabled
+        self.crash_drawdown_threshold = crash_drawdown_threshold
+        self.crash_vol_percentile_threshold = crash_vol_percentile_threshold
+        self.crash_vol_lookback_days = crash_vol_lookback_days
+        self._benchmark_equity = None
 
     def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
                   held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
         scores = self.signal.compute(conn, universe, as_of_date, self.bollinger_window)
         # ascending=True: LOWEST %B first (closest to lower band = most oversold)
         oversold = scores.sort_values(ascending=True).head(self.top_n)
-        return [
-            Signal(ticker=str(ticker), action="buy", conviction=1.0 - score, rank=rank + 1)
-            for rank, (ticker, score) in enumerate(oversold.items())
-        ]
+        target = set(oversold.index)
+
+        if self._in_crash_regime(as_of_date, conn):
+            allowed = set(held) & target
+        else:
+            allowed = target
+
+        signals: List[Signal] = []
+        rank = 0
+        for ticker, score in oversold.items():
+            if ticker not in allowed:
+                continue
+            rank += 1
+            signals.append(Signal(ticker=str(ticker), action="buy", conviction=1.0 - score, rank=rank))
+        return signals
 
 
 class R13QueueGenerator(QueueGenerator):
@@ -81,7 +117,7 @@ class R13QueueGenerator(QueueGenerator):
         self.end_date = end_date
 
     def build_jobs(self) -> List[Dict[str, Any]]:
-        return cast(List[Dict[str, Any]], self.simple_momentum_grid(
+        return self.simple_momentum_grid(
             strategy_code=STRATEGY_CODE,
             rank_method=RANK_METHOD,
             bands=self.BANDS,
@@ -91,4 +127,5 @@ class R13QueueGenerator(QueueGenerator):
             end_date=self.end_date,
             filter_presets=self.FILTER_PRESETS,
             extra_fields={"bollinger_window": DEFAULT_WINDOW},
-        ))
+            crash_regime_enabled=True,  # user decision 2026-09-06 (B6): current default is guard ON
+        )

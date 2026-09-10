@@ -27,6 +27,12 @@ from typing import Any, Dict, FrozenSet, List, Optional
 import pandas as pd
 
 from momentum_framework.backtesting.adapter import Signal
+from momentum_framework.common.crash_regime import (
+    CrashRegimeGuardMixin,
+    DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+    DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
+    DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+)
 from momentum_framework.common.signals import TrailingMomentumSignal
 from momentum_framework.queues.generator import QueueGenerator
 from momentum_framework.strategies.base import StrategyBase
@@ -36,8 +42,13 @@ RANK_METHOD = "trailing_reversal_1mo"
 REVERSAL_LOOKBACK_MONTHS = 1  # fixed — this IS the "1-month" in "1-Month Reversal"
 
 
-class R12Reversal1Mo(StrategyBase):
-    """1-month trailing-return reversal within an optional liquidity quintile."""
+class R12Reversal1Mo(CrashRegimeGuardMixin, StrategyBase):
+    """1-month trailing-return reversal within an optional liquidity quintile.
+
+    Optional crash-regime guard (Category B6 Option B, 2026-09-06,
+    disabled by default) — see common/crash_regime.py::
+    CrashRegimeGuardMixin and R11's class docstring for the mechanism.
+    """
 
     strategy_code = STRATEGY_CODE
     rank_method = RANK_METHOD
@@ -45,11 +56,25 @@ class R12Reversal1Mo(StrategyBase):
     def __init__(self, band_id: int, top_n: int, rebalance_cadence_days: int,
                  filter_preset: str = "all_risk",
                  liquidity_quintile: Optional[int] = None,
+                 crash_regime_enabled: bool = False,
+                 crash_drawdown_threshold: float = DEFAULT_CRASH_DRAWDOWN_THRESHOLD,
+                 crash_vol_percentile_threshold: float = DEFAULT_CRASH_VOL_PERCENTILE_THRESHOLD,
+                 crash_vol_lookback_days: int = DEFAULT_CRASH_VOL_LOOKBACK_DAYS,
                  **kwargs: Any):
         super().__init__(band_id, top_n, REVERSAL_LOOKBACK_MONTHS, rebalance_cadence_days,
-                          filter_preset=filter_preset, liquidity_quintile=liquidity_quintile, **kwargs)
+                          filter_preset=filter_preset, liquidity_quintile=liquidity_quintile,
+                          crash_regime_enabled=crash_regime_enabled,
+                          crash_drawdown_threshold=crash_drawdown_threshold,
+                          crash_vol_percentile_threshold=crash_vol_percentile_threshold,
+                          crash_vol_lookback_days=crash_vol_lookback_days,
+                          **kwargs)
         self.signal = TrailingMomentumSignal(lookback_months=REVERSAL_LOOKBACK_MONTHS)
         self.liquidity_quintile = liquidity_quintile
+        self.crash_regime_enabled = crash_regime_enabled
+        self.crash_drawdown_threshold = crash_drawdown_threshold
+        self.crash_vol_percentile_threshold = crash_vol_percentile_threshold
+        self.crash_vol_lookback_days = crash_vol_lookback_days
+        self._benchmark_equity = None
 
     def rebalance(self, as_of_date: str, universe: List[str], conn: Any,
                   held: FrozenSet[str], equity_curve: pd.Series) -> List[Signal]:
@@ -62,10 +87,21 @@ class R12Reversal1Mo(StrategyBase):
         scores = self.signal.compute(conn, universe, as_of_date, self.signal.lookback_days)
         # ascending=True: LOWEST 1-month return first (strongest reversal signal)
         losers = scores.sort_values(ascending=True).head(self.top_n)
-        return [
-            Signal(ticker=str(ticker), action="buy", conviction=-score, rank=rank + 1)
-            for rank, (ticker, score) in enumerate(losers.items())
-        ]
+        target = set(losers.index)
+
+        if self._in_crash_regime(as_of_date, conn):
+            allowed = set(held) & target
+        else:
+            allowed = target
+
+        signals: List[Signal] = []
+        rank = 0
+        for ticker, score in losers.items():
+            if ticker not in allowed:
+                continue
+            rank += 1
+            signals.append(Signal(ticker=str(ticker), action="buy", conviction=-score, rank=rank))
+        return signals
 
 
 class R12QueueGenerator(QueueGenerator):
@@ -104,5 +140,6 @@ class R12QueueGenerator(QueueGenerator):
                 end_date=self.end_date,
                 filter_presets=self.FILTER_PRESETS,
                 extra_fields={"liquidity_quintile": quintile},
+                crash_regime_enabled=True,  # user decision 2026-09-06 (B6): current default is guard ON
             ))
         return jobs

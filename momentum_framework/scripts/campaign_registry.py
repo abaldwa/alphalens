@@ -49,7 +49,8 @@ from momentum_framework.strategies.r12_reversal_1mo import R12Reversal1Mo
 from momentum_framework.strategies.r13_bollinger_reversal import R13BollingerReversal
 from momentum_framework.strategies.r14_inverse_volatility import R14InverseVolatility
 from momentum_framework.strategies.r15_inverse_variance import R15InverseVariance
-from momentum_framework.strategies.r16_target_volatility import R16TargetVolatility
+# r16_target_volatility.R16TargetVolatility NOT imported — R16 retired
+# 2026-09-06 (Category B2), see that file's module docstring.
 from momentum_framework.strategies.r17_downside_volatility import R17DownsideVolatility
 
 REBALANCE_CADENCES = [5, 10, 21]
@@ -128,9 +129,8 @@ WEIGHTED_STRATEGIES: List[Tuple[str, List[int], Callable[[int, int], StrategyAda
     ("R15", [2, 4, 7, 9, 10, 12, 13], lambda band_id, top_n: R15InverseVariance(
         band_id=band_id, top_n=top_n, lookback_months=DEFAULT_LOOKBACK_MONTHS,
         rebalance_cadence_days=_WEIGHTED_REBALANCE_CADENCE)),
-    ("R16", [2, 4, 7, 9, 10, 12, 13], lambda band_id, top_n: R16TargetVolatility(
-        band_id=band_id, top_n=top_n, lookback_months=DEFAULT_LOOKBACK_MONTHS,
-        rebalance_cadence_days=_WEIGHTED_REBALANCE_CADENCE)),
+    # R16 retired 2026-09-06 (Category B2) — see
+    # strategies/r16_target_volatility.py's module docstring.
     ("R17", [2, 4, 7, 9, 10, 12, 13], lambda band_id, top_n: R17DownsideVolatility(
         band_id=band_id, top_n=top_n, lookback_months=DEFAULT_LOOKBACK_MONTHS,
         rebalance_cadence_days=_WEIGHTED_REBALANCE_CADENCE)),

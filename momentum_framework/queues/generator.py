@@ -67,6 +67,40 @@ class QueueGenerator(ABC):
                 pairs.append((band_id, top_n))
         return pairs
 
+    @staticmethod
+    def with_and_without_extraordinary_returns(
+        jobs: List[Dict[str, Any]], top_n: int = 15,
+    ) -> List[Dict[str, Any]]:
+        """
+        Doubles `jobs`: one copy unchanged (baseline, includes every
+        ticker), one copy with `exclude_extraordinary_returns=True` and
+        `extraordinary_returns_top_n=top_n` added (strips the top-`top_n`
+        P&L-contributing tickers — see config/extraordinary_return_tickers.py)
+        — for an explicit A/B comparison of "are these returns a
+        repeatable edge, or dominated by a handful of extreme rallies?"
+        (user decision 2026-09-06). `top_n` defaults to 15 (configurable
+        per user decision — was a fixed top-30 list before).
+
+        Deliberately OPT-IN at the campaign-assembly level (a caller must
+        call this explicitly on its built job list) rather than doubling
+        every generator's default output — most day-to-day grid runs don't
+        need this comparison, and silently doubling job counts everywhere
+        would be a surprising, expensive default.
+
+        `exclude_extraordinary_returns`/`extraordinary_returns_top_n` are
+        not themselves REQUIRED_JOB_FIELDS keys (they default to
+        False/15 via StrategyBase/build_strategy_id), so the baseline copy
+        is emitted byte-for-byte identical to `jobs` — this helper is
+        additive, never a mutation of the existing grid.
+        """
+        variant = []
+        for job in jobs:
+            paired = dict(job)
+            paired["exclude_extraordinary_returns"] = True
+            paired["extraordinary_returns_top_n"] = top_n
+            variant.append(paired)
+        return jobs + variant
+
     def generate(self, skip_validation: bool = False) -> List[Dict[str, Any]]:
         """Build, validate, and return the job list (does not write to disk)."""
         jobs = self.build_jobs()

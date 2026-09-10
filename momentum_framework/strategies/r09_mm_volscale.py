@@ -48,6 +48,7 @@ see that module.
 """
 
 from typing import Any, Dict, FrozenSet, List, Optional
+import logging
 
 import pandas as pd
 
@@ -56,6 +57,8 @@ from momentum_framework.common.portfolio_vol_scaling import VOL_SCALING_DISPATCH
 from momentum_framework.common.signals import TrailingMomentumSignal
 from momentum_framework.queues.generator import QueueGenerator
 from momentum_framework.strategies.base import StrategyBase
+
+logger = logging.getLogger(__name__)
 
 STRATEGY_CODE = "R09"
 RANK_METHOD = "trailing_return"
@@ -158,7 +161,11 @@ class R09MMVolScale(StrategyBase):
             kwargs["target_vol"] = self.vol_target_pct
         try:
             mult_series = scaling_fn(equity_curve, **kwargs)
-        except (ValueError, KeyError):
+        except (ValueError, KeyError) as e:
+            logger.warning(
+                "%s vol-scaling function failed for %s (%s: %s) — degrading to exposure=1.0 for this call",
+                active_mode, self.__class__.__name__, type(e).__name__, e,
+            )
             return 1.0
         ts = pd.Timestamp(as_of_date)
         if ts in mult_series.index:

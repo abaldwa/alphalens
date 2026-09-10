@@ -60,6 +60,22 @@ class StrategyIdentity:
     # under one strategy_id without this field, the exact bug class this
     # module exists to prevent (see module docstring).
     liquidity_quintile: Optional[int] = None
+    # Sensitivity-analysis toggle (2026-09-06, see
+    # config/extraordinary_return_tickers.py) — strips the top-30
+    # P&L-contributing tickers from the tradeable universe when True, to
+    # check whether reported returns are a repeatable edge or dominated by
+    # a handful of extreme, likely non-repeatable rallies. A DIFFERENT
+    # dimension from filter_preset (which is a risk-management concept
+    # with a closed enum) — added as its own field for the exact reason
+    # every other field above was: two runs differing only in this flag
+    # must never collide under one strategy_id.
+    exclude_extraordinary_returns: bool = False
+    #: Configurable cutoff (user decision 2026-09-06: was a fixed top-30
+    #: list, now a parameter) — see
+    #: config/extraordinary_return_tickers.py::DEFAULT_EXTRAORDINARY_RETURNS_TOP_N.
+    #: Only affects the id string when exclude_extraordinary_returns=True
+    #: (see below) — irrelevant, so not represented, when the toggle is off.
+    extraordinary_returns_top_n: int = 15
 
     def __post_init__(self) -> None:
         from momentum_framework.common.universe import MBANDS
@@ -90,6 +106,8 @@ def build_strategy_id(
     vol_target_enabled: bool = False,
     vol_target_pct: Optional[float] = None,
     liquidity_quintile: Optional[int] = None,
+    exclude_extraordinary_returns: bool = False,
+    extraordinary_returns_top_n: int = 15,
 ) -> str:
     """
     Canonical strategy_id string — BAND NAME FIRST, then strategy code
@@ -137,6 +155,8 @@ def build_strategy_id(
         vol_target_enabled=vol_target_enabled,
         vol_target_pct=vol_target_pct,
         liquidity_quintile=liquidity_quintile,
+        exclude_extraordinary_returns=exclude_extraordinary_returns,
+        extraordinary_returns_top_n=extraordinary_returns_top_n,
     )
 
     from momentum_framework.common.universe import MBANDS
@@ -163,6 +183,8 @@ def build_strategy_id(
         parts.append(f"weight-{identity.weight_method}")
     if identity.liquidity_quintile is not None:
         parts.append(f"liqQ{identity.liquidity_quintile}")
+    if identity.exclude_extraordinary_returns:
+        parts.append(f"exOutliers{identity.extraordinary_returns_top_n}")
 
     return "_".join(parts)
 

@@ -58,12 +58,35 @@ CREATE TABLE IF NOT EXISTS framework_backtest_runs (
     data_gaps_json VARCHAR,
     universe_cache_used BOOLEAN,        -- did resolve_universe() hit the pre-built cache or fall back live
     parity_checked BOOLEAN NOT NULL DEFAULT FALSE,  -- has this exact strategy_id+commit been diffed vs legacy
-    run_executed_at TIMESTAMP NOT NULL
+    run_executed_at TIMESTAMP NOT NULL,
+    -- Added 2026-09-07 (E4 sensitivity-analysis toggle, config/extraordinary_return_tickers.py):
+    -- distinguishes a normal run from one with the top-N P&L-contributing
+    -- tickers stripped from the universe. Already recoverable from
+    -- config_json/strategy_id's "exOutliersN" suffix, but a real column
+    -- is needed for cheap SQL filtering/grouping across a large campaign
+    -- rather than parsing JSON or string-matching strategy_id per row.
+    excludes_extraordinary_returns BOOLEAN NOT NULL DEFAULT FALSE,
+    extraordinary_returns_top_n INTEGER  -- NULL when excludes_extraordinary_returns is FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_framework_runs_strategy_id
     ON framework_backtest_runs (strategy_id);
 CREATE INDEX IF NOT EXISTS idx_framework_runs_commit
     ON framework_backtest_runs (source_commit);
+-- Migration for a table that already existed before 2026-09-07 (CREATE
+-- TABLE IF NOT EXISTS above is a no-op on an existing table, columns and
+-- all — these ALTER statements are what actually backfills it). Existing
+-- rows get excludes_extraordinary_returns=FALSE via the column DEFAULT,
+-- correctly reflecting that none of them used this toggle (added
+-- 2026-09-06, after every pre-2026-09-06 row and applied to every row
+-- since until a caller explicitly opts in).
+-- DuckDB's ALTER TABLE ADD COLUMN does not support a NOT NULL constraint
+-- (only CREATE TABLE does) — DEFAULT FALSE alone still backfills every
+-- existing row correctly and every future write via db_writer.py always
+-- supplies an explicit value, so this is not a real nullability gap.
+ALTER TABLE framework_backtest_runs ADD COLUMN IF NOT EXISTS
+    excludes_extraordinary_returns BOOLEAN DEFAULT FALSE;
+ALTER TABLE framework_backtest_runs ADD COLUMN IF NOT EXISTS
+    extraordinary_returns_top_n INTEGER;
 
 CREATE TABLE IF NOT EXISTS framework_backtest_trades (
     run_id VARCHAR NOT NULL,

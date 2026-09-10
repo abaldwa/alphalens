@@ -168,6 +168,53 @@ class BacktestOrchestrator:
             if as_of_date in rebalance_dates:
                 universe = self.strategy.resolve_universe(as_of_date, conn)
                 if universe:
+                    # FRAMEWORK-LEVEL circuit-lock exclusion (Category B/data-
+                    # quality item #2, 2026-09-06, explicit user instruction:
+                    # "exclude ADTV/circuit locked trades out of our universe,
+                    # you will never be able to buy them"). Previously this was
+                    # opt-in and R07-only (common/liquidity.py::filter_tradeable,
+                    # applied only to R07's new_entrants) — every other strategy
+                    # (R01/R03/R09/R11/R12/R13/R14-R17) could select a circuit-
+                    # locked ticker as a fresh buy signal, which Portfolio would
+                    # then execute as a phantom fill at a price that was never
+                    # actually tradeable that day. Filtering HERE, once, before
+                    # any strategy sees the universe, fixes it for all of them
+                    # uniformly with no per-strategy code required. ADTV floor
+                    # is deliberately NOT applied here — R12's liquidity-quintile
+                    # design needs the full liquidity spectrum, including
+                    # illiquid names, as a first-class research variable; an
+                    # ADTV floor stays a strategy-level opt-in (min_adtv_cr).
+                    #
+                    # This prevents NEW buys of a locked name. A currently-
+                    # HELD ticker that becomes locked on a rebalance date is
+                    # handled separately, in Portfolio.rebalance_to_target()
+                    # itself (skips the sell, keeps holding until it
+                    # unlocks — fixed 2026-09-06, see that method's comment).
+                    # 2026-09-06: routed through get_circuit_locked_tickers_auto()
+                    # (common/liquidity.py) — prefers the pre-materialized
+                    # circuit_lock_snapshots cache (~instant) over a live
+                    # per-rebalance query (~7ms), same reasoning as the
+                    # existing momentum-rank cache. See that function's
+                    # docstring and scripts/build_liquidity_cache.py.
+                    from momentum_framework.common.liquidity import get_circuit_locked_tickers_auto
+                    locked = get_circuit_locked_tickers_auto(conn, universe, as_of_date)
+                    if locked:
+                        universe = [t for t in universe if t not in locked]
+                if universe and self.strategy.extra_params.get("exclude_extraordinary_returns", False):
+                    # Sensitivity-analysis toggle (2026-09-06, see
+                    # config/extraordinary_return_tickers.py) — strips the
+                    # top-N P&L-contributing tickers from the tradeable
+                    # universe, for an explicit with/without comparison
+                    # rather than a permanent data-quality exclusion (see
+                    # config/backtest_exclusions.py's, which this is
+                    # deliberately kept separate from). N is configurable
+                    # (extraordinary_returns_top_n, default 15) — user
+                    # decision 2026-09-06, was a fixed top-30 list before.
+                    from config.extraordinary_return_tickers import extraordinary_return_tickers
+                    top_n = self.strategy.extra_params.get("extraordinary_returns_top_n", 15)
+                    outliers = extraordinary_return_tickers(top_n=top_n)
+                    universe = [t for t in universe if t not in outliers]
+                if universe:
                     # PURE-FUNCTION CONTRACT (see StrategyAdapter.rebalance()'s
                     # docstring) — `held` is REAL post-execution ground truth
                     # from Portfolio (not a strategy's own memory of what it
@@ -194,7 +241,7 @@ class BacktestOrchestrator:
                         # not Portfolio._sell()'s stale-entry-price fallback.
                         needed = {s.ticker for s in signals} | set(portfolio.positions.keys())
                         prices = self._closes_on(conn, list(needed), as_of_date)
-                        portfolio.rebalance_to_target(signals, prices, as_of_date)
+                        portfolio.rebalance_to_target(signals, prices, as_of_date, conn=conn)
 
             held_prices = self._closes_on(conn, list(portfolio.positions.keys()), as_of_date)
             equity = portfolio.market_value(held_prices)
@@ -207,12 +254,27 @@ class BacktestOrchestrator:
             equity_series, trade_count=len(portfolio.trade_log),
         ).to_dict()
 
+        # Post-tax overlay (2026-09-06, see common/tax_overlay.py's module
+        # docstring) — ADDITIONAL fields merged into `metrics`, never
+        # replacing the pre-tax CAGR/Sharpe/MaxDD/equity-curve numbers
+        # above. Uses the SAME years window MetricsCalculator computed its
+        # pre-tax CAGR over, so post_tax_cagr is directly comparable.
+        from momentum_framework.common.tax_overlay import compute_post_tax_metrics
+        years = (equity_series.index[-1] - equity_series.index[0]).days / 365.25
+        metrics.update(compute_post_tax_metrics(
+            trade_log=portfolio.trade_log,
+            initial_capital=self.config.initial_capital,
+            pre_tax_ending_value=float(equity_series.iloc[-1]),
+            years=years,
+        ))
+
         params = self.strategy.describe()
         # Filter to only parameters that build_strategy_id() accepts
         identity_fields = {
             "filter_preset", "crash_regime_enabled", "vol_scaling_mode",
             "weight_method", "skip_months", "vol_target_enabled",
-            "vol_target_pct", "liquidity_quintile",
+            "vol_target_pct", "liquidity_quintile", "exclude_extraordinary_returns",
+            "extraordinary_returns_top_n",
         }
         identity_params = {k: v for k, v in params.items() if k in identity_fields}
         strategy_id = build_strategy_id(
@@ -274,7 +336,8 @@ class BacktestOrchestrator:
         identity_fields = {
             "filter_preset", "crash_regime_enabled", "vol_scaling_mode",
             "weight_method", "skip_months", "vol_target_enabled",
-            "vol_target_pct", "liquidity_quintile",
+            "vol_target_pct", "liquidity_quintile", "exclude_extraordinary_returns",
+            "extraordinary_returns_top_n",
         }
         identity_params = {k: v for k, v in params.items() if k in identity_fields}
         strategy_id = build_strategy_id(
