@@ -58,6 +58,36 @@ def is_trading_day(check_date: date) -> bool:
     return check_date.weekday() < 5 and not is_nse_holiday(check_date)
 
 
+def latest_fetchable_date() -> date:
+    """
+    The latest calendar date whose EOD data (bhavcopy, FYERS daily
+    candles) can actually be fetched right now.
+
+    [2026-09-10, user-confirmed] NSE does not publish a trading day's
+    bhavcopy/EOD data until after market close — fetching "today" before
+    config.settings.PIPELINE_WINDOW_START (18:00 IST) always 404s. Every
+    date-range backfill that could otherwise be asked to fetch through
+    "today" must clip its end date through this function, not just skip
+    logging the resulting 404 — a wasted retry against a guaranteed
+    failure is itself the bug being fixed here, not merely its symptom.
+
+    Returns
+    -------
+    date
+        Today, if it's on/after PIPELINE_WINDOW_START IST; yesterday
+        otherwise. Not clipped to a trading day — callers that need the
+        latest fetchable *trading* day should combine this with
+        is_trading_day/detect_gaps as they already do.
+    """
+    from config.settings import PIPELINE_WINDOW_START
+
+    now = now_ist()
+    window_start_hour = int(PIPELINE_WINDOW_START.split(":")[0])
+    if now.hour < window_start_hour:
+        return now.date() - timedelta(days=1)
+    return now.date()
+
+
 def get_last_successful_run_date(db_path: Optional[Path] = None) -> Optional[date]:
     """
     Look up the most recent successful pipeline_runs date.

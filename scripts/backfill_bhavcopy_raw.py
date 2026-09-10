@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(
 logger = logging.getLogger(__name__)
 
 from config.settings import RAW_DIR  # noqa: E402
-from ingestion.scheduler.gap_detector import is_trading_day  # noqa: E402
+from ingestion.scheduler.gap_detector import is_trading_day, latest_fetchable_date  # noqa: E402
 from ingestion.scrapers.bhavcopy import download_bhavcopy  # noqa: E402
 
 _RAW_BHAVCOPY_DIR = RAW_DIR / "bhavcopy"
@@ -55,7 +55,15 @@ def main() -> None:
     from_dt = date.fromisoformat(args.from_date)
     to_dt = date.fromisoformat(args.to_date) if args.to_date else date.today()
 
-    pending = _pending_dates(from_dt, to_dt)
+    fetchable_through = latest_fetchable_date()
+    if to_dt > fetchable_through:
+        logger.info(
+            "--to-date %s is not fetchable yet (NSE publishes after market close) — clipping to %s",
+            to_dt, fetchable_through,
+        )
+        to_dt = fetchable_through
+
+    pending = _pending_dates(from_dt, to_dt) if from_dt <= to_dt else []
     logger.info(
         "Bhavcopy raw backfill %s → %s: %d trading dates pending (raw CSVs already on disk are skipped)",
         from_dt, to_dt, len(pending),

@@ -517,4 +517,16 @@ if __name__ == "__main__":
     start_date = date.fromisoformat(args.start_date)
     end_date = date.fromisoformat(args.end_date)
 
-    run(start_date, end_date, ticker_filter=args.tickers, dry_run=args.dry_run, mode=args.mode)
+    from ingestion.scheduler.gap_detector import latest_fetchable_date
+
+    fetchable_through = latest_fetchable_date()
+    if end_date > fetchable_through:
+        logger.info(
+            f"--end-date {end_date.isoformat()} is not fetchable yet (NSE publishes after market "
+            f"close) — clipping to {fetchable_through.isoformat()}"
+        )
+        end_date = fetchable_through
+    if start_date > end_date:
+        logger.info(f"Nothing to fetch: start-date {start_date.isoformat()} is after the fetchable range ends")
+    else:
+        run(start_date, end_date, ticker_filter=args.tickers, dry_run=args.dry_run, mode=args.mode)

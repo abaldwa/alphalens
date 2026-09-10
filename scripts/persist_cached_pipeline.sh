@@ -29,6 +29,7 @@ NSE_XBRL_CACHE=""
 CORP_ACTIONS_CACHE=""
 FYERS_FROM=""
 FYERS_TO=""
+MF_HOLDINGS_MONTHS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --corp-actions-cache) CORP_ACTIONS_CACHE="$2"; shift 2 ;;
     --fyers-from) FYERS_FROM="$2"; shift 2 ;;
     --fyers-to) FYERS_TO="$2"; shift 2 ;;
+    --mf-holdings-months) shift; while [[ $# -gt 0 && "$1" != --* ]]; do MF_HOLDINGS_MONTHS="$MF_HOLDINGS_MONTHS $1"; shift; done ;;
     *) echo "Unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -99,6 +101,16 @@ echo ""
 echo "[TRENDLYNE] Persisting cached fundamentals (if any cache exists)"
 timeout 600 .venv/bin/python3 scripts/trendlyne_backfill_two_phase.py --phase 2
 [ $? -eq 0 ] && echo "✓ DONE" || { echo "⚠ SKIPPED/FAILED (no cache, or already empty)"; }
+
+if [[ -n "$MF_HOLDINGS_MONTHS" ]]; then
+  echo ""
+  echo "[MF HOLDINGS] Persisting cached months:$MF_HOLDINGS_MONTHS"
+  timeout 600 .venv/bin/python3 scripts/backfill_mf_holdings.py --months $MF_HOLDINGS_MONTHS --mode persist
+  [ $? -eq 0 ] && echo "✓ DONE" || { echo "✗ FAILED"; ((FAILED++)); }
+else
+  echo ""
+  echo "[MF HOLDINGS] Skipped — no --mf-holdings-months given"
+fi
 
 echo ""
 echo "=========================================="
