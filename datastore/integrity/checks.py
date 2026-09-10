@@ -689,11 +689,26 @@ def check_corporate_actions_coverage(
 
 
 def _yahoo_close(ticker: str, d: date_type) -> Optional[float]:
-    """Thin Yahoo Finance lookup via yfinance, for check_spot_check's second independent source."""
+    """Thin Yahoo Finance lookup via yfinance, for check_spot_check's second independent source.
+
+    [2026-09-10, live-discovered] yfinance's own default timeout is 10s —
+    fine for one call, but check_spot_check calls this once per sampled
+    ticker (sample_size=100 by default) with no concurrency and no
+    per-call error backoff, so ANY stretch where a chunk of calls run
+    slow (rate-limiting, a delisted ticker's error-handling path, a
+    transient network blip — direct testing same-day found ordinary
+    calls fast at ~0.1-0.3s but delisted tickers taking 2-10s) can push
+    the whole check to several minutes without any visible progress
+    output, reading from the outside as a hang. Bounding the per-call
+    timeout to 3s caps the worst case rather than compounding a slow
+    stretch across all 100 samples.
+    """
     import yfinance as yf
 
     yf_ticker = f"{ticker}.NS"
-    hist = yf.Ticker(yf_ticker).history(start=d.isoformat(), end=(d + timedelta(days=1)).isoformat())
+    hist = yf.Ticker(yf_ticker).history(
+        start=d.isoformat(), end=(d + timedelta(days=1)).isoformat(), timeout=3,
+    )
     if hist is None or hist.empty:
         return None
     return float(hist["Close"].iloc[0])
