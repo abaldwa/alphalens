@@ -2352,7 +2352,15 @@ def step_publish_and_snapshot(run_date: date_type, db_path: Optional[Path] = Non
     import sys
     import textwrap
 
-    from config.settings import DUCKDB_PATH, SNAPSHOT_DIR, SNAPSHOT_RETENTION_N, SNAPSHOT_TIMEOUT_S
+    from config.settings import (
+        DUCKDB_PATH,
+        DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS,
+        DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S,
+        DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S,
+        SNAPSHOT_DIR,
+        SNAPSHOT_RETENTION_N,
+        SNAPSHOT_TIMEOUT_S,
+    )
     from datastore.staging.snapshot import prune_snapshots
 
     resolved_db_path = db_path or DUCKDB_PATH
@@ -2367,11 +2375,35 @@ def step_publish_and_snapshot(run_date: date_type, db_path: Optional[Path] = Non
     # a non-fatal failure instead of halting the pipeline. prune_snapshots
     # stays in-process (fast, local file ops). Snapshotting is non-critical by
     # design (rollback point only), so a timeout here never blocks downstream.
+    #
+    # [2026-09-11] This step's own docstring says "runs last", but SPEC-SCHED-013's
+    # wave concurrency (2026-09-05, pipeline_steps.py) put it in the same
+    # dependency-depth wave as data_integrity_check/derive_fundamentals_ratios
+    # — genuinely concurrent sibling threads, each opening their own fresh
+    # get_duckdb_connection(persist=False) to the SAME file this subprocess
+    # also connects to. The default retry budget (DUCKDB_LOCK_RETRY_ATTEMPTS=6,
+    # ~15.5s worst case) was too short against siblings that can hold the
+    # write lock for close to that long themselves, so the snapshot subprocess
+    # was losing the race and failing (silently, as "non-fatal") on nearly
+    # every date. Widening to the DUCKDB_WRITE_LOCK_RETRY_* budget already
+    # built for exactly this "write step holding the lock longer than the
+    # default budget" case (settings.py, ~125s worst case) fits comfortably
+    # inside SNAPSHOT_TIMEOUT_S (900s) and lets the subprocess reliably
+    # outlast its wave-mates instead of reordering the dependency graph (which
+    # would risk publish_and_snapshot being skipped outright on the many
+    # nights data_integrity_check fails on real, known corp-action-continuity
+    # findings — see FeatureBacklog.md/CLAUDE.md Known Issues).
     snapshot_script = textwrap.dedent(f"""
         from pathlib import Path
         from datastore.staging.snapshot import take_snapshot
         from datastore.api.db import get_duckdb_connection
-        with get_duckdb_connection({str(resolved_db_path)!r}, persist=False) as conn:
+        with get_duckdb_connection(
+            {str(resolved_db_path)!r},
+            persist=False,
+            retry_attempts={DUCKDB_WRITE_LOCK_RETRY_ATTEMPTS!r},
+            retry_base_delay_s={DUCKDB_WRITE_LOCK_RETRY_BASE_DELAY_S!r},
+            retry_max_delay_s={DUCKDB_WRITE_LOCK_RETRY_MAX_DELAY_S!r},
+        ) as conn:
             take_snapshot(conn, {tables!r}, Path({str(SNAPSHOT_DIR)!r}))
     """)
     try:
