@@ -104,8 +104,27 @@ def _run_step(run_date: date, step_name: str, cascade: bool) -> bool:
 
 def run_one_date(run_date: date, steps: "list[str]") -> bool:
     """Runs each step in `steps` (in order, non-cascading) for one date, in
-    separate subprocesses. Stops at the first failed step for this date."""
+    separate subprocesses. Stops at the first failed step for this date.
+
+    [2026-09-10 fix, live-discovered] force_run_date_sync's own dependency
+    check only looks at steps BEFORE the one it's asked to run — it always
+    re-executes the named step_name itself regardless of whether it's
+    already checkpointed 'success'. Recording a checkpoint via
+    record_backfill_checkpoints.py therefore does NOT, by itself, stop
+    this function from redundantly re-running an already-satisfied step —
+    confirmed live: a checkpoint had just been recorded for
+    download_fyers_daily, and the very next invocation still spent
+    another cycle re-hanging on the same full-universe FYERS pull before
+    being caught and killed. Skipping steps already in get_succeeded_steps
+    here, in the caller, is the actual fix.
+    """
+    from ingestion.scheduler.checkpoint import CheckpointManager
+
+    already_succeeded = CheckpointManager().get_succeeded_steps(run_date)
     for step_name in steps:
+        if step_name in already_succeeded:
+            logger.info(f"  {run_date.isoformat()} {step_name}: already checkpointed success, skipping")
+            continue
         if not _run_step(run_date, step_name, cascade=False):
             return False
     return True
