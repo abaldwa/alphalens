@@ -31,8 +31,6 @@ from datastore.api.db import get_duckdb_connection
 from features.fundamental_quality_gate import validate_and_annotate
 from features.fundamental_source_priority import (
     SOURCE_PRIORITY,
-    append_fundamentals_history,
-    build_priority_update_clause,
 )
 from ingestion.scrapers.trendlyne_cache import TrendlyneScraperCache, TRENDLYNE_CACHE_DIR
 from scripts.backfill_fundamentals_trendlyne import (
@@ -135,50 +133,53 @@ def persist_cache_to_db(dry_run: bool = False) -> int:
             logger.info(f"  ... and {len(all_rows) - 10} more")
         return 0
 
-    # ===== LOCK-CRITICAL SECTION: Minimal time =====
-    # Write all rows in one bulk transaction
+    # [2026-09-10 fix] The previous direct `INSERT ... ON CONFLICT (ticker,
+    # fiscal_year, quarter)` cannot work — live-verified the fundamentals
+    # table carries no UNIQUE/PRIMARY KEY constraint on those columns at
+    # all (DuckDB raised BinderException the first time this ever actually
+    # ran against real data). Switched to the same staged-publish pattern
+    # backfill_fundamentals_nse_xbrl.py's staged mode already uses
+    # successfully: read existing data (lock released immediately after),
+    # merge in-memory, then acquire the lock only for the atomic
+    # stage+publish. datastore/staging/merge.py::coalesce_merge's own
+    # docstring names Trendlyne's quality_flag/quality_flag_reason as the
+    # canonical force_new_wins_cols example — Trendlyne is a lower-priority
+    # source (new_wins=False, existing higher-priority values are kept),
+    # but its freshly-computed quality flag should still always land.
+    import pandas as pd
+
+    from datastore.staging.gate import stage_dataframe
+    from datastore.staging.merge import coalesce_merge
+    from datastore.staging.publish import publish_run_lock, publish_table
+
+    cols = [
+        "ticker", "fiscal_year", "quarter", "quarter_end_date", "announcement_date",
+        "revenue", "ebitda", "pat", "eps", "roe", "roce", "debt_to_equity",
+        "interest_coverage", "ebitda_margin", "asset_turnover",
+        "quality_flag", "quality_flag_reason", "fundamentals_source", "fundamentals_source_priority"
+    ]
+    new_df = pd.DataFrame([{c: row.get(c) for c in cols} for row in all_rows])
+
     with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
-        # Create temp table with exact schema
-        conn.execute("CREATE TEMP TABLE trendlyne_delta AS SELECT * FROM fundamentals WHERE FALSE")
+        existing_df = conn.execute("SELECT * FROM fundamentals").df()
 
-        # Insert all rows
-        cols = [
-            "ticker", "fiscal_year", "quarter", "quarter_end_date", "announcement_date",
-            "revenue", "ebitda", "pat", "eps", "roe", "roce", "debt_to_equity",
-            "interest_coverage", "ebitda_margin", "asset_turnover",
-            "quality_flag", "quality_flag_reason", "fundamentals_source", "fundamentals_source_priority"
-        ]
-        placeholders = ", ".join("?" for _ in cols)
-        rows_tuple = [tuple(row.get(c) for c in cols) for row in all_rows]
+    merged_df = coalesce_merge(
+        existing_df, new_df, key_cols=["ticker", "fiscal_year", "quarter"],
+        new_wins=False,  # trendlyne: existing (higher-priority source) values win
+        force_new_wins_cols=["quality_flag", "quality_flag_reason"],
+    )
 
-        conn.executemany(
-            f"INSERT INTO trendlyne_delta ({', '.join(cols)}) VALUES ({placeholders})",
-            rows_tuple,
-        )
-
-        # Upsert: new Trendlyne data overwrites existing (unless from higher-priority source)
-        update_cols = [
-            "revenue", "ebitda", "pat", "eps", "roe", "roce", "debt_to_equity",
-            "interest_coverage", "ebitda_margin", "asset_turnover",
-            "quality_flag", "quality_flag_reason"
-        ]
-        update_clause = build_priority_update_clause(update_cols)
-
-        conn.execute(
-            f"""
-            INSERT INTO fundamentals ({', '.join(cols)}, as_of_ingested)
-            SELECT {', '.join(cols)}, CURRENT_TIMESTAMP FROM trendlyne_delta
-            ON CONFLICT (ticker, fiscal_year, quarter) DO UPDATE SET {update_clause}
-            """
-        )
-
-        # History snapshots
-        for row in all_rows:
-            append_fundamentals_history(
-                conn, row["ticker"], row["fiscal_year"], row["quarter"]
-            )
-
-    # ===== END LOCK-CRITICAL SECTION =====
+    with publish_run_lock() as acquired:
+        if not acquired:
+            logger.error("Another publish is in progress — Trendlyne cache NOT published.")
+            return 0
+        with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+            result = stage_dataframe(conn, "fundamentals", merged_df, validators=[])
+            if not result.ok:
+                logger.error("Staging gate rejected the entire batch — nothing published.")
+                return 0
+            published_rows = publish_table(conn, "fundamentals")
+            logger.info(f"Staged publish: {len(all_rows)} delta rows merged, {published_rows} now in fundamentals")
 
     logger.info(f"Persisted {len(all_rows)} rows to fundamentals")
     return len(all_rows)
