@@ -21,9 +21,8 @@ import argparse
 import json
 import logging
 import sys
-from datetime import date
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -36,6 +35,23 @@ from features.fundamental_source_priority import (
     build_priority_update_clause,
 )
 from ingestion.scrapers.trendlyne_cache import TrendlyneScraperCache, TRENDLYNE_CACHE_DIR
+from scripts.backfill_fundamentals_trendlyne import (
+    _extract_annual_patch,
+    _extract_quarterly_rows,
+    _merge_annual,
+)
+
+# [2026-09-10 fix] parse_fundamentals_from_cache() below originally assumed
+# a cache_data["quarterly"]/["annual"] schema that never matched what
+# ingestion.scrapers.trendlyne_cache.py actually caches — real responses
+# are Trendlyne's own {"head": ..., "body": {...}} shape (quarterlyOrder/
+# quarterlyDataDump/annualOrder/annualDataDump keys), which is why every
+# real persist attempt logged "No valid rows parsed from cache" despite
+# the cache files genuinely containing data. scripts/backfill_fundamentals_
+# trendlyne.py already has proven, tested extraction logic for this exact
+# shape (percent-to-fraction conversion, gross_profit/interest_coverage/
+# total_debt derivation, annual-into-quarterly merge) — reusing it here
+# rather than writing a second, independently-drifting copy.
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,66 +60,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def parse_fundamentals_from_cache(ticker: str, cache_data: Dict) -> Optional[Dict]:
+def parse_fundamentals_from_cache(ticker: str, cache_data: Dict) -> Optional[List[Dict]]:
     """
-    Parse raw Trendlyne JSON response from cache into fundamentals row.
-    Returns dict with ticker/fiscal_year/quarter/announcement_date/...fields
-    or None if parsing fails.
+    Parse raw Trendlyne JSON response from cache into fundamentals rows.
+    Returns a list of row dicts, or None if parsing fails / no data.
+
+    cache_data is the real Trendlyne get-fundamental_results-v2 response
+    shape: {"head": {...}, "body": {quarterlyOrder, quarterlyDataDump,
+    annualOrder, annualDataDump, ...}} — see
+    scripts.backfill_fundamentals_trendlyne's extraction functions, reused
+    here rather than duplicated.
     """
     if not cache_data or not isinstance(cache_data, dict):
         return None
 
-    # Extract quarterly and annual data
-    quarterly = cache_data.get("quarterly", [])
-    annual = cache_data.get("annual", [])
-
-    if not quarterly and not annual:
-        logger.debug(f"{ticker}: no data in cache")
+    body = cache_data.get("body")
+    if not body:
+        logger.debug(f"{ticker}: no body in cache")
         return None
 
-    results = []
+    q_rows = _extract_quarterly_rows(ticker, body)
+    annual_patches = _extract_annual_patch(body)
+    merged = _merge_annual(q_rows, annual_patches)
 
-    # Parse quarterly data
-    for q_row in quarterly:
-        row = {
-            "ticker": ticker,
-            "fiscal_year": q_row.get("fy"),
-            "quarter": q_row.get("quarter"),
-            "quarter_end_date": q_row.get("quarter_end_date"),
-            "announcement_date": q_row.get("announcement_date") or date.today(),
-            "revenue": q_row.get("revenue"),
-            "ebitda": q_row.get("ebitda"),
-            "pat": q_row.get("pat"),
-            "eps": q_row.get("eps"),
-            "fundamentals_source": "trendlyne",
-            "fundamentals_source_priority": SOURCE_PRIORITY["trendlyne"],
-        }
+    if not merged:
+        logger.debug(f"{ticker}: no quarterly/annual data in cache")
+        return None
+
+    for row in merged:
+        row["fundamentals_source"] = "trendlyne"
+        row["fundamentals_source_priority"] = SOURCE_PRIORITY["trendlyne"]
         validate_and_annotate(row)
-        results.append(row)
 
-    # Parse annual data (replicate across quarters)
-    for a_row in annual:
-        fy = a_row.get("fy")
-        for q in range(1, 5):
-            row = {
-                "ticker": ticker,
-                "fiscal_year": fy,
-                "quarter": q,
-                "quarter_end_date": None,  # Annual data, no specific quarter date
-                "announcement_date": date.today(),
-                "roe": a_row.get("roe"),
-                "roce": a_row.get("roce"),
-                "debt_to_equity": a_row.get("debt_to_equity"),
-                "interest_coverage": a_row.get("interest_coverage"),
-                "ebitda_margin": a_row.get("ebitda_margin"),
-                "asset_turnover": a_row.get("asset_turnover"),
-                "fundamentals_source": "trendlyne",
-                "fundamentals_source_priority": SOURCE_PRIORITY["trendlyne"],
-            }
-            validate_and_annotate(row)
-            results.append(row)
-
-    return results
+    return merged
 
 
 def persist_cache_to_db(dry_run: bool = False) -> int:
@@ -122,7 +111,7 @@ def persist_cache_to_db(dry_run: bool = False) -> int:
 
     all_rows = []
     for ticker in cached_tickers:
-        cache_file = TRENDLYNE_CACHE_DIR / f"{ticker.replace('.', '_')}.json"
+        cache_file = TRENDLYNE_CACHE_DIR / f"{ticker}.json"
         try:
             with open(cache_file) as f:
                 cache_data = json.load(f)
