@@ -155,6 +155,19 @@ class BacktestOrchestrator:
             # serves every floor_date correctly.
             self.strategy.signal.band_id = self.strategy.band_id
 
+        # BACKTEST-ONLY sparsity: ranks/signals are computed only on this
+        # cadence-sampled subset of days, never every trading day — safe
+        # here because the full calendar is known upfront and skipping
+        # non-rebalance days changes nothing about the resulting trades.
+        # A live/paper-trading engine (paper_trading/ — no code yet as of
+        # 2026-09-10, explicit user instruction) MUST NOT reuse this loop
+        # as-is: live has no "future calendar" to pre-slice, and ranks
+        # need to be computed DAILY (for monitoring/decisioning, not just
+        # on a fixed N-day cadence) since a live process can't know in
+        # advance which day would have been "skippable." Building the live
+        # engine means a different loop — compute daily, decide whether
+        # today is a rebalance day from real elapsed time — not a port of
+        # this backtest-cadence sampling.
         rebalance_dates = set(calendar[::self.strategy.rebalance_cadence_days])
         rebalance_dates.add(calendar[0])  # always establish an initial basket
 
