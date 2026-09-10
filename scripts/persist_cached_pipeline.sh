@@ -56,22 +56,49 @@ echo "✓ Lock free, proceeding"
 
 FAILED=0
 
+# [2026-09-10] Every successful persist below also records the matching
+# pipeline_checkpoints step (record_backfill_checkpoints.py) — otherwise
+# force_run_date_sync (used by catchup_pipeline_for_dates.py further down)
+# has no way to know this data already exists and will redundantly
+# re-pull the full universe from FYERS/NSE for these dates. Confirmed
+# live: without this, a 3-date catch-up got stuck 10+ minutes re-pulling
+# ~2317 tickers for data already published minutes earlier. Only the
+# steps whose real download genuinely happened get checkpointed this way
+# — validation/computation steps (fyers_health_check, adjust_prices,
+# derive_fundamentals_ratios, data_integrity_check) are left for
+# catchup_pipeline_for_dates.py to actually run, since faking those would
+# risk skipping a genuinely necessary recompute.
 if [[ -n "$FYERS_FROM" && -n "$FYERS_TO" ]]; then
   echo ""
   echo "[FYERS] Persisting cached OHLCV ($FYERS_FROM..$FYERS_TO)"
   PYTHONPATH=. timeout 1800 .venv/bin/python3 scripts/fyers_multiday_backfill.py \
     --start-date "$FYERS_FROM" --end-date "$FYERS_TO" --mode persist
-  [ $? -eq 0 ] && echo "✓ DONE" || { echo "✗ FAILED"; ((FAILED++)); }
+  if [ $? -eq 0 ]; then
+    echo "✓ DONE"
+    .venv/bin/python3 scripts/record_backfill_checkpoints.py --from-date "$FYERS_FROM" --to-date "$FYERS_TO" --steps download_fyers_daily
+  else
+    echo "✗ FAILED"; ((FAILED++))
+  fi
 
   echo ""
   echo "[DELIVERY] Upserting delivery_qty/delivery_pct from bhavcopy ($FYERS_FROM..$FYERS_TO)"
   timeout 1800 .venv/bin/python3 scripts/backfill_delivery_from_bhavcopy.py --from-date "$FYERS_FROM" --to-date "$FYERS_TO"
-  [ $? -eq 0 ] && echo "✓ DONE" || { echo "✗ FAILED"; ((FAILED++)); }
+  if [ $? -eq 0 ]; then
+    echo "✓ DONE"
+    .venv/bin/python3 scripts/record_backfill_checkpoints.py --from-date "$FYERS_FROM" --to-date "$FYERS_TO" --steps download_bhavcopy
+  else
+    echo "✗ FAILED"; ((FAILED++))
+  fi
 
   echo ""
   echo "[INDEX] Persisting index OHLCV ($FYERS_FROM..$FYERS_TO)"
   timeout 600 .venv/bin/python3 scripts/backfill_index_ohlcv.py --from-date "$FYERS_FROM" --to-date "$FYERS_TO"
-  [ $? -eq 0 ] && echo "✓ DONE" || { echo "✗ FAILED"; ((FAILED++)); }
+  if [ $? -eq 0 ]; then
+    echo "✓ DONE"
+    .venv/bin/python3 scripts/record_backfill_checkpoints.py --from-date "$FYERS_FROM" --to-date "$FYERS_TO" --steps download_index_ohlcv
+  else
+    echo "✗ FAILED"; ((FAILED++))
+  fi
 else
   echo ""
   echo "[FYERS/DELIVERY/INDEX] Skipped — no --fyers-from/--fyers-to given"
@@ -91,7 +118,15 @@ if [[ -n "$CORP_ACTIONS_CACHE" ]]; then
   echo ""
   echo "[CORPORATE ACTIONS] Persisting cached rows from $CORP_ACTIONS_CACHE"
   timeout 300 .venv/bin/python3 scripts/backfill_corporate_actions.py --persist-from-cache "$CORP_ACTIONS_CACHE"
-  [ $? -eq 0 ] && echo "✓ DONE" || { echo "✗ FAILED"; ((FAILED++)); }
+  CA_RC=$?
+  if [ $CA_RC -eq 0 ]; then
+    echo "✓ DONE"
+    if [[ -n "$FYERS_FROM" && -n "$FYERS_TO" ]]; then
+      .venv/bin/python3 scripts/record_backfill_checkpoints.py --from-date "$FYERS_FROM" --to-date "$FYERS_TO" --steps download_corporate_actions
+    fi
+  else
+    echo "✗ FAILED"; ((FAILED++))
+  fi
 else
   echo ""
   echo "[CORPORATE ACTIONS] Skipped — no --corp-actions-cache given"
@@ -120,9 +155,13 @@ fi
 if [[ -n "$FYERS_FROM" && -n "$FYERS_TO" ]]; then
   echo ""
   echo "[CATCHUP] Feature generation + momentum signals ($FYERS_FROM..$FYERS_TO)"
-  CATCHUP_FLAGS=""
+  echo "  --from-prerequisites: download_fyers_daily/download_bhavcopy/download_index_ohlcv/"
+  echo "  download_corporate_actions are already checkpointed above (real data, real download,"
+  echo "  just via this script instead of the live pipeline) — only the genuinely untouched"
+  echo "  steps (F&O, macro, large deals) and validation/compute steps actually run here."
+  CATCHUP_FLAGS="--from-prerequisites"
   if [[ "${INCLUDE_ML:-0}" == "1" ]]; then
-    CATCHUP_FLAGS="--include-ml"
+    CATCHUP_FLAGS="$CATCHUP_FLAGS --include-ml"
     echo "  INCLUDE_ML=1 — will also run ML model inference"
   fi
   timeout 7200 .venv/bin/python3 scripts/catchup_pipeline_for_dates.py \
