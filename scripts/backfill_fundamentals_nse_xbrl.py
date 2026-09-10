@@ -35,10 +35,11 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -95,13 +96,13 @@ _TARGET_COLUMNS = [
 _DERIVED_RATIO_COLUMNS = ["debt_to_equity", "ebitda_margin", "asset_turnover", "roe"]
 
 
-def _fiscal_year_quarter(quarter_end: "datetime.date") -> "tuple[int, int]":
+def _fiscal_year_quarter(quarter_end: date) -> "tuple[int, int]":
     quarter = _FY_QUARTER_MAP[quarter_end.month]
     fiscal_year = quarter_end.year if quarter_end.month == 3 else quarter_end.year + 1
     return fiscal_year, quarter
 
 
-def _resolve_announcement_date(broadcast_str, quarter_end) -> "datetime.date":
+def _resolve_announcement_date(broadcast_str, quarter_end) -> date:
     if broadcast_str:
         try:
             announcement_date = datetime.strptime(broadcast_str, "%d-%b-%Y %H:%M:%S").date()
@@ -166,6 +167,38 @@ def _derive_ratios_from_raw(record: dict, other_source_row: "Optional[dict]") ->
         record["roe"] = pat / total_equity
 
 
+def _save_delta_cache(cache_file: str, delta_records: list, newly_ingested: list) -> None:
+    """Serialize the scanned-but-not-yet-published delta to disk so a
+    separate, later process can persist it (the 6pm-cache / persist-when-
+    I-allow split). Only quarter_end_date/announcement_date are date
+    objects — isoformat them explicitly rather than a generic encoder."""
+    def _encode(records: list) -> list:
+        out = []
+        for r in records:
+            r2 = dict(r)
+            for k in ("quarter_end_date", "announcement_date"):
+                if isinstance(r2.get(k), (date,)):
+                    r2[k] = r2[k].isoformat()
+            out.append(r2)
+        return out
+
+    Path(cache_file).parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "w") as f:
+        json.dump({"delta_records": _encode(delta_records), "newly_ingested": newly_ingested}, f)
+    logger.info(f"Cached {len(delta_records)} delta rows, {len(newly_ingested)} filing markers -> {cache_file}")
+
+
+def _load_delta_cache(cache_file: str) -> "tuple[list, list]":
+    with open(cache_file) as f:
+        data = json.load(f)
+    delta_records = data["delta_records"]
+    for r in delta_records:
+        for k in ("quarter_end_date", "announcement_date"):
+            if r.get(k):
+                r[k] = date.fromisoformat(r[k])
+    return delta_records, data["newly_ingested"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Refresh fundamentals from NSE's real Integrated Filing IndAS data (delta-only, cached)"
@@ -179,9 +212,25 @@ def main() -> None:
                              "publish atomically via datastore/staging, gaining an N=7 rollback "
                              "point (A25). 'direct': legacy TEMP-TABLE bulk upsert, no rollback "
                              "snapshot; kept only as an escape hatch.")
+    parser.add_argument("--cache-file", type=str, default=None,
+                        help="Scan and fetch as normal, but write the resulting delta to this "
+                             "JSON file instead of publishing to DuckDB. No DB write lock is "
+                             "ever requested in this mode. Filings are NOT marked ingested yet, "
+                             "so a later --persist-from-cache run publishes them properly.")
+    parser.add_argument("--persist-from-cache", type=str, default=None,
+                        help="Skip scanning/fetching entirely; load a delta previously written "
+                             "by --cache-file and publish it now (requires the write lock).")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    if args.persist_from_cache:
+        delta_records, newly_ingested = _load_delta_cache(args.persist_from_cache)
+        state_conn = sqlite3.connect(PIPELINE_LOG_DB_PATH)
+        ensure_ingested_filings_table(state_conn)
+        logger.info(f"Loaded {len(delta_records)} cached delta rows from {args.persist_from_cache}")
+        _publish_delta(args, delta_records, newly_ingested, state_conn)
+        return
 
     with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
         tickers = [r[0] for r in conn.execute("SELECT DISTINCT ticker FROM fundamentals ORDER BY ticker").fetchall()]
@@ -297,6 +346,20 @@ def main() -> None:
         f"{tickers_with_new_filings} tickers had new filings, {len(delta_records)} rows staged for upsert"
     )
 
+    if args.cache_file:
+        # Cache-only mode (the 6pm fetch pass): write the raw delta to disk
+        # and stop here — no DB connection of any kind is opened past this
+        # point, and filings are deliberately NOT marked ingested yet (see
+        # _save_delta_cache docstring), so a later --persist-from-cache run
+        # picks them up and publishes properly.
+        _save_delta_cache(args.cache_file, delta_records, newly_ingested)
+        state_conn.close()
+        return
+
+    _publish_delta(args, delta_records, newly_ingested, state_conn)
+
+
+def _publish_delta(args: argparse.Namespace, delta_records: list, newly_ingested: list, state_conn: "sqlite3.Connection") -> None:
     # A61 (2026-07-10): batch-lookup revenue/pat/ebitda from whatever OTHER
     # source (trendlyne/screener) already wrote them for the same exact
     # (ticker, fiscal_year, quarter), then derive debt_to_equity/

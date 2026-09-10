@@ -166,6 +166,13 @@ def main() -> None:
                         help="'direct' (default): unchanged legacy per-window INSERT ON CONFLICT "
                              "DO NOTHING. 'staged' (A25): accumulate every window's rows across "
                              "the whole run and publish atomically once at the end.")
+    parser.add_argument("--cache-file", type=str, default=None,
+                        help="Fetch all windows as normal (implies --publish-mode staged) but "
+                             "write the accumulated rows to this parquet file instead of "
+                             "publishing to DuckDB. No DB write lock is ever requested.")
+    parser.add_argument("--persist-from-cache", type=str, default=None,
+                        help="Skip fetching entirely; load rows previously written by "
+                             "--cache-file and publish them now (requires the write lock).")
     args = parser.parse_args()
 
     from config.settings import DUCKDB_PATH
@@ -175,6 +182,14 @@ def main() -> None:
         upsert_corporate_actions,
         upsert_corporate_actions_staged,
     )
+
+    if args.persist_from_cache:
+        cached_df = pd.read_parquet(args.persist_from_cache)
+        logger.info("Loaded %d cached corporate-action rows from %s", len(cached_df), args.persist_from_cache)
+        with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
+            total_upserted = upsert_corporate_actions_staged(conn, cached_df)
+        logger.info("Persist-from-cache complete. Total rows upserted: %d", total_upserted)
+        return
 
     from_dt = date.fromisoformat(args.from_date)
     to_dt = date.fromisoformat(args.to_date) if args.to_date else date.today()
@@ -204,7 +219,7 @@ def main() -> None:
                 df["action_type"].value_counts().to_dict(),
             )
             if not args.dry_run:
-                if args.publish_mode == "staged":
+                if args.publish_mode == "staged" or args.cache_file:
                     staged_batches.append(df)
                 else:
                     with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:
@@ -219,6 +234,16 @@ def main() -> None:
                 logger.info("NSE session refreshed")
             except Exception as exc:
                 logger.warning("Session refresh failed: %s", exc)
+
+    if args.cache_file:
+        if staged_batches:
+            all_df = pd.concat(staged_batches, ignore_index=True)
+            Path(args.cache_file).parent.mkdir(parents=True, exist_ok=True)
+            all_df.to_parquet(args.cache_file, index=False)
+            logger.info("Cached %d corporate-action rows -> %s (no DB touched)", len(all_df), args.cache_file)
+        else:
+            logger.info("Cache pass: 0 rows fetched, nothing written to %s", args.cache_file)
+        return
 
     if not args.dry_run and args.publish_mode == "staged" and staged_batches:
         with get_duckdb_connection(DUCKDB_PATH, persist=False) as conn:

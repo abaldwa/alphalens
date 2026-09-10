@@ -192,6 +192,7 @@ def backfill_date_range(
     end_date: date,
     ticker_filter: Optional[list[str]] = None,
     dry_run: bool = False,
+    mode: str = "both",
 ) -> "dict[str, Any]":
     """
     Backfill OHLCV for all (or filtered) tickers across [start_date, end_date].
@@ -200,6 +201,17 @@ def backfill_date_range(
     ----------
     ticker_filter : list[str], optional
         If provided, only fetch these tickers (else all from universe).
+    mode : str
+        'fetch' — resolve universe, fetch from FYERS, cache to local parquet
+            (TICKER_CACHE_DIR), then return WITHOUT touching ohlcv_adjusted.
+            `conn` only needs read access (get_listing_windows) — pass a
+            read-only connection so no DB write lock is ever requested.
+        'persist' — skip the FYERS API fetch entirely (assumes a prior
+            'fetch' pass already populated TICKER_CACHE_DIR for this exact
+            range) and go straight to loading the cached parquet, staging,
+            diffing, and publishing. `conn` must be a write connection.
+        'both' (default) — original single-pass behavior: fetch then
+            immediately persist, all under one write connection.
     """
     # Resolve universe
     stock_universe = set(get_tickers_for_feature_engineering())
@@ -261,28 +273,41 @@ def backfill_date_range(
         f"(up to {MAX_PARALLEL_FETCHES} in parallel, multi-day batching)"
     )
 
-    # Parallel fetch with multi-day batching per ticker
-    statuses = {"cached": 0, "fetched": 0, "empty": 0, "failed": 0}
-    failed_tickers = []
+    if mode != "persist":
+        # Parallel fetch with multi-day batching per ticker — network-only,
+        # writes to local parquet cache, no DB connection touched here.
+        statuses = {"cached": 0, "fetched": 0, "empty": 0, "failed": 0}
+        failed_tickers = []
 
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCHES) as executor:
-        future_to_ticker = {
-            executor.submit(_fetch_and_cache_ticker, fb, ticker, start_date, end_date): ticker
-            for ticker in per_ticker_range
-        }
-        for future in as_completed(future_to_ticker):
-            ticker = future_to_ticker[future]
-            status = future.result()
-            statuses[status] = statuses.get(status, 0) + 1
-            if status == "failed":
-                failed_tickers.append(ticker)
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCHES) as executor:
+            future_to_ticker = {
+                executor.submit(_fetch_and_cache_ticker, fb, ticker, start_date, end_date): ticker
+                for ticker in per_ticker_range
+            }
+            for future in as_completed(future_to_ticker):
+                ticker = future_to_ticker[future]
+                status = future.result()
+                statuses[status] = statuses.get(status, 0) + 1
+                if status == "failed":
+                    failed_tickers.append(ticker)
 
-    logger.info(f"backfill_date_range: fetch complete — {statuses}")
-    if failed_tickers:
-        logger.warning(
-            f"backfill_date_range: {len(failed_tickers)}/{len(per_ticker_range)} tickers failed: "
-            f"{failed_tickers[:20]}"
-        )
+        logger.info(f"backfill_date_range: fetch complete — {statuses}")
+        if failed_tickers:
+            logger.warning(
+                f"backfill_date_range: {len(failed_tickers)}/{len(per_ticker_range)} tickers failed: "
+                f"{failed_tickers[:20]}"
+            )
+
+        if mode == "fetch":
+            return {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "tickers": len(per_ticker_range),
+                "fetch_statuses": statuses,
+                "cached_for_persist": True,
+            }
+    else:
+        logger.info("backfill_date_range: mode=persist — skipping FYERS fetch, using existing cache")
 
     # Load cached data
     date_key = _make_cache_key(start_date, end_date)
@@ -419,19 +444,36 @@ def run(
     end_date: date,
     ticker_filter: Optional[list[str]] = None,
     dry_run: bool = False,
+    mode: str = "both",
 ) -> None:
-    """Run multi-day backfill for [start_date, end_date]."""
+    """Run multi-day backfill for [start_date, end_date].
+
+    mode='fetch': no DB write lock is ever requested — uses a read-only
+    connection (needed only for get_listing_windows) and never marks the
+    range complete or clears the parquet cache, since persistence hasn't
+    happened yet. Safe to run at any time, including while another
+    process holds the DuckDB write lock.
+
+    mode='persist': requires the write lock; assumes 'fetch' already ran
+    for this exact range and the parquet cache is populated.
+    """
     completed = _load_completed_ranges()
     range_key = _make_cache_key(start_date, end_date)
 
-    if range_key in completed:
+    if range_key in completed and mode != "fetch":
         logger.info(f"fyers_multiday_backfill: range {start_date.isoformat()}-{end_date.isoformat()} already completed")
         return
 
     fb = FYERSBackfill(non_interactive=True)
 
+    if mode == "fetch":
+        with get_duckdb_connection(DUCKDB_PATH, read_only=True, persist=False) as conn:
+            summary = backfill_date_range(conn, fb, start_date, end_date, ticker_filter, dry_run=dry_run, mode="fetch")
+        logger.info(f"fyers_multiday_backfill: FETCH-ONLY {start_date.isoformat()}-{end_date.isoformat()} cached — {summary}")
+        return
+
     with get_duckdb_connection(DUCKDB_PATH, read_only=False, persist=False) as conn:
-        summary = backfill_date_range(conn, fb, start_date, end_date, ticker_filter, dry_run=dry_run)
+        summary = backfill_date_range(conn, fb, start_date, end_date, ticker_filter, dry_run=dry_run, mode=mode)
         logger.info(f"fyers_multiday_backfill: {start_date.isoformat()}-{end_date.isoformat()} done — {summary}")
 
         if not dry_run:
@@ -456,6 +498,15 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stage and diff but never publish",
     )
+    p.add_argument(
+        "--mode",
+        choices=["fetch", "persist", "both"],
+        default="both",
+        help="'fetch': download from FYERS and cache to local parquet only, no DB write "
+             "lock requested (safe to run anytime, e.g. a 6pm cache pass). "
+             "'persist': skip the FYERS download, stage/diff/publish an existing cache "
+             "(requires the write lock). 'both' (default): original single-pass behavior.",
+    )
     return p.parse_args()
 
 
@@ -466,4 +517,4 @@ if __name__ == "__main__":
     start_date = date.fromisoformat(args.start_date)
     end_date = date.fromisoformat(args.end_date)
 
-    run(start_date, end_date, ticker_filter=args.tickers, dry_run=args.dry_run)
+    run(start_date, end_date, ticker_filter=args.tickers, dry_run=args.dry_run, mode=args.mode)
