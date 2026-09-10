@@ -14,12 +14,23 @@ shared, production-adjacent store the legacy engine uses (single-writer
 DuckDB — see CLAUDE.md's concurrency section). Call this only for a real,
 intentional persist — never from a test or a parity-check run (those use
 an isolated temp DB, see scripts/parity_check.py).
+
+CONNECTION LIFETIME: one FrameworkResultsDBWriter instance holds a single
+connection open across all of its write() calls (opened lazily on first
+use) instead of reconnecting per call. Reconnecting on every write forces
+a checkpoint/flush against the underlying file on each close, and that
+cost grows with the file's size — against a 15GB+ shared DB this made
+per-job write cost climb over the course of a long queue run (10s/job ->
+60s/job across a single pass). Callers that write many results in a loop
+(run_pass_queue.py, run_campaign.py, etc.) should call close() when done;
+if they don't, the connection is simply released at process exit — every
+write() still commits individually, so nothing is lost either way.
 """
 
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import duckdb
 
@@ -87,6 +98,27 @@ def _build_round_trips(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 class FrameworkResultsDBWriter:
     def __init__(self, db_path: Path = PROD_BACKTEST_DB_PATH):
         self.db_path = db_path
+        self._conn: Optional[duckdb.DuckDBPyConnection] = None
+
+    def _get_conn(self) -> duckdb.DuckDBPyConnection:
+        """Opens the connection on first use and reuses it for every
+        subsequent write() — see the module docstring's CONNECTION
+        LIFETIME note for why reconnecting per call was expensive."""
+        if self._conn is None:
+            self._conn = duckdb.connect(str(self.db_path), read_only=False)
+            self._conn.execute(SCHEMA_SQL)
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self) -> "FrameworkResultsDBWriter":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
 
     def write(
         self,
@@ -95,60 +127,58 @@ class FrameworkResultsDBWriter:
         universe_cache_used: bool = True,
         parity_checked: bool = False,
     ) -> None:
-        conn = duckdb.connect(str(self.db_path), read_only=False)
-        try:
-            conn.execute(SCHEMA_SQL)
+        conn = self._get_conn()
+        config = result.config
+        conn.execute(
+            """
+            INSERT INTO framework_backtest_runs (
+                run_id, strategy_id, strategy_code, band_id, engine,
+                source_commit, source_commit_dirty, framework_version,
+                start_date, end_date, config_json, metrics_json,
+                trade_count, integrity_passed, integrity_detail_json,
+                data_gaps_json, universe_cache_used, parity_checked,
+                run_executed_at, excludes_extraordinary_returns,
+                extraordinary_returns_top_n
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (run_id) DO NOTHING
+            """,
+            [
+                result.run_id,
+                result.strategy_id,
+                config.get("strategy_code"),
+                config.get("band_id"),
+                engine,
+                result.source_commit or "unknown",
+                bool(result.integrity_detail.get("source_commit_dirty", False)),
+                result.framework_version,
+                config.get("start_date"),
+                config.get("end_date"),
+                json.dumps(config, default=str),
+                json.dumps(result.metrics, default=str),
+                result.trade_count,
+                result.integrity_passed,
+                json.dumps(result.integrity_detail, default=str),
+                json.dumps(result.data_gaps, default=str),
+                universe_cache_used,
+                parity_checked,
+                datetime.now(timezone.utc),
+                bool(config.get("exclude_extraordinary_returns", False)),
+                config.get("extraordinary_returns_top_n"),
+            ],
+        )
 
-            config = result.config
-            conn.execute(
-                """
-                INSERT INTO framework_backtest_runs (
-                    run_id, strategy_id, strategy_code, band_id, engine,
-                    source_commit, source_commit_dirty, framework_version,
-                    start_date, end_date, config_json, metrics_json,
-                    trade_count, integrity_passed, integrity_detail_json,
-                    data_gaps_json, universe_cache_used, parity_checked,
-                    run_executed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (run_id) DO NOTHING
-                """,
-                [
-                    result.run_id,
-                    result.strategy_id,
-                    config.get("strategy_code"),
-                    config.get("band_id"),
-                    engine,
-                    result.source_commit or "unknown",
-                    bool(result.integrity_detail.get("source_commit_dirty", False)),
-                    result.framework_version,
-                    config.get("start_date"),
-                    config.get("end_date"),
-                    json.dumps(config, default=str),
-                    json.dumps(result.metrics, default=str),
-                    result.trade_count,
-                    result.integrity_passed,
-                    json.dumps(result.integrity_detail, default=str),
-                    json.dumps(result.data_gaps, default=str),
-                    universe_cache_used,
-                    parity_checked,
-                    datetime.now(timezone.utc),
-                ],
+        if result.trades:
+            round_trips = _build_round_trips(result.trades)
+            rows = [
+                (result.run_id, rt["ticker"], rt["qty"], rt["buy_date"], rt["buy_price"],
+                 rt["sale_date"], rt["sale_price"], rt["pnl_inr"], rt["pnl_pct"], rt["holding_days"])
+                for rt in round_trips
+            ]
+            conn.executemany(
+                """INSERT INTO framework_backtest_trades
+                   (run_id, ticker, qty, buy_date, buy_price, sale_date, sale_price,
+                    pnl_inr, pnl_pct, holding_days)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
             )
-
-            if result.trades:
-                round_trips = _build_round_trips(result.trades)
-                rows = [
-                    (result.run_id, rt["ticker"], rt["qty"], rt["buy_date"], rt["buy_price"],
-                     rt["sale_date"], rt["sale_price"], rt["pnl_inr"], rt["pnl_pct"], rt["holding_days"])
-                    for rt in round_trips
-                ]
-                conn.executemany(
-                    """INSERT INTO framework_backtest_trades
-                       (run_id, ticker, qty, buy_date, buy_price, sale_date, sale_price,
-                        pnl_inr, pnl_pct, holding_days)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    rows,
-                )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.commit()
