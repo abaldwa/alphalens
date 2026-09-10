@@ -112,6 +112,27 @@ else
   echo "[MF HOLDINGS] Skipped — no --mf-holdings-months given"
 fi
 
+# [2026-09-10] Raw data being current isn't the same as the pipeline being
+# current — features and momentum signals for the newly-published dates
+# don't exist until this runs too. ML model inference (run_models) is
+# deliberately skipped by default (user decision — revisiting the ML
+# strategy approach soon); pass INCLUDE_ML=1 in the environment to include it.
+if [[ -n "$FYERS_FROM" && -n "$FYERS_TO" ]]; then
+  echo ""
+  echo "[CATCHUP] Feature generation + momentum signals ($FYERS_FROM..$FYERS_TO)"
+  CATCHUP_FLAGS=""
+  if [[ "${INCLUDE_ML:-0}" == "1" ]]; then
+    CATCHUP_FLAGS="--include-ml"
+    echo "  INCLUDE_ML=1 — will also run ML model inference"
+  fi
+  timeout 7200 .venv/bin/python3 scripts/catchup_pipeline_for_dates.py \
+    --from-date "$FYERS_FROM" --to-date "$FYERS_TO" $CATCHUP_FLAGS
+  [ $? -eq 0 ] && echo "✓ DONE" || { echo "✗ FAILED (some dates) — see output above, re-run individually to retry"; ((FAILED++)); }
+else
+  echo ""
+  echo "[CATCHUP] Skipped — no --fyers-from/--fyers-to given (nothing new to compute features for)"
+fi
+
 echo ""
 echo "=========================================="
 echo "PERSIST CACHED PIPELINE COMPLETE ($FAILED failure(s))"
