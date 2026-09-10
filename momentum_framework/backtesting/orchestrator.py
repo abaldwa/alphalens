@@ -68,6 +68,13 @@ class BacktestOrchestrator:
     def __init__(self, strategy: StrategyAdapter, config: BacktestConfig):
         self.strategy = strategy
         self.config = config
+        # ticker -> {date_str: close}, populated lazily by _closes_on() —
+        # see that method's docstring for why (perf fix 2026-09-10: a
+        # per-trading-day point query for mark-to-market, run unconditionally
+        # for EVERY day not just rebalance days, was ~60% of total job time
+        # on a full 2009-2026 run: 4333 days x ~6ms/query = ~27s/job versus
+        # <1s for one bulk fetch per ticker across its whole history).
+        self._price_cache: Dict[str, Dict[str, float]] = {}
 
     def build_legacy_job_spec(self) -> Dict[str, Any]:
         """
@@ -317,14 +324,36 @@ class BacktestOrchestrator:
         return [str(r[0]) for r in rows]
 
     def _closes_on(self, conn: Any, tickers: List[str], as_of_date: str) -> Dict[str, float]:
+        """Looks up each ticker's close on as_of_date from an in-memory,
+        per-orchestrator cache — see __init__'s _price_cache comment. Any
+        ticker not yet cached gets its ENTIRE [start_date, end_date] close
+        series pulled in one bulk query (not just as_of_date), so a ticker
+        held across many rebalances costs one DB round-trip total instead
+        of one per day it's held."""
         if not tickers:
             return {}
-        placeholders = ",".join("?" for _ in tickers)
+        self._ensure_prices_cached(conn, tickers)
+        result = {}
+        for ticker in tickers:
+            close = self._price_cache.get(ticker, {}).get(as_of_date)
+            if close is not None:
+                result[ticker] = close
+        return result
+
+    def _ensure_prices_cached(self, conn: Any, tickers: List[str]) -> None:
+        missing = [t for t in tickers if t not in self._price_cache]
+        if not missing:
+            return
+        placeholders = ",".join("?" for _ in missing)
         rows = conn.execute(
-            f"SELECT ticker, close FROM ohlcv_adjusted WHERE ticker IN ({placeholders}) AND date = ?",
-            list(tickers) + [as_of_date],
+            f"SELECT ticker, date, close FROM ohlcv_adjusted "
+            f"WHERE ticker IN ({placeholders}) AND date >= ? AND date <= ?",
+            list(missing) + [self.config.start_date, self.config.end_date],
         ).fetchall()
-        return {ticker: close for ticker, close in rows}
+        for ticker in missing:
+            self._price_cache[ticker] = {}
+        for ticker, date, close in rows:
+            self._price_cache[ticker][str(date)] = close
 
     def _normalize_report(self, report: Dict[str, Any]) -> BacktestResult:
         run = report.get("run", {})
