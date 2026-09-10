@@ -93,6 +93,23 @@ logger = logging.getLogger(__name__)
 # rows to source='fyers'; the ON CONFLICT CASE preserves an existing
 # 'fyers' label rather than downgrading it when bhavcopy re-runs a date
 # fyers already claimed.
+# [2026-09-10, live corruption incident] That source-label CASE alone was
+# not enough: FYERS prices arrive pre-adjusted for corporate actions
+# (adj_factor=1.0 baked into the price itself, see fyers_multiday_backfill.py),
+# while bhavcopy prices are always raw/unadjusted. A bhavcopy re-run (e.g.
+# backfill_delivery_from_bhavcopy.py, whose only reason to touch an
+# already-fyers-covered date is to backfill delivery_qty/delivery_pct,
+# which FYERS doesn't provide) was unconditionally overwriting
+# open/high/low/close/volume with the unadjusted excluded.* values while
+# still labeling the row source='fyers' -- a silently mislabeled,
+# corrupted row. Confirmed live: TCC 2026-09-04 (5:1 SPLIT) had its FYERS
+# close overwritten from 233.13 to bhavcopy's unadjusted 44.10, still
+# tagged source='fyers'. Now price/volume columns follow the same
+# priority as the source label: preserved from the existing row whenever
+# that row is already fyers-sourced, only taken from bhavcopy for
+# bhavcopy-native rows. delivery_qty/delivery_pct always take the fresh
+# bhavcopy value regardless -- that is this upsert's entire purpose,
+# since FYERS never provides them.
 _UPSERT_OHLCV_WITH_DELIVERY = """
     INSERT INTO ohlcv_adjusted (
         date, ticker, open, high, low, close, volume, delivery_qty, delivery_pct,
@@ -100,15 +117,15 @@ _UPSERT_OHLCV_WITH_DELIVERY = """
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, 1.0, 'bhavcopy')
     ON CONFLICT (date, ticker) DO UPDATE SET
-        open           = excluded.open,
-        high           = excluded.high,
-        low            = excluded.low,
-        close          = excluded.close,
-        volume         = excluded.volume,
+        open           = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.open ELSE excluded.open END,
+        high           = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.high ELSE excluded.high END,
+        low            = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.low ELSE excluded.low END,
+        close          = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.close ELSE excluded.close END,
+        volume         = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.volume ELSE excluded.volume END,
         delivery_qty   = excluded.delivery_qty,
         delivery_pct   = excluded.delivery_pct,
-        adj_factor     = 1.0,
-        vol_adj_factor = 1.0,
+        adj_factor     = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.adj_factor ELSE 1.0 END,
+        vol_adj_factor = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.vol_adj_factor ELSE 1.0 END,
         source         = CASE WHEN ohlcv_adjusted.source = 'fyers'
                               THEN 'fyers' ELSE excluded.source END
 """

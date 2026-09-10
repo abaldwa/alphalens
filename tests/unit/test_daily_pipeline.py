@@ -940,7 +940,12 @@ class TestFyersAdjFactorInvariant:
         sql = self._sql_of("ingestion/scheduler/daily_pipeline.py")
         insert = sql.split("INSERT INTO ohlcv_adjusted")[1].split('"""')[0]
         assert "1.0, 1.0, 'bhavcopy'" in insert
-        assert "adj_factor     = 1.0" in insert
+        # adj_factor/price columns must NOT be unconditionally reset to
+        # bhavcopy's raw values on conflict — a fyers-owned row (pre-adjusted
+        # for corporate actions) must keep its own adjusted price/factor;
+        # only a genuinely bhavcopy-owned row resets to 1.0 / raw price.
+        assert "adj_factor     = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.adj_factor ELSE 1.0 END" in insert
+        assert "close          = CASE WHEN ohlcv_adjusted.source = 'fyers' THEN ohlcv_adjusted.close ELSE excluded.close END" in insert
         assert "WHEN ohlcv_adjusted.source = 'fyers'" in insert
 
     def test_staged_backfill_publish_writes_literal_one(self):
