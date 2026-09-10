@@ -64,6 +64,48 @@ def test_r01_cagr_is_plausible_vs_nifty50(prod_conn):
     )
 
 
+def test_closes_on_does_not_query_per_trading_day(prod_conn):
+    """
+    Regression test for the 2026-09-10 perf fix: _closes_on() used to run
+    one SQL point-query per ticker PER TRADING DAY for mark-to-market
+    (4333 days x ~6ms/query = ~27s/job on a full 2009-2026 run, ~60% of
+    total job time). The fix caches each ticker's full close series in
+    memory after one bulk fetch. This test pins that behavior so a future
+    change can't silently reintroduce the per-day query pattern: it wraps
+    the connection to count conn.execute() calls and asserts the count
+    stays small relative to the number of trading days in the window,
+    rather than scaling with it.
+    """
+    class _CountingConnProxy:
+        """DuckDBPyConnection.execute is a read-only C attribute, so it
+        can't be monkeypatched directly — proxy every other attribute
+        through to the real connection and count only .execute() calls."""
+        def __init__(self, real_conn):
+            self._real_conn = real_conn
+            self.call_count = 0
+
+        def execute(self, *args, **kwargs):
+            self.call_count += 1
+            return self._real_conn.execute(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real_conn, name)
+
+    proxy = _CountingConnProxy(prod_conn)
+    strategy = R01TrailingMomentum(band_id=2, top_n=5, lookback_months=6, rebalance_cadence_days=21)
+    config = BacktestConfig(start_date="2023-01-01", end_date="2023-12-31", initial_capital=1_000_000)
+    result = BacktestOrchestrator(strategy, config).run_native(proxy)
+    call_count = proxy.call_count
+
+    trading_days = result.integrity_detail["trading_days"]
+    assert call_count < trading_days / 4, (
+        f"{call_count} conn.execute() calls over {trading_days} trading days — "
+        f"this ratio is the signature of a per-trading-day query creeping back into "
+        f"_closes_on() (or a similar hot path); it should be a small, roughly constant "
+        f"number of bulk fetches, not something that scales with trading_days"
+    )
+
+
 def test_r01_equity_curve_has_no_gaps(prod_conn):
     strategy = R01TrailingMomentum(band_id=2, top_n=5, lookback_months=6, rebalance_cadence_days=21)
     config = BacktestConfig(start_date="2023-01-01", end_date="2023-06-30", initial_capital=1_000_000)
