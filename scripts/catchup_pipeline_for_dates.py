@@ -124,6 +124,17 @@ def main() -> None:
         help="Also run run_models/write_signals/sanity_check (ML model inference). "
              "Off by default — see module docstring.",
     )
+    parser.add_argument(
+        "--from-prerequisites", action="store_true",
+        help="Run the full prerequisite chain (download_bhavcopy through "
+             "data_integrity_check) before compute_features/compute_momentum, "
+             "instead of assuming those checkpoints already exist. Needed "
+             "when the data was persisted via ad-hoc backfill scripts rather "
+             "than the real pipeline_checkpoints-recording step functions — "
+             "force_run_date_sync refuses to skip ahead without them, and "
+             "this also genuinely fetches anything those scripts didn't "
+             "touch (F&O, macro indicators, large deals).",
+    )
     args = parser.parse_args()
 
     from_dt = date.fromisoformat(args.from_date)
@@ -134,14 +145,23 @@ def main() -> None:
         logger.info(f"No trading days in {from_dt}..{to_dt} — nothing to catch up")
         return
 
+    _PREREQUISITES = [
+        "download_bhavcopy", "download_fyers_daily", "fyers_health_check",
+        "download_fno", "download_macro", "download_index_ohlcv",
+        "download_corporate_actions", "download_large_deals", "attribute_bulk_deals",
+        "adjust_prices", "derive_fundamentals_ratios", "data_integrity_check",
+    ]
+
+    prefix = _PREREQUISITES if args.from_prerequisites else []
+
     if args.include_ml:
-        steps = ["compute_features"]  # cascades the rest via force_run_date_sync itself
+        steps = prefix + ["compute_features"]  # cascades the rest via force_run_date_sync itself
         cascade_full = True
     elif args.features_only:
-        steps = ["compute_features"]
+        steps = prefix + ["compute_features"]
         cascade_full = False
     else:
-        steps = ["compute_features", "compute_momentum"]
+        steps = prefix + ["compute_features", "compute_momentum"]
         cascade_full = False
 
     logger.info(
