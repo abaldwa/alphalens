@@ -30,8 +30,45 @@ from typing import Any, Dict
 import duckdb
 
 from momentum_framework.backtesting.orchestrator import BacktestConfig, BacktestOrchestrator
-from momentum_framework.results.db_writer import FrameworkResultsDBWriter
-from momentum_framework.scripts.job_dispatch import strategy_from_job
+from momentum_framework.results.db_writer import PROD_BACKTEST_DB_PATH, FrameworkResultsDBWriter
+from momentum_framework.scripts.job_dispatch import strategy_from_job, strategy_id_for_job
+
+
+def _already_completed_strategy_ids() -> set:
+    """strategy_ids already persisted in framework_backtest_runs — see
+    _filter_incomplete_jobs()'s docstring for why this exists. A short-
+    lived read-only connection, opened and closed before
+    FrameworkResultsDBWriter's own (write) connection, so there's no
+    single-writer lock conflict (see db_writer.py's SAFETY note)."""
+    if not PROD_BACKTEST_DB_PATH.exists():
+        return set()
+    conn = duckdb.connect(str(PROD_BACKTEST_DB_PATH), read_only=True)
+    try:
+        rows = conn.execute("SELECT DISTINCT strategy_id FROM framework_backtest_runs").fetchall()
+        return {r[0] for r in rows}
+    except duckdb.CatalogException:
+        return set()  # table doesn't exist yet — nothing persisted, nothing to skip
+    finally:
+        conn.close()
+
+
+def _filter_incomplete_jobs(jobs: list) -> list:
+    """Drops any job whose strategy_id already has a row in
+    framework_backtest_runs (perf/correctness fix, 2026-09-10: restarting
+    a killed run previously re-executed EVERY job from scratch — wasted
+    compute, and silently inserted duplicate rows for the same strategy_id
+    under a new run_id, since write()'s ON CONFLICT(run_id) DO NOTHING
+    can never catch a rerun — run_id embeds a fresh timestamp every time).
+    strategy_id is computed from the job dict alone (no backtest
+    execution) via strategy_id_for_job()."""
+    done = _already_completed_strategy_ids()
+    if not done:
+        return jobs
+    remaining = [j for j in jobs if strategy_id_for_job(j) not in done]
+    skipped = len(jobs) - len(remaining)
+    if skipped:
+        print(f"Resume: skipping {skipped}/{len(jobs)} jobs already persisted in framework_backtest_runs")
+    return remaining
 
 PROD_DB_PATH = "/home/amit/projects/AlphaLens/datastore/normalised/alphalens.duckdb"
 MAX_WORKERS = 4  # same cap rationale as run_campaign.py's PASS2_MAX_WORKERS
@@ -156,8 +193,12 @@ def main(pass_file: str) -> None:
 def _run(pass_file: str) -> None:
     path = Path(pass_file)
     data = json.loads(path.read_text())
-    jobs = data["jobs"]
+    jobs = _filter_incomplete_jobs(data["jobs"])
     pass_name = path.stem  # e.g. "campaign_2026_09_06_pass1"
+
+    if not jobs:
+        print(f"{pass_name}: every job already persisted — nothing to run")
+        return
 
     progress_path = RESULTS_DIR / f"{pass_name}_progress.json"
     log_path = RESULTS_DIR / f"{pass_name}_run_log.jsonl"

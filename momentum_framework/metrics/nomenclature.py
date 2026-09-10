@@ -229,3 +229,35 @@ def parse_strategy_id(strategy_id: str) -> Dict[str, Any]:
         "strategy_code": tokens[1],
         "raw_tokens": tokens,
     }
+
+
+# The subset of StrategyAdapter.describe() output that participates in
+# strategy_id identity — everything else (start_date, end_date, etc.) is
+# run metadata, not identity. Kept as one shared constant/function so
+# orchestrator.py's two build_strategy_id() call sites and any resume/
+# dedup logic (e.g. run_pass_queue.py checking "has this job's strategy_id
+# already been persisted") can never drift apart on which fields count.
+IDENTITY_PARAM_FIELDS = frozenset({
+    "filter_preset", "crash_regime_enabled", "vol_scaling_mode",
+    "weight_method", "skip_months", "vol_target_enabled",
+    "vol_target_pct", "liquidity_quintile", "exclude_extraordinary_returns",
+    "extraordinary_returns_top_n",
+})
+
+
+def strategy_id_from_params(params: Dict[str, Any]) -> str:
+    """build_strategy_id(), fed from a strategy's own describe() dict —
+    the params a StrategyAdapter reports about itself, filtered to just
+    the identity-relevant subset (IDENTITY_PARAM_FIELDS). Computable from
+    a job dict alone (via strategy_from_job(job).describe()), with no
+    backtest execution required — see job_dispatch.strategy_id_for_job()."""
+    identity_params = {k: v for k, v in params.items() if k in IDENTITY_PARAM_FIELDS}
+    return build_strategy_id(
+        strategy_code=params["strategy_code"],
+        rank_method=params["rank_method"],
+        band_id=params["band_id"],
+        top_n=params["top_n"],
+        lookback_months=params["lookback_months"],
+        rebalance_cadence_days=params["rebalance_cadence_days"],
+        **identity_params,
+    )

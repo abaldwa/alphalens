@@ -125,3 +125,13 @@ def strategy_from_job(job: Dict[str, Any]) -> StrategyAdapter:
         call_kwargs["lookback_months"] = job["lookback_months"]
     call_kwargs.update(filtered_kwargs)
     return cls(**call_kwargs)
+
+
+def strategy_id_for_job(job: Dict[str, Any]) -> str:
+    """A job's strategy_id, computed without running the backtest — just
+    instantiates the strategy and reads its describe() output. Lets a
+    caller (e.g. run_pass_queue.py's resume/dedup check) know a job's
+    identity cheaply, before deciding whether it's worth actually
+    executing."""
+    from momentum_framework.metrics.nomenclature import strategy_id_from_params
+    return strategy_id_from_params(strategy_from_job(job).describe())

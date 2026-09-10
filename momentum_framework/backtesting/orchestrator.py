@@ -35,7 +35,7 @@ import pandas as pd
 from momentum_framework.backtesting.adapter import StrategyAdapter
 from momentum_framework.backtesting.portfolio import Portfolio
 from momentum_framework.backtesting.result import BacktestResult
-from momentum_framework.metrics.nomenclature import build_strategy_id
+from momentum_framework.metrics.nomenclature import strategy_id_from_params
 from momentum_framework.metrics.standard import MetricsCalculator
 
 logger = logging.getLogger(__name__)
@@ -276,23 +276,7 @@ class BacktestOrchestrator:
         ))
 
         params = self.strategy.describe()
-        # Filter to only parameters that build_strategy_id() accepts
-        identity_fields = {
-            "filter_preset", "crash_regime_enabled", "vol_scaling_mode",
-            "weight_method", "skip_months", "vol_target_enabled",
-            "vol_target_pct", "liquidity_quintile", "exclude_extraordinary_returns",
-            "extraordinary_returns_top_n",
-        }
-        identity_params = {k: v for k, v in params.items() if k in identity_fields}
-        strategy_id = build_strategy_id(
-            strategy_code=params["strategy_code"],
-            rank_method=params["rank_method"],
-            band_id=params["band_id"],
-            top_n=params["top_n"],
-            lookback_months=params["lookback_months"],
-            rebalance_cadence_days=params["rebalance_cadence_days"],
-            **identity_params,
-        )
+        strategy_id = strategy_id_from_params(params)
 
         from datetime import datetime, timezone
 
@@ -361,23 +345,7 @@ class BacktestOrchestrator:
         metrics = report.get("metrics", {})
 
         params = self.strategy.describe()
-        # Filter to only parameters that build_strategy_id() accepts
-        identity_fields = {
-            "filter_preset", "crash_regime_enabled", "vol_scaling_mode",
-            "weight_method", "skip_months", "vol_target_enabled",
-            "vol_target_pct", "liquidity_quintile", "exclude_extraordinary_returns",
-            "extraordinary_returns_top_n",
-        }
-        identity_params = {k: v for k, v in params.items() if k in identity_fields}
-        strategy_id = build_strategy_id(
-            strategy_code=params["strategy_code"],
-            rank_method=params["rank_method"],
-            band_id=params["band_id"],
-            top_n=params["top_n"],
-            lookback_months=params["lookback_months"],
-            rebalance_cadence_days=params["rebalance_cadence_days"],
-            **identity_params,
-        )
+        strategy_id = strategy_id_from_params(params)
 
         return BacktestResult(
             run_id=run.get("run_id", "unknown"),
