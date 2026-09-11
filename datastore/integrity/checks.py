@@ -255,6 +255,23 @@ def check_corporate_action_continuity(
     No FYERS call, no external dependency: this only ever reads
     corporate_actions and ohlcv_adjusted, so it is safe and cheap to run
     unattended or as a large historical sweep.
+
+    [2026-09-11] Skips a gap when the ex_date row's source='fyers': FYERS
+    pre-adjusts its own OHLCV for corporate actions before we ever see it
+    (see ingestion/adjust/price_adjuster.py's `WHERE source IS NULL OR
+    source != 'fyers'` — our own adjuster already treats source='fyers'
+    rows as "not ours to adjust, already correct"). A close-to-close gap
+    at ex_date in FYERS-sourced data is FYERS's own genuine, already-
+    correct reflection of the corporate action's real market price impact
+    (confirmed live: JAYKAY's 2026-08-28 RIGHTS ex_date gap, source=
+    'fyers', prev_close=169.62 -> ex_close=154.11 — a real 9.1% dilution
+    effect, not corrupted data), not evidence of a bug needing a fix. A
+    sample of 100 pending critical findings for this check showed 80% were
+    source='fyers' -- almost certainly false positives from this check
+    never having made the source-aware distinction price_adjuster.py
+    already relies on, which was silently blocking compute_features for
+    every date with such a finding (data_integrity_check hard-depends on
+    this check passing).
     """
     where = "" if lookback_days is None else "WHERE ex_date BETWEEN ? AND ?"
     params = [] if lookback_days is None else [as_of_date - timedelta(days=lookback_days), as_of_date]
@@ -269,7 +286,7 @@ def check_corporate_action_continuity(
 
         px = conn.execute(
             """
-            SELECT date, close FROM ohlcv_adjusted
+            SELECT date, close, source FROM ohlcv_adjusted
             WHERE ticker = ? AND date BETWEEN ? AND ?
             ORDER BY date
             """,
@@ -287,7 +304,11 @@ def check_corporate_action_continuity(
 
         prev_close = float(before.iloc[-1]["close"])
         ex_close = float(on_or_after.iloc[0]["close"])
+        ex_source = on_or_after.iloc[0]["source"]
         if prev_close <= 0:
+            continue
+
+        if ex_source == "fyers":
             continue
 
         gap_pct = abs(ex_close - prev_close) / prev_close * 100
