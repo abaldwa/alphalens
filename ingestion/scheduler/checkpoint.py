@@ -200,9 +200,14 @@ STEPS: List[Dict[str, Any]] = [
     # check_ta_alerts: evaluates the 42 TA screener templates + user-defined
     # alerts against run_date's own feature Parquet only (systems/
     # technical_analysis/alerts/{daily_alert_checker,alert_store}.py) —
-    # deterministic given that day's features, no model inference, so
-    # unlike run_models/write_signals it IS safe to backfill.
-    {"name": "check_ta_alerts", "is_backfillable": True, "depends_on": ["compute_features"]},
+    # deterministic given that day's features, no model inference.
+    # 2026-09-11 (user decision): made non-backfillable — alerts for a stale
+    # gap day are useless (nobody was watching for them on that day), so
+    # generating them retroactively during the 08-14..09-10 catch-up just
+    # burns compute for no consumer. Matches paper_trade/propose_paper_trades'
+    # "not genuinely live" reasoning, just for a different reason (no
+    # audience, not the gate7-inflation concern those two have).
+    {"name": "check_ta_alerts", "is_backfillable": False, "depends_on": ["compute_features"]},
     # ML38 (2026-07-14): live momentum-strategy ranking + rebalance
     # suggestions (features/momentum_live.py). Deterministic given that
     # day's own already-final EOD OHLCV — same rationale as

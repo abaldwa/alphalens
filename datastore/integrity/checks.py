@@ -775,6 +775,15 @@ def check_spot_check(
                 )
             )
 
+    # [2026-09-11] yfinance's yf.Ticker() builds a fresh session/cache per
+    # call; across sample_size=100 calls this process never frees promptly
+    # under memory pressure, and this check runs once per backfilled date —
+    # 15-20 dates in one long-lived scheduler process compounds into an
+    # OOM. Force collection here rather than waiting for the next gen-2 GC.
+    import gc
+
+    gc.collect()
+
     return findings
 
 

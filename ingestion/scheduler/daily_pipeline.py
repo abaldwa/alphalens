@@ -1625,7 +1625,14 @@ _SANITY_KNOWN_SPARSE_COLUMNS = {
     # cash-flow line items but not capex directly.  These are structurally
     # sparse (~44-53% populated table-wide from historical backfill data,
     # but 0% for recent 6 months of automated scrapes).
-    "capex", "capex_intensity", "fcf_margin",
+    # [2026-09-11] "fcf" itself was missing here despite this comment
+    # naming it explicitly above ("Screener free-tier hardcodes capex/fcf
+    # to None") -- only its derived ratios (capex_intensity, fcf_margin)
+    # were exempted, same class of miss as the 08-08 base-vs-derived gap
+    # noted earlier in this set. Confirmed 2026-09-11: 100% NULL for the
+    # trailing 30-day window ending 2026-08-28 (1801/1801 rows), consistent
+    # with this column's known sparsity, not a new regression.
+    "capex", "capex_intensity", "fcf_margin", "fcf",
     # [2026-08-06, Issue6] Advanced signal-processing feature families that
     # compute 100% all-NaN on every date across the whole backfill — a known
     # feature-computation gap in features/advanced_technical.py (wavelet

@@ -6,79 +6,65 @@ Specs: SPEC-PIPE-005, SPEC-DS-007
 Owner: Platform / Ingestion
 Consumers: operator (manual, run after the OHLCV backfill is complete)
 
-One-time/periodic operator script: loads ~2 years of OHLCV history from
-Store 2's ohlcv_adjusted DuckDB table (SPEC-DS-007), derives a small set
-of stationary, PSI-appropriate columns from it, and calls
+One-time/periodic operator script: loads ~2 years of feature history from
+Store 3's per-date Parquets (FEATURES_DAILY_DIR), restricted to
+CORE_TECHNICAL_FEATURES (the same 77-column pool daily_inference.py's PSI
+check restricts itself to — features/technical.py), and calls
 ingestion.quality.drift_monitor.PSIMonitor.compute_baseline() to produce
 datastore/features/baseline/stats_baseline.pkl — the reference distribution
 ingestion.quality.drift_monitor.PSIMonitor.check_drift() compares each new
 day against (SPEC-PIPE-005).
 
-NOTE on data source (corrected from an earlier version of this file): "load
-2 years of existing data ... must run after backfill is complete" (this
-module's originating task) refers to the OHLCV backfill
-(ingestion/backfill_runner.py / SPEC-PIPE-001), which already exists and
-has data today — NOT to the Phase 1 76-feature matrix
-(features/matrix_builder.py), which doesn't exist yet. An earlier version
-of this file read from FEATURES_DAILY_DIR (Store 3 Parquets) instead,
-which meant it could never produce a baseline until Phase 1 was built —
-contradicting its own task instruction, which has no such Phase-1
-dependency (compare ingestion/quality/drift_monitor.py's daily *check*,
-which the same task explicitly defers with "after feature matrix is
-built" — baseline computation has no equivalent qualifier). Fixed to read
-from ohlcv_adjusted, which is real and populated now.
-
-raw OHLCV price levels (open/high/low/close) are not themselves PSI-
-appropriate — they're non-stationary (a stock's price trends over years
-regardless of any real distributional shift in behavior), so PSI on raw
-price would just measure long-run price drift, not drift worth alerting
-on. This module instead derives return_1d, volume, and delivery_pct —
-already-stationary quantities directly computable from ohlcv_adjusted
-without needing the full Phase 1 technical-indicator suite
-(features/technical.py). This is a deliberate, minimal Phase 0.6
-stand-in, not a duplicate of future feature computation (SPEC-SOLID-002:
-feature computation belongs in features/, not ingestion/quality/) — once
-features/matrix_builder.py exists, swap load_ohlcv_history() for a Parquet
-read from FEATURES_DAILY_DIR; PSIMonitor.compute_baseline() itself doesn't
-care about the data source, so no other change is needed.
+NOTE on data source (2026-09-11 fix): an earlier version of this file read
+only 3 derived columns (return_1d, volume, delivery_pct) from
+ohlcv_adjusted, as a deliberate Phase-0.6 stand-in for when
+features/matrix_builder.py didn't exist yet. That module now exists and
+CORE_TECHNICAL_FEATURES has grown to 77 real technical features, but the
+baseline was never regenerated against it — check_drift() ended up
+restricted to the 1 of those 77 columns the stale 3-feature baseline
+happened to cover (delivery_pct), tripping PSI_MIN_MONITORED_FEATURES=10
+and running the drift comparison on essentially one noisy series (see
+BuildLog 2026-09-11: run_models halting on flip-flopping delivery_pct PSI
+readings that were really measuring baseline staleness, not real drift —
+same root cause as commit fe3c7231's 2026-08-14 fix, whose non_null_share
+coverage-shift safety net never activated because this pickle predates
+that field). Now reads CORE_TECHNICAL_FEATURES directly from the feature
+store instead of re-deriving a subset from raw OHLCV, so the baseline
+covers the same pool the drift check evaluates and non_null_share is
+populated for every one of them.
 """
 
 import argparse
 import logging
 from datetime import date, timedelta
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
 import pandas as pd
 
-from config.settings import DUCKDB_PATH
+from config.settings import FEATURES_DAILY_DIR
 from config.timezone import now_ist
-from datastore.api.db import get_duckdb_connection
+from features.technical import CORE_TECHNICAL_FEATURES
 from ingestion.quality.drift_monitor import PSIMonitor
 
 logger = logging.getLogger(__name__)
 
 BASELINE_WINDOW_YEARS = 2  # "Compute PSI baseline: load 2 years of existing data"
 
-_SELECT_OHLCV_HISTORY = """
-    SELECT date, ticker, close, volume, delivery_pct
-    FROM ohlcv_adjusted
-    WHERE date >= ? AND date <= ?
-    ORDER BY ticker, date
-"""
 
-
-def load_ohlcv_history(
-    db_path: Optional[str] = None,
+def load_feature_history(
+    features_dir: Optional[Union[str, Path]] = None,
     end_date: Optional[date] = None,
     years: int = BASELINE_WINDOW_YEARS,
 ) -> pd.DataFrame:
     """
-    Load OHLCV history from ohlcv_adjusted covering the last `years` years.
+    Load CORE_TECHNICAL_FEATURES history from the per-date feature Parquets
+    covering the last `years` years.
 
     Parameters
     ----------
-    db_path : str, optional
-        Defaults to config.settings.DUCKDB_PATH.
+    features_dir : str, optional
+        Defaults to config.settings.FEATURES_DAILY_DIR.
     end_date : date, optional
         Defaults to today.
     years : int
@@ -87,61 +73,8 @@ def load_ohlcv_history(
     Returns
     -------
     pd.DataFrame
-        Columns: date, ticker, close, volume, delivery_pct. One row per
-        (date, ticker).
-
-    Spec References
-    ----------------
-    SPEC-PIPE-005, SPEC-DS-007 (Store 2: ohlcv_adjusted DuckDB table).
-
-    PIT Assumptions
-    ----------------
-    None — ohlcv_adjusted is same-day, publicly available price data with
-    no announcement-date lag (SPEC-PIPE-001).
-
-    Raises
-    ------
-    FileNotFoundError
-        If no rows are found in the requested window — the OHLCV backfill
-        (ingestion/backfill_runner.py) must run first.
-    """
-    end_date = end_date or now_ist().date()
-    start_date = end_date - timedelta(days=365 * years)
-    db_path = db_path or DUCKDB_PATH
-
-    with get_duckdb_connection(db_path) as conn:
-        ohlcv = conn.execute(_SELECT_OHLCV_HISTORY, [start_date, end_date]).df()
-
-    if ohlcv.empty:
-        raise FileNotFoundError(
-            f"No ohlcv_adjusted rows found for {start_date}..{end_date}. "
-            "Run the OHLCV backfill first (ingestion/backfill_runner.py) — "
-            "see ingestion/quality/baseline_runner.py's module docstring."
-        )
-
-    logger.info(
-        f"Loaded OHLCV history ({start_date}..{end_date}): "
-        f"{len(ohlcv)} rows, {ohlcv['ticker'].nunique()} tickers"
-    )
-    return ohlcv
-
-
-def _derive_baseline_features(ohlcv: pd.DataFrame) -> pd.DataFrame:
-    """
-    Derive a minimal, stationary feature set from raw OHLCV history.
-
-    Parameters
-    ----------
-    ohlcv : pd.DataFrame
-        Output of load_ohlcv_history() — columns date, ticker, close,
-        volume, delivery_pct.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: return_1d, volume, delivery_pct. One row per
-        (date, ticker) observation (the first observation per ticker is
-        dropped — return_1d is undefined for it).
+        Columns: date, ticker, + whichever CORE_TECHNICAL_FEATURES are
+        present in the stored Parquets. One row per (date, ticker).
 
     Spec References
     ----------------
@@ -149,25 +82,55 @@ def _derive_baseline_features(ohlcv: pd.DataFrame) -> pd.DataFrame:
 
     PIT Assumptions
     ----------------
-    None — derived purely from already-PIT-correct OHLCV.
+    None — each date's Parquet is that date's own already-final, PIT-correct
+    feature snapshot (features/matrix_builder.py).
 
     Raises
     ------
-    None
+    FileNotFoundError
+        If no feature Parquets are found in the requested window — the
+        feature backfill (compute_features) must run first.
     """
-    ohlcv = ohlcv.sort_values(["ticker", "date"])
-    ohlcv = ohlcv.assign(return_1d=ohlcv.groupby("ticker")["close"].pct_change())
-    return ohlcv.dropna(subset=["return_1d"])[["return_1d", "volume", "delivery_pct"]]
+
+    end_date = end_date or now_ist().date()
+    start_date = end_date - timedelta(days=365 * years)
+    resolved_dir = Path(features_dir) if features_dir is not None else FEATURES_DAILY_DIR
+
+    frames = []
+    for path in sorted(resolved_dir.glob("*.parquet")):
+        try:
+            file_date = date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if not (start_date <= file_date <= end_date):
+            continue
+        df = pd.read_parquet(path)
+        cols = ["date", "ticker"] + [c for c in CORE_TECHNICAL_FEATURES if c in df.columns]
+        frames.append(df[cols])
+
+    if not frames:
+        raise FileNotFoundError(
+            f"No feature Parquets found in {resolved_dir} for {start_date}..{end_date}. "
+            "Run the feature backfill (compute_features) first — see "
+            "ingestion/quality/baseline_runner.py's module docstring."
+        )
+
+    history = pd.concat(frames, ignore_index=True)
+    logger.info(
+        f"Loaded feature history ({start_date}..{end_date}): "
+        f"{len(history)} rows, {history['ticker'].nunique()} tickers, "
+        f"{len(history.columns) - 2} feature(s)"
+    )
+    return history
 
 
 def run(
-    db_path: Optional[str] = None,
+    features_dir: Optional[Union[str, Path]] = None,
     end_date: Optional[date] = None,
     years: int = BASELINE_WINDOW_YEARS,
-) -> dict:
+) -> Dict[str, Any]:
     """
-    Load OHLCV history, derive baseline features, and compute + persist
-    the PSI baseline.
+    Load feature history, and compute + persist the PSI baseline.
 
     Returns
     -------
@@ -182,12 +145,13 @@ def run(
     Raises
     ------
     FileNotFoundError
-        See load_ohlcv_history().
+        See load_feature_history().
     """
-    ohlcv = load_ohlcv_history(db_path=db_path, end_date=end_date, years=years)
-    matrix = _derive_baseline_features(ohlcv)
+    history = load_feature_history(features_dir=features_dir, end_date=end_date, years=years)
+    matrix = history.drop(columns=["date", "ticker"])
     monitor = PSIMonitor()
-    return monitor.compute_baseline(matrix)
+    baseline: Dict[str, Any] = monitor.compute_baseline(matrix)
+    return baseline
 
 
 def main() -> None:
