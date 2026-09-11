@@ -34,7 +34,7 @@ import logging
 from datetime import date as date_type
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -516,6 +516,78 @@ def check_holiday_leakage(conn: Any, as_of_date: date_type, lookback_days: int =
     return findings
 
 
+def _cumulative_corp_action_factor(
+    conn: Any, ticker: str, from_date: date_type, to_date: date_type,
+) -> tuple[float, bool]:
+    """
+    [2026-09-11] Cumulative SPLIT/BONUS price factor for `ticker` over
+    every corporate_actions row with `from_date < ex_date <= to_date`,
+    same per-action formulas as ingestion/adjust/price_adjuster.py
+    (SPLIT=1/ratio, BONUS=1/(1+ratio)) chained multiplicatively — i.e.
+    `raw_close_at_from_date * factor ~= adjusted_close_at_to_date` when
+    every intervening action is SPLIT/BONUS.
+
+    Returns (factor, fully_explained). fully_explained is False if any
+    RIGHTS/DIVIDEND/OTHER action falls in the window: unlike SPLIT/BONUS,
+    those have no reliable price-factor formula from `ratio` alone (see
+    ingestion/adjust/price_adjuster.py's own docstring — RIGHTS needs
+    subscription price + take-up rate, not implemented; DIVIDEND's factor
+    depends on raw_close at that specific ex_date, not just ratio), so a
+    window containing one can't be fully reconciled — a residual gap after
+    applying only the SPLIT/BONUS-explainable factor may be real OR may be
+    the unquantified RIGHTS/DIVIDEND effect. check_spot_check treats
+    fully_explained=False as "can't rule out a benign explanation" and
+    flags conservatively, per explicit user decision (2026-09-11).
+    """
+    actions = conn.execute(
+        "SELECT action_type, ratio FROM corporate_actions "
+        "WHERE ticker = ? AND ex_date > ? AND ex_date <= ? ORDER BY ex_date",
+        [ticker, from_date, to_date],
+    ).fetchall()
+    factor = 1.0
+    fully_explained = True
+    for action_type, ratio in actions:
+        if action_type == "SPLIT" and ratio:
+            factor *= 1.0 / ratio
+        elif action_type == "BONUS":
+            factor *= 1.0 / (1.0 + ratio)
+        else:
+            fully_explained = False
+    return factor, fully_explained
+
+
+def _bhavcopy_close(date_str: str, ticker: str, cache: Dict[str, Optional[pd.DataFrame]]) -> Optional[float]:
+    """
+    [2026-09-11] NSE bhavcopy's own raw (unadjusted) close for `ticker` on
+    `date_str`, used as check_spot_check's third reconciliation source for
+    FYERS-sourced rows. `cache` is caller-owned and scoped to one
+    check_spot_check call (NOT a module-level dict — this runs inside the
+    long-lived scheduler process, and each call samples up to
+    `sample_size` distinct historical dates; a persistent cache would grow
+    unboundedly across the process's lifetime, exactly the kind of leak
+    behind the 2026-09-11 OOM incident this module's own PIPELINE_MEMORY_
+    CEILING_MB fix addressed). Caches the full-day download within that
+    single call since multiple sampled tickers may share a date, and a
+    bhavcopy download is a full-universe CSV fetch — expensive to repeat
+    per-ticker.
+    """
+    if date_str not in cache:
+        from ingestion.scrapers.bhavcopy import download_bhavcopy
+
+        try:
+            cache[date_str] = download_bhavcopy(date_str)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("check_spot_check: bhavcopy fetch failed for %s: %s", date_str, exc)
+            cache[date_str] = None
+    day = cache[date_str]
+    if day is None:
+        return None
+    hit = day[day["ticker"] == ticker]
+    if hit.empty:
+        return None
+    return float(hit.iloc[0]["close"])
+
+
 def check_spot_check(
     conn: Any,
     as_of_date: date_type,
@@ -527,11 +599,28 @@ def check_spot_check(
 ) -> List[Finding]:
     """
     Sample `sample_size` random (ticker, date) pairs across the trailing
-    `lookback_years` of ohlcv_adjusted, cross-check adjusted close
-    against two independent sources (Fyers + Yahoo Finance). A mismatch
-    is only flagged when BOTH independent sources disagree with us and
-    agree with each other — a single-source disagreement is that
-    source's own data-quality issue, not necessarily a bug in our data.
+    `lookback_years` of ohlcv_adjusted and cross-check our adjusted close.
+
+    Legacy/bhavcopy-sourced rows: cross-check against two independent
+    sources (Fyers + Yahoo Finance). A mismatch is only flagged when BOTH
+    independent sources disagree with us and agree with each other — a
+    single-source disagreement is that source's own data-quality issue,
+    not necessarily a bug in our data.
+
+    FYERS-sourced rows: [2026-09-11] `our_close` already IS Fyers' own
+    (pre-adjusted) value, so re-fetching Fyers again would be a
+    tautological comparison against itself — wasted, and structurally
+    unable to ever disagree. Instead: check against Yahoo first (cheap);
+    if it disagrees, fetch NSE bhavcopy's raw close for that date (a
+    genuinely independent third source) and reconcile it against
+    `our_close` via `_cumulative_corp_action_factor` (any SPLIT/BONUS
+    between that date and today legitimately explains a gap — bhavcopy is
+    never adjusted for FUTURE actions the way Fyers' continuous series is).
+    Only flag once Yahoo disagrees AND the bhavcopy gap survives that
+    reconciliation (or the window contains an unquantifiable RIGHTS/
+    DIVIDEND action, so it can't be ruled out) — per explicit user decision
+    (2026-09-11): "check against Yahoo and BhavCopy... check Corporate
+    Actions for adjustments... if still unexplainable, flag it."
 
     `fyers_client`/`yahoo_fetch` are injectable for tests.
     `yahoo_fetch(ticker, date) -> Optional[float]` defaults to a thin
@@ -575,18 +664,75 @@ def check_spot_check(
 
     window_start = as_of_date - timedelta(days=365 * lookback_years)
     universe = conn.execute(
-        "SELECT ticker, date, close FROM ohlcv_adjusted WHERE date BETWEEN ? AND ?",
+        "SELECT ticker, date, close, source FROM ohlcv_adjusted WHERE date BETWEEN ? AND ?",
         [window_start, as_of_date],
     ).df()
     if universe.empty:
         return []
 
     sample = universe.sample(n=min(sample_size, len(universe)), random_state=seed)
+    bhavcopy_cache: Dict[str, Optional[pd.DataFrame]] = {}
 
     findings: List[Finding] = []
     for row in sample.itertuples():
         ticker, d, our_close = row.ticker, pd.Timestamp(row.date).date(), row.close
         date_str = d.isoformat()
+
+        # [2026-09-11] our_close for a source='fyers' row already IS Fyers'
+        # own value — re-fetching Fyers again would be a tautological,
+        # wasted comparison against itself, and the dual-source path below
+        # would then structurally never disagree with it regardless of any
+        # real issue. Use the Yahoo -> bhavcopy+corp-action cascade instead
+        # (see docstring); the two paths are mutually exclusive per row.
+        if row.source == "fyers":
+            try:
+                yahoo_close = yahoo_fetch(ticker, d)
+            except Exception:  # noqa: BLE001
+                yahoo_close = None
+            if yahoo_close is None or our_close in (None, 0):
+                continue
+            if abs(our_close - yahoo_close) / our_close <= TOLERANCE_PCT / 100:
+                continue  # Yahoo agrees — nothing to reconcile
+
+            bhav_close = _bhavcopy_close(date_str, ticker, bhavcopy_cache)
+            if bhav_close is None:
+                continue  # can't reconcile without a third source; don't guess
+            factor, fully_explained = _cumulative_corp_action_factor(conn, ticker, d, as_of_date)
+            reconciled_close = bhav_close * factor
+            reconciled_gap = abs(our_close - reconciled_close) / our_close
+
+            if reconciled_gap <= TOLERANCE_PCT / 100 and fully_explained:
+                continue  # gap fully explained by known SPLIT/BONUS actions
+
+            explain_note = (
+                "fully reconciled" if fully_explained
+                else "partially reconciled -- unquantifiable RIGHTS/DIVIDEND in window"
+            )
+            findings.append(
+                Finding(
+                    check_name="spot_check",
+                    finding_date=as_of_date,
+                    severity="critical",
+                    description=(
+                        f"{ticker}@{d}: our close={our_close} disagrees with Yahoo "
+                        f"({yahoo_close}); bhavcopy raw={bhav_close} x corp-action "
+                        f"factor={factor:.4f} = {reconciled_close:.2f} "
+                        f"({explain_note}, still {reconciled_gap * 100:.1f}% off)"
+                    ),
+                    ticker=ticker,
+                    evidence={
+                        "date": date_str,
+                        "our_close": our_close,
+                        "yahoo_close": yahoo_close,
+                        "bhavcopy_raw_close": bhav_close,
+                        "corp_action_factor": factor,
+                        "fully_explained": fully_explained,
+                        "reconciled_close": reconciled_close,
+                        "reconciled_gap_pct": reconciled_gap * 100,
+                    },
+                )
+            )
+            continue
 
         if fyers_client is None:
             fy_close = None

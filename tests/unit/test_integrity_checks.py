@@ -268,6 +268,95 @@ class TestCheckSpotCheck:
         )
         assert findings == []
 
+    def test_fyers_sourced_row_not_flagged_when_yahoo_agrees(self, conn, monkeypatch):
+        # [2026-09-11] A source='fyers' row must never re-fetch Fyers
+        # (tautological) — only Yahoo. Agreement means no bhavcopy/corp-
+        # action reconciliation is even attempted.
+        ticker = "FYAGREE"
+        d = date(2026, 6, 1)
+        conn.execute(
+            "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, source) "
+            "VALUES (?, ?, 100, 100, 100, 100, 1000, 'fyers')",
+            [d, ticker],
+        )
+
+        def fake_yahoo(t, dd):
+            return 100.0
+
+        def boom(*a, **kw):
+            raise AssertionError("bhavcopy should not be fetched when Yahoo agrees")
+
+        monkeypatch.setattr("datastore.integrity.checks._bhavcopy_close", boom)
+        findings = check_spot_check(
+            conn, date(2026, 6, 5), sample_size=10, seed=1, fyers_client=_FakeFyers({}), yahoo_fetch=fake_yahoo
+        )
+        assert findings == []
+
+    def test_fyers_sourced_row_reconciled_by_split_not_flagged(self, conn):
+        # our_close (fyers, already split-adjusted) legitimately differs
+        # from both Yahoo (unadjusted-for-this-gap fixture) and bhavcopy's
+        # raw close once a 2:1 SPLIT between the sampled date and as_of_date
+        # fully explains the gap.
+        ticker = "FYSPLIT"
+        d = date(2026, 6, 1)
+        as_of = date(2026, 6, 10)
+        conn.execute(
+            "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, source) "
+            "VALUES (?, ?, 100, 100, 100, 100, 1000, 'fyers')",
+            [d, ticker],
+        )
+        conn.execute(
+            "INSERT INTO corporate_actions (ticker, ex_date, action_type, ratio) VALUES (?, ?, 'SPLIT', 2.0)",
+            [ticker, date(2026, 6, 5)],
+        )
+
+        def fake_yahoo(t, dd):
+            return 200.0  # disagrees with our_close=100, triggering reconciliation
+
+        def fake_bhavcopy(date_str, tkr, cache):
+            return 200.0  # raw bhavcopy close, pre-split
+
+        import datastore.integrity.checks as checks_mod
+
+        orig = checks_mod._bhavcopy_close
+        checks_mod._bhavcopy_close = fake_bhavcopy
+        try:
+            findings = check_spot_check(
+                conn, as_of, sample_size=10, seed=1, fyers_client=_FakeFyers({}), yahoo_fetch=fake_yahoo
+            )
+        finally:
+            checks_mod._bhavcopy_close = orig
+        assert findings == []
+
+    def test_fyers_sourced_row_unexplained_gap_flagged(self, conn):
+        ticker = "FYBAD"
+        d = date(2026, 6, 1)
+        as_of = date(2026, 6, 10)
+        conn.execute(
+            "INSERT INTO ohlcv_adjusted (date, ticker, open, high, low, close, volume, source) "
+            "VALUES (?, ?, 100, 100, 100, 100, 1000, 'fyers')",
+            [d, ticker],
+        )
+        # No corporate_actions row at all -- factor stays 1.0, gap unexplained.
+
+        def fake_yahoo(t, dd):
+            return 200.0
+
+        def fake_bhavcopy(date_str, tkr, cache):
+            return 200.0
+
+        import datastore.integrity.checks as checks_mod
+
+        orig = checks_mod._bhavcopy_close
+        checks_mod._bhavcopy_close = fake_bhavcopy
+        try:
+            findings = check_spot_check(
+                conn, as_of, sample_size=10, seed=1, fyers_client=_FakeFyers({}), yahoo_fetch=fake_yahoo
+            )
+        finally:
+            checks_mod._bhavcopy_close = orig
+        assert any(f.ticker == ticker and f.severity == "critical" for f in findings)
+
 
 class TestCheckCorporateActionsCoverage:
     def _insert_days(self, conn, ticker, start, n_days):
