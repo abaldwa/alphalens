@@ -154,6 +154,28 @@ STEPS: List[Dict[str, Any]] = [
     # restart during the 2026-09 catch-up incident, before the scheduler
     # could even reach new dates.
     {"name": "data_integrity_check", "is_backfillable": True, "depends_on": ["adjust_prices", "download_corporate_actions"], "resume_failed_as_done": True},
+    # A25 (Write-Audit-Publish Architecture): daily incremental rollback
+    # snapshot of the pilot tables (fno_data, ohlcv_adjusted) — see
+    # daily_pipeline.py::step_publish_and_snapshot's docstring. Depends only
+    # on that day's two table writers (download_fno, adjust_prices), so it
+    # is independent of compute_features/data_integrity_check and runs in
+    # an early dependency-depth wave (2, same as data_integrity_check)
+    # regardless of list position — see get_resume_step's docstring.
+    # Backfillable — a skipped/late day still deserves its own rollback
+    # point once it eventually runs.
+    #
+    # [2026-09-11] Moved here (was previously the LAST entry in STEPS,
+    # despite executing in this early wave) — that mismatch between list
+    # position and actual dependency depth meant get_resume_step's "skip
+    # steps before the resume point" pre-seed (which uses list INDEX, not
+    # dependency depth) never covered this step whenever resume_index
+    # pointed at any step still earlier than the true end of the list
+    # (e.g. compute_features): its large end-of-list index was never below
+    # resume_index, so it was never auto-marked "already done" even after
+    # genuinely succeeding, and got needlessly re-executed (a fresh,
+    # redundant snapshot write) on every single scheduler restart during
+    # backfill. List position now matches its real early execution wave.
+    {"name": "publish_and_snapshot", "is_backfillable": True, "depends_on": ["download_fno", "adjust_prices"]},
     # compute_features needs adjusted OHLCV. macro/fno data is consumed as
     # NaN-tolerant soft inputs — features compute fine without them.
     #
@@ -235,14 +257,6 @@ STEPS: List[Dict[str, Any]] = [
     # compute_features because every channel's adapter reads that day's
     # feature snapshot.
     {"name": "propose_paper_trades", "is_backfillable": False, "depends_on": ["compute_features"]},
-    # A25 (Write-Audit-Publish Architecture): daily incremental rollback
-    # snapshot of the pilot tables (fno_data, ohlcv_adjusted) — see
-    # daily_pipeline.py::step_publish_and_snapshot's docstring. Runs last,
-    # depending on both of that day's writers to those tables, so the
-    # snapshot reflects the full day's final state. Backfillable — a
-    # skipped/late day still deserves its own rollback point once it
-    # eventually runs.
-    {"name": "publish_and_snapshot", "is_backfillable": True, "depends_on": ["download_fno", "adjust_prices"]},
 ]
 STEP_NAMES: List[str] = [str(step["name"]) for step in STEPS]
 _BACKFILLABLE: Dict[str, bool] = {str(step["name"]): bool(step["is_backfillable"]) for step in STEPS}
