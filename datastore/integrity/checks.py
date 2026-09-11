@@ -168,9 +168,39 @@ def check_corporate_actions(
         ratio_before = before["ratio"].median()
         ratio_after = after["ratio"].median()
         implied_factor = ratio_after / ratio_before
-        pct_diff, matched_type, matched_ratio, _ = classify_factor(implied_factor)
 
-        if matched_type != action_type or pct_diff > TOLERANCE_PCT:
+        # [2026-09-11] Compare the OBSERVED implied_factor directly against
+        # the ANNOUNCED action_type/ratio's own expected factor (same
+        # formulas as ingestion/adjust/price_adjuster.py: SPLIT=1/ratio,
+        # BONUS=1/(1+ratio)), instead of classify_factor()'s "guess the
+        # type from the factor alone" result. That guess is genuinely
+        # ambiguous for this purpose: a 2:1 SPLIT (factor=1/2=0.5) and a
+        # 1:1 BONUS (factor=1/(1+1)=0.5) produce an IDENTICAL numeric
+        # factor, and CANDIDATE_FACTORS is a plain dict keyed by that
+        # factor value — so BONUS silently overwrote SPLIT's entry at that
+        # key (bonus_ratio=(1,1) is processed after the split loop),
+        # meaning ANY genuine 2:1 split (KIRLPNU, TDPOWERSYS confirmed
+        # live) was misclassified as "should have been a BONUS 1:1" and
+        # flagged critical even though the announced SPLIT was correctly
+        # applied. classify_factor's ambiguity is fine for its original
+        # exploratory use (scripts/detect_missing_split_reconstruction.py,
+        # reconstructing an unknown type from price behavior alone) but
+        # wrong here, where the type is already known from corporate_actions
+        # — there is no need to re-guess it.
+        if action_type == "SPLIT":
+            expected_factor = 1.0 / ratio if ratio else None
+        elif action_type == "BONUS":
+            expected_factor = 1.0 / (1.0 + ratio)
+        else:
+            expected_factor = None
+        pct_diff = (
+            abs(implied_factor - expected_factor) / expected_factor * 100
+            if expected_factor
+            else float("inf")
+        )
+
+        if pct_diff > TOLERANCE_PCT:
+            _, matched_type, matched_ratio, _ = classify_factor(implied_factor)
             findings.append(
                 Finding(
                     check_name="corporate_actions",
