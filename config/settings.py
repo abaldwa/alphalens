@@ -275,7 +275,21 @@ PIPELINE_STALE_RUN_THRESHOLD_MINUTES = 180
 # ~4.4GB RSS). Revert to 6144 once that backfill (and the resumed A74
 # corp_action run behind it) completes — this ceiling also governs the
 # daily scheduler's own jobs, which weren't sized against 8192.
-PIPELINE_MEMORY_CEILING_MB = 8192
+#
+# [2026-09-11] Reverted, as instructed above — that backfill completed
+# long ago and the revert was simply never done. Root-caused a live
+# incident: with the cgroup's real MemoryMax=6144MB (alphalens-scheduler.service),
+# resource_guard.py's self-heal (adaptive chunk-sizing) only triggers at 80%
+# of THIS constant — 6554MB at the stale 8192 value, mathematically ABOVE
+# the 6144MB hard cap, so self-heal could never engage before systemd's own
+# cgroup OOM killer fired. compute_features was repeatedly OOM-killed
+# mid-run (confirmed: stuck status='running' checkpoints, 428K available/
+# 1.3G swapped observed moments before a crash), each time forcing the
+# scheduler to redo that date's expensive feature computation from scratch
+# on restart. At 6144, self-heal's 80% trigger (~4915MB) sits with real
+# headroom below the cgroup max, able to actually shrink chunk sizes before
+# the hard kill.
+PIPELINE_MEMORY_CEILING_MB = 6144
 RETRAIN_OVERDUE_MULTIPLIER = 1.5  # days_since_retrain > interval * this => overdue
 # 2026-07-07: retrain cadence for all registry-tracked models (hmm_market,
 # pnd_detector, signal_5d/21d/63d, meta_labeler, conformal_signal5d,

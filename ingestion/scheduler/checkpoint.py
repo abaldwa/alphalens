@@ -140,10 +140,41 @@ STEPS: List[Dict[str, Any]] = [
     # early (depends only on adjust_prices, proxy for "cycle has progressed");
     # idempotent, fills NULLs only.
     {"name": "derive_fundamentals_ratios", "is_backfillable": True, "depends_on": ["adjust_prices"]},
-    {"name": "data_integrity_check", "is_backfillable": True, "depends_on": ["adjust_prices", "download_corporate_actions"]},
+    # [2026-09-11] resume_failed_as_done=True: this step's own docstring
+    # above says only 'critical' findings fail the checkpoint, and even
+    # then the pipeline logs and moves on (never raises) — a failure here
+    # is frequently a genuine, persistent finding (e.g. real corporate-
+    # action-continuity gaps) that will fail identically on every retry,
+    # not a transient error worth re-attempting. Without this flag,
+    # get_resume_step treated 'failed' as "not done" and rewound EVERY
+    # scheduler restart back to re-run this step (and everything after it,
+    # including the expensive compute_features) for every date with a
+    # standing critical finding — observed burning hours of redundant
+    # compute_features re-runs across 7+ backlog dates on each crash/
+    # restart during the 2026-09 catch-up incident, before the scheduler
+    # could even reach new dates.
+    {"name": "data_integrity_check", "is_backfillable": True, "depends_on": ["adjust_prices", "download_corporate_actions"], "resume_failed_as_done": True},
     # compute_features needs adjusted OHLCV. macro/fno data is consumed as
     # NaN-tolerant soft inputs — features compute fine without them.
-    {"name": "compute_features", "is_backfillable": True, "depends_on": ["adjust_prices", "data_integrity_check"]},
+    #
+    # [2026-09-11] resume_running_as_done=False: unlike the short, atomic
+    # DB-write steps the 2026-08-06 "'running' is terminal" fix targeted
+    # (see get_resume_step's docstring), this step is long-running and
+    # non-atomic — it only produces its real output (a feature Parquet
+    # file) at the very end, potentially 10+ minutes and a multiprocessing
+    # Pool of per-ticker HMM fits later. When OOM-killed mid-computation
+    # (observed during the 2026-09 catch-up incident, root-caused to
+    # PIPELINE_MEMORY_CEILING_MB sitting above the scheduler's actual
+    # cgroup MemoryMax), its checkpoint is left at 'running' with no
+    # Parquet ever written. Treating that as "done" (the default/legacy
+    # behavior) permanently skipped real recomputation on every later
+    # restart, silently starving downstream steps — confirmed as the exact
+    # cause of run_models failing with "No such file or directory:
+    # .../2026-09-0{7,8}.parquet" days after the actual crash. Safe to
+    # always retry when stuck at 'running': recomputing a date's features
+    # is deterministic and side-effect-free (overwrites that date's own
+    # Parquet only).
+    {"name": "compute_features", "is_backfillable": True, "depends_on": ["adjust_prices", "data_integrity_check"], "resume_running_as_done": False},
     # check_ta_alerts: evaluates the 42 TA screener templates + user-defined
     # alerts against run_date's own feature Parquet only (systems/
     # technical_analysis/alerts/{daily_alert_checker,alert_store}.py) —
@@ -573,11 +604,10 @@ class CheckpointManager:
         None
         """
         with get_sqlite_connection(self._db_path) as conn:
-            done = {
-                row[0]
+            status_by_step = {
+                row[0]: row[1]
                 for row in conn.execute(
-                    "SELECT step_name FROM pipeline_checkpoints "
-                    "WHERE date = ? AND status IN ('success', 'running')",
+                    "SELECT step_name, status FROM pipeline_checkpoints WHERE date = ?",
                     (run_date.isoformat(),),
                 ).fetchall()
             }
@@ -586,15 +616,44 @@ class CheckpointManager:
         # Skipped and failed steps are both retried so a fixed prerequisite
         # can unlock its dependents.
         #
-        # [2026-08-06] 'running' is now treated as terminal here: a
-        # 'running' checkpoint means the step was started and likely
-        # completed before the scheduler died (DuckDB writes are atomic
-        # per-step, and steps use persist=False so the connection closes
-        # on completion).  Treating 'running' as done prevents re-running
-        # already-completed download steps on restart — the old behavior
-        # caused redundant Fyers/BhavCopy re-downloads for every gap date
-        # on each scheduler restart, wasting 5-10min per date.
+        # [2026-08-06] 'running' is treated as terminal by default: a
+        # 'running' checkpoint usually means the step was started and
+        # likely completed before the scheduler died (DuckDB writes are
+        # atomic per-step, and steps use persist=False so the connection
+        # closes on completion). Treating 'running' as done prevents
+        # re-running already-completed download steps on restart — the old
+        # behavior caused redundant Fyers/BhavCopy re-downloads for every
+        # gap date on each scheduler restart, wasting 5-10min per date.
+        #
+        # [2026-09-11] That assumption only holds for short, atomic steps.
+        # Two per-step overrides (declared in STEPS, see checkpoint.py's
+        # STEPS list) let individual steps opt out of the defaults above:
+        #   - resume_running_as_done=False (compute_features): a long,
+        #     non-atomic step whose real output (a Parquet file) is only
+        #     written at the very end — an OOM-killed mid-run leaves
+        #     'running' with no output ever produced, and the default
+        #     "running is done" rule would then skip it forever, silently
+        #     starving every downstream step. See compute_features' STEPS
+        #     entry for the incident this was rootcaused against.
+        #   - resume_failed_as_done=True (data_integrity_check): a
+        #     'failed' status here is frequently a real, persistent
+        #     finding (e.g. corporate-action-continuity gaps) that fails
+        #     identically on every retry, not a transient error — without
+        #     this flag every restart rewound to re-run this step AND
+        #     every step after it (including compute_features) for every
+        #     date with a standing finding. See data_integrity_check's
+        #     STEPS entry for the incident this was rootcaused against.
+        step_by_name = {step["name"]: step for step in STEPS}
         for step_name in STEP_NAMES:
-            if step_name not in done:
+            status = status_by_step.get(step_name)
+            step_def = step_by_name[step_name]
+            running_is_done = step_def.get("resume_running_as_done", True)
+            failed_is_done = step_def.get("resume_failed_as_done", False)
+            is_done = (
+                status == "success"
+                or (status == "running" and running_is_done)
+                or (status == "failed" and failed_is_done)
+            )
+            if not is_done:
                 return step_name
         return None
