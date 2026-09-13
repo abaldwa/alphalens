@@ -15169,3 +15169,206 @@ running).
 `tests/unit/` (see branch), `FeatureBacklog.md`/`BuildLog.md` on that
 branch. Merged into master as part of the 2026-07-23 branch-cleanup
 merge.
+
+## Scrum-Master Scheduled Pass: FE2 Frontend Code-Splitting, 2 Self-Healed Test Bugs, Full Batched Suite Re-Run (2026-09-13)
+
+**Flagging up front, per this run's own instructions:** this pass ran
+without `.claude/agents/scrum-master.md` present in the checkout (it is
+`.gitignore`d as local tool settings and was not present in this
+container; this session's launch prompt served as the substitute
+"Scheduled run" procedure). Also: the last commit on `origin/master`
+before this session was **36d620d1, dated 2026-07-23** — a **~7 week
+gap** with zero activity on master despite this being a recurring
+scheduled automation. Both are logged here explicitly, not just
+mentioned in chat, per the run's own instructions.
+
+Also note: `main` (the repo's checkout default in a fresh clone) is a
+vestigial branch holding an unrelated old import of the upstream
+open-source `alphalens` factor-analysis library, unrelated to this
+project. All real work — this entry included — is based on and targets
+`origin/master`.
+
+### PRIMARY: burned FE2 (frontend bundle code-splitting)
+Read the full Status Matrix in `FeatureBacklog.md` (lines 15-154) looking
+for a `⏳`-only item, not blocked on a user decision, clearly scoped, and
+outside ML Signal Engine / `features/` / `backtest/` / live-scheduler
+territory. Ruled out: A42/T8/ML28/ML35/ML36/ML37 (all ML Signal Engine or
+`features/` core); FE3/FE4/FE5 and CP2/CP3/CP4 (each explicitly blocked
+on a user/product decision per their own narrative — cutover approach,
+deployment origin, design call, or an explicit prior deferral); A65
+(coverage push) was considered as the well-precedented safe fallback but
+FE2 was cleanly scoped with a concrete, verifiable "done" and touched
+zero backend/ML code, so it was picked instead. Checked the 10
+unmerged/no-PR branches listed in this run's brief for anything
+resurrectable against FE2 — none touch the frontend build config or
+`router.tsx`.
+
+**FE2**: Vite warned about a >500 kB minified chunk because all 48 page
+components were static top-of-file imports in `frontend/src/app/router.tsx`,
+so every route's code — and every third-party library any page used
+(`recharts`, `lightweight-charts`, etc.) — landed in one shared bundle
+downloaded on first paint. Fixed both halves:
+1. `frontend/src/app/router.tsx`: every page component converted to
+   `React.lazy(() => import(...))`, one dynamic import per route, each
+   route wrapped in a `<Suspense fallback=...>` (a plain "Loading…" div,
+   matching this codebase's existing loading-state text convention
+   rather than adding a new spinner component). Route table itself
+   (49 paths) is unchanged — confirmed via diff, not just build success.
+2. `frontend/vite.config.ts`: added `build.rollupOptions.output.manualChunks`
+   splitting vendor code into its own chunks by library
+   (`vendor-lightweight-charts`, `vendor-recharts`, `vendor-radix`,
+   `vendor-react-router`, `vendor-tanstack`, `vendor-react`, catch-all
+   `vendor`) instead of one shared `ui` chunk.
+
+**Verified via a real `npm ci && npm run build`** (not assumed): before —
+one `dist/assets/index-*.js` at 1,378.41 kB (390.79 kB gzip) plus Vite's
+">500 kB chunk" warning; after — 61 total JS chunks (route/shared-code
+chunks from 0.15 kB-41.64 kB, plus 8 vendor chunks), largest is
+`vendor-recharts` at 322.65 kB (86.03 kB gzip) — no chunk over 500 kB,
+warning gone. `tsc -b && vite build` clean, zero errors/warnings.
+`npm run lint` (oxlint): no new errors, only pre-existing-pattern
+`react-refresh/only-export-components` *warnings* (already present
+elsewhere in this codebase pre-change, e.g. `button.tsx`/`badge.tsx`;
+exit code 0 before and after — this rule is configured `"warn"` in
+`.oxlintrc.json`, not `"error"`). No backend/Python code touched, so the
+Python test suite and `tests/quality/` gate battery are unaffected by
+this change (confirmed: `tests/quality/` still 5/5, see below). This
+project has no frontend test runner (`frontend/package.json` has no
+vitest/jest), so per this codebase's own established precedent for
+frontend-only changes ("Frontend `tsc -b` and `npm run build` both
+clean," see earlier entry above), the build itself is the verification.
+`FeatureBacklog.md`'s FE2 row updated to `✅ 2026-09-13` with a full
+narrative note (not deleted/replaced — appended in place, same as other
+items' history in this file).
+
+**PR opened**: `fix/frontend-code-split-fe2` → `master`.
+
+### SECONDARY: full batched test-suite run + 2 self-healed bugs
+No Python dependency was pre-installed in this container — built a full
+venv from scratch via `requirements/phase{0,1,2,3}.txt` (this project's
+own documented phased dependency scheme). Two environment-only
+adjustments needed, neither a code change: (1) `fyers-apiv3==3.1.13`'s
+transitive pins (`requests==2.31.0`, `aiohttp==3.9.3`, etc.) conflict
+with `phase0.txt`'s own force-upgraded versions (see that file's own
+2026-06-24 comment — this is a known, accepted conflict, not new);
+installed `fyers-apiv3` and its own further transitive deps
+(`aws-lambda-powertools`, `websocket-client`, `jmespath`) with `--no-deps`
+to route around it, exactly as the existing comment implies was already
+being done. (2) Found and fixed a genuinely missing dependency pin —
+see below.
+
+**Ran the full suite in memory-safe batches**, per the `feedback_coverage`
+convention documented repeatedly elsewhere in this file: `tests/unit/`'s
+210 files split into 10 light batches of ~20 files (`--cov`-free, since
+this pass is a correctness run not a coverage push) plus the 15
+known-heavy ML-training/deep-model files (gainer/multibagger/stacking/
+deep-model suite) run one at a time, then `tests/integration/`,
+`tests/regression/`, and `tests/quality/` each run as their own batch.
+`free -h` checked mid-run; peak stayed at ~10GB used / 5GB free, no OOM.
+
+**Final tally**: **2425 tests collected, 2375 passed, 25 failed, 6
+errored, 18 skipped, 1 xfailed** (after the 2 fixes below; see their own
+before/after counts). Breakdown of the 25 failed + 6 errored:
+
+- **2 self-healed this session** (see below) — both fixed, both now
+  green.
+- **16 failed**: a single root-cause bug in
+  `features/advanced_technical.py::_optimal_fracdiff_d` (`NameError:
+  target_adf_threshold`) surfacing across `tests/unit/test_matrix_builder.py`
+  (9) and `tests/unit/test_phase3_features.py` (7). **Not fixed** —
+  `features/` is off-limits for this session's non-intrusive-only
+  charter. Root-caused (not just observed) and logged as **ML39** in
+  `FeatureBacklog.md`'s Machine Learning section: a botched merge
+  resolution in the *last commit ever merged to master* (36d620d1,
+  2026-07-23) combined an older branch's function-signature change
+  (parameter removed, from `fix/remove-unused-adf-threshold-var`,
+  2026-07-13, back when the function didn't need it) with master's
+  since-rewritten body (2026-07-19's real-ADF-test rewrite, which does
+  need it) — see ML39's full narrative for the `git log -S`/`git show`
+  trail. This is a live production bug: any real ticker with ≥32 price
+  points crashes `compute_advanced_technical_features`. Flagged as
+  **high severity** for the next session with `features/` write scope —
+  likely a one-line fix (restore `target_adf_threshold: float = -3.5` as
+  a parameter/default) but that is still a feature-engineering code
+  change, not something to guess at blind or push through this session's
+  guardrail.
+- **9 failed + 6 errored (15 total), environmental, not a code bug**:
+  split two ways —
+  - **4** (`tests/integration/test_daily_pipeline.py` ×1,
+    `tests/regression/test_multibagger_historical.py` ×3) are the
+    already-documented pre-existing DuckDB cross-process
+    connection-config conflict (`Can't open a connection to same
+    database file with a different configuration than existing
+    connections`) — same class as A65's session-7 note and others
+    earlier in this file. Not fixed; per this run's own instructions,
+    pre-existing environmental flakes get noted, not "fixed" by
+    weakening a test.
+  - **11** (`test_momentum_adapter.py` ×1, `test_paper_trading_router.py`
+    ×1, `test_score_multibagger.py` ×5, `test_multibagger.py` ×4) fail
+    with `CatalogException: Table with name ohlcv_adjusted does not
+    exist` — these tests intentionally query the real production
+    `datastore/normalised/alphalens.duckdb` (by design, per their own
+    "No-Mock-Data Policy" docstrings) rather than a seeded fixture, and
+    this sandboxed container has never run ingestion, so that table
+    (and the real NSE data it would hold) simply doesn't exist here.
+    Confirmed real, not a masking issue: the file that does get created
+    at that path (12 KB) is schema-empty. Not a code bug; these tests
+    are written correctly for an environment with real ingested data,
+    which this container isn't.
+
+**2 bugs self-healed** (both non-ML, small, and safe — separate PR from
+FE2):
+1. `tests/unit/test_backtest_runs_router.py::TestQueueStatusAndDiscovery::
+   test_active_queues_excludes_completed` — failing because
+   `_queue_runner_is_alive()` (added 2026-07-22 to stop crashed/killed
+   queues showing as "running" forever) checks a real OS process via
+   `psutil`, and there is no real `run_strategy_queue` subprocess in a
+   unit test. The test predates that safety check and was never updated
+   for it. Fixed by monkeypatching `_queue_runner_is_alive` to the one
+   signal the test is actually about; also added a new sibling test,
+   `test_active_queues_excludes_dead_process`, covering the
+   dead-process-filtering behavior `_queue_runner_is_alive` exists for
+   (previously untested). `tests/unit/test_backtest_runs_router.py`:
+   17/17 passing (was 16/17).
+2. `ingestion/scheduler/exception_catalog.py`'s `location` for the
+   `main (scheduler startup)` entry pointed at
+   `daily_pipeline.py:2045` (the `pass` body) instead of `:2044` (the
+   actual `except Exception:` line) — a one-line drift, caught by
+   `tests/unit/test_exception_catalog.py`'s own fitness function.
+   Corrected the line number. `tests/unit/test_exception_catalog.py`:
+   9/9 passing (was 8/9).
+
+**Also fixed** (found via this session's from-scratch environment
+build, not the test run itself, but real and worth fixing): `features/
+advanced_technical.py::_optimal_fracdiff_d`'s `adfuller` import needs
+`statsmodels`, which was never added to any `requirements/*.txt` — a
+clean install per this project's own documented setup would not
+actually be able to run that feature computation. Added `statsmodels==
+0.14.6` to `requirements/phase3.txt` (whose documented consumer list
+already explicitly names `features/advanced_technical`), verified
+compatible with the existing numpy/scipy/pandas pins. This is a
+dependency-manifest fix, not a `features/` code change.
+
+**`tests/quality/` gate battery: 5/5 passed** (`test_duckdb_connection_
+discipline`, and all 4 of `test_no_stub_or_synthetic_data`'s checks) —
+confirms neither the FE2 frontend work nor the 2 self-healed test fixes
+introduced a stub/synthetic-data or DuckDB-discipline regression.
+
+**PR opened**: `fix/backtest-runs-router-and-exception-catalog` →
+`master` (the 2 self-heals + the `statsmodels` requirements fix +
+this BuildLog.md entry + the ML39 FeatureBacklog.md entry).
+
+### New backlog item
+**ML39** (`FeatureBacklog.md`, Machine Learning section): the
+production-breaking `target_adf_threshold` `NameError` described above.
+Logged with full root-cause history rather than just "tests are
+failing," so whoever picks it up doesn't have to re-derive it.
+
+### Files changed
+`frontend/src/app/router.tsx`, `frontend/vite.config.ts` (PR 1 — FE2);
+`tests/unit/test_backtest_runs_router.py`,
+`ingestion/scheduler/exception_catalog.py`, `requirements/phase3.txt`
+(PR 2 — self-heals + dependency fix); `FeatureBacklog.md` (FE2 row
+updated, ML39 row added), `BuildLog.md` (this entry) — bundled into PR
+2 rather than a third docs-only PR, per this run's own "whichever keeps
+things minimal" guidance.
