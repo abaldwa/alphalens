@@ -199,10 +199,30 @@ class TestQueueStatusAndDiscovery:
         (logs_dir / "queue_running.log").write_text("still going\n")
         (logs_dir / "queue_finished.log").write_text("done\n")
         (reports_dir / "strategy_queue_queue_finished.json").write_text(json.dumps({"all_passed": True}))
+        # _queue_runner_is_alive() (added 2026-07-22 to stop crashed/killed
+        # queues showing as "running" forever) inspects real OS processes via
+        # psutil — there is no real `run_strategy_queue` subprocess in this
+        # test, so it would report every queue_id as not alive regardless of
+        # its trigger-log/summary state. Patch it to the one signal this test
+        # is actually about (whether a completed queue is filtered out).
+        monkeypatch.setattr(backtest_runs_router, "_queue_runner_is_alive", lambda queue_id: True)
 
         resp = client.get("/api/v1/backtest/queue/active")
         assert resp.status_code == 200
         assert resp.json()["queue_ids"] == ["queue_running"]
+
+    def test_active_queues_excludes_dead_process(self, client, tmp_path, monkeypatch):
+        """A trigger log with no final summary yet, but whose
+        `run_strategy_queue` process is no longer alive (e.g. killed by
+        systemd-oomd or a host restart), must not be reported as active —
+        this is the phantom-entry bug _queue_runner_is_alive exists to fix."""
+        reports_dir, logs_dir = self._patch_queue_dirs(tmp_path, monkeypatch)
+        (logs_dir / "queue_killed.log").write_text("was going\n")
+        monkeypatch.setattr(backtest_runs_router, "_queue_runner_is_alive", lambda queue_id: False)
+
+        resp = client.get("/api/v1/backtest/queue/active")
+        assert resp.status_code == 200
+        assert resp.json()["queue_ids"] == []
 
     def test_active_queues_empty_when_no_logs_dir(self, client, tmp_path, monkeypatch):
         reports_dir = tmp_path / "reports_empty"

@@ -124,7 +124,7 @@ CATALOG: list[ExceptionCatalogEntry] = [
     ),
     ExceptionCatalogEntry(
         step_name="main (scheduler startup)",
-        location="ingestion/scheduler/daily_pipeline.py:2045",
+        location="ingestion/scheduler/daily_pipeline.py:2044",
         caught="scheduler.remove_job('backfill_catchup') raising "
         "JobLookupError when the stale persisted job doesn't exist (the "
         "common case after the first cleanup run).",
